@@ -19,11 +19,14 @@
   <a href="#-current-workflow">Workflow</a> ·
   <a href="#-architecture">Architecture</a> ·
   <a href="#-quick-start">Quick Start</a> ·
+  <a href="#-deployment">Deployment</a> ·
   <a href="#-faros-api">API</a> ·
   <a href="#-important-todo">TODO</a>
 </p>
 
-
+<p align="center">
+  <img src="./FAROS.png" alt="FAROS architecture overview" width="88%">
+</p>
 
 ---
 
@@ -40,11 +43,6 @@
 
 <p align="center">
   <code>idea -> experiment -> paper -> review</code>
-</p>
-
-
-<p align="center">
-  <img src="./FAROS.png" alt="FAROS architecture overview" width="88%">
 </p>
 
 ---
@@ -245,6 +243,37 @@ cd frontend
 npm install
 npm run dev
 ```
+
+## 🚢 Deployment
+
+The current RC is intended for a simple internal deployment shape:
+
+- one backend API process
+- one frontend process or static build
+- one writable data directory
+- one configured LLM provider for real LLM-backed execution
+
+The most important runtime knobs are:
+
+- backend:
+  - `API_HOST`
+  - `API_PORT`
+  - `DATA_DIR`
+  - `ACTIVE_PROVIDER_NAME`
+- frontend:
+  - `FRONTEND_HOST`
+  - `FRONTEND_PORT`
+  - `VITE_API_BASE_URL`
+  - `VITE_USE_MOCK`
+
+Important:
+
+- the frontend helper script uses `FRONTEND_PORT`, not the CLI `--port` flag, as the effective dev-server port
+- the default frontend backend target is `http://127.0.0.1:8005`
+- real LLM execution is only ready when `/api/system/version` reports `llm.configured=true`
+
+See [docs/FAROS_DEPLOYMENT_GUIDE.md](docs/FAROS_DEPLOYMENT_GUIDE.md) for the full deployment checklist and environment-variable reference.
+For copy-ready shell commands, see [docs/FAROS_PRODUCTION_COMMANDS.md](docs/FAROS_PRODUCTION_COMMANDS.md).
 
 ### Useful Endpoints
 

@@ -1,0 +1,24 @@
+{
+  "id": "lit_2f7eac9a1caa",
+  "sessionId": "idea_90236e3bf233",
+  "title": "FTF-ER: Feature-Topology Fusion-Based Experience Replay Method for Continual Graph Learning",
+  "authors": [
+    "Jinhui Pang",
+    "Changqing Lin",
+    "Xiaoshuai Hao",
+    "Rong Yin",
+    "Zixuan Wang",
+    "Zhihui Zhang",
+    "Jinglin He",
+    "Huang Tai Sheng"
+  ],
+  "venue": "ACM Multimedia",
+  "year": 2024,
+  "url": "https://www.semanticscholar.org/paper/5a0f6d19e56c93eb398b62ebfdf9a94a5c5b4bed",
+  "doi": "10.1145/3664647.3681457",
+  "arxivId": "2407.19429",
+  "snippet": "Continual graph learning (CGL) is an important and challenging task that aims to extend static GNNs to dynamic task flow scenarios. As one of the mainstream CGL methods, the experience replay (ER) method receives widespread attention due to its superior performance. However, existing ER methods focus on identifying samples by feature significance or topological relevance, which limits their utilization of comprehensive graph data. In addition, the topology-based ER methods only consider local to",
+  "relevanceScore": 0.55,
+  "source": "semantic_scholar",
+  "createdAt": "2026-05-20T06:58:47.210626"
+}

@@ -1,0 +1,21 @@
+{
+  "id": "rev_f655da58880e",
+  "paperId": "paper_file_backend",
+  "reviewerProfile": "senior_reviewer",
+  "providerName": "manual-review",
+  "model": "external-human-file",
+  "status": "completed",
+  "scoreSuggestion": 8,
+  "jsonReport": {
+    "summary": "External human review"
+  },
+  "markdownReport": "# External Review\n\nLooks good.\n",
+  "actionItems": [
+    {
+      "title": "Tighten evidence section",
+      "severity": "major"
+    }
+  ],
+  "createdAt": "2026-05-24T01:58:23.554188+00:00",
+  "updatedAt": "2026-05-24T01:58:23.554666+00:00"
+}

@@ -1,0 +1,20 @@
+{
+  "id": "lit_66dfde1813a4",
+  "sessionId": "idea_c9ad227677d0",
+  "title": "Curious Replay for Model-based Adaptation",
+  "authors": [
+    "Isaac Kauvar",
+    "Chris Doyle",
+    "Linqi Zhou",
+    "Nick Haber"
+  ],
+  "venue": "arXiv",
+  "year": 2023,
+  "url": "http://arxiv.org/abs/2306.15934v1",
+  "doi": null,
+  "arxivId": "2306.15934v1",
+  "snippet": "Agents must be able to adapt quickly as an environment changes. We find that existing model-based reinforcement learning agents are unable to do this well, in part because of how they use past experiences to train their world model. Here, we present Curious Replay -- a form of prioritized experience replay tailored to model-based agents through use of a curiosity-based priority signal. Agents using Curious Replay exhibit improved performance in an exploration paradigm inspired by animal behavior",
+  "relevanceScore": 0.95,
+  "source": "arxiv",
+  "createdAt": "2026-05-15T15:03:14.862684"
+}

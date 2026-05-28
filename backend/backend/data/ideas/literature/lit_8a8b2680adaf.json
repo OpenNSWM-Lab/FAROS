@@ -1,0 +1,20 @@
+{
+  "id": "lit_8a8b2680adaf",
+  "sessionId": "idea_bc8f884b1ebe",
+  "title": "Deep Residual Learning for Image Recognition",
+  "authors": [
+    "Kaiming He",
+    "Xiangyu Zhang",
+    "Shaoqing Ren",
+    "Jian Sun"
+  ],
+  "venue": "CVPR",
+  "year": 2016,
+  "url": "https://arxiv.org/abs/1512.03385",
+  "doi": null,
+  "arxivId": "1512.03385",
+  "snippet": "Deeper neural networks are more difficult to train. We present a residual learning framework to ease the training of networks that are substantially deeper than those used previously. We explicitly reformulate the layers as learning residual functions with reference to the layer inputs.",
+  "relevanceScore": 0.11666666666666667,
+  "source": "local",
+  "createdAt": "2026-05-14T14:48:44.451686"
+}

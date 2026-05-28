@@ -1,0 +1,78 @@
+[
+  {
+    "id": "faros_8ed734072fb0:experiment:project",
+    "type": "code_project",
+    "uri": "project://cproj_054dfe74cedd",
+    "producer": "experiment",
+    "summary": "Project cproj_054dfe74cedd created for experiment stage",
+    "metadata": {
+      "projectId": "cproj_054dfe74cedd",
+      "language": "python",
+      "framework": "FastAPI"
+    }
+  },
+  {
+    "id": "faros_8ed734072fb0:experiment:experiment",
+    "type": "experiment_record",
+    "uri": "experiment://exp_655a265bfd78",
+    "producer": "experiment",
+    "summary": "Experiment exp_655a265bfd78 linked to project cproj_054dfe74cedd",
+    "metadata": {
+      "experimentId": "exp_655a265bfd78",
+      "projectId": "cproj_054dfe74cedd"
+    }
+  },
+  {
+    "id": "faros_8ed734072fb0:paper_drafting:paper",
+    "type": "paper_record",
+    "uri": "paper://paper_5bdf5a407c38",
+    "producer": "paper_drafting",
+    "summary": "Paper paper_5bdf5a407c38 generated for venue generic",
+    "metadata": {
+      "paperId": "paper_5bdf5a407c38",
+      "status": "prepared"
+    }
+  },
+  {
+    "id": "faros_8ed734072fb0:paper_drafting:latex",
+    "type": "latex_project",
+    "uri": "/data/guiyao/codex/LLM_Scientist/FAROS-release/backend/data/papers/paper_5bdf5a407c38/latex",
+    "producer": "paper_drafting",
+    "summary": "LaTeX project with 4 entries",
+    "metadata": {
+      "paperId": "paper_5bdf5a407c38",
+      "fileCount": 4
+    }
+  },
+  {
+    "id": "faros_8ed734072fb0:paper_drafting:zip",
+    "type": "latex_zip",
+    "uri": "/data/guiyao/codex/LLM_Scientist/FAROS-release/backend/data/papers/paper_5bdf5a407c38/paper_5bdf5a407c38.zip",
+    "producer": "paper_drafting",
+    "summary": "Downloadable LaTeX bundle",
+    "metadata": {
+      "paperId": "paper_5bdf5a407c38"
+    }
+  },
+  {
+    "id": "faros_8ed734072fb0:paper_drafting:pdf",
+    "type": "paper_pdf",
+    "uri": "/data/guiyao/codex/LLM_Scientist/FAROS-release/backend/data/papers/paper_5bdf5a407c38/latex/main.pdf",
+    "producer": "paper_drafting",
+    "summary": "Compiled paper PDF",
+    "metadata": {
+      "paperId": "paper_5bdf5a407c38"
+    }
+  },
+  {
+    "id": "faros_8ed734072fb0:reviewer_simulation:review",
+    "type": "review_report",
+    "uri": "review://rev_3d786079e6e3",
+    "producer": "reviewer_simulation",
+    "summary": "Review rev_3d786079e6e3 with 2 action items",
+    "metadata": {
+      "reviewId": "rev_3d786079e6e3",
+      "paperId": "paper_5bdf5a407c38"
+    }
+  }
+]

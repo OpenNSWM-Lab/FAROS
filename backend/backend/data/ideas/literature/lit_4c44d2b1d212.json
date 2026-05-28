@@ -1,0 +1,26 @@
+{
+  "id": "lit_4c44d2b1d212",
+  "sessionId": "idea_bc8f884b1ebe",
+  "title": "Exploring the Efficacy of Multi-Agent Reinforcement Learning for Autonomous Cyber Defence: A CAGE Challenge 4 Perspective",
+  "authors": [
+    "Mitchell Kiely",
+    "Metin Ahiskali",
+    "E. Borde",
+    "Benjamin Bowman",
+    "David Bowman",
+    "Dirk Van Bruggen",
+    "KC Cowan",
+    "Prithviraj Dasgupta",
+    "Erich Devendorf",
+    "Ben Edwards"
+  ],
+  "venue": "AAAI Conference on Artificial Intelligence",
+  "year": 2025,
+  "url": "https://www.semanticscholar.org/paper/46156809cc1d7d839f08e85dd7b7f8d26c29fd09",
+  "doi": "10.1609/aaai.v39i28.35158",
+  "arxivId": null,
+  "snippet": "As cyber threats become increasingly automated and sophisticated, novel solutions must be introduced to improve defence of enterprise networks. Deep Reinforcement Learning (DRL) has demonstrated potential in mitigating these advanced threats. Single DRL Agents have proven utility toward execution of autonomous cyber defence. Despite the success of employing single DRL Agents, this approach presents significant limitations, especially regarding scalability within large enterprise networks. An att",
+  "relevanceScore": 0.7,
+  "source": "semantic_scholar",
+  "createdAt": "2026-05-14T14:48:44.454361"
+}

@@ -1,0 +1,23 @@
+{
+  "id": "lit_b3210370c89e",
+  "sessionId": "idea_212f55dc8e66",
+  "title": "PEAR: Planner-Executor Agent Robustness Benchmark",
+  "authors": [
+    "Shen Dong",
+    "Mingxuan Zhang",
+    "Pengfei He",
+    "Li Ma",
+    "Bhavani Thuraisingham",
+    "Hui Liu",
+    "Yue Xing"
+  ],
+  "venue": "arXiv",
+  "year": 2025,
+  "url": "http://arxiv.org/abs/2510.07505v4",
+  "doi": null,
+  "arxivId": "2510.07505v4",
+  "snippet": "Large Language Model (LLM)-based Multi-Agent Systems (MAS) have emerged as a powerful paradigm for tackling complex, multi-step tasks across diverse domains. However, despite their impressive capabilities, MAS remain susceptible to adversarial manipulation. Existing studies typically examine isolated attack surfaces or specific scenarios, leaving a lack of holistic understanding of MAS vulnerabilities. To bridge this gap, we introduce PEAR, a benchmark for systematically evaluating both the util",
+  "relevanceScore": 0.6,
+  "source": "arxiv",
+  "createdAt": "2026-05-13T16:37:12.845556"
+}

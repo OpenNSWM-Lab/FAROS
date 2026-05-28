@@ -1,0 +1,337 @@
+{
+  "id": "faros_8ed734072fb0",
+  "blueprint_id": "ml_paper",
+  "profile_id": "faros_hybrid",
+  "status": "completed",
+  "execution_mode": "plan",
+  "created_at": "2026-05-24T02:35:50.442649+00:00",
+  "started_at": "2026-05-24T02:35:50.466984+00:00",
+  "ended_at": "2026-05-24T02:35:50.961442+00:00",
+  "inputs": {
+    "seedQuery": "hybrid runtime flow",
+    "paperType": "system",
+    "targetVenue": "generic"
+  },
+  "runtime_options": {
+    "readyNodePolicy": "fifo"
+  },
+  "steps": [
+    {
+      "node_id": "idea",
+      "capability": "idea_refinement",
+      "agent_id": "researcher",
+      "skill_ids": [
+        "literature-grounding",
+        "idea-analysis"
+      ],
+      "status": "skipped",
+      "started_at": null,
+      "ended_at": "2026-05-24T02:35:50.450929+00:00",
+      "outputs_summary": {},
+      "verification": {
+        "status": "skipped",
+        "message": "step skipped by operator"
+      },
+      "error": null,
+      "retry_count": 0,
+      "checkpoint": {}
+    },
+    {
+      "node_id": "experiment",
+      "capability": "experiment",
+      "agent_id": "experimenter",
+      "skill_ids": [
+        "experiment-scaffold",
+        "artifact-packaging"
+      ],
+      "status": "completed",
+      "started_at": "2026-05-24T02:35:50.468310+00:00",
+      "ended_at": "2026-05-24T02:35:50.914604+00:00",
+      "outputs_summary": {
+        "projectId": "cproj_054dfe74cedd",
+        "projectTitle": "hybrid runtime flow [python]",
+        "experimentId": "exp_655a265bfd78",
+        "experimentStatus": "designed",
+        "experimentIds": [
+          "exp_655a265bfd78"
+        ]
+      },
+      "verification": {
+        "status": "passed",
+        "message": "experiment passed verification dispatch",
+        "verifier_ids": [],
+        "results": []
+      },
+      "error": null,
+      "retry_count": 0,
+      "checkpoint": {
+        "status": "completed",
+        "at": "2026-05-24T02:35:50.914645+00:00",
+        "outputKeys": [
+          "experimentId",
+          "experimentIds",
+          "experimentStatus",
+          "projectId",
+          "projectTitle"
+        ]
+      }
+    },
+    {
+      "node_id": "paper",
+      "capability": "paper_drafting",
+      "agent_id": "writer",
+      "skill_ids": [
+        "paper-outline",
+        "section-drafting",
+        "latex-assembly"
+      ],
+      "status": "completed",
+      "started_at": "2026-05-24T02:35:50.922875+00:00",
+      "ended_at": "2026-05-24T02:35:50.928167+00:00",
+      "outputs_summary": {
+        "paperId": "paper_5bdf5a407c38",
+        "paperTitle": "hybrid runtime flow",
+        "paperStatus": "prepared",
+        "paperVenue": "generic",
+        "pdfAvailable": true,
+        "paperFileCount": 4
+      },
+      "verification": {
+        "status": "passed",
+        "message": "paper_drafting passed verification dispatch",
+        "verifier_ids": [],
+        "results": []
+      },
+      "error": null,
+      "retry_count": 0,
+      "checkpoint": {
+        "status": "completed",
+        "at": "2026-05-24T02:35:50.928199+00:00",
+        "outputKeys": [
+          "paperFileCount",
+          "paperId",
+          "paperStatus",
+          "paperTitle",
+          "paperVenue",
+          "pdfAvailable"
+        ]
+      }
+    },
+    {
+      "node_id": "review",
+      "capability": "reviewer_simulation",
+      "agent_id": "reviewer",
+      "skill_ids": [
+        "review-critique",
+        "consistency-audit"
+      ],
+      "status": "completed",
+      "started_at": "2026-05-24T02:35:50.949263+00:00",
+      "ended_at": "2026-05-24T02:35:50.952378+00:00",
+      "outputs_summary": {
+        "reviewId": "rev_3d786079e6e3",
+        "reviewStatus": "completed",
+        "scoreSuggestion": 6,
+        "actionItemCount": 2
+      },
+      "verification": {
+        "status": "passed",
+        "message": "reviewer_simulation passed verification dispatch",
+        "verifier_ids": [],
+        "results": []
+      },
+      "error": null,
+      "retry_count": 0,
+      "checkpoint": {
+        "status": "completed",
+        "at": "2026-05-24T02:35:50.952411+00:00",
+        "outputKeys": [
+          "actionItemCount",
+          "actionItems",
+          "reviewId",
+          "reviewStatus",
+          "scoreSuggestion"
+        ]
+      }
+    }
+  ],
+  "output_summary": {
+    "paperId": "paper_5bdf5a407c38",
+    "reviewId": "rev_3d786079e6e3",
+    "selectedCandidateId": null,
+    "memorySummary": {
+      "projectId": "cproj_054dfe74cedd",
+      "experimentId": "exp_655a265bfd78",
+      "paperId": "paper_5bdf5a407c38",
+      "reviewId": "rev_3d786079e6e3",
+      "lastNodeId": "review"
+    },
+    "artifactContract": {
+      "status": "passed",
+      "message": "run output contract satisfied",
+      "required": [
+        "paper_pdf",
+        "latex_zip",
+        "review_report"
+      ],
+      "produced": [
+        "code_project",
+        "experiment_record",
+        "paper_record",
+        "latex_project",
+        "latex_zip",
+        "paper_pdf",
+        "review_report"
+      ],
+      "missing": []
+    }
+  },
+  "preflight": {
+    "blueprint_id": "ml_paper",
+    "profile_id": "faros_hybrid",
+    "status": "passed",
+    "message": "Preflight passed for blueprint 'ml_paper' with profile 'faros_hybrid'",
+    "nodes": [
+      {
+        "node_id": "idea",
+        "capability": "idea_refinement",
+        "status": "passed",
+        "agent_id": "researcher",
+        "skill_ids": [
+          "literature-grounding",
+          "idea-analysis"
+        ],
+        "provider_types": [
+          "llm",
+          "minimax"
+        ],
+        "errors": [],
+        "warnings": []
+      },
+      {
+        "node_id": "experiment",
+        "capability": "experiment",
+        "status": "passed",
+        "agent_id": "experimenter",
+        "skill_ids": [
+          "experiment-scaffold",
+          "artifact-packaging"
+        ],
+        "provider_types": [
+          "execution",
+          "local-executor"
+        ],
+        "errors": [],
+        "warnings": [
+          "skill 'experiment-scaffold' requires provider capability 'reasoning' but resolved providers do not advertise it"
+        ]
+      },
+      {
+        "node_id": "paper",
+        "capability": "paper_drafting",
+        "status": "passed",
+        "agent_id": "writer",
+        "skill_ids": [
+          "paper-outline",
+          "section-drafting",
+          "latex-assembly"
+        ],
+        "provider_types": [
+          "local-toolbox",
+          "tool"
+        ],
+        "errors": [],
+        "warnings": [
+          "skill 'paper-outline' requires provider capability 'reasoning' but resolved providers do not advertise it",
+          "skill 'section-drafting' requires provider capability 'reasoning' but resolved providers do not advertise it"
+        ]
+      },
+      {
+        "node_id": "review",
+        "capability": "reviewer_simulation",
+        "status": "passed",
+        "agent_id": "reviewer",
+        "skill_ids": [
+          "review-critique",
+          "consistency-audit"
+        ],
+        "provider_types": [
+          "human",
+          "manual-review"
+        ],
+        "errors": [],
+        "warnings": [
+          "skill 'review-critique' requires provider capability 'reasoning' but resolved providers do not advertise it"
+        ]
+      }
+    ],
+    "errors": [],
+    "warnings": [
+      "experiment: skill 'experiment-scaffold' requires provider capability 'reasoning' but resolved providers do not advertise it",
+      "paper: skill 'paper-outline' requires provider capability 'reasoning' but resolved providers do not advertise it",
+      "paper: skill 'section-drafting' requires provider capability 'reasoning' but resolved providers do not advertise it",
+      "review: skill 'review-critique' requires provider capability 'reasoning' but resolved providers do not advertise it"
+    ]
+  },
+  "checkpoint": {
+    "readyNodePolicy": "fifo",
+    "readyNodeIds": [],
+    "completedNodeIds": [
+      "experiment",
+      "paper",
+      "review"
+    ],
+    "failedNodeIds": [],
+    "skippedNodeIds": [
+      "idea"
+    ],
+    "replayableNodeIds": [
+      "idea",
+      "experiment",
+      "paper",
+      "review"
+    ],
+    "stepCheckpoints": {
+      "experiment": {
+        "status": "completed",
+        "at": "2026-05-24T02:35:50.914645+00:00",
+        "outputKeys": [
+          "experimentId",
+          "experimentIds",
+          "experimentStatus",
+          "projectId",
+          "projectTitle"
+        ]
+      },
+      "paper": {
+        "status": "completed",
+        "at": "2026-05-24T02:35:50.928199+00:00",
+        "outputKeys": [
+          "paperFileCount",
+          "paperId",
+          "paperStatus",
+          "paperTitle",
+          "paperVenue",
+          "pdfAvailable"
+        ]
+      },
+      "review": {
+        "status": "completed",
+        "at": "2026-05-24T02:35:50.952411+00:00",
+        "outputKeys": [
+          "actionItemCount",
+          "actionItems",
+          "reviewId",
+          "reviewStatus",
+          "scoreSuggestion"
+        ]
+      }
+    },
+    "lastOperatorAction": {
+      "type": "resume",
+      "at": "2026-05-24T02:35:50.462947+00:00"
+    },
+    "updatedAt": "2026-05-24T02:35:50.960169+00:00"
+  },
+  "error_message": null
+}

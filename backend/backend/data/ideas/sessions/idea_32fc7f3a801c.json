@@ -1,0 +1,344 @@
+{
+  "id": "idea_32fc7f3a801c",
+  "createdAt": "2026-05-14T02:33:15.283962",
+  "status": "completed",
+  "config": {
+    "providerName": "moonshot",
+    "model": "moonshot-v1-8k",
+    "directionId": null,
+    "seedQuery": "Agent executor smoke test",
+    "paperType": "algorithm",
+    "maxCandidates": 5,
+    "maxPapers": 10,
+    "domain": null,
+    "constraints": null,
+    "mustCiteList": null
+  },
+  "startedAt": "2026-05-14T02:33:15.284646",
+  "endedAt": "2026-05-14T02:33:26.476345",
+  "trace": {
+    "sessionId": "idea_32fc7f3a801c",
+    "startedAt": "2026-05-14T02:33:15.284675",
+    "endedAt": "2026-05-14T02:33:26.476358",
+    "totalSteps": 7,
+    "successfulSteps": 7,
+    "failedSteps": 0,
+    "steps": [
+      {
+        "name": "expandQuery",
+        "status": "ok",
+        "inputs": {
+          "seedQuery": "Agent executor smoke test"
+        },
+        "outputs": {
+          "expandedTerms": [
+            "Agent executor smoke test",
+            "Agent executor smoke test machine learning",
+            "Agent executor smoke test deep learning",
+            "Agent executor smoke test neural network"
+          ],
+          "error": "API key not configured for provider 'moonshot'. Set environment variable: MOONSHOT_API_KEY"
+        },
+        "artifacts": [],
+        "startedAt": "2026-05-14T02:33:15.285379",
+        "endedAt": "2026-05-14T02:33:18.705967",
+        "durationSeconds": 3.420588,
+        "error": null
+      },
+      {
+        "name": "literatureSearch",
+        "status": "ok",
+        "inputs": {
+          "seedQuery": "Agent executor smoke test",
+          "maxPapers": 10,
+          "searchQueries": [
+            "Agent executor smoke test",
+            "Agent executor smoke test machine learning",
+            "Agent executor smoke test deep learning"
+          ]
+        },
+        "outputs": {
+          "paperCount": 10,
+          "paperIds": [
+            "lit_f6dff2a02e62",
+            "lit_caf5f8e3d905",
+            "lit_6b59c4a53166",
+            "lit_729bb0631265",
+            "lit_4d8f592437b4",
+            "lit_a88652c6f076",
+            "lit_2ba31166f85a",
+            "lit_450b30854eed",
+            "lit_7b3ef5512a64",
+            "lit_9d4305654f7f"
+          ],
+          "sourcesUsed": [
+            "arxiv",
+            "semantic_scholar",
+            "local"
+          ]
+        },
+        "artifacts": [],
+        "startedAt": "2026-05-14T02:33:18.706342",
+        "endedAt": "2026-05-14T02:33:26.441281",
+        "durationSeconds": 7.734939,
+        "error": null
+      },
+      {
+        "name": "noveltyCheck",
+        "status": "ok",
+        "inputs": {
+          "literatureCount": 10
+        },
+        "outputs": {
+          "coveredAreas": [
+            "planner-executor",
+            "survey",
+            "kingdom",
+            "decisions",
+            "dispatcher/",
+            "agents'",
+            "discovering",
+            "speedup",
+            "learning",
+            "queens",
+            "group",
+            "complexity",
+            "alife",
+            "multi-agent",
+            "agent:"
+          ],
+          "gaps": [
+            "Scalability of Agent executor smoke test methods",
+            "Interpretability in Agent executor smoke test",
+            "Theoretical foundations of Agent executor smoke test",
+            "Real-world deployment of Agent executor smoke test"
+          ],
+          "novelDirections": [],
+          "error": "API key not configured for provider 'moonshot'. Set environment variable: MOONSHOT_API_KEY"
+        },
+        "artifacts": [],
+        "startedAt": "2026-05-14T02:33:26.442188",
+        "endedAt": "2026-05-14T02:33:26.452196",
+        "durationSeconds": 0.010008,
+        "error": null
+      },
+      {
+        "name": "gapAnalysis",
+        "status": "ok",
+        "inputs": {
+          "topic": "Agent executor smoke test"
+        },
+        "outputs": {
+          "gapAnalysis": [],
+          "prioritizedGaps": [
+            "Scalability of Agent executor smoke test methods",
+            "Interpretability in Agent executor smoke test",
+            "Theoretical foundations of Agent executor smoke test",
+            "Real-world deployment of Agent executor smoke test"
+          ],
+          "researchOpportunities": [
+            "Novel architectures for Agent executor smoke test",
+            "Efficient training methods for Agent executor smoke test"
+          ],
+          "error": "API key not configured for provider 'moonshot'. Set environment variable: MOONSHOT_API_KEY"
+        },
+        "artifacts": [],
+        "startedAt": "2026-05-14T02:33:26.453367",
+        "endedAt": "2026-05-14T02:33:26.459892",
+        "durationSeconds": 0.006525,
+        "error": null
+      },
+      {
+        "name": "ideaBrainstorm",
+        "status": "ok",
+        "inputs": {
+          "topic": "Agent executor smoke test"
+        },
+        "outputs": {
+          "candidateCount": 3,
+          "candidateIds": [
+            "cand_d371567d1351",
+            "cand_e2dad3d624d0",
+            "cand_e0579d8ba29e"
+          ],
+          "error": "API key not configured for provider 'moonshot'. Set environment variable: MOONSHOT_API_KEY"
+        },
+        "artifacts": [],
+        "startedAt": "2026-05-14T02:33:26.460385",
+        "endedAt": "2026-05-14T02:33:26.466091",
+        "durationSeconds": 0.005706,
+        "error": null
+      },
+      {
+        "name": "rankCandidates",
+        "status": "ok",
+        "inputs": {
+          "candidateCount": 3
+        },
+        "outputs": {
+          "rankings": [
+            {
+              "id": "cand_e0579d8ba29e",
+              "title": "Self-Supervised Agent executor smoke test for Low-Resource Settings",
+              "totalScore": 7.43,
+              "rank": 1,
+              "breakdown": {
+                "novelty": {
+                  "value": 8.6,
+                  "rationale": "Heuristic assessment"
+                },
+                "feasibility": {
+                  "value": 8.1,
+                  "rationale": "Heuristic assessment"
+                },
+                "impact": {
+                  "value": 8.4,
+                  "rationale": "Heuristic assessment"
+                },
+                "clarity": {
+                  "value": 4.6,
+                  "rationale": "Based on description quality"
+                },
+                "risk": {
+                  "value": 4.7,
+                  "rationale": "Based on risk identification"
+                },
+                "alignment": {
+                  "value": 10.0,
+                  "rationale": "Based on topic overlap"
+                },
+                "referenceSupport": {
+                  "value": 3.8,
+                  "rationale": "Based on reference count"
+                },
+                "experimentSpecificity": {
+                  "value": 5.9,
+                  "rationale": "Based on experiment plan"
+                }
+              },
+              "overallRationale": "Scored using heuristic analysis",
+              "scoringConfidence": 0.6,
+              "scoringMethod": "heuristic"
+            },
+            {
+              "id": "cand_e2dad3d624d0",
+              "title": "Interpretable Agent executor smoke test via Concept Bottlenecks",
+              "totalScore": 7.1,
+              "rank": 2,
+              "breakdown": {
+                "novelty": {
+                  "value": 7.6,
+                  "rationale": "Heuristic assessment"
+                },
+                "feasibility": {
+                  "value": 8.7,
+                  "rationale": "Heuristic assessment"
+                },
+                "impact": {
+                  "value": 7.3,
+                  "rationale": "Heuristic assessment"
+                },
+                "clarity": {
+                  "value": 5.1,
+                  "rationale": "Based on description quality"
+                },
+                "risk": {
+                  "value": 4.3,
+                  "rationale": "Based on risk identification"
+                },
+                "alignment": {
+                  "value": 10.0,
+                  "rationale": "Based on topic overlap"
+                },
+                "referenceSupport": {
+                  "value": 4.0,
+                  "rationale": "Based on reference count"
+                },
+                "experimentSpecificity": {
+                  "value": 4.9,
+                  "rationale": "Based on experiment plan"
+                }
+              },
+              "overallRationale": "Scored using heuristic analysis",
+              "scoringConfidence": 0.6,
+              "scoringMethod": "heuristic"
+            },
+            {
+              "id": "cand_d371567d1351",
+              "title": "Scalable Agent executor smoke test with Efficient Attention",
+              "totalScore": 6.74,
+              "rank": 3,
+              "breakdown": {
+                "novelty": {
+                  "value": 7.2,
+                  "rationale": "Heuristic assessment"
+                },
+                "feasibility": {
+                  "value": 7.7,
+                  "rationale": "Heuristic assessment"
+                },
+                "impact": {
+                  "value": 6.3,
+                  "rationale": "Heuristic assessment"
+                },
+                "clarity": {
+                  "value": 4.9,
+                  "rationale": "Based on description quality"
+                },
+                "risk": {
+                  "value": 5.3,
+                  "rationale": "Based on risk identification"
+                },
+                "alignment": {
+                  "value": 10.0,
+                  "rationale": "Based on topic overlap"
+                },
+                "referenceSupport": {
+                  "value": 3.6,
+                  "rationale": "Based on reference count"
+                },
+                "experimentSpecificity": {
+                  "value": 5.9,
+                  "rationale": "Based on experiment plan"
+                }
+              },
+              "overallRationale": "Scored using heuristic analysis",
+              "scoringConfidence": 0.6,
+              "scoringMethod": "heuristic"
+            }
+          ],
+          "scoreVariance": 0.079,
+          "minScore": 6.74,
+          "maxScore": 7.43
+        },
+        "artifacts": [],
+        "startedAt": "2026-05-14T02:33:26.466589",
+        "endedAt": "2026-05-14T02:33:26.470042",
+        "durationSeconds": 0.003453,
+        "error": null
+      },
+      {
+        "name": "finalizeSession",
+        "status": "ok",
+        "inputs": {},
+        "outputs": {
+          "totalCandidates": 3,
+          "totalLiterature": 10,
+          "topCandidate": "Self-Supervised Agent executor smoke test for Low-Resource Settings"
+        },
+        "artifacts": [],
+        "startedAt": "2026-05-14T02:33:26.470624",
+        "endedAt": "2026-05-14T02:33:26.475730",
+        "durationSeconds": 0.005106,
+        "error": null
+      }
+    ]
+  },
+  "candidateIds": [
+    "cand_d371567d1351",
+    "cand_e2dad3d624d0",
+    "cand_e0579d8ba29e"
+  ],
+  "selectedCandidateId": null,
+  "errorMessage": null
+}

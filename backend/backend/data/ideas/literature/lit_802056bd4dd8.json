@@ -1,0 +1,20 @@
+{
+  "id": "lit_802056bd4dd8",
+  "sessionId": "idea_d81eb13af0fa",
+  "title": "Privacy-preserving machine learning for healthcare: open challenges and future perspectives",
+  "authors": [
+    "Alejandro Guerra-Manzanares",
+    "L. Julian Lechuga Lopez",
+    "Michail Maniatakos",
+    "Farah E. Shamout"
+  ],
+  "venue": "arXiv",
+  "year": 2023,
+  "url": "http://arxiv.org/abs/2303.15563v1",
+  "doi": null,
+  "arxivId": "2303.15563v1",
+  "snippet": "Machine Learning (ML) has recently shown tremendous success in modeling various healthcare prediction tasks, ranging from disease diagnosis and prognosis to patient treatment. Due to the sensitive nature of medical data, privacy must be considered along the entire ML pipeline, from model training to inference. In this paper, we conduct a review of recent literature concerning Privacy-Preserving Machine Learning (PPML) for healthcare. We primarily focus on privacy-preserving training and inferenc",
+  "relevanceScore": 0.6499999999999999,
+  "source": "arxiv",
+  "createdAt": "2026-05-24T01:59:23.546488+00:00"
+}

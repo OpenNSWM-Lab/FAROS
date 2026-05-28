@@ -1,0 +1,21 @@
+{
+  "id": "lit_bb835cf65b7f",
+  "sessionId": "idea_d4e11bc7abfa",
+  "title": "WINFlowNets: Warm-up Integrated Networks Training of Generative Flow Networks for Robotics and Machine Fault Adaptation",
+  "authors": [
+    "Zahin Sufiyan",
+    "Shadan Golestan",
+    "Yoshihiro Mitsuka",
+    "Shotaro Miwa",
+    "Osmar R. Zaiane"
+  ],
+  "venue": "",
+  "year": 2026,
+  "url": "https://www.semanticscholar.org/paper/c302bbc0beaad879cc9f12ed1c36b26adeed24c7",
+  "doi": null,
+  "arxivId": "2603.17301",
+  "snippet": "Generative Flow Networks for continuous scenarios (CFlowNets) have shown promise in solving sequential decision-making tasks by learning stochastic policies using a flow and a retrieval network. Despite their demonstrated efficiency compared to state-of-the-art Reinforcement Learning (RL) algorithms, their practical application in robotic control tasks is constrained by the reliance on pre-training the retrieval network. This dependency poses challenges in dynamic robotic environments, where pre",
+  "relevanceScore": 0.9,
+  "source": "semantic_scholar",
+  "createdAt": "2026-05-24T02:01:35.737490+00:00"
+}

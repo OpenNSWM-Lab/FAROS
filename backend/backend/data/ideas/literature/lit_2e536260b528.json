@@ -1,0 +1,21 @@
+{
+  "id": "lit_2e536260b528",
+  "sessionId": "idea_bc8f884b1ebe",
+  "title": "Knowledge- and Model-Driven Deep Reinforcement Learning for Efficient Federated Edge Learning: Single- and Multi-Agent Frameworks",
+  "authors": [
+    "Yangchen Li",
+    "Lingzhi Zhao",
+    "Tianle Wang",
+    "Lianghui Ding",
+    "Feng Yang"
+  ],
+  "venue": "IEEE Transactions on Machine Learning in Communications and Networking",
+  "year": 2025,
+  "url": "https://www.semanticscholar.org/paper/ec21a7faf8ae318245fc4df6f16ce6eaa23ea7a3",
+  "doi": "10.1109/TMLCN.2025.3534754",
+  "arxivId": null,
+  "snippet": "In this paper, we investigate federated learning (FL) efficiency improvement in practical edge computing systems, where edge workers have non-independent and identically distributed (non-IID) local data, as well as dynamic and heterogeneous computing and communication capabilities. We consider a general FL algorithm with configurable parameters, including the number of local iterations, mini-batch sizes, step sizes, aggregation weights, and quantization parameters, and provide a rigorous converg",
+  "relevanceScore": 0.75,
+  "source": "semantic_scholar",
+  "createdAt": "2026-05-14T14:48:44.453977"
+}

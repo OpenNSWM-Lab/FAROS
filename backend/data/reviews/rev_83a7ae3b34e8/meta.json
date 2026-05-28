@@ -1,0 +1,21 @@
+{
+  "id": "rev_83a7ae3b34e8",
+  "paperId": "paper_approval_queue",
+  "reviewerProfile": "senior_reviewer",
+  "providerName": "manual-review",
+  "model": "queued-approval-review",
+  "status": "completed",
+  "scoreSuggestion": 9,
+  "jsonReport": {
+    "summary": "queued approval"
+  },
+  "markdownReport": "# Queued Approval\n",
+  "actionItems": [
+    {
+      "title": "Double-check appendix",
+      "severity": "minor"
+    }
+  ],
+  "createdAt": "2026-05-24T02:36:00.283018+00:00",
+  "updatedAt": "2026-05-24T02:36:00.283404+00:00"
+}

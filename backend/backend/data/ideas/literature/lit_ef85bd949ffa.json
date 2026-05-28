@@ -1,0 +1,19 @@
+{
+  "id": "lit_ef85bd949ffa",
+  "sessionId": "idea_90236e3bf233",
+  "title": "Automatic Speaker Verification and Replay Attack Detection System using novel Glottal Flow Cepstrum Coefficients",
+  "authors": [
+    "Yusra Banaras",
+    "A. Javed",
+    "Farman Hassan"
+  ],
+  "venue": "International Conference on Frontiers of Information Technology",
+  "year": 2021,
+  "url": "https://www.semanticscholar.org/paper/6ffa7a99db0a66424c93e2121b567398778eec07",
+  "doi": "10.1109/FIT53504.2021.00036",
+  "arxivId": null,
+  "snippet": "With the growing number of devices that use voice biometric system for verification purposes, it becomes mandatory to accurately verify the target speaker. Moreover, intruders use different spoofing attacks to fool an automatic speaker verification (ASV) system. Voice replay attack being the easiest to generate among other spoofing attacks is frequently employed in front of the ASV systems of these devices to get access to the system for malicious purposes. Thus, we need to develop robust system",
+  "relevanceScore": 0.9,
+  "source": "semantic_scholar",
+  "createdAt": "2026-05-20T06:58:47.207918"
+}

@@ -1,0 +1,21 @@
+{
+  "id": "lit_3db9da550288",
+  "sessionId": "idea_f46d3d28aeea",
+  "title": "A Benchmark Study of Machine Learning Models for Online Fake News Detection",
+  "authors": [
+    "Junaed Younus Khan",
+    "Md. Tawkat Islam Khondaker",
+    "Sadia Afroz",
+    "Gias Uddin",
+    "Anindya Iqbal"
+  ],
+  "venue": "arXiv",
+  "year": 2019,
+  "url": "http://arxiv.org/abs/1905.04749v2",
+  "doi": null,
+  "arxivId": "1905.04749v2",
+  "snippet": "The proliferation of fake news and its propagation on social media has become a major concern due to its ability to create devastating impacts. Different machine learning approaches have been suggested to detect fake news. However, most of those focused on a specific type of news (such as political) which leads us to the question of dataset-bias of the models used. In this research, we conducted a benchmark study to assess the performance of different applicable machine learning approaches on th",
+  "relevanceScore": 0.6,
+  "source": "arxiv",
+  "createdAt": "2026-05-14T15:18:20.109281"
+}

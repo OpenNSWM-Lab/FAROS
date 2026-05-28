@@ -1,0 +1,20 @@
+{
+  "id": "lit_95aa2d8503d0",
+  "sessionId": "idea_90236e3bf233",
+  "title": "Overcoming Forgetting in Fine-Grained Urban Flow Inference via Adaptive Knowledge Replay",
+  "authors": [
+    "Haoyang Yu",
+    "Xovee Xu",
+    "Ting Zhong",
+    "Fan Zhou"
+  ],
+  "venue": "AAAI Conference on Artificial Intelligence",
+  "year": 2023,
+  "url": "https://www.semanticscholar.org/paper/54eec69dadad0093b38be8488968e7786a5fb376",
+  "doi": "10.1609/aaai.v37i4.25671",
+  "arxivId": null,
+  "snippet": "Fine-grained urban flow inference (FUFI) problem aims at inferring the high-resolution flow maps from the coarse-grained ones, which plays an important role in sustainable and economic urban computing and traffic management. Previous models addressed the FUFI problem from spatial constraint, external factors, and memory cost. However, utilizing the new urban flow maps to calibrate the learned model is very challenging due to the \"catastrophic forgetting\" problem and is still under-explored. In t",
+  "relevanceScore": 1.0,
+  "source": "semantic_scholar",
+  "createdAt": "2026-05-20T06:58:47.206741"
+}

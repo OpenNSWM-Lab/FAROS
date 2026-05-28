@@ -1,0 +1,22 @@
+{
+  "id": "lit_f93f33b6e6a0",
+  "sessionId": "idea_6f2a8f35a21e",
+  "title": "Toward Generative 6G Simulation: An Experimental Multi-Agent LLM and ns-3 Integration",
+  "authors": [
+    "Farhad Rezazadeh",
+    "Amir Ashtari Gargari",
+    "Sandra Lag\u00e9n",
+    "Houbing Song",
+    "D. Niyato",
+    "Lingjia Liu"
+  ],
+  "venue": "International Mediterranean Conference on Communications and Networking",
+  "year": 2025,
+  "url": "https://www.semanticscholar.org/paper/59b1d629075f19583134a339b87ad4a550643449",
+  "doi": "10.1109/MeditCom64437.2025.11104374",
+  "arxivId": "2503.13402",
+  "snippet": "The move toward open Sixth-Generation (6G) networks necessitates a novel approach to full-stack simulation environments for evaluating complex technology developments before prototyping and real-world implementation. This paper introduces an innovative approach11 A lightweight, mock version of the code is available on GitHub at https://github.com/frezazadeh/LangChain-RAG-Technology that combines a multi-agent framework with the Network Simulator 3 (ns-3) to automate and optimize the generation, ",
+  "relevanceScore": 0.6,
+  "source": "semantic_scholar",
+  "createdAt": "2026-05-14T03:35:30.758588"
+}

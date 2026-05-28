@@ -1,0 +1,22 @@
+{
+  "id": "lit_ec10e01af4bc",
+  "sessionId": "idea_d4e11bc7abfa",
+  "title": "Improving Task-free Continual Learning by Distributionally Robust Memory Evolution",
+  "authors": [
+    "Zhenyi Wang",
+    "Li Shen",
+    "Le Fang",
+    "Qiuling Suo",
+    "Tiehang Duan",
+    "Mingchen Gao"
+  ],
+  "venue": "International Conference on Machine Learning",
+  "year": 2022,
+  "url": "https://www.semanticscholar.org/paper/4dcb0a5142f47e2903edf95131413a57792f90e2",
+  "doi": "10.48550/arXiv.2207.07256",
+  "arxivId": "2207.07256",
+  "snippet": "Task-free continual learning (CL) aims to learn a non-stationary data stream without explicit task definitions and not forget previous knowledge. The widely adopted memory replay approach could gradually become less effective for long data streams, as the model may memorize the stored examples and overfit the memory buffer. Second, existing methods overlook the high uncertainty in the memory data distribution since there is a big gap between the memory data distribution and the distribution of a",
+  "relevanceScore": 0.6,
+  "source": "semantic_scholar",
+  "createdAt": "2026-05-24T02:01:35.739719+00:00"
+}

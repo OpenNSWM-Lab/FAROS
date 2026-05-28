@@ -1,0 +1,24 @@
+{
+  "id": "idea-analysis",
+  "name": "Idea Analysis",
+  "version": "0.1.0",
+  "kind": "reasoning",
+  "description": "Evaluates candidate ideas and selects a grounded direction.",
+  "agent_roles": [
+    "researcher"
+  ],
+  "tags": [
+    "ideation"
+  ],
+  "artifact_types": [
+    "idea_session"
+  ],
+  "verification_hooks": [
+    "schema-check",
+    "evidence-check"
+  ],
+  "provider_requirements": {
+    "reasoning": "llm"
+  },
+  "manifest_version": "1.0"
+}

@@ -7,6 +7,7 @@ All feature work should happen inside `app.modules`.
 
 import os as _os
 import logging
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -21,12 +22,28 @@ from app.version import API_VERSION, APP_NAME, APP_VERSION, CAPABILITIES, RELEAS
 
 logger = logging.getLogger(__name__)
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Initialize runtime prerequisites required by the release baseline."""
+    try:
+        from app.db.engine import init_db
+
+        init_db()
+        logger.info("Database initialized/verified on startup")
+    except Exception:
+        logger.exception("Database initialization failed during startup")
+        raise
+    yield
+
+
 app = FastAPI(
     title=APP_NAME,
     description="Research-grade backend for scientific experiment execution and artifact management",
     version=APP_VERSION,
     docs_url="/api/docs",
     redoc_url="/api/redoc",
+    lifespan=lifespan,
 )
 
 _dev_origins = _os.environ.get("DEV_ALLOWED_ORIGINS", "").split(",") if _os.environ.get("DEV_ALLOWED_ORIGINS") else []
@@ -49,18 +66,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
-@app.on_event("startup")
-async def initialize_runtime() -> None:
-    """Initialize runtime prerequisites required by the release baseline."""
-    try:
-        from app.db.engine import init_db
-
-        init_db()
-        logger.info("Database initialized/verified on startup")
-    except Exception:
-        logger.exception("Database initialization failed during startup")
-        raise
 
 
 @app.get("/api/system/health")

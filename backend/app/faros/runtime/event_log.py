@@ -1,7 +1,11 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from app.faros.runtime.state_store import FarosStateStore
+
+
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 class EventLog:
@@ -14,11 +18,11 @@ class EventLog:
         self.state_store.append_event(
             run_id,
             {
-                "timestamp": datetime.utcnow().isoformat(),
-                "level": "info",
-                "nodeId": node_id,
-                "message": message,
-                "details": details,
+                'timestamp': utc_now_iso(),
+                'level': 'info',
+                'nodeId': node_id,
+                'message': message,
+                'details': details,
             },
         )
 
@@ -26,10 +30,10 @@ class EventLog:
         self.state_store.append_event(
             run_id,
             {
-                "timestamp": datetime.utcnow().isoformat(),
-                "level": "error",
-                "nodeId": node_id,
-                "message": message,
-                "details": details,
+                'timestamp': utc_now_iso(),
+                'level': 'error',
+                'nodeId': node_id,
+                'message': message,
+                'details': details,
             },
         )

@@ -1,0 +1,26 @@
+{
+  "id": "lit_d3ace99da7c4",
+  "sessionId": "idea_6f2a8f35a21e",
+  "title": "TAME: A Trustworthy Test-Time Evolution of Agent Memory with Systematic Benchmarking",
+  "authors": [
+    "Yu Cheng",
+    "Jiuan Zhou",
+    "Yongkang Hu",
+    "Yihang Chen",
+    "Huichi Zhou",
+    "Mingang Chen",
+    "Zhizhong Zhang",
+    "Kun Shao",
+    "Yuan Xie",
+    "Zhaoxia Yin"
+  ],
+  "venue": "arXiv.org",
+  "year": 2026,
+  "url": "https://www.semanticscholar.org/paper/99e807b512ec27f2fabb99366a93d7bd29f2587e",
+  "doi": "10.48550/arXiv.2602.03224",
+  "arxivId": "2602.03224",
+  "snippet": "Test-time evolution of agent memory serves as a pivotal paradigm for achieving AGI by bolstering complex reasoning through experience accumulation. However, even during benign task evolution, agent safety alignment remains vulnerable-a phenomenon known as Agent Memory Misevolution. To evaluate this phenomenon, we construct the Trust-Memevo benchmark to assess multi-dimensional trustworthiness during benign task evolution, revealing an overall decline in trustworthiness across various task domain",
+  "relevanceScore": 0.75,
+  "source": "semantic_scholar",
+  "createdAt": "2026-05-14T03:35:30.757429"
+}

@@ -1,10 +1,16 @@
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from app.faros.models.execution import FarosRunRecord, StepState
+from app.faros.errors import FarosNotFoundError
+from app.faros.models.execution import (
+    FarosRunRecord,
+    StepState,
+    assert_run_status_transition,
+    assert_step_status_transition,
+)
 
 
 class FarosStateStore:
@@ -32,7 +38,17 @@ class FarosStateStore:
     def _memory_path(self, run_id: str) -> Path:
         return self._run_dir(run_id) / "memory.json"
 
-    def create_run(self, blueprint_id: str, profile_id: str, execution_mode: str, inputs: Dict[str, Any], steps: List[StepState]) -> Dict[str, Any]:
+    def create_run(
+        self,
+        blueprint_id: str,
+        profile_id: str,
+        execution_mode: str,
+        inputs: Dict[str, Any],
+        steps: List[StepState],
+        preflight: Optional[Dict[str, Any]] = None,
+        runtime_options: Optional[Dict[str, Any]] = None,
+        checkpoint: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         run_id = f"faros_{uuid.uuid4().hex[:12]}"
         record = FarosRunRecord(
             id=run_id,
@@ -40,9 +56,12 @@ class FarosStateStore:
             profile_id=profile_id,
             status="planned" if execution_mode == "plan" else "pending",
             execution_mode=execution_mode,
-            created_at=datetime.utcnow().isoformat(),
+            created_at=datetime.now(timezone.utc).isoformat(),
             inputs=inputs,
+            runtime_options=runtime_options or {},
             steps=steps,
+            preflight=preflight or {},
+            checkpoint=checkpoint or {},
         ).model_dump()
         self._save_json(self._run_path(run_id), record)
         self._save_json(self._events_path(run_id), [])
@@ -68,7 +87,8 @@ class FarosStateStore:
     def update_run(self, run_id: str, updates: Dict[str, Any]) -> Dict[str, Any]:
         record = self.get_run(run_id)
         if not record:
-            raise ValueError(f"FAROS run '{run_id}' not found")
+            raise FarosNotFoundError(f"FAROS run '{run_id}' not found")
+        self._validate_run_updates(record, updates)
         record.update(updates)
         self._save_json(self._run_path(run_id), record)
         return record
@@ -76,11 +96,14 @@ class FarosStateStore:
     def update_step(self, run_id: str, node_id: str, updates: Dict[str, Any]) -> Dict[str, Any]:
         record = self.get_run(run_id)
         if not record:
-            raise ValueError(f"FAROS run '{run_id}' not found")
+            raise FarosNotFoundError(f"FAROS run '{run_id}' not found")
         for step in record.get("steps", []):
             if step["node_id"] == node_id:
+                self._validate_step_updates(step, updates)
                 step.update(updates)
                 break
+        else:
+            raise FarosNotFoundError(f"FAROS step '{node_id}' not found in run '{run_id}'")
         self._save_json(self._run_path(run_id), record)
         return record
 
@@ -114,6 +137,22 @@ class FarosStateStore:
 
     def save_memory(self, run_id: str, memory: Dict[str, Any]) -> None:
         self._save_json(self._memory_path(run_id), memory)
+
+    def _validate_run_updates(self, current: Dict[str, Any], updates: Dict[str, Any]) -> None:
+        if 'status' in updates:
+            assert_run_status_transition(current.get('status', 'pending'), updates['status'])
+        if 'steps' in updates:
+            current_steps = {step['node_id']: step for step in current.get('steps', [])}
+            for new_step in updates['steps']:
+                node_id = new_step['node_id']
+                if node_id in current_steps:
+                    old_status = current_steps[node_id].get('status', 'pending')
+                    new_status = new_step.get('status', old_status)
+                    assert_step_status_transition(old_status, new_status, node_id)
+
+    def _validate_step_updates(self, current_step: Dict[str, Any], updates: Dict[str, Any]) -> None:
+        if 'status' in updates:
+            assert_step_status_transition(current_step.get('status', 'pending'), updates['status'], current_step['node_id'])
 
     def _save_json(self, path: Path, payload: Any) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)

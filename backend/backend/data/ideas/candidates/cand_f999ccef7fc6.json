@@ -1,0 +1,43 @@
+{
+  "id": "cand_f999ccef7fc6",
+  "sessionId": "idea_411ac4e357c1",
+  "title": "Self-Supervised Agent executor smoke test for Low-Resource Settings",
+  "problem": "Agent executor smoke test requires large labeled datasets.",
+  "keyInsight": "Self-supervised pretraining can reduce label requirements.",
+  "novelty": 6.8,
+  "noveltyRationale": "Heuristic assessment",
+  "feasibility": 6.8,
+  "feasibilityRationale": "Heuristic assessment",
+  "impact": 6.9,
+  "impactRationale": "Heuristic assessment",
+  "clarity": 5.1,
+  "clarityRationale": "Based on description quality",
+  "risk": 5.9,
+  "riskRationale": "Based on risk identification",
+  "alignment": 10.0,
+  "alignmentRationale": "Based on topic overlap",
+  "referenceSupport": 4.2,
+  "referenceSupportRationale": "Based on reference count",
+  "experimentSpecificity": 5.2,
+  "experimentSpecificityRationale": "Based on experiment plan",
+  "overallRationale": "Scored using heuristic analysis",
+  "scoringConfidence": 0.6,
+  "scoringMethod": "heuristic",
+  "risks": [],
+  "requiredExperiments": [],
+  "expectedMetrics": [],
+  "draftPlan": {
+    "researchQuestion": "Agent executor smoke test requires large labeled datasets.",
+    "hypothesis": "Self-supervised pretraining can reduce label requirements.",
+    "variables": {},
+    "methodology": "To be defined",
+    "expectedOutcomes": [
+      "Improved performance",
+      "Novel insights"
+    ],
+    "tags": [],
+    "notes": ""
+  },
+  "references": [],
+  "createdAt": "2026-05-14T02:43:40.241693"
+}

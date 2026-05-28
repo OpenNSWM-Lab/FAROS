@@ -7,7 +7,7 @@ Provides typed CRUD operations for all code module entities.
 import uuid
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, UTC
 from typing import List, Optional, Dict, Any
 
 from sqlmodel import Session, select
@@ -43,8 +43,8 @@ def create_project(session: Session, data: CodeProjectCreate) -> CodeProject:
     project = CodeProject(
         id=generate_id("proj"),
         **data.model_dump(),
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow(),
+        created_at=_utcnow(),
+        updated_at=_utcnow(),
     )
     session.add(project)
     session.commit()
@@ -73,7 +73,7 @@ def update_project(session: Session, project_id: str, updates: Dict[str, Any]) -
         if hasattr(project, key):
             setattr(project, key, value)
     
-    project.updated_at = datetime.utcnow()
+    project.updated_at = _utcnow()
     session.add(project)
     session.commit()
     session.refresh(project)
@@ -97,7 +97,7 @@ def create_repo_context(session: Session, data: RepoContextCreate) -> RepoContex
     ctx = RepoContextDB(
         id=generate_id("ctx"),
         **data.model_dump(),
-        created_at=datetime.utcnow(),
+        created_at=_utcnow(),
     )
     session.add(ctx)
     session.commit()
@@ -126,7 +126,7 @@ def create_code_session(session: Session, data: CodeSessionCreate) -> CodeSessio
         id=generate_id("code"),
         **data.model_dump(),
         status=SessionStatus.PENDING,
-        created_at=datetime.utcnow(),
+        created_at=_utcnow(),
     )
     session.add(code_session)
     session.commit()
@@ -191,7 +191,7 @@ def create_candidate(session: Session, data: CodeCandidateCreate) -> CodeCandida
     candidate = CodeCandidateDB(
         id=generate_id("cand"),
         **data.model_dump(),
-        created_at=datetime.utcnow(),
+        created_at=_utcnow(),
     )
     session.add(candidate)
     session.commit()
@@ -238,7 +238,7 @@ def create_job(session: Session, data: CodeJobCreate) -> CodeJob:
         id=generate_id("job"),
         **data.model_dump(),
         status=JobStatus.PENDING,
-        created_at=datetime.utcnow(),
+        created_at=_utcnow(),
     )
     session.add(job)
     session.commit()
@@ -295,7 +295,7 @@ def create_eval_report(session: Session, data: EvalReportCreate) -> EvalReportDB
     report = EvalReportDB(
         id=generate_id("eval"),
         **data.model_dump(),
-        created_at=datetime.utcnow(),
+        created_at=_utcnow(),
     )
     session.add(report)
     session.commit()
@@ -320,7 +320,7 @@ def create_trace_log(session: Session, data: TraceLogCreate) -> TraceLogDB:
     """Create a new trace log."""
     log = TraceLogDB(
         **data.model_dump(),
-        created_at=datetime.utcnow(),
+        created_at=_utcnow(),
     )
     session.add(log)
     session.commit()
@@ -353,7 +353,7 @@ def create_artifact(session: Session, data: ArtifactCreate) -> ArtifactDB:
     artifact = ArtifactDB(
         id=generate_id("art"),
         **data.model_dump(),
-        created_at=datetime.utcnow(),
+        created_at=_utcnow(),
     )
     session.add(artifact)
     session.commit()
@@ -388,6 +388,12 @@ def list_artifacts(
     return list(session.exec(stmt).all())
 
 
+
+
+def _utcnow() -> datetime:
+    return datetime.now(UTC)
+
+
 # ============ Code Projects V2 (Phase A) ============
 
 def create_project_v2(session: Session, data: CodeProjectV2Create) -> CodeProjectV2:
@@ -395,8 +401,8 @@ def create_project_v2(session: Session, data: CodeProjectV2Create) -> CodeProjec
     project = CodeProjectV2(
         id=generate_id("cproj"),
         **data.model_dump(),
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow(),
+        created_at=_utcnow(),
+        updated_at=_utcnow(),
     )
     session.add(project)
     session.commit()
@@ -431,7 +437,7 @@ def update_project_v2(session: Session, project_id: str, updates: Dict[str, Any]
     for key, value in updates.items():
         if hasattr(project, key):
             setattr(project, key, value)
-    project.updated_at = datetime.utcnow()
+    project.updated_at = _utcnow()
     session.add(project)
     session.commit()
     session.refresh(project)
@@ -453,8 +459,8 @@ def create_project_file(session: Session, data: CodeProjectFileCreate) -> CodePr
     f = CodeProjectFile(
         id=generate_id("cpf"),
         **data.model_dump(),
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow(),
+        created_at=_utcnow(),
+        updated_at=_utcnow(),
     )
     session.add(f)
     session.commit()
@@ -469,8 +475,8 @@ def bulk_create_project_files(session: Session, files: List[CodeProjectFileCreat
         f = CodeProjectFile(
             id=generate_id("cpf"),
             **data.model_dump(),
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow(),
+            created_at=_utcnow(),
+            updated_at=_utcnow(),
         )
         session.add(f)
         count += 1
@@ -533,7 +539,7 @@ def create_project_generation(session: Session, data: CodeProjectGenerationCreat
     gen = CodeProjectGeneration(
         id=generate_id("cpgen"),
         **data.model_dump(),
-        created_at=datetime.utcnow(),
+        created_at=_utcnow(),
     )
     session.add(gen)
     session.commit()
@@ -564,7 +570,7 @@ def create_project_export(session: Session, data: CodeProjectExportCreate) -> Co
     exp = CodeProjectExport(
         id=generate_id("cpexp"),
         **data.model_dump(),
-        created_at=datetime.utcnow(),
+        created_at=_utcnow(),
     )
     session.add(exp)
     session.commit()

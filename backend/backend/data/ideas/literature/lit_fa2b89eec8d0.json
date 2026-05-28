@@ -1,0 +1,22 @@
+{
+  "id": "lit_fa2b89eec8d0",
+  "sessionId": "idea_d4e11bc7abfa",
+  "title": "Power Flow Change Characteristics Analysis and Path Optimization of Interconnected Power Grid based on Machine Learning",
+  "authors": [
+    "Jiayin Xu",
+    "Jiaqing Wang",
+    "Lei Dai",
+    "Peiru Feng",
+    "Hao Yang",
+    "Guifen Jiang"
+  ],
+  "venue": "2025 2nd International Conference on Software, Systems and Information Technology (SSITCON)",
+  "year": 2025,
+  "url": "https://www.semanticscholar.org/paper/b279b14ad00ee46462a0c0d93557e9a9415f8044",
+  "doi": "10.1109/SSITCON66133.2025.11342285",
+  "arxivId": null,
+  "snippet": "This study constructed a hybrid framework that integrates spatiotemporal feature extraction and deep reinforcement learning. First, a multi-scale spatiotemporal convolutional network was used to analyze power flow data containing wind power/photovoltaic power output fluctuations and sudden load changes. Dynamic pattern decomposition was used to extract 12-dimensional spatiotemporal feature vectors. A graph neural network based on a dual-attention mechanism was then designed to model the dynamic ",
+  "relevanceScore": 1.0,
+  "source": "semantic_scholar",
+  "createdAt": "2026-05-24T02:01:35.736370+00:00"
+}

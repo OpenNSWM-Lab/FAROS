@@ -1,0 +1,22 @@
+{
+  "id": "lit_99b001c79f00",
+  "sessionId": "idea_90236e3bf233",
+  "title": "Mixed-mode Information Flow Tracking with Compile-time Taint Semantics Extraction and Offline Replay",
+  "authors": [
+    "Yu-Hsin Hung",
+    "Bing-Jhong Jheng",
+    "Hong-Wei Li",
+    "Wen-Yang Lai",
+    "S. Mallissery",
+    "Yu-Sung Wu"
+  ],
+  "venue": "International Conference on Data Science in Cyberspace",
+  "year": 2021,
+  "url": "https://www.semanticscholar.org/paper/84cdb26c8a8a89265ca22ccfecdf7b13931bcacf",
+  "doi": "10.1109/DSC49826.2021.9346239",
+  "arxivId": null,
+  "snippet": "Static information flow analysis (IFA) and dynamic information flow tracking (DIFT) have been widely employed in offline security analysis of computer programs. As security attacks become more sophisticated, there is a rising need for IFA and DIFT in production environment. However, existing systems usually deal with IFA and DIFT separately, and most DIFT systems incur significant performance overhead. We propose MIT to facilitate IFA and DIFT in online production environment. MIT offers mixed-m",
+  "relevanceScore": 0.85,
+  "source": "semantic_scholar",
+  "createdAt": "2026-05-20T06:58:47.208323"
+}

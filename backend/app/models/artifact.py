@@ -7,10 +7,13 @@ Scientific Responsibility:
 - Link to Run for traceability
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from enum import Enum
+
+def _utcnow() -> datetime:
+    return datetime.now(UTC)
 
 
 class ArtifactType(str, Enum):
@@ -36,8 +39,6 @@ class Artifact(BaseModel):
     size: int = Field(..., description="File size in bytes")
     storagePath: str = Field(..., description="Storage location")
     checksum: Optional[str] = Field(None, description="SHA256 checksum for integrity verification")
-    createdAt: datetime = Field(default_factory=datetime.utcnow)
+    createdAt: datetime = Field(default_factory=_utcnow)
     
-    class Config:
-        frozen = True
-        use_enum_values = True
+    model_config = ConfigDict(frozen=True, use_enum_values=True)

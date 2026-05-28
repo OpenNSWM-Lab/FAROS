@@ -1,0 +1,25 @@
+{
+  "id": "paper_29d9be8d583d",
+  "title": "provider owned paper",
+  "paperType": "system",
+  "targetVenue": "generic",
+  "status": "prepared",
+  "planLinkId": null,
+  "projectId": null,
+  "experimentIds": [],
+  "figureIds": [],
+  "runIds": [],
+  "providerName": "local-toolbox",
+  "model": "tool-paper-assembler",
+  "notes": "Tool provider assembled paper scaffold for provider owned paper",
+  "outlineJson": null,
+  "pdfAvailable": true,
+  "logs": [
+    {
+      "timestamp": "2026-05-24T02:35:58.936075+00:00",
+      "message": "Tool provider assembled paper scaffold for provider owned paper"
+    }
+  ],
+  "createdAt": "2026-05-24T02:35:58.935625+00:00",
+  "updatedAt": "2026-05-24T02:35:58.936273+00:00"
+}

@@ -20,10 +20,13 @@ It does NOT specify:
 (Those are Run concerns)
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import List, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from enum import Enum
+
+def _utcnow() -> datetime:
+    return datetime.now(UTC)
 
 
 class ResearchApproach(str, Enum):
@@ -122,7 +125,7 @@ class ResearchPlan(BaseModel):
     # Identity
     id: str = Field(..., description="Unique identifier (UUID)")
     created_at: datetime = Field(
-        default_factory=datetime.utcnow,
+        default_factory=_utcnow,
         description="Creation timestamp (immutability proof)"
     )
     
@@ -180,10 +183,9 @@ class ResearchPlan(BaseModel):
         description="Title of the source idea candidate"
     )
     
-    class Config:
-        # Enforce immutability at Pydantic level
-        frozen = True
-        json_schema_extra = {
+    model_config = ConfigDict(
+        frozen=True,
+        json_schema_extra={
             "example": {
                 "id": "plan_dpo_vs_sft_001",
                 "research_question": "Does Direct Preference Optimization improve helpfulness over Supervised Fine-Tuning?",
@@ -208,4 +210,5 @@ class ResearchPlan(BaseModel):
                 "tags": ["alignment", "preference-learning", "comparative-study"],
                 "notes": "Replicating findings from Rafailov et al. (2023) on smaller model scale"
             }
-        }
+        },
+    )

@@ -1,0 +1,24 @@
+{
+  "id": "paper-outline",
+  "name": "Paper Outline",
+  "version": "0.1.0",
+  "kind": "writing",
+  "description": "Builds the outline and claim structure for a paper draft.",
+  "agent_roles": [
+    "writer"
+  ],
+  "tags": [
+    "paper",
+    "outline"
+  ],
+  "artifact_types": [
+    "paper_outline"
+  ],
+  "verification_hooks": [
+    "schema-check"
+  ],
+  "provider_requirements": {
+    "reasoning": "llm"
+  },
+  "manifest_version": "1.0"
+}

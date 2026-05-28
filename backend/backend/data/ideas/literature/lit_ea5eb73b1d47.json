@@ -1,0 +1,17 @@
+{
+  "id": "lit_ea5eb73b1d47",
+  "sessionId": "idea_9e1c107a70b2",
+  "title": "A simple way to speedup Gauss Elimination",
+  "authors": [
+    "Sivaram Ambikasaran"
+  ],
+  "venue": "arXiv",
+  "year": 2011,
+  "url": "http://arxiv.org/abs/1101.4081v3",
+  "doi": null,
+  "arxivId": "1101.4081v3",
+  "snippet": "This article looks at a simple modification to speedup the conventional Gauss Elimination. The proposed modification speeds up the conventional Gauss Elimination by a factor of nearly 9/7 (in the asymptotic limit).",
+  "relevanceScore": 0.9,
+  "source": "arxiv",
+  "createdAt": "2026-05-13T14:17:06.855843"
+}

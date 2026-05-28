@@ -1,0 +1,27 @@
+{
+  "id": "paper_376779db4e32",
+  "title": "Self-Supervised replay flow for Low-Resource Settings",
+  "paperType": "system",
+  "targetVenue": "generic",
+  "status": "prepared",
+  "planLinkId": null,
+  "projectId": "cproj_b516fc8a77f9",
+  "experimentIds": [
+    "exp_8c8b96565629"
+  ],
+  "figureIds": [],
+  "runIds": [],
+  "providerName": "local-toolbox",
+  "model": "tool-paper-assembler",
+  "notes": "Tool provider assembled paper scaffold for Self-Supervised replay flow for Low-Resource Settings",
+  "outlineJson": null,
+  "pdfAvailable": true,
+  "logs": [
+    {
+      "timestamp": "2026-05-24T02:01:36.339986+00:00",
+      "message": "Tool provider assembled paper scaffold for Self-Supervised replay flow for Low-Resource Settings"
+    }
+  ],
+  "createdAt": "2026-05-24T02:01:36.339377+00:00",
+  "updatedAt": "2026-05-24T02:01:36.340248+00:00"
+}

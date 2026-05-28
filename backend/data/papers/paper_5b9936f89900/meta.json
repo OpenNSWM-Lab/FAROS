@@ -1,0 +1,27 @@
+{
+  "id": "paper_5b9936f89900",
+  "title": "Interpretable replay flow via Concept Bottlenecks",
+  "paperType": "system",
+  "targetVenue": "generic",
+  "status": "prepared",
+  "planLinkId": null,
+  "projectId": "cproj_dfeb7cc920c6",
+  "experimentIds": [
+    "exp_afdb7a76f5c0"
+  ],
+  "figureIds": [],
+  "runIds": [],
+  "providerName": "local-toolbox",
+  "model": "tool-paper-assembler",
+  "notes": "Tool provider assembled paper scaffold for Interpretable replay flow via Concept Bottlenecks",
+  "outlineJson": null,
+  "pdfAvailable": true,
+  "logs": [
+    {
+      "timestamp": "2026-05-24T02:35:50.356679+00:00",
+      "message": "Tool provider assembled paper scaffold for Interpretable replay flow via Concept Bottlenecks"
+    }
+  ],
+  "createdAt": "2026-05-24T02:35:50.356237+00:00",
+  "updatedAt": "2026-05-24T02:35:50.356880+00:00"
+}

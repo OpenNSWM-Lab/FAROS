@@ -1,0 +1,25 @@
+{
+  "id": "experiment-scaffold",
+  "name": "Experiment Scaffold",
+  "version": "0.1.0",
+  "kind": "execution",
+  "description": "Creates runnable experiment or code project scaffolds.",
+  "agent_roles": [
+    "experimenter"
+  ],
+  "tags": [
+    "experiment",
+    "scaffold"
+  ],
+  "artifact_types": [
+    "code_project",
+    "experiment_record"
+  ],
+  "verification_hooks": [
+    "schema-check"
+  ],
+  "provider_requirements": {
+    "reasoning": "llm"
+  },
+  "manifest_version": "1.0"
+}

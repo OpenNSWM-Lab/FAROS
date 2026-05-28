@@ -1,0 +1,21 @@
+{
+  "id": "lit_e5bbc8d0eae1",
+  "sessionId": "idea_bc8f884b1ebe",
+  "title": "Deep Learning-based Wildfire Smoke Detection using Uncrewed Aircraft System Imagery",
+  "authors": [
+    "Khan Raqib Mahmud",
+    "Lingxiao Wang",
+    "Xiyuan Liu",
+    "Jiahao Li",
+    "Sunzid Hassan"
+  ],
+  "venue": "2024 21st International Conference on Ubiquitous Robots (UR)",
+  "year": 2024,
+  "url": "https://www.semanticscholar.org/paper/1af04070f3844b4e8e2163de34d734b26247c5ed",
+  "doi": "10.1109/UR61395.2024.10597449",
+  "arxivId": null,
+  "snippet": "Recent years have seen notable advancements in wildfire smoke detection, particularly in Uncrewed Aircraft Systems (UAS)-based detection employing diverse deep learning (DL) approaches. Despite the promise exhibited by these approaches, the task of detecting smoke from UAS imagery remains challenging due to difficulties in differentiating smoke from similar phenomena such as clouds and water. This work introduces a novel DL-based method for smoke detection from UAS visual observations. The core ",
+  "relevanceScore": 0.6,
+  "source": "semantic_scholar",
+  "createdAt": "2026-05-14T14:48:44.455150"
+}

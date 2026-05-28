@@ -11,6 +11,9 @@ from app.modules.idea.service import get_idea_service
 class IdeaRefinementCapability(BaseCapability):
     capability_id = "idea_refinement"
     description = "Run the existing LLM Scientist idea pipeline and normalize outputs for FAROS."
+    default_agent_id = "researcher"
+    default_skill_ids = ["literature-grounding", "idea-analysis"]
+    artifact_types = ["idea_session"]
 
     def execute(self, context: ExecutionContext, inputs: Dict[str, Any]) -> CapabilityResult:
         binding = context.get_binding() or context.get_binding(self.capability_id)

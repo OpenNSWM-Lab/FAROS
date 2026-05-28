@@ -10,7 +10,7 @@ Stores:
 import json
 import os
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Optional, List, Dict, Any
 
 logger = logging.getLogger(__name__)
@@ -27,11 +27,15 @@ def _gen_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:12]}"
 
 
+def _utcnow_iso() -> str:
+    return datetime.now(UTC).isoformat()
+
+
 # ── Experiments ──────────────────────────────────────────────
 
 def create_experiment(data: Dict[str, Any]) -> Dict[str, Any]:
     exp_id = _gen_id("exp")
-    now = datetime.utcnow().isoformat()
+    now = _utcnow_iso()
     record = {
         "id": exp_id,
         "name": data.get("name", "Untitled Experiment"),
@@ -85,7 +89,7 @@ def update_experiment(exp_id: str, updates: Dict[str, Any]) -> Optional[Dict[str
     if not record:
         return None
     record.update(updates)
-    record["updatedAt"] = datetime.utcnow().isoformat()
+    record["updatedAt"] = _utcnow_iso()
     path = os.path.join(_EXPERIMENTS_DIR, exp_id, "experiment.json")
     with open(path, "w") as f:
         json.dump(record, f, indent=2)
@@ -103,7 +107,7 @@ def ingest_metrics(exp_id: str, metrics: List[Dict[str, Any]]) -> int:
     if os.path.isfile(metrics_path):
         with open(metrics_path) as f:
             existing = json.load(f)
-    now = datetime.utcnow().isoformat()
+    now = _utcnow_iso()
     for m in metrics:
         metric_id = _gen_id("met")
         entry = {
@@ -166,7 +170,7 @@ def save_figure_artifact(
         "caption": caption,
         "promptUsed": prompt_used,
         "modelUsed": model_used,
-        "createdAt": datetime.utcnow().isoformat(),
+        "createdAt": _utcnow_iso(),
         "fileName": fig_filename,
         "title": title,
     }
@@ -268,7 +272,7 @@ def save_dataset(exp_id: str, name: str, fmt: str, raw_bytes: bytes, parsed_prev
         "rawPath": raw_path,
         "rowCount": len(parsed_preview),
         "columns": list(parsed_preview[0].keys()) if parsed_preview else [],
-        "createdAt": datetime.utcnow().isoformat(),
+        "createdAt": _utcnow_iso(),
     }
     with open(os.path.join(ds_dir, "meta.json"), "w") as f:
         json.dump(meta, f, indent=2)

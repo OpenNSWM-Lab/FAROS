@@ -1,0 +1,43 @@
+{
+  "id": "cand_0cb4a114ebc0",
+  "sessionId": "idea_933d775053b4",
+  "title": "Interpretable replay flow via Concept Bottlenecks",
+  "problem": "replay flow models lack interpretability.",
+  "keyInsight": "Concept bottleneck layers provide human-understandable explanations.",
+  "novelty": 6.6,
+  "noveltyRationale": "Heuristic assessment",
+  "feasibility": 6.4,
+  "feasibilityRationale": "Heuristic assessment",
+  "impact": 8.4,
+  "impactRationale": "Heuristic assessment",
+  "clarity": 5.1,
+  "clarityRationale": "Based on description quality",
+  "risk": 5.6,
+  "riskRationale": "Based on risk identification",
+  "alignment": 9.0,
+  "alignmentRationale": "Based on topic overlap",
+  "referenceSupport": 3.9,
+  "referenceSupportRationale": "Based on reference count",
+  "experimentSpecificity": 5.8,
+  "experimentSpecificityRationale": "Based on experiment plan",
+  "overallRationale": "Scored using heuristic analysis",
+  "scoringConfidence": 0.6,
+  "scoringMethod": "heuristic",
+  "risks": [],
+  "requiredExperiments": [],
+  "expectedMetrics": [],
+  "draftPlan": {
+    "researchQuestion": "replay flow models lack interpretability.",
+    "hypothesis": "Concept bottleneck layers provide human-understandable explanations.",
+    "variables": {},
+    "methodology": "To be defined",
+    "expectedOutcomes": [
+      "Improved performance",
+      "Novel insights"
+    ],
+    "tags": [],
+    "notes": ""
+  },
+  "references": [],
+  "createdAt": "2026-05-24T01:52:56.456434"
+}
