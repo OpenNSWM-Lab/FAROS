@@ -1,0 +1,21 @@
+{
+  "id": "artifact-packaging",
+  "name": "Artifact Packaging",
+  "version": "0.1.0",
+  "kind": "runtime",
+  "description": "Normalizes project outputs for downstream workflow nodes.",
+  "agent_roles": [
+    "experimenter"
+  ],
+  "tags": [
+    "artifacts"
+  ],
+  "artifact_types": [
+    "run_manifest"
+  ],
+  "verification_hooks": [
+    "schema-check"
+  ],
+  "provider_requirements": {},
+  "manifest_version": "1.0"
+}

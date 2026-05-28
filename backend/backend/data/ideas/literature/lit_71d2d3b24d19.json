@@ -1,0 +1,21 @@
+{
+  "id": "lit_71d2d3b24d19",
+  "sessionId": "idea_6f2a8f35a21e",
+  "title": "Predicting smoke hazards and burning fuel via smart building fire sensor network and dual-agent deep learning",
+  "authors": [
+    "W. Cheung",
+    "Yanfu Zeng",
+    "Yifei Ding",
+    "W. W\u0229grzy\u0144ski",
+    "Xinyan Huang"
+  ],
+  "venue": "Indoor and Built Environment",
+  "year": 2025,
+  "url": "https://www.semanticscholar.org/paper/d159554d44db229113c20a78264fb3c13d19fff1",
+  "doi": "10.1177/1420326X251331180",
+  "arxivId": null,
+  "snippet": "A smart building should quantify real-time fire hazards in complex-built environments and support real-time emergency response. This work introduced a smart framework using dual-agent deep learning to predict real-time fire and smoke hazards in a 30-m corridor by feeding point-sensor data. After validation with four full-scale corridor tests, a numerical database was established, consisting of 100 fire scenarios with varying fire locations, intensities, growth curves and fuel materials. The Poin",
+  "relevanceScore": 1.0,
+  "source": "semantic_scholar",
+  "createdAt": "2026-05-14T03:35:30.755128"
+}

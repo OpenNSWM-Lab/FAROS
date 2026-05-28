@@ -1,0 +1,19 @@
+{
+  "id": "lit_098943c91f7b",
+  "sessionId": "idea_212f55dc8e66",
+  "title": "From Alife Agents to a Kingdom of N Queens",
+  "authors": [
+    "Jing Han",
+    "Jiming Liu",
+    "Qingsheng Cai"
+  ],
+  "venue": "arXiv",
+  "year": 2002,
+  "url": "http://arxiv.org/abs/cs/0205016v1",
+  "doi": null,
+  "arxivId": "cs/0205016v1",
+  "snippet": "This paper presents a new approach to solving N-queen problems, which involves a model of distributed autonomous agents with artificial life (ALife) and a method of representing N-queen constraints in an agent environment. The distributed agents locally interact with their living environment, i.e., a chessboard, and execute their reactive behaviors by applying their behavioral rules for randomized motion, least-conflict position searching, and cooperating with other agents etc. The agent-based N",
+  "relevanceScore": 0.75,
+  "source": "arxiv",
+  "createdAt": "2026-05-13T16:37:12.844419"
+}

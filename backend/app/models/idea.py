@@ -8,10 +8,13 @@ Scientific Responsibility:
 - Maintain full traceability from session to candidates
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Optional, List, Dict, Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from enum import Enum
+
+def _utcnow() -> datetime:
+    return datetime.now(UTC)
 
 
 class IdeaSessionStatus(str, Enum):
@@ -102,7 +105,7 @@ class IdeaSession(BaseModel):
     Represents one complete idea generation workflow execution.
     """
     id: str = Field(..., description="Unique session identifier")
-    createdAt: datetime = Field(default_factory=datetime.utcnow)
+    createdAt: datetime = Field(default_factory=_utcnow)
     status: IdeaSessionStatus = Field(default=IdeaSessionStatus.PENDING)
     config: IdeaSessionConfig
     startedAt: Optional[datetime] = None
@@ -127,8 +130,7 @@ class IdeaSession(BaseModel):
             IdeaSessionStatus.CANCELLED
         ]
     
-    class Config:
-        frozen = False  # Allow updates during execution
+    model_config = ConfigDict(frozen=False)  # Allow updates during execution
 
 
 class LiteratureItem(BaseModel):
@@ -157,10 +159,9 @@ class LiteratureItem(BaseModel):
         default="stub",
         description="Source of the literature item"
     )
-    createdAt: datetime = Field(default_factory=datetime.utcnow)
+    createdAt: datetime = Field(default_factory=_utcnow)
     
-    class Config:
-        frozen = True
+    model_config = ConfigDict(frozen=True)
 
 
 class RiskItem(BaseModel):
@@ -237,7 +238,7 @@ class IdeaCandidate(BaseModel):
         description="List of LiteratureItem IDs or citation strings"
     )
     
-    createdAt: datetime = Field(default_factory=datetime.utcnow)
+    createdAt: datetime = Field(default_factory=_utcnow)
     
     @property
     def overallScore(self) -> float:
@@ -268,5 +269,4 @@ class IdeaCandidate(BaseModel):
             "experimentSpecificity": {"value": round(self.experimentSpecificity, 1), "rationale": self.experimentSpecificityRationale},
         }
     
-    class Config:
-        frozen = True
+    model_config = ConfigDict(frozen=True)

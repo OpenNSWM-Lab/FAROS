@@ -1,0 +1,43 @@
+{
+  "id": "cand_2b84c2cc6796",
+  "sessionId": "idea_c9ad227677d0",
+  "title": "Scalable replay flow with Efficient Attention",
+  "problem": "Current replay flow methods do not scale to large datasets.",
+  "keyInsight": "Using sparse attention patterns can reduce complexity.",
+  "novelty": 8.1,
+  "noveltyRationale": "Heuristic assessment",
+  "feasibility": 8.1,
+  "feasibilityRationale": "Heuristic assessment",
+  "impact": 6.0,
+  "impactRationale": "Heuristic assessment",
+  "clarity": 4.8,
+  "clarityRationale": "Based on description quality",
+  "risk": 5.9,
+  "riskRationale": "Based on risk identification",
+  "alignment": 9.1,
+  "alignmentRationale": "Based on topic overlap",
+  "referenceSupport": 3.6,
+  "referenceSupportRationale": "Based on reference count",
+  "experimentSpecificity": 4.7,
+  "experimentSpecificityRationale": "Based on experiment plan",
+  "overallRationale": "Scored using heuristic analysis",
+  "scoringConfidence": 0.6,
+  "scoringMethod": "heuristic",
+  "risks": [],
+  "requiredExperiments": [],
+  "expectedMetrics": [],
+  "draftPlan": {
+    "researchQuestion": "Current replay flow methods do not scale to large datasets.",
+    "hypothesis": "Using sparse attention patterns can reduce complexity.",
+    "variables": {},
+    "methodology": "To be defined",
+    "expectedOutcomes": [
+      "Improved performance",
+      "Novel insights"
+    ],
+    "tags": [],
+    "notes": ""
+  },
+  "references": [],
+  "createdAt": "2026-05-15T15:03:14.903518"
+}

@@ -1,0 +1,25 @@
+{
+  "id": "paper_142c779df060",
+  "title": "external tool paper",
+  "paperType": "system",
+  "targetVenue": "iclr",
+  "status": "prepared",
+  "planLinkId": null,
+  "projectId": null,
+  "experimentIds": [],
+  "figureIds": [],
+  "runIds": [],
+  "providerName": "local-toolbox",
+  "model": "external-tool-command",
+  "notes": "external tool backend for tool-external-run",
+  "outlineJson": null,
+  "pdfAvailable": true,
+  "logs": [
+    {
+      "timestamp": "2026-05-24T01:53:08.586568",
+      "message": "external tool backend for tool-external-run"
+    }
+  ],
+  "createdAt": "2026-05-24T01:53:08.585800",
+  "updatedAt": "2026-05-24T01:53:08.587022"
+}

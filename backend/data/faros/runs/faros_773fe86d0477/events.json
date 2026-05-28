@@ -1,0 +1,174 @@
+[
+  {
+    "timestamp": "2026-05-24T02:35:15.753131+00:00",
+    "level": "info",
+    "nodeId": "idea",
+    "message": "Executing capability idea_refinement",
+    "details": {
+      "agentId": "researcher",
+      "skillIds": [
+        "literature-grounding",
+        "idea-analysis"
+      ]
+    }
+  },
+  {
+    "timestamp": "2026-05-24T02:35:46.177590+00:00",
+    "level": "info",
+    "nodeId": "idea",
+    "message": "Idea refinement completed with 3 candidates",
+    "details": {}
+  },
+  {
+    "timestamp": "2026-05-24T02:35:46.177798+00:00",
+    "level": "info",
+    "nodeId": "idea",
+    "message": "idea_refinement completed",
+    "details": {
+      "verification": {
+        "status": "passed",
+        "message": "idea_refinement passed verification dispatch",
+        "verifier_ids": [],
+        "results": []
+      },
+      "agentId": "researcher",
+      "skillIds": [
+        "literature-grounding",
+        "idea-analysis"
+      ]
+    }
+  },
+  {
+    "timestamp": "2026-05-24T02:35:46.180987+00:00",
+    "level": "info",
+    "nodeId": "experiment",
+    "message": "Executing capability experiment",
+    "details": {
+      "agentId": "experimenter",
+      "skillIds": [
+        "experiment-scaffold",
+        "artifact-packaging"
+      ]
+    }
+  },
+  {
+    "timestamp": "2026-05-24T02:35:50.348281+00:00",
+    "level": "info",
+    "nodeId": "experiment",
+    "message": "Execution provider scaffolded experiment workspace for Interpretable replay flow via Concept Bottlenecks",
+    "details": {}
+  },
+  {
+    "timestamp": "2026-05-24T02:35:50.348805+00:00",
+    "level": "info",
+    "nodeId": "experiment",
+    "message": "experiment completed",
+    "details": {
+      "verification": {
+        "status": "passed",
+        "message": "experiment passed verification dispatch",
+        "verifier_ids": [],
+        "results": []
+      },
+      "agentId": "experimenter",
+      "skillIds": [
+        "experiment-scaffold",
+        "artifact-packaging"
+      ]
+    }
+  },
+  {
+    "timestamp": "2026-05-24T02:35:50.355713+00:00",
+    "level": "info",
+    "nodeId": "paper",
+    "message": "Executing capability paper_drafting",
+    "details": {
+      "agentId": "writer",
+      "skillIds": [
+        "paper-outline",
+        "section-drafting",
+        "latex-assembly"
+      ]
+    }
+  },
+  {
+    "timestamp": "2026-05-24T02:35:50.363721+00:00",
+    "level": "info",
+    "nodeId": "paper",
+    "message": "Tool provider assembled paper scaffold for Interpretable replay flow via Concept Bottlenecks",
+    "details": {}
+  },
+  {
+    "timestamp": "2026-05-24T02:35:50.364122+00:00",
+    "level": "info",
+    "nodeId": "paper",
+    "message": "paper_drafting completed",
+    "details": {
+      "verification": {
+        "status": "passed",
+        "message": "paper_drafting passed verification dispatch",
+        "verifier_ids": [],
+        "results": []
+      },
+      "agentId": "writer",
+      "skillIds": [
+        "paper-outline",
+        "section-drafting",
+        "latex-assembly"
+      ]
+    }
+  },
+  {
+    "timestamp": "2026-05-24T02:35:50.384151+00:00",
+    "level": "info",
+    "nodeId": "review",
+    "message": "Executing capability reviewer_simulation",
+    "details": {
+      "agentId": "reviewer",
+      "skillIds": [
+        "review-critique",
+        "consistency-audit"
+      ]
+    }
+  },
+  {
+    "timestamp": "2026-05-24T02:35:50.393263+00:00",
+    "level": "info",
+    "nodeId": "review",
+    "message": "Human review checkpoint completed for paper_5b9936f89900",
+    "details": {}
+  },
+  {
+    "timestamp": "2026-05-24T02:35:50.393844+00:00",
+    "level": "info",
+    "nodeId": "review",
+    "message": "reviewer_simulation completed",
+    "details": {
+      "verification": {
+        "status": "passed",
+        "message": "reviewer_simulation passed verification dispatch",
+        "verifier_ids": [],
+        "results": []
+      },
+      "agentId": "reviewer",
+      "skillIds": [
+        "review-critique",
+        "consistency-audit"
+      ]
+    }
+  },
+  {
+    "timestamp": "2026-05-24T02:35:50.415125+00:00",
+    "level": "info",
+    "nodeId": "experiment",
+    "message": "step replay requested by operator",
+    "details": {
+      "replayTargets": [
+        "experiment",
+        "paper",
+        "review"
+      ],
+      "includeDownstream": true
+    }
+  }
+]

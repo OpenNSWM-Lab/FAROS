@@ -1,0 +1,18 @@
+{
+  "id": "lit_754b3904083b",
+  "sessionId": "idea_f03a94ae7ef2",
+  "title": "Active learning for data streams: a survey",
+  "authors": [
+    "Davide Cacciarelli",
+    "Murat Kulahci"
+  ],
+  "venue": "arXiv",
+  "year": 2023,
+  "url": "http://arxiv.org/abs/2302.08893v4",
+  "doi": null,
+  "arxivId": "2302.08893v4",
+  "snippet": "Online active learning is a paradigm in machine learning that aims to select the most informative data points to label from a data stream. The problem of minimizing the cost associated with collecting labeled observations has gained a lot of attention in recent years, particularly in real-world applications where data is only available in an unlabeled form. Annotating each observation can be time-consuming and costly, making it difficult to obtain large amounts of labeled data. To overcome this ",
+  "relevanceScore": 0.8,
+  "source": "arxiv",
+  "createdAt": "2026-05-24T02:02:16.309816+00:00"
+}

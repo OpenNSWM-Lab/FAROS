@@ -1,0 +1,18 @@
+{
+  "id": "lit_29f7c1cd0eb2",
+  "sessionId": "idea_411ac4e357c1",
+  "title": "AOAD-MAT: Transformer-based multi-agent deep reinforcement learning model considering agents' order of action decisions",
+  "authors": [
+    "Shota Takayama",
+    "Katsuhide Fujita"
+  ],
+  "venue": "arXiv",
+  "year": 2025,
+  "url": "http://arxiv.org/abs/2510.13343v1",
+  "doi": null,
+  "arxivId": "2510.13343v1",
+  "snippet": "Multi-agent reinforcement learning focuses on training the behaviors of multiple learning agents that coexist in a shared environment. Recently, MARL models, such as the Multi-Agent Transformer (MAT) and ACtion dEpendent deep Q-learning (ACE), have significantly improved performance by leveraging sequential decision-making processes. Although these models can enhance performance, they do not explicitly consider the importance of the order in which agents make decisions. In this paper, we propose",
+  "relevanceScore": 0.6499999999999999,
+  "source": "arxiv",
+  "createdAt": "2026-05-14T02:43:40.216508"
+}

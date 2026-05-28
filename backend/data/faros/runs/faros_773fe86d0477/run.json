@@ -1,0 +1,693 @@
+{
+  "id": "faros_773fe86d0477",
+  "blueprint_id": "ml_paper",
+  "profile_id": "faros_hybrid",
+  "status": "pending",
+  "execution_mode": "plan",
+  "created_at": "2026-05-24T02:35:15.735605+00:00",
+  "started_at": "2026-05-24T02:35:15.750726+00:00",
+  "ended_at": "2026-05-24T02:35:50.398158+00:00",
+  "inputs": {
+    "seedQuery": "replay flow",
+    "paperType": "system",
+    "targetVenue": "generic"
+  },
+  "runtime_options": {
+    "readyNodePolicy": "fifo"
+  },
+  "steps": [
+    {
+      "node_id": "idea",
+      "capability": "idea_refinement",
+      "agent_id": "researcher",
+      "skill_ids": [
+        "literature-grounding",
+        "idea-analysis"
+      ],
+      "status": "completed",
+      "started_at": "2026-05-24T02:35:15.752111+00:00",
+      "ended_at": "2026-05-24T02:35:46.173965+00:00",
+      "outputs_summary": {
+        "ideaSessionId": "idea_57b6415b8ab4",
+        "candidateCount": 3,
+        "selectedCandidateId": "cand_032ecc49754e",
+        "selectedCandidate": {
+          "id": "cand_032ecc49754e",
+          "sessionId": "idea_57b6415b8ab4",
+          "title": "Interpretable replay flow via Concept Bottlenecks",
+          "problem": "replay flow models lack interpretability.",
+          "keyInsight": "Concept bottleneck layers provide human-understandable explanations.",
+          "novelty": 7.5,
+          "noveltyRationale": "Heuristic assessment",
+          "feasibility": 7.9,
+          "feasibilityRationale": "Heuristic assessment",
+          "impact": 7.9,
+          "impactRationale": "Heuristic assessment",
+          "clarity": 4.2,
+          "clarityRationale": "Based on description quality",
+          "risk": 5.2,
+          "riskRationale": "Based on risk identification",
+          "alignment": 9.0,
+          "alignmentRationale": "Based on topic overlap",
+          "referenceSupport": 4.2,
+          "referenceSupportRationale": "Based on reference count",
+          "experimentSpecificity": 6.0,
+          "experimentSpecificityRationale": "Based on experiment plan",
+          "overallRationale": "Scored using heuristic analysis",
+          "scoringConfidence": 0.6,
+          "scoringMethod": "heuristic",
+          "risks": [],
+          "requiredExperiments": [],
+          "expectedMetrics": [],
+          "draftPlan": {
+            "researchQuestion": "replay flow models lack interpretability.",
+            "hypothesis": "Concept bottleneck layers provide human-understandable explanations.",
+            "variables": {},
+            "methodology": "To be defined",
+            "expectedOutcomes": [
+              "Improved performance",
+              "Novel insights"
+            ],
+            "tags": [],
+            "notes": ""
+          },
+          "references": [],
+          "createdAt": "2026-05-24 02:35:46.153392+00:00"
+        },
+        "ideaTrace": {
+          "sessionId": "idea_57b6415b8ab4",
+          "startedAt": "2026-05-24 02:35:15.754695+00:00",
+          "endedAt": "2026-05-24 02:35:46.170093+00:00",
+          "totalSteps": 7,
+          "successfulSteps": 7,
+          "failedSteps": 0,
+          "steps": [
+            {
+              "name": "expandQuery",
+              "status": "ok",
+              "inputs": {
+                "seedQuery": "replay flow"
+              },
+              "outputs": {
+                "expandedTerms": [
+                  "replay flow",
+                  "replay flow machine learning",
+                  "replay flow deep learning",
+                  "replay flow neural network"
+                ],
+                "error": "API key not configured for provider 'minimax'. Set environment variable: MINIMAX_API_KEY"
+              },
+              "artifacts": [],
+              "startedAt": "2026-05-24 02:35:15.756801+00:00",
+              "endedAt": "2026-05-24 02:35:23.530795+00:00",
+              "durationSeconds": 7.773994,
+              "error": null
+            },
+            {
+              "name": "literatureSearch",
+              "status": "ok",
+              "inputs": {
+                "seedQuery": "replay flow",
+                "maxPapers": 10,
+                "searchQueries": [
+                  "replay flow",
+                  "replay flow machine learning",
+                  "replay flow deep learning"
+                ]
+              },
+              "outputs": {
+                "paperCount": 10,
+                "paperIds": [
+                  "lit_e97ec15ebd34",
+                  "lit_4d23cb2f5aee",
+                  "lit_11f5d9b10490",
+                  "lit_645bf78b1a7f",
+                  "lit_85bdc81aaacf",
+                  "lit_b9d2825d9a95",
+                  "lit_4aa5c82239a4",
+                  "lit_b2412757bfbe",
+                  "lit_72b7b2bd1722",
+                  "lit_2246364f20ae"
+                ],
+                "sourcesUsed": [
+                  "arxiv",
+                  "local"
+                ]
+              },
+              "artifacts": [],
+              "startedAt": "2026-05-24 02:35:23.531165+00:00",
+              "endedAt": "2026-05-24 02:35:46.117462+00:00",
+              "durationSeconds": 22.586297,
+              "error": null
+            },
+            {
+              "name": "noveltyCheck",
+              "status": "ok",
+              "inputs": {
+                "literatureCount": 10
+              },
+              "outputs": {
+                "coveredAreas": [
+                  "influenced",
+                  "hydrofoil",
+                  "flows",
+                  "averaging",
+                  "transport",
+                  "velocity",
+                  "two-dimensional",
+                  "in-gpu",
+                  "characterizing",
+                  "variance,",
+                  "fields",
+                  "policy",
+                  "cavitating",
+                  "channel",
+                  "model-based"
+                ],
+                "gaps": [
+                  "Scalability of replay flow methods",
+                  "Interpretability in replay flow",
+                  "Theoretical foundations of replay flow",
+                  "Real-world deployment of replay flow"
+                ],
+                "novelDirections": [],
+                "error": "API key not configured for provider 'minimax'. Set environment variable: MINIMAX_API_KEY"
+              },
+              "artifacts": [],
+              "startedAt": "2026-05-24 02:35:46.118320+00:00",
+              "endedAt": "2026-05-24 02:35:46.135743+00:00",
+              "durationSeconds": 0.017423,
+              "error": null
+            },
+            {
+              "name": "gapAnalysis",
+              "status": "ok",
+              "inputs": {
+                "topic": "replay flow"
+              },
+              "outputs": {
+                "gapAnalysis": [],
+                "prioritizedGaps": [
+                  "Scalability of replay flow methods",
+                  "Interpretability in replay flow",
+                  "Theoretical foundations of replay flow",
+                  "Real-world deployment of replay flow"
+                ],
+                "researchOpportunities": [
+                  "Novel architectures for replay flow",
+                  "Efficient training methods for replay flow"
+                ],
+                "error": "API key not configured for provider 'minimax'. Set environment variable: MINIMAX_API_KEY"
+              },
+              "artifacts": [],
+              "startedAt": "2026-05-24 02:35:46.136218+00:00",
+              "endedAt": "2026-05-24 02:35:46.145648+00:00",
+              "durationSeconds": 0.00943,
+              "error": null
+            },
+            {
+              "name": "ideaBrainstorm",
+              "status": "ok",
+              "inputs": {
+                "topic": "replay flow"
+              },
+              "outputs": {
+                "candidateCount": 3,
+                "candidateIds": [
+                  "cand_2ff03a51da26",
+                  "cand_032ecc49754e",
+                  "cand_d0ace25c79c3"
+                ],
+                "error": "API key not configured for provider 'minimax'. Set environment variable: MINIMAX_API_KEY"
+              },
+              "artifacts": [],
+              "startedAt": "2026-05-24 02:35:46.146013+00:00",
+              "endedAt": "2026-05-24 02:35:46.153873+00:00",
+              "durationSeconds": 0.00786,
+              "error": null
+            },
+            {
+              "name": "rankCandidates",
+              "status": "ok",
+              "inputs": {
+                "candidateCount": 3
+              },
+              "outputs": {
+                "rankings": [
+                  {
+                    "id": "cand_032ecc49754e",
+                    "title": "Interpretable replay flow via Concept Bottlenecks",
+                    "totalScore": 7.01,
+                    "rank": 1,
+                    "breakdown": {
+                      "novelty": {
+                        "value": 7.5,
+                        "rationale": "Heuristic assessment"
+                      },
+                      "feasibility": {
+                        "value": 7.9,
+                        "rationale": "Heuristic assessment"
+                      },
+                      "impact": {
+                        "value": 7.9,
+                        "rationale": "Heuristic assessment"
+                      },
+                      "clarity": {
+                        "value": 4.2,
+                        "rationale": "Based on description quality"
+                      },
+                      "risk": {
+                        "value": 5.2,
+                        "rationale": "Based on risk identification"
+                      },
+                      "alignment": {
+                        "value": 9.0,
+                        "rationale": "Based on topic overlap"
+                      },
+                      "referenceSupport": {
+                        "value": 4.2,
+                        "rationale": "Based on reference count"
+                      },
+                      "experimentSpecificity": {
+                        "value": 6.0,
+                        "rationale": "Based on experiment plan"
+                      }
+                    },
+                    "overallRationale": "Scored using heuristic analysis",
+                    "scoringConfidence": 0.6,
+                    "scoringMethod": "heuristic"
+                  },
+                  {
+                    "id": "cand_2ff03a51da26",
+                    "title": "Scalable replay flow with Efficient Attention",
+                    "totalScore": 6.91,
+                    "rank": 2,
+                    "breakdown": {
+                      "novelty": {
+                        "value": 7.7,
+                        "rationale": "Heuristic assessment"
+                      },
+                      "feasibility": {
+                        "value": 8.1,
+                        "rationale": "Heuristic assessment"
+                      },
+                      "impact": {
+                        "value": 6.7,
+                        "rationale": "Heuristic assessment"
+                      },
+                      "clarity": {
+                        "value": 4.7,
+                        "rationale": "Based on description quality"
+                      },
+                      "risk": {
+                        "value": 5.9,
+                        "rationale": "Based on risk identification"
+                      },
+                      "alignment": {
+                        "value": 9.0,
+                        "rationale": "Based on topic overlap"
+                      },
+                      "referenceSupport": {
+                        "value": 3.7,
+                        "rationale": "Based on reference count"
+                      },
+                      "experimentSpecificity": {
+                        "value": 5.3,
+                        "rationale": "Based on experiment plan"
+                      }
+                    },
+                    "overallRationale": "Scored using heuristic analysis",
+                    "scoringConfidence": 0.6,
+                    "scoringMethod": "heuristic"
+                  },
+                  {
+                    "id": "cand_d0ace25c79c3",
+                    "title": "Self-Supervised replay flow for Low-Resource Settings",
+                    "totalScore": 6.58,
+                    "rank": 3,
+                    "breakdown": {
+                      "novelty": {
+                        "value": 6.9,
+                        "rationale": "Heuristic assessment"
+                      },
+                      "feasibility": {
+                        "value": 6.8,
+                        "rationale": "Heuristic assessment"
+                      },
+                      "impact": {
+                        "value": 7.6,
+                        "rationale": "Heuristic assessment"
+                      },
+                      "clarity": {
+                        "value": 4.5,
+                        "rationale": "Based on description quality"
+                      },
+                      "risk": {
+                        "value": 5.2,
+                        "rationale": "Based on risk identification"
+                      },
+                      "alignment": {
+                        "value": 9.2,
+                        "rationale": "Based on topic overlap"
+                      },
+                      "referenceSupport": {
+                        "value": 3.8,
+                        "rationale": "Based on reference count"
+                      },
+                      "experimentSpecificity": {
+                        "value": 4.8,
+                        "rationale": "Based on experiment plan"
+                      }
+                    },
+                    "overallRationale": "Scored using heuristic analysis",
+                    "scoringConfidence": 0.6,
+                    "scoringMethod": "heuristic"
+                  }
+                ],
+                "scoreVariance": 0.034,
+                "minScore": 6.58,
+                "maxScore": 7.01
+              },
+              "artifacts": [],
+              "startedAt": "2026-05-24 02:35:46.154224+00:00",
+              "endedAt": "2026-05-24 02:35:46.158979+00:00",
+              "durationSeconds": 0.004755,
+              "error": null
+            },
+            {
+              "name": "finalizeSession",
+              "status": "ok",
+              "inputs": {},
+              "outputs": {
+                "totalCandidates": 3,
+                "totalLiterature": 10,
+                "topCandidate": "Interpretable replay flow via Concept Bottlenecks"
+              },
+              "artifacts": [],
+              "startedAt": "2026-05-24 02:35:46.159523+00:00",
+              "endedAt": "2026-05-24 02:35:46.169508+00:00",
+              "durationSeconds": 0.009985,
+              "error": null
+            }
+          ]
+        }
+      },
+      "verification": {
+        "status": "passed",
+        "message": "idea_refinement passed verification dispatch",
+        "verifier_ids": [],
+        "results": []
+      },
+      "error": null,
+      "retry_count": 0,
+      "checkpoint": {
+        "status": "completed",
+        "at": "2026-05-24T02:35:46.173976+00:00",
+        "outputKeys": [
+          "candidateCount",
+          "ideaCandidates",
+          "ideaSessionId",
+          "ideaTrace",
+          "selectedCandidate",
+          "selectedCandidateId"
+        ]
+      }
+    },
+    {
+      "node_id": "experiment",
+      "capability": "experiment",
+      "agent_id": "experimenter",
+      "skill_ids": [
+        "experiment-scaffold",
+        "artifact-packaging"
+      ],
+      "status": "ready",
+      "started_at": null,
+      "ended_at": null,
+      "outputs_summary": {},
+      "verification": {},
+      "error": null,
+      "retry_count": 0,
+      "checkpoint": {
+        "status": "replay-requested",
+        "at": "2026-05-24T02:35:50.405451+00:00",
+        "sourceNodeId": "experiment",
+        "scope": "subgraph",
+        "replayTargetIds": [
+          "experiment",
+          "paper",
+          "review"
+        ]
+      }
+    },
+    {
+      "node_id": "paper",
+      "capability": "paper_drafting",
+      "agent_id": "writer",
+      "skill_ids": [
+        "paper-outline",
+        "section-drafting",
+        "latex-assembly"
+      ],
+      "status": "blocked",
+      "started_at": null,
+      "ended_at": null,
+      "outputs_summary": {},
+      "verification": {},
+      "error": null,
+      "retry_count": 0,
+      "checkpoint": {
+        "status": "replay-requested",
+        "at": "2026-05-24T02:35:50.405451+00:00",
+        "sourceNodeId": "experiment",
+        "scope": "subgraph",
+        "replayTargetIds": [
+          "experiment",
+          "paper",
+          "review"
+        ]
+      }
+    },
+    {
+      "node_id": "review",
+      "capability": "reviewer_simulation",
+      "agent_id": "reviewer",
+      "skill_ids": [
+        "review-critique",
+        "consistency-audit"
+      ],
+      "status": "blocked",
+      "started_at": null,
+      "ended_at": null,
+      "outputs_summary": {},
+      "verification": {},
+      "error": null,
+      "retry_count": 0,
+      "checkpoint": {
+        "status": "replay-requested",
+        "at": "2026-05-24T02:35:50.405451+00:00",
+        "sourceNodeId": "experiment",
+        "scope": "subgraph",
+        "replayTargetIds": [
+          "experiment",
+          "paper",
+          "review"
+        ]
+      }
+    }
+  ],
+  "output_summary": {
+    "paperId": "paper_5b9936f89900",
+    "reviewId": "rev_369eb99d696e",
+    "selectedCandidateId": "cand_032ecc49754e",
+    "memorySummary": {
+      "selectedCandidateId": "cand_032ecc49754e",
+      "projectId": "cproj_dfeb7cc920c6",
+      "experimentId": "exp_afdb7a76f5c0",
+      "paperId": "paper_5b9936f89900",
+      "reviewId": "rev_369eb99d696e",
+      "lastNodeId": "review"
+    },
+    "artifactContract": {
+      "status": "passed",
+      "message": "run output contract satisfied",
+      "required": [
+        "paper_pdf",
+        "latex_zip",
+        "review_report"
+      ],
+      "produced": [
+        "idea_session",
+        "code_project",
+        "experiment_record",
+        "paper_record",
+        "latex_project",
+        "latex_zip",
+        "paper_pdf",
+        "review_report"
+      ],
+      "missing": []
+    }
+  },
+  "preflight": {
+    "blueprint_id": "ml_paper",
+    "profile_id": "faros_hybrid",
+    "status": "passed",
+    "message": "Preflight passed for blueprint 'ml_paper' with profile 'faros_hybrid'",
+    "nodes": [
+      {
+        "node_id": "idea",
+        "capability": "idea_refinement",
+        "status": "passed",
+        "agent_id": "researcher",
+        "skill_ids": [
+          "literature-grounding",
+          "idea-analysis"
+        ],
+        "provider_types": [
+          "llm",
+          "minimax"
+        ],
+        "errors": [],
+        "warnings": []
+      },
+      {
+        "node_id": "experiment",
+        "capability": "experiment",
+        "status": "passed",
+        "agent_id": "experimenter",
+        "skill_ids": [
+          "experiment-scaffold",
+          "artifact-packaging"
+        ],
+        "provider_types": [
+          "execution",
+          "local-executor"
+        ],
+        "errors": [],
+        "warnings": [
+          "skill 'experiment-scaffold' requires provider capability 'reasoning' but resolved providers do not advertise it"
+        ]
+      },
+      {
+        "node_id": "paper",
+        "capability": "paper_drafting",
+        "status": "passed",
+        "agent_id": "writer",
+        "skill_ids": [
+          "paper-outline",
+          "section-drafting",
+          "latex-assembly"
+        ],
+        "provider_types": [
+          "local-toolbox",
+          "tool"
+        ],
+        "errors": [],
+        "warnings": [
+          "skill 'paper-outline' requires provider capability 'reasoning' but resolved providers do not advertise it",
+          "skill 'section-drafting' requires provider capability 'reasoning' but resolved providers do not advertise it"
+        ]
+      },
+      {
+        "node_id": "review",
+        "capability": "reviewer_simulation",
+        "status": "passed",
+        "agent_id": "reviewer",
+        "skill_ids": [
+          "review-critique",
+          "consistency-audit"
+        ],
+        "provider_types": [
+          "human",
+          "manual-review"
+        ],
+        "errors": [],
+        "warnings": [
+          "skill 'review-critique' requires provider capability 'reasoning' but resolved providers do not advertise it"
+        ]
+      }
+    ],
+    "errors": [],
+    "warnings": [
+      "experiment: skill 'experiment-scaffold' requires provider capability 'reasoning' but resolved providers do not advertise it",
+      "paper: skill 'paper-outline' requires provider capability 'reasoning' but resolved providers do not advertise it",
+      "paper: skill 'section-drafting' requires provider capability 'reasoning' but resolved providers do not advertise it",
+      "review: skill 'review-critique' requires provider capability 'reasoning' but resolved providers do not advertise it"
+    ]
+  },
+  "checkpoint": {
+    "readyNodePolicy": "fifo",
+    "readyNodeIds": [
+      "experiment"
+    ],
+    "completedNodeIds": [
+      "idea"
+    ],
+    "failedNodeIds": [],
+    "skippedNodeIds": [],
+    "replayableNodeIds": [
+      "idea"
+    ],
+    "stepCheckpoints": {
+      "idea": {
+        "status": "completed",
+        "at": "2026-05-24T02:35:46.173976+00:00",
+        "outputKeys": [
+          "candidateCount",
+          "ideaCandidates",
+          "ideaSessionId",
+          "ideaTrace",
+          "selectedCandidate",
+          "selectedCandidateId"
+        ]
+      },
+      "experiment": {
+        "status": "replay-requested",
+        "at": "2026-05-24T02:35:50.405451+00:00",
+        "sourceNodeId": "experiment",
+        "scope": "subgraph",
+        "replayTargetIds": [
+          "experiment",
+          "paper",
+          "review"
+        ]
+      },
+      "paper": {
+        "status": "replay-requested",
+        "at": "2026-05-24T02:35:50.405451+00:00",
+        "sourceNodeId": "experiment",
+        "scope": "subgraph",
+        "replayTargetIds": [
+          "experiment",
+          "paper",
+          "review"
+        ]
+      },
+      "review": {
+        "status": "replay-requested",
+        "at": "2026-05-24T02:35:50.405451+00:00",
+        "sourceNodeId": "experiment",
+        "scope": "subgraph",
+        "replayTargetIds": [
+          "experiment",
+          "paper",
+          "review"
+        ]
+      }
+    },
+    "lastOperatorAction": {
+      "type": "replay",
+      "nodeId": "experiment",
+      "scope": "subgraph",
+      "targetIds": [
+        "experiment",
+        "paper",
+        "review"
+      ],
+      "at": "2026-05-24T02:35:50.405451+00:00"
+    },
+    "updatedAt": "2026-05-24T02:35:50.412105+00:00"
+  },
+  "error_message": null
+}

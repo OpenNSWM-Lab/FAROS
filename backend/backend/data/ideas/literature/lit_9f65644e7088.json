@@ -1,0 +1,20 @@
+{
+  "id": "lit_9f65644e7088",
+  "sessionId": "idea_90236e3bf233",
+  "title": "Is Flow Matching Just Trajectory Replay for Sequential Data?",
+  "authors": [
+    "Soon Hoe Lim",
+    "Shizhen Lin",
+    "Michael W. Mahoney",
+    "N. Benjamin Erichson"
+  ],
+  "venue": "arXiv.org",
+  "year": 2026,
+  "url": "https://www.semanticscholar.org/paper/3d0ca0ec842304ed42462f7cf4e605009488ada0",
+  "doi": "10.48550/arXiv.2602.08318",
+  "arxivId": "2602.08318",
+  "snippet": "Flow matching (FM) is increasingly used in scientific domains for time series generation and forecasting, where data often arise from underlying dynamical systems. However, it is not well-understood whether it learns transferable dynamical structure or simply performs an effective\"trajectory replay\". We study this question by deriving the velocity field targeted by the empirical FM objective on sequential data in the limit of perfect function approximation. For the Gaussian conditional paths com",
+  "relevanceScore": 0.95,
+  "source": "semantic_scholar",
+  "createdAt": "2026-05-20T06:58:47.207441"
+}

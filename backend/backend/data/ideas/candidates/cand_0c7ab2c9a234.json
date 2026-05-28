@@ -1,0 +1,43 @@
+{
+  "id": "cand_0c7ab2c9a234",
+  "sessionId": "idea_90236e3bf233",
+  "title": "Self-Supervised replay flow for Low-Resource Settings",
+  "problem": "replay flow requires large labeled datasets.",
+  "keyInsight": "Self-supervised pretraining can reduce label requirements.",
+  "novelty": 8.6,
+  "noveltyRationale": "Heuristic assessment",
+  "feasibility": 6.9,
+  "feasibilityRationale": "Heuristic assessment",
+  "impact": 7.8,
+  "impactRationale": "Heuristic assessment",
+  "clarity": 4.5,
+  "clarityRationale": "Based on description quality",
+  "risk": 4.5,
+  "riskRationale": "Based on risk identification",
+  "alignment": 8.9,
+  "alignmentRationale": "Based on topic overlap",
+  "referenceSupport": 3.7,
+  "referenceSupportRationale": "Based on reference count",
+  "experimentSpecificity": 5.3,
+  "experimentSpecificityRationale": "Based on experiment plan",
+  "overallRationale": "Scored using heuristic analysis",
+  "scoringConfidence": 0.6,
+  "scoringMethod": "heuristic",
+  "risks": [],
+  "requiredExperiments": [],
+  "expectedMetrics": [],
+  "draftPlan": {
+    "researchQuestion": "replay flow requires large labeled datasets.",
+    "hypothesis": "Self-supervised pretraining can reduce label requirements.",
+    "variables": {},
+    "methodology": "To be defined",
+    "expectedOutcomes": [
+      "Improved performance",
+      "Novel insights"
+    ],
+    "tags": [],
+    "notes": ""
+  },
+  "references": [],
+  "createdAt": "2026-05-20T06:58:47.246286"
+}

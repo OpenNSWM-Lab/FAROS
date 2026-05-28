@@ -1,0 +1,16 @@
+{
+  "id": "exp_dff36429e41f",
+  "name": "Scalable replay flow with Efficient Attention Experiment",
+  "projectId": "cproj_ac3b311ee2d8",
+  "planSessionId": null,
+  "planLinkId": null,
+  "status": "designed",
+  "tags": [
+    "faros",
+    "llm",
+    "system"
+  ],
+  "description": "Current replay flow methods do not scale to large datasets.",
+  "createdAt": "2026-05-15T15:03:15.429655",
+  "updatedAt": "2026-05-15T15:03:15.429655"
+}

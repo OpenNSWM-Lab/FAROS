@@ -1,0 +1,27 @@
+{
+  "id": "paper_ca3c42410eef",
+  "title": "Scalable replay flow with Efficient Attention",
+  "paperType": "system",
+  "targetVenue": "generic",
+  "status": "prepared",
+  "planLinkId": null,
+  "projectId": "cproj_117f941b8d07",
+  "experimentIds": [
+    "exp_e03dcd80a23c"
+  ],
+  "figureIds": [],
+  "runIds": [],
+  "providerName": "local-toolbox",
+  "model": "tool-paper-assembler",
+  "notes": "Tool provider assembled paper scaffold for Scalable replay flow with Efficient Attention",
+  "outlineJson": null,
+  "pdfAvailable": true,
+  "logs": [
+    {
+      "timestamp": "2026-05-15T15:03:56.872806",
+      "message": "Tool provider assembled paper scaffold for Scalable replay flow with Efficient Attention"
+    }
+  ],
+  "createdAt": "2026-05-15T15:03:56.872152",
+  "updatedAt": "2026-05-15T15:03:56.873087"
+}

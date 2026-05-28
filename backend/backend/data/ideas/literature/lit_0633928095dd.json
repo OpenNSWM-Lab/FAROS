@@ -1,0 +1,19 @@
+{
+  "id": "lit_0633928095dd",
+  "sessionId": "idea_f03a94ae7ef2",
+  "title": "Emotion in Reinforcement Learning Agents and Robots: A Survey",
+  "authors": [
+    "Thomas M. Moerland",
+    "Joost Broekens",
+    "Catholijn M. Jonker"
+  ],
+  "venue": "arXiv",
+  "year": 2017,
+  "url": "http://arxiv.org/abs/1705.05172v1",
+  "doi": null,
+  "arxivId": "1705.05172v1",
+  "snippet": "This article provides the first survey of computational models of emotion in reinforcement learning (RL) agents. The survey focuses on agent/robot emotions, and mostly ignores human user emotions. Emotions are recognized as functional in decision-making by influencing motivation and action selection. Therefore, computational emotion models are usually grounded in the agent's decision making architecture, of which RL is an important subclass. Studying emotions in RL-based agents is useful for thr",
+  "relevanceScore": 0.9,
+  "source": "arxiv",
+  "createdAt": "2026-05-24T02:02:16.309081+00:00"
+}

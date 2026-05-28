@@ -1,0 +1,20 @@
+{
+  "id": "lit_032159ce13bf",
+  "sessionId": "idea_212f55dc8e66",
+  "title": "Less is more -- the Dispatcher/ Executor principle for multi-task Reinforcement Learning",
+  "authors": [
+    "Martin Riedmiller",
+    "Andrea Gesmundo",
+    "Tim Hertweck",
+    "Roland Hafner"
+  ],
+  "venue": "arXiv",
+  "year": 2023,
+  "url": "http://arxiv.org/abs/2312.09120v2",
+  "doi": null,
+  "arxivId": "2312.09120v2",
+  "snippet": "Humans instinctively know how to neglect details when it comes to solve complex decision making problems in environments with unforeseeable variations. This abstraction process seems to be a vital property for most biological systems and helps to 'abstract away' unnecessary details and boost generalisation. In this work we introduce the dispatcher/ executor principle for the design of multi-task Reinforcement Learning controllers. It suggests to partition the controller in two entities, one that",
+  "relevanceScore": 1.0,
+  "source": "arxiv",
+  "createdAt": "2026-05-13T16:37:12.842050"
+}

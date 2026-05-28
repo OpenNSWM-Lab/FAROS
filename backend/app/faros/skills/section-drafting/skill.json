@@ -1,0 +1,25 @@
+{
+  "id": "section-drafting",
+  "name": "Section Drafting",
+  "version": "0.1.0",
+  "kind": "writing",
+  "description": "Generates publication-oriented paper sections from runtime context.",
+  "agent_roles": [
+    "writer"
+  ],
+  "tags": [
+    "paper",
+    "sections"
+  ],
+  "artifact_types": [
+    "paper_record"
+  ],
+  "verification_hooks": [
+    "schema-check",
+    "consistency-check"
+  ],
+  "provider_requirements": {
+    "reasoning": "llm"
+  },
+  "manifest_version": "1.0"
+}

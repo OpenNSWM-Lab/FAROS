@@ -1,0 +1,63 @@
+{
+  "_farosMemoryEnvelope": true,
+  "data": {
+    "seedQuery": "memory recall",
+    "paperType": "system",
+    "targetVenue": "generic",
+    "paperId": "paper_archived",
+    "projectId": "proj_archived"
+  },
+  "summary": {
+    "projectId": "proj_archived",
+    "paperId": "paper_archived"
+  },
+  "scopes": {
+    "run": [
+      "paperId",
+      "paperType",
+      "projectId",
+      "seedQuery",
+      "targetVenue"
+    ],
+    "paper": [
+      "paperId",
+      "projectId"
+    ]
+  },
+  "history": [],
+  "archives": {
+    "paper": {
+      "keys": [
+        "paperId",
+        "projectId"
+      ],
+      "data": {
+        "paperId": "paper_archived",
+        "projectId": "proj_archived"
+      }
+    }
+  },
+  "policy": {
+    "mode": "persistent",
+    "summary_keys": [
+      "selectedCandidateId",
+      "projectId",
+      "experimentId",
+      "paperId",
+      "reviewId",
+      "lastNodeId"
+    ],
+    "scope_strategy": "node",
+    "max_history_entries": 32,
+    "compaction_mode": "summary_only",
+    "volatile_prefixes": [
+      "tmp_",
+      "draft_",
+      "scratch_"
+    ],
+    "retained_scopes": [
+      "run"
+    ],
+    "remove_archived_keys": false
+  }
+}

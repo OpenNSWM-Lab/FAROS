@@ -1,0 +1,43 @@
+{
+  "id": "cand_ddc5ba1ace88",
+  "sessionId": "idea_9e1c107a70b2",
+  "title": "Scalable Agent executor smoke test with Efficient Attention",
+  "problem": "Current Agent executor smoke test methods do not scale to large datasets.",
+  "keyInsight": "Using sparse attention patterns can reduce complexity.",
+  "novelty": 8.0,
+  "noveltyRationale": "Heuristic assessment",
+  "feasibility": 6.3,
+  "feasibilityRationale": "Heuristic assessment",
+  "impact": 7.6,
+  "impactRationale": "Heuristic assessment",
+  "clarity": 5.1,
+  "clarityRationale": "Based on description quality",
+  "risk": 5.0,
+  "riskRationale": "Based on risk identification",
+  "alignment": 10.0,
+  "alignmentRationale": "Based on topic overlap",
+  "referenceSupport": 3.8,
+  "referenceSupportRationale": "Based on reference count",
+  "experimentSpecificity": 5.2,
+  "experimentSpecificityRationale": "Based on experiment plan",
+  "overallRationale": "Scored using heuristic analysis",
+  "scoringConfidence": 0.6,
+  "scoringMethod": "heuristic",
+  "risks": [],
+  "requiredExperiments": [],
+  "expectedMetrics": [],
+  "draftPlan": {
+    "researchQuestion": "Current Agent executor smoke test methods do not scale to large datasets.",
+    "hypothesis": "Using sparse attention patterns can reduce complexity.",
+    "variables": {},
+    "methodology": "To be defined",
+    "expectedOutcomes": [
+      "Improved performance",
+      "Novel insights"
+    ],
+    "tags": [],
+    "notes": ""
+  },
+  "references": [],
+  "createdAt": "2026-05-13T14:17:06.881837"
+}

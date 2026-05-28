@@ -1,0 +1,22 @@
+{
+  "id": "consistency-audit",
+  "name": "Consistency Audit",
+  "version": "0.1.0",
+  "kind": "verification",
+  "description": "Checks cross-artifact alignment and internal consistency.",
+  "agent_roles": [
+    "reviewer"
+  ],
+  "tags": [
+    "verification",
+    "consistency"
+  ],
+  "artifact_types": [
+    "consistency_report"
+  ],
+  "verification_hooks": [
+    "consistency-check"
+  ],
+  "provider_requirements": {},
+  "manifest_version": "1.0"
+}

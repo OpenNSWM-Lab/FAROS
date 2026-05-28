@@ -1,0 +1,186 @@
+{
+  "id": "faros_eb901758c13e",
+  "blueprint_id": "ml_paper",
+  "profile_id": "faros_llm",
+  "status": "running",
+  "execution_mode": "plan",
+  "created_at": "2026-05-24T02:35:50.423542+00:00",
+  "started_at": null,
+  "ended_at": null,
+  "inputs": {
+    "seedQuery": "replay guard",
+    "paperType": "system",
+    "targetVenue": "generic"
+  },
+  "runtime_options": {
+    "readyNodePolicy": "fifo"
+  },
+  "steps": [
+    {
+      "node_id": "idea",
+      "capability": "idea_refinement",
+      "agent_id": "researcher",
+      "skill_ids": [
+        "literature-grounding",
+        "idea-analysis"
+      ],
+      "status": "ready",
+      "started_at": null,
+      "ended_at": null,
+      "outputs_summary": {},
+      "verification": {},
+      "error": null,
+      "retry_count": 0,
+      "checkpoint": {}
+    },
+    {
+      "node_id": "experiment",
+      "capability": "experiment",
+      "agent_id": "experimenter",
+      "skill_ids": [
+        "experiment-scaffold",
+        "artifact-packaging"
+      ],
+      "status": "blocked",
+      "started_at": null,
+      "ended_at": null,
+      "outputs_summary": {},
+      "verification": {},
+      "error": null,
+      "retry_count": 0,
+      "checkpoint": {}
+    },
+    {
+      "node_id": "paper",
+      "capability": "paper_drafting",
+      "agent_id": "writer",
+      "skill_ids": [
+        "paper-outline",
+        "section-drafting",
+        "latex-assembly"
+      ],
+      "status": "blocked",
+      "started_at": null,
+      "ended_at": null,
+      "outputs_summary": {},
+      "verification": {},
+      "error": null,
+      "retry_count": 0,
+      "checkpoint": {}
+    },
+    {
+      "node_id": "review",
+      "capability": "reviewer_simulation",
+      "agent_id": "reviewer",
+      "skill_ids": [
+        "review-critique",
+        "consistency-audit"
+      ],
+      "status": "blocked",
+      "started_at": null,
+      "ended_at": null,
+      "outputs_summary": {},
+      "verification": {},
+      "error": null,
+      "retry_count": 0,
+      "checkpoint": {}
+    }
+  ],
+  "output_summary": {},
+  "preflight": {
+    "blueprint_id": "ml_paper",
+    "profile_id": "faros_llm",
+    "status": "passed",
+    "message": "Preflight passed for blueprint 'ml_paper' with profile 'faros_llm'",
+    "nodes": [
+      {
+        "node_id": "idea",
+        "capability": "idea_refinement",
+        "status": "passed",
+        "agent_id": "researcher",
+        "skill_ids": [
+          "literature-grounding",
+          "idea-analysis"
+        ],
+        "provider_types": [
+          "llm",
+          "minimax"
+        ],
+        "errors": [],
+        "warnings": []
+      },
+      {
+        "node_id": "experiment",
+        "capability": "experiment",
+        "status": "passed",
+        "agent_id": "experimenter",
+        "skill_ids": [
+          "experiment-scaffold",
+          "artifact-packaging"
+        ],
+        "provider_types": [
+          "llm",
+          "minimax"
+        ],
+        "errors": [],
+        "warnings": [
+          "no capability-level provider binding declared"
+        ]
+      },
+      {
+        "node_id": "paper",
+        "capability": "paper_drafting",
+        "status": "passed",
+        "agent_id": "writer",
+        "skill_ids": [
+          "paper-outline",
+          "section-drafting",
+          "latex-assembly"
+        ],
+        "provider_types": [
+          "llm",
+          "minimax"
+        ],
+        "errors": [],
+        "warnings": [
+          "skill 'latex-assembly' requires provider capability 'compilation' but resolved providers do not advertise it"
+        ]
+      },
+      {
+        "node_id": "review",
+        "capability": "reviewer_simulation",
+        "status": "passed",
+        "agent_id": "reviewer",
+        "skill_ids": [
+          "review-critique",
+          "consistency-audit"
+        ],
+        "provider_types": [
+          "llm",
+          "minimax"
+        ],
+        "errors": [],
+        "warnings": []
+      }
+    ],
+    "errors": [],
+    "warnings": [
+      "experiment: no capability-level provider binding declared",
+      "paper: skill 'latex-assembly' requires provider capability 'compilation' but resolved providers do not advertise it"
+    ]
+  },
+  "checkpoint": {
+    "readyNodePolicy": "fifo",
+    "readyNodeIds": [
+      "idea"
+    ],
+    "completedNodeIds": [],
+    "failedNodeIds": [],
+    "skippedNodeIds": [],
+    "replayableNodeIds": [],
+    "stepCheckpoints": {},
+    "lastOperatorAction": {},
+    "updatedAt": "2026-05-24T02:35:50.423504+00:00"
+  },
+  "error_message": null
+}

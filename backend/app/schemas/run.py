@@ -9,7 +9,7 @@ Scientific Responsibility:
 
 from datetime import datetime
 from typing import Optional, List
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.run import RunStatus, RunType, RunConfig, TraceReference
 from app.schemas.artifact import ArtifactResponse
@@ -75,8 +75,7 @@ class RunResponse(BaseModel):
     errorMessage: Optional[str]
     isMock: bool = False  # Phase 1.5: Mock run indicator
     
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class RunListResponse(BaseModel):

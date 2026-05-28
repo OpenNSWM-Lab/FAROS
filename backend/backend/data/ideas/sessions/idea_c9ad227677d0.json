@@ -1,0 +1,344 @@
+{
+  "id": "idea_c9ad227677d0",
+  "createdAt": "2026-05-15T15:02:48.154044",
+  "status": "completed",
+  "config": {
+    "providerName": "minimax",
+    "model": "MiniMax-M2.5",
+    "directionId": null,
+    "seedQuery": "replay flow",
+    "paperType": "system",
+    "maxCandidates": 5,
+    "maxPapers": 10,
+    "domain": null,
+    "constraints": null,
+    "mustCiteList": null
+  },
+  "startedAt": "2026-05-15T15:02:48.154756",
+  "endedAt": "2026-05-15T15:03:14.918596",
+  "trace": {
+    "sessionId": "idea_c9ad227677d0",
+    "startedAt": "2026-05-15T15:02:48.154780",
+    "endedAt": "2026-05-15T15:03:14.918609",
+    "totalSteps": 7,
+    "successfulSteps": 7,
+    "failedSteps": 0,
+    "steps": [
+      {
+        "name": "expandQuery",
+        "status": "ok",
+        "inputs": {
+          "seedQuery": "replay flow"
+        },
+        "outputs": {
+          "expandedTerms": [
+            "replay flow",
+            "replay flow machine learning",
+            "replay flow deep learning",
+            "replay flow neural network"
+          ],
+          "error": "API key not configured for provider 'minimax'. Set environment variable: MINIMAX_API_KEY"
+        },
+        "artifacts": [],
+        "startedAt": "2026-05-15T15:02:48.155557",
+        "endedAt": "2026-05-15T15:02:52.921218",
+        "durationSeconds": 4.765661,
+        "error": null
+      },
+      {
+        "name": "literatureSearch",
+        "status": "ok",
+        "inputs": {
+          "seedQuery": "replay flow",
+          "maxPapers": 10,
+          "searchQueries": [
+            "replay flow",
+            "replay flow machine learning",
+            "replay flow deep learning"
+          ]
+        },
+        "outputs": {
+          "paperCount": 10,
+          "paperIds": [
+            "lit_393f801bf2fc",
+            "lit_66dfde1813a4",
+            "lit_a6d247bd2b64",
+            "lit_fe418248f218",
+            "lit_d4e03fee9bf8",
+            "lit_13e42184ec51",
+            "lit_4ad1867a70e7",
+            "lit_afb3c5dc4f0e",
+            "lit_f9bb4d042ba6",
+            "lit_d587361360bc"
+          ],
+          "sourcesUsed": [
+            "arxiv",
+            "semantic_scholar",
+            "local"
+          ]
+        },
+        "artifacts": [],
+        "startedAt": "2026-05-15T15:02:52.921770",
+        "endedAt": "2026-05-15T15:03:14.866405",
+        "durationSeconds": 21.944635,
+        "error": null
+      },
+      {
+        "name": "noveltyCheck",
+        "status": "ok",
+        "inputs": {
+          "literatureCount": 10
+        },
+        "outputs": {
+          "coveredAreas": [
+            "enriching",
+            "phase-field",
+            "transport",
+            "variance,",
+            "replay",
+            "adaptation",
+            "hydrofoil",
+            "model-based",
+            "influenced",
+            "pedestrian",
+            "flows",
+            "statistics",
+            "sediment",
+            "group",
+            "fields"
+          ],
+          "gaps": [
+            "Scalability of replay flow methods",
+            "Interpretability in replay flow",
+            "Theoretical foundations of replay flow",
+            "Real-world deployment of replay flow"
+          ],
+          "novelDirections": [],
+          "error": "API key not configured for provider 'minimax'. Set environment variable: MINIMAX_API_KEY"
+        },
+        "artifacts": [],
+        "startedAt": "2026-05-15T15:03:14.867318",
+        "endedAt": "2026-05-15T15:03:14.885570",
+        "durationSeconds": 0.018252,
+        "error": null
+      },
+      {
+        "name": "gapAnalysis",
+        "status": "ok",
+        "inputs": {
+          "topic": "replay flow"
+        },
+        "outputs": {
+          "gapAnalysis": [],
+          "prioritizedGaps": [
+            "Scalability of replay flow methods",
+            "Interpretability in replay flow",
+            "Theoretical foundations of replay flow",
+            "Real-world deployment of replay flow"
+          ],
+          "researchOpportunities": [
+            "Novel architectures for replay flow",
+            "Efficient training methods for replay flow"
+          ],
+          "error": "API key not configured for provider 'minimax'. Set environment variable: MINIMAX_API_KEY"
+        },
+        "artifacts": [],
+        "startedAt": "2026-05-15T15:03:14.886728",
+        "endedAt": "2026-05-15T15:03:14.896187",
+        "durationSeconds": 0.009459,
+        "error": null
+      },
+      {
+        "name": "ideaBrainstorm",
+        "status": "ok",
+        "inputs": {
+          "topic": "replay flow"
+        },
+        "outputs": {
+          "candidateCount": 3,
+          "candidateIds": [
+            "cand_2b84c2cc6796",
+            "cand_4191c190b050",
+            "cand_fa993cf1ea77"
+          ],
+          "error": "API key not configured for provider 'minimax'. Set environment variable: MINIMAX_API_KEY"
+        },
+        "artifacts": [],
+        "startedAt": "2026-05-15T15:03:14.896701",
+        "endedAt": "2026-05-15T15:03:14.904116",
+        "durationSeconds": 0.007415,
+        "error": null
+      },
+      {
+        "name": "rankCandidates",
+        "status": "ok",
+        "inputs": {
+          "candidateCount": 3
+        },
+        "outputs": {
+          "rankings": [
+            {
+              "id": "cand_2b84c2cc6796",
+              "title": "Scalable replay flow with Efficient Attention",
+              "totalScore": 6.83,
+              "rank": 1,
+              "breakdown": {
+                "novelty": {
+                  "value": 8.1,
+                  "rationale": "Heuristic assessment"
+                },
+                "feasibility": {
+                  "value": 8.1,
+                  "rationale": "Heuristic assessment"
+                },
+                "impact": {
+                  "value": 6.0,
+                  "rationale": "Heuristic assessment"
+                },
+                "clarity": {
+                  "value": 4.8,
+                  "rationale": "Based on description quality"
+                },
+                "risk": {
+                  "value": 5.9,
+                  "rationale": "Based on risk identification"
+                },
+                "alignment": {
+                  "value": 9.1,
+                  "rationale": "Based on topic overlap"
+                },
+                "referenceSupport": {
+                  "value": 3.6,
+                  "rationale": "Based on reference count"
+                },
+                "experimentSpecificity": {
+                  "value": 4.7,
+                  "rationale": "Based on experiment plan"
+                }
+              },
+              "overallRationale": "Scored using heuristic analysis",
+              "scoringConfidence": 0.6,
+              "scoringMethod": "heuristic"
+            },
+            {
+              "id": "cand_4191c190b050",
+              "title": "Interpretable replay flow via Concept Bottlenecks",
+              "totalScore": 6.81,
+              "rank": 2,
+              "breakdown": {
+                "novelty": {
+                  "value": 7.0,
+                  "rationale": "Heuristic assessment"
+                },
+                "feasibility": {
+                  "value": 8.4,
+                  "rationale": "Heuristic assessment"
+                },
+                "impact": {
+                  "value": 6.2,
+                  "rationale": "Heuristic assessment"
+                },
+                "clarity": {
+                  "value": 4.4,
+                  "rationale": "Based on description quality"
+                },
+                "risk": {
+                  "value": 6.0,
+                  "rationale": "Based on risk identification"
+                },
+                "alignment": {
+                  "value": 9.5,
+                  "rationale": "Based on topic overlap"
+                },
+                "referenceSupport": {
+                  "value": 3.9,
+                  "rationale": "Based on reference count"
+                },
+                "experimentSpecificity": {
+                  "value": 6.0,
+                  "rationale": "Based on experiment plan"
+                }
+              },
+              "overallRationale": "Scored using heuristic analysis",
+              "scoringConfidence": 0.6,
+              "scoringMethod": "heuristic"
+            },
+            {
+              "id": "cand_fa993cf1ea77",
+              "title": "Self-Supervised replay flow for Low-Resource Settings",
+              "totalScore": 6.53,
+              "rank": 3,
+              "breakdown": {
+                "novelty": {
+                  "value": 6.8,
+                  "rationale": "Heuristic assessment"
+                },
+                "feasibility": {
+                  "value": 7.0,
+                  "rationale": "Heuristic assessment"
+                },
+                "impact": {
+                  "value": 7.0,
+                  "rationale": "Heuristic assessment"
+                },
+                "clarity": {
+                  "value": 4.8,
+                  "rationale": "Based on description quality"
+                },
+                "risk": {
+                  "value": 5.7,
+                  "rationale": "Based on risk identification"
+                },
+                "alignment": {
+                  "value": 8.6,
+                  "rationale": "Based on topic overlap"
+                },
+                "referenceSupport": {
+                  "value": 4.2,
+                  "rationale": "Based on reference count"
+                },
+                "experimentSpecificity": {
+                  "value": 4.9,
+                  "rationale": "Based on experiment plan"
+                }
+              },
+              "overallRationale": "Scored using heuristic analysis",
+              "scoringConfidence": 0.6,
+              "scoringMethod": "heuristic"
+            }
+          ],
+          "scoreVariance": 0.019,
+          "minScore": 6.53,
+          "maxScore": 6.83
+        },
+        "artifacts": [],
+        "startedAt": "2026-05-15T15:03:14.904502",
+        "endedAt": "2026-05-15T15:03:14.908905",
+        "durationSeconds": 0.004403,
+        "error": null
+      },
+      {
+        "name": "finalizeSession",
+        "status": "ok",
+        "inputs": {},
+        "outputs": {
+          "totalCandidates": 3,
+          "totalLiterature": 10,
+          "topCandidate": "Scalable replay flow with Efficient Attention"
+        },
+        "artifacts": [],
+        "startedAt": "2026-05-15T15:03:14.909482",
+        "endedAt": "2026-05-15T15:03:14.917977",
+        "durationSeconds": 0.008495,
+        "error": null
+      }
+    ]
+  },
+  "candidateIds": [
+    "cand_2b84c2cc6796",
+    "cand_4191c190b050",
+    "cand_fa993cf1ea77"
+  ],
+  "selectedCandidateId": null,
+  "errorMessage": null
+}

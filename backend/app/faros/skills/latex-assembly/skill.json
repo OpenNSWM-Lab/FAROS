@@ -1,0 +1,26 @@
+{
+  "id": "latex-assembly",
+  "name": "LaTeX Assembly",
+  "version": "0.1.0",
+  "kind": "compilation",
+  "description": "Compiles structured paper content into a venue-aware LaTeX project.",
+  "agent_roles": [
+    "writer"
+  ],
+  "tags": [
+    "latex",
+    "paper"
+  ],
+  "artifact_types": [
+    "latex_project",
+    "latex_zip",
+    "paper_pdf"
+  ],
+  "verification_hooks": [
+    "schema-check"
+  ],
+  "provider_requirements": {
+    "compilation": "latex"
+  },
+  "manifest_version": "1.0"
+}

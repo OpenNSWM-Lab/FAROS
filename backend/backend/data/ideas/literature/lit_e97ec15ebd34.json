@@ -1,0 +1,17 @@
+{
+  "id": "lit_e97ec15ebd34",
+  "sessionId": "idea_57b6415b8ab4",
+  "title": "Deep In-GPU Experience Replay",
+  "authors": [
+    "Ben Parr"
+  ],
+  "venue": "arXiv",
+  "year": 2018,
+  "url": "http://arxiv.org/abs/1801.03138v1",
+  "doi": null,
+  "arxivId": "1801.03138v1",
+  "snippet": "Experience replay allows a reinforcement learning agent to train on samples from a large amount of the most recent experiences. A simple in-RAM experience replay stores these most recent experiences in a list in RAM, and then copies sampled batches to the GPU for training. I moved this list to the GPU, thus creating an in-GPU experience replay, and a training step that no longer has inputs copied from the CPU. I trained an agent to play Super Smash Bros. Melee, using internal game memory values ",
+  "relevanceScore": 1.0,
+  "source": "arxiv",
+  "createdAt": "2026-05-24T02:35:46.113529+00:00"
+}

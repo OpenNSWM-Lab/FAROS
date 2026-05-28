@@ -1,0 +1,21 @@
+{
+  "id": "rev_37ed1402fb31",
+  "paperId": "paper_approval_backend",
+  "reviewerProfile": "senior_reviewer",
+  "providerName": "manual-review",
+  "model": "approval-file-review",
+  "status": "completed",
+  "scoreSuggestion": 7,
+  "jsonReport": {
+    "summary": "approved externally"
+  },
+  "markdownReport": "# Approved Review\n",
+  "actionItems": [
+    {
+      "title": "Recheck citations",
+      "severity": "minor"
+    }
+  ],
+  "createdAt": "2026-05-24T02:01:46.002254+00:00",
+  "updatedAt": "2026-05-24T02:01:46.002691+00:00"
+}

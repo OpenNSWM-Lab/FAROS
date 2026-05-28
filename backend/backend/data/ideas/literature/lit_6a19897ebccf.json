@@ -1,0 +1,22 @@
+{
+  "id": "lit_6a19897ebccf",
+  "sessionId": "idea_d4e11bc7abfa",
+  "title": "Towards Understanding and Improving GFlowNet Training",
+  "authors": [
+    "Max W. Shen",
+    "Emmanuel Bengio",
+    "Ehsan Hajiramezanali",
+    "Andreas Loukas",
+    "Kyunghyun Cho",
+    "Tommaso Biancalani"
+  ],
+  "venue": "International Conference on Machine Learning",
+  "year": 2023,
+  "url": "https://www.semanticscholar.org/paper/0a2f2836285b7c035eb9131508c11f1534642662",
+  "doi": "10.48550/arXiv.2305.07170",
+  "arxivId": "2305.07170",
+  "snippet": "Generative flow networks (GFlowNets) are a family of algorithms that learn a generative policy to sample discrete objects $x$ with non-negative reward $R(x)$. Learning objectives guarantee the GFlowNet samples $x$ from the target distribution $p^*(x) \\propto R(x)$ when loss is globally minimized over all states or trajectories, but it is unclear how well they perform with practical limits on training resources. We introduce an efficient evaluation strategy to compare the learned sampling distrib",
+  "relevanceScore": 0.55,
+  "source": "semantic_scholar",
+  "createdAt": "2026-05-24T02:01:35.740064+00:00"
+}

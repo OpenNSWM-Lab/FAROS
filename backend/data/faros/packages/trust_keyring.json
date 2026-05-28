@@ -1,0 +1,5 @@
+{
+  "faros-test-signer": {
+    "secret": "faros-test-secret"
+  }
+}

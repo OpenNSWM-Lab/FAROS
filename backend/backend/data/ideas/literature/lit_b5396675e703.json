@@ -1,0 +1,20 @@
+{
+  "id": "lit_b5396675e703",
+  "sessionId": "idea_9d4968092850",
+  "title": "A mechanism for discovering semantic relationships among agent communication protocols",
+  "authors": [
+    "Idoia Berges",
+    "Jes\u00fas Berm\u00fadez",
+    "Alfredo Go\u00f1i",
+    "Arantza Illarramendi"
+  ],
+  "venue": "arXiv",
+  "year": 2024,
+  "url": "http://arxiv.org/abs/2401.16216v1",
+  "doi": null,
+  "arxivId": "2401.16216v1",
+  "snippet": "One relevant aspect in the development of the Semantic Web framework is the achievement of a real inter-agents communication capability at the semantic level. Agents should be able to communicate with each other freely using different communication protocols, constituted by communication acts. For that scenario, we introduce in this paper an efficient mechanism presenting the following main features: - It promotes the description of the communication acts of protocols as classes that belong to a",
+  "relevanceScore": 0.55,
+  "source": "arxiv",
+  "createdAt": "2026-05-13T14:42:05.853846"
+}

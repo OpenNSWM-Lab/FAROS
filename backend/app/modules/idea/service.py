@@ -5,7 +5,7 @@ Orchestrates the idea generation pipeline with step-based tracing.
 """
 
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Optional, List, Dict, Any
 
 from app.modules.idea.contracts import (
@@ -38,6 +38,10 @@ import re
 logger = logging.getLogger(__name__)
 
 
+def _utcnow() -> datetime:
+    return datetime.now(UTC)
+
+
 class IdeaGenerationService:
     """Service for managing idea generation sessions."""
     
@@ -52,7 +56,7 @@ class IdeaGenerationService:
             id=generate_session_id(),
             config=config,
             status=IdeaSessionStatus.PENDING,
-            createdAt=datetime.utcnow(),
+            createdAt=_utcnow(),
         )
         return self.session_storage.create(session)
     
@@ -74,10 +78,10 @@ class IdeaGenerationService:
             raise ValueError(f"Cannot start session in {session.status} state")
         
         session.status = IdeaSessionStatus.RUNNING
-        session.startedAt = datetime.utcnow()
+        session.startedAt = _utcnow()
         session.trace = WorkflowTrace(
             sessionId=session_id,
-            startedAt=datetime.utcnow(),
+            startedAt=_utcnow(),
         )
         
         return self.session_storage.update(session)
@@ -92,9 +96,9 @@ class IdeaGenerationService:
             raise ValueError(f"Cannot cancel session in {session.status} state")
         
         session.status = IdeaSessionStatus.CANCELLED
-        session.endedAt = datetime.utcnow()
+        session.endedAt = _utcnow()
         if session.trace:
-            session.trace.endedAt = datetime.utcnow()
+            session.trace.endedAt = _utcnow()
         
         return self.session_storage.update(session)
     
@@ -166,9 +170,9 @@ class IdeaGenerationService:
             
             # Mark completed
             session.status = IdeaSessionStatus.COMPLETED
-            session.endedAt = datetime.utcnow()
+            session.endedAt = _utcnow()
             if session.trace:
-                session.trace.endedAt = datetime.utcnow()
+                session.trace.endedAt = _utcnow()
             
             return self.session_storage.update(session)
             
@@ -176,9 +180,9 @@ class IdeaGenerationService:
             logger.error(f"Pipeline failed for session {session_id}: {e}")
             session.status = IdeaSessionStatus.FAILED
             session.errorMessage = str(e)
-            session.endedAt = datetime.utcnow()
+            session.endedAt = _utcnow()
             if session.trace:
-                session.trace.endedAt = datetime.utcnow()
+                session.trace.endedAt = _utcnow()
             return self.session_storage.update(session)
     
     def _run_step(
@@ -188,12 +192,12 @@ class IdeaGenerationService:
         step_func,
     ) -> IdeaSession:
         """Run a single pipeline step with tracing."""
-        start_time = datetime.utcnow()
+        start_time = _utcnow()
         
         try:
             inputs, outputs, artifacts = step_func(session)
             
-            end_time = datetime.utcnow()
+            end_time = _utcnow()
             duration = (end_time - start_time).total_seconds()
             
             step_result = StepResult(
@@ -215,7 +219,7 @@ class IdeaGenerationService:
             return self.session_storage.update(session)
             
         except Exception as e:
-            end_time = datetime.utcnow()
+            end_time = _utcnow()
             duration = (end_time - start_time).total_seconds()
             
             step_result = StepResult(

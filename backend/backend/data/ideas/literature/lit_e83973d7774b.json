@@ -1,0 +1,18 @@
+{
+  "id": "lit_e83973d7774b",
+  "sessionId": "idea_d81eb13af0fa",
+  "title": "Learning Curves for Decision Making in Supervised Machine Learning: A Survey",
+  "authors": [
+    "Felix Mohr",
+    "Jan N. van Rijn"
+  ],
+  "venue": "arXiv",
+  "year": 2022,
+  "url": "http://arxiv.org/abs/2201.12150v2",
+  "doi": null,
+  "arxivId": "2201.12150v2",
+  "snippet": "Learning curves are a concept from social sciences that has been adopted in the context of machine learning to assess the performance of a learning algorithm with respect to a certain resource, e.g., the number of training examples or the number of training iterations. Learning curves have important applications in several machine learning contexts, most notably in data acquisition, early stopping of model training, and model selection. For instance, learning curves can be used to model the perf",
+  "relevanceScore": 0.85,
+  "source": "arxiv",
+  "createdAt": "2026-05-24T01:59:23.545046+00:00"
+}

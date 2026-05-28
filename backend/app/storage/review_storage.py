@@ -6,7 +6,7 @@ import json
 import os
 import uuid
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Optional, Dict, Any, List
 
 logger = logging.getLogger(__name__)
@@ -22,9 +22,13 @@ def _gen_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:12]}"
 
 
+def _utcnow_iso() -> str:
+    return datetime.now(UTC).isoformat()
+
+
 def create_review(data: Dict[str, Any]) -> Dict[str, Any]:
     review_id = _gen_id("rev")
-    now = datetime.utcnow().isoformat()
+    now = _utcnow_iso()
     record = {
         "id": review_id,
         "paperId": data.get("paperId"),
@@ -58,7 +62,7 @@ def update_review(review_id: str, updates: Dict[str, Any]) -> Optional[Dict[str,
     if not record:
         return None
     record.update(updates)
-    record["updatedAt"] = datetime.utcnow().isoformat()
+    record["updatedAt"] = _utcnow_iso()
     _save_record(review_id, record)
     return record
 
@@ -92,7 +96,7 @@ def _save_record(review_id: str, record: Dict):
 
 def create_improvement_request(data: Dict[str, Any]) -> Dict[str, Any]:
     req_id = _gen_id("impr")
-    now = datetime.utcnow().isoformat()
+    now = _utcnow_iso()
     record = {
         "id": req_id,
         "reviewId": data.get("reviewId"),
@@ -162,7 +166,7 @@ def update_improvement_request(req_id: str, updates: Dict[str, Any]) -> Optional
     if not record:
         return None
     record.update(updates)
-    record["updatedAt"] = datetime.utcnow().isoformat()
+    record["updatedAt"] = _utcnow_iso()
     req_dir = os.path.join(IMPROVEMENT_REQUESTS_DIR, req_id)
     with open(os.path.join(req_dir, "meta.json"), "w") as f:
         json.dump(record, f, indent=2, default=str)

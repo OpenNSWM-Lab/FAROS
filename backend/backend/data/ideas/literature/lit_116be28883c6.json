@@ -1,0 +1,18 @@
+{
+  "id": "lit_116be28883c6",
+  "sessionId": "idea_f03a94ae7ef2",
+  "title": "Changing Data Sources in the Age of Machine Learning for Official Statistics",
+  "authors": [
+    "Cedric De Boom",
+    "Michael Reusens"
+  ],
+  "venue": "arXiv",
+  "year": 2023,
+  "url": "http://arxiv.org/abs/2306.04338v1",
+  "doi": null,
+  "arxivId": "2306.04338v1",
+  "snippet": "Data science has become increasingly essential for the production of official statistics, as it enables the automated collection, processing, and analysis of large amounts of data. With such data science practices in place, it enables more timely, more insightful and more flexible reporting. However, the quality and integrity of data-science-driven statistics rely on the accuracy and reliability of the data sources and the machine learning techniques that support them. In particular, changes in ",
+  "relevanceScore": 1.0,
+  "source": "arxiv",
+  "createdAt": "2026-05-24T02:02:16.307976+00:00"
+}

@@ -1,0 +1,16 @@
+{
+  "id": "exp_8c8b96565629",
+  "name": "Self-Supervised replay flow for Low-Resource Settings Experiment",
+  "projectId": "cproj_b516fc8a77f9",
+  "planSessionId": null,
+  "planLinkId": null,
+  "status": "designed",
+  "tags": [
+    "faros",
+    "llm",
+    "system"
+  ],
+  "description": "replay flow requires large labeled datasets.",
+  "createdAt": "2026-05-24T02:01:36.317600+00:00",
+  "updatedAt": "2026-05-24T02:01:36.317600+00:00"
+}

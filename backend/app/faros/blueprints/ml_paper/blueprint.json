@@ -1,111 +1,72 @@
 {
   "id": "ml_paper",
   "name": "ML Paper Workflow",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "domain": "machine-learning",
-  "description": "A first FAROS blueprint for LLM-driven ML research workflows covering ideation, drafting, and review.",
+  "description": "A FAROS blueprint for LLM-domain research workflows with explicit agent and skill bindings.",
   "workflow": [
     {
       "id": "idea",
       "capability": "idea_refinement",
+      "agent": "researcher",
+      "skills": ["literature-grounding", "idea-analysis"],
+      "outputs": ["ideaSessionId", "selectedCandidateId", "selectedCandidate"],
       "name": "Idea Refinement",
-      "description": "Run the existing idea pipeline and select a candidate."
+      "description": "Run the idea pipeline and select a candidate."
     },
     {
       "id": "experiment",
       "capability": "experiment",
+      "agent": "experimenter",
+      "skills": ["experiment-scaffold", "artifact-packaging"],
+      "outputs": ["projectId", "experimentId", "experimentIds"],
       "name": "Experiment Workspace",
-      "description": "Provision a code project and experiment record for the LLM workflow."
+      "description": "Provision a code project and experiment record for the workflow."
     },
     {
       "id": "paper",
       "capability": "paper_drafting",
+      "agent": "writer",
+      "skills": ["paper-outline", "section-drafting", "latex-assembly"],
+      "outputs": ["paperId", "paperStatus"],
       "name": "Paper Drafting",
       "description": "Draft the paper artifact with the current paper module."
     },
     {
       "id": "review",
       "capability": "reviewer_simulation",
+      "agent": "reviewer",
+      "skills": ["review-critique", "consistency-audit"],
+      "outputs": ["reviewId", "reviewStatus"],
       "name": "Reviewer Simulation",
       "description": "Generate a structured peer review for the drafted paper."
     }
   ],
   "edges": [
-    {
-      "from": "idea",
-      "to": "experiment"
-    },
-    {
-      "from": "experiment",
-      "to": "paper"
-    },
-    {
-      "from": "paper",
-      "to": "review"
-    }
+    {"from": "idea", "to": "experiment"},
+    {"from": "experiment", "to": "paper"},
+    {"from": "paper", "to": "review"}
   ],
   "artifact_schema": {
-    "idea_refinement": [
-      "idea_session"
-    ],
-    "paper_drafting": [
-      "paper_record",
-      "latex_project",
-      "latex_zip",
-      "paper_pdf"
-    ],
-    "reviewer_simulation": [
-      "review_report"
-    ],
-    "experiment": [
-      "code_project",
-      "experiment_record"
-    ]
+    "idea_refinement": ["idea_session"],
+    "experiment": ["code_project", "experiment_record"],
+    "paper_drafting": ["paper_record", "latex_project", "latex_zip", "paper_pdf"],
+    "reviewer_simulation": ["review_report"]
   },
   "verification_rules": [
-    {
-      "capability": "idea_refinement",
-      "requires": [
-        "ideaSessionId",
-        "selectedCandidateId"
-      ]
-    },
-    {
-      "capability": "experiment",
-      "requires": [
-        "projectId",
-        "experimentId"
-      ]
-    },
-    {
-      "capability": "paper_drafting",
-      "requires": [
-        "paperId",
-        "paperStatus"
-      ]
-    },
-    {
-      "capability": "reviewer_simulation",
-      "requires": [
-        "reviewId",
-        "reviewStatus"
-      ]
-    }
+    {"capability": "idea_refinement", "requires": ["ideaSessionId", "selectedCandidateId"]},
+    {"capability": "experiment", "requires": ["projectId", "experimentId"]},
+    {"capability": "paper_drafting", "requires": ["paperId", "paperStatus"]},
+    {"capability": "reviewer_simulation", "requires": ["reviewId", "reviewStatus"]}
   ],
   "writing_constraints": {
-    "supportedVenues": [
-      "icml",
-      "neurips",
-      "iclr",
-      "acl",
-      "generic"
-    ]
+    "supportedVenues": ["icml", "neurips", "iclr", "acl", "generic"]
   },
   "output_contract": {
-    "finalArtifacts": [
-      "paper_pdf",
-      "latex_zip",
-      "review_report"
-    ]
+    "finalArtifacts": ["paper_pdf", "latex_zip", "review_report"]
+  },
+  "metadata": {
+    "runtimeVersion": "v1-foundation",
+    "domainProfile": "faros_llm"
   }
 }

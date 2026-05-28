@@ -1,0 +1,26 @@
+{
+  "id": "rev_5fca5dd42408",
+  "paperId": "paper_4f58779d39d4",
+  "reviewerProfile": "senior_reviewer",
+  "providerName": "manual-review",
+  "model": "human-review-baseline",
+  "status": "completed",
+  "scoreSuggestion": 6,
+  "jsonReport": {
+    "summary": "Human review checkpoint completed",
+    "paperId": "paper_4f58779d39d4"
+  },
+  "markdownReport": "# Review for paper_4f58779d39d4\n\nHuman review checkpoint completed by FAROS baseline provider.\n",
+  "actionItems": [
+    {
+      "title": "Validate claims",
+      "severity": "major"
+    },
+    {
+      "title": "Confirm experiment scope",
+      "severity": "minor"
+    }
+  ],
+  "createdAt": "2026-05-15T03:21:06.696871",
+  "updatedAt": "2026-05-15T03:21:06.697326"
+}

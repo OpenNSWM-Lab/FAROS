@@ -1,0 +1,27 @@
+{
+  "id": "paper_bb3ce0c6dd85",
+  "title": "hybrid runtime flow",
+  "paperType": "system",
+  "targetVenue": "generic",
+  "status": "prepared",
+  "planLinkId": null,
+  "projectId": "cproj_070b7c93af6a",
+  "experimentIds": [
+    "exp_a004ab48d857"
+  ],
+  "figureIds": [],
+  "runIds": [],
+  "providerName": "local-toolbox",
+  "model": "tool-paper-assembler",
+  "notes": "Tool provider assembled paper scaffold for hybrid runtime flow",
+  "outlineJson": null,
+  "pdfAvailable": true,
+  "logs": [
+    {
+      "timestamp": "2026-05-15T02:53:52.921873",
+      "message": "Tool provider assembled paper scaffold for hybrid runtime flow"
+    }
+  ],
+  "createdAt": "2026-05-15T02:53:52.920984",
+  "updatedAt": "2026-05-15T02:53:52.922272"
+}

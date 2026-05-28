@@ -1,0 +1,21 @@
+{
+  "id": "lit_9607e76dfdc3",
+  "sessionId": "idea_bc8f884b1ebe",
+  "title": "Research and application of deep learning object detection methods for forest fire smoke recognition",
+  "authors": [
+    "Luhao He",
+    "Yongzhang Zhou",
+    "Lei Liu",
+    "Yuqing Zhang",
+    "Jianhua Ma"
+  ],
+  "venue": "Scientific Reports",
+  "year": 2025,
+  "url": "https://www.semanticscholar.org/paper/7e7a2434b0a29b637b74c7da6fae3eb0f6855854",
+  "doi": "10.1038/s41598-025-98086-w",
+  "arxivId": null,
+  "snippet": "Forest fires are severe ecological disasters worldwide that cause extensive ecological destruction and economic losses while threatening biodiversity and human safety. With the escalation of climate change, the frequency and intensity of forest fires are increasing annually, underscoring the urgent need for effective monitoring and early warning systems. This study investigates the application effectiveness of deep learning-based object detection technology in forest fire smoke recognition by us",
+  "relevanceScore": 0.9,
+  "source": "semantic_scholar",
+  "createdAt": "2026-05-14T14:48:44.452800"
+}

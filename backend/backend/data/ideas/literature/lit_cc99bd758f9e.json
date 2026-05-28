@@ -1,0 +1,19 @@
+{
+  "id": "lit_cc99bd758f9e",
+  "sessionId": "idea_f46d3d28aeea",
+  "title": "Isoelastic Agents and Wealth Updates in Machine Learning Markets",
+  "authors": [
+    "Amos Storkey",
+    "Jono Millin",
+    "Krzysztof Geras"
+  ],
+  "venue": "arXiv",
+  "year": 2012,
+  "url": "http://arxiv.org/abs/1206.6443v2",
+  "doi": null,
+  "arxivId": "1206.6443v2",
+  "snippet": "Recently, prediction markets have shown considerable promise for developing flexible mechanisms for machine learning. In this paper, agents with isoelastic utilities are considered. It is shown that the costs associated with homogeneous markets of agents with isoelastic utilities produce equilibrium prices corresponding to alpha-mixtures, with a particular form of mixing component relating to each agent's wealth. We also demonstrate that wealth accumulation for logarithmic and other isoelastic a",
+  "relevanceScore": 0.55,
+  "source": "arxiv",
+  "createdAt": "2026-05-14T15:18:20.109664"
+}

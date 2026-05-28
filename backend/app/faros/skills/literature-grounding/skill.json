@@ -1,0 +1,24 @@
+{
+  "id": "literature-grounding",
+  "name": "Literature Grounding",
+  "version": "0.1.0",
+  "kind": "retrieval",
+  "description": "Collects and organizes evidence before reasoning-heavy research steps.",
+  "agent_roles": [
+    "researcher"
+  ],
+  "tags": [
+    "literature",
+    "evidence"
+  ],
+  "artifact_types": [
+    "literature_notes"
+  ],
+  "verification_hooks": [
+    "schema-check"
+  ],
+  "provider_requirements": {
+    "reasoning": "llm"
+  },
+  "manifest_version": "1.0"
+}

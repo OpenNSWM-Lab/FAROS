@@ -24,8 +24,11 @@ class CapabilityRegistry:
     def list(self) -> List[dict]:
         return [
             {
-                "id": capability.capability_id,
-                "description": capability.description,
+                'id': capability.capability_id,
+                'description': capability.description,
+                'defaultAgentId': capability.default_agent_id or None,
+                'defaultSkillIds': list(capability.default_skill_ids),
+                'artifactTypes': list(capability.artifact_types),
             }
             for capability in self._capabilities.values()
         ]

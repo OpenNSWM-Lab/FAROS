@@ -20,10 +20,13 @@ It does NOT:
 - Modify itself after completion (immutable)
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Optional, List, Dict, Any
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from enum import Enum
+
+def _utcnow() -> datetime:
+    return datetime.now(UTC)
 
 
 class RunStatus(str, Enum):
@@ -174,7 +177,7 @@ class Run(BaseModel):
         description="Current lifecycle state"
     )
     createdAt: datetime = Field(
-        default_factory=datetime.utcnow,
+        default_factory=_utcnow,
         description="When run was created/queued"
     )
     startedAt: Optional[datetime] = Field(
@@ -266,9 +269,9 @@ class Run(BaseModel):
         
         return new_status in valid_transitions.get(self.status, set())
     
-    class Config:
-        use_enum_values = True
-        json_schema_extra = {
+    model_config = ConfigDict(
+        use_enum_values=True,
+        json_schema_extra={
             "example": {
                 "id": "run_abc123def456",
                 "plan_id": "plan_dpo_vs_sft_001",
@@ -298,4 +301,5 @@ class Run(BaseModel):
                 "artifactIds": ["artifact_001", "artifact_002"],
                 "errorMessage": None
             }
-        }
+        },
+    )

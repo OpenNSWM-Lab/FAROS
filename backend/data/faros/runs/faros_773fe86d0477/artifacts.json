@@ -1,0 +1,89 @@
+[
+  {
+    "id": "faros_773fe86d0477:idea_refinement:session",
+    "type": "idea_session",
+    "uri": "idea://idea_57b6415b8ab4",
+    "producer": "idea_refinement",
+    "summary": "Idea session idea_57b6415b8ab4 with 3 candidates",
+    "metadata": {
+      "sessionId": "idea_57b6415b8ab4",
+      "selectedCandidateId": "cand_032ecc49754e"
+    }
+  },
+  {
+    "id": "faros_773fe86d0477:experiment:project",
+    "type": "code_project",
+    "uri": "project://cproj_dfeb7cc920c6",
+    "producer": "experiment",
+    "summary": "Project cproj_dfeb7cc920c6 created for experiment stage",
+    "metadata": {
+      "projectId": "cproj_dfeb7cc920c6",
+      "language": "python",
+      "framework": "FastAPI"
+    }
+  },
+  {
+    "id": "faros_773fe86d0477:experiment:experiment",
+    "type": "experiment_record",
+    "uri": "experiment://exp_afdb7a76f5c0",
+    "producer": "experiment",
+    "summary": "Experiment exp_afdb7a76f5c0 linked to project cproj_dfeb7cc920c6",
+    "metadata": {
+      "experimentId": "exp_afdb7a76f5c0",
+      "projectId": "cproj_dfeb7cc920c6"
+    }
+  },
+  {
+    "id": "faros_773fe86d0477:paper_drafting:paper",
+    "type": "paper_record",
+    "uri": "paper://paper_5b9936f89900",
+    "producer": "paper_drafting",
+    "summary": "Paper paper_5b9936f89900 generated for venue generic",
+    "metadata": {
+      "paperId": "paper_5b9936f89900",
+      "status": "prepared"
+    }
+  },
+  {
+    "id": "faros_773fe86d0477:paper_drafting:latex",
+    "type": "latex_project",
+    "uri": "/data/guiyao/codex/LLM_Scientist/FAROS-release/backend/data/papers/paper_5b9936f89900/latex",
+    "producer": "paper_drafting",
+    "summary": "LaTeX project with 4 entries",
+    "metadata": {
+      "paperId": "paper_5b9936f89900",
+      "fileCount": 4
+    }
+  },
+  {
+    "id": "faros_773fe86d0477:paper_drafting:zip",
+    "type": "latex_zip",
+    "uri": "/data/guiyao/codex/LLM_Scientist/FAROS-release/backend/data/papers/paper_5b9936f89900/paper_5b9936f89900.zip",
+    "producer": "paper_drafting",
+    "summary": "Downloadable LaTeX bundle",
+    "metadata": {
+      "paperId": "paper_5b9936f89900"
+    }
+  },
+  {
+    "id": "faros_773fe86d0477:paper_drafting:pdf",
+    "type": "paper_pdf",
+    "uri": "/data/guiyao/codex/LLM_Scientist/FAROS-release/backend/data/papers/paper_5b9936f89900/latex/main.pdf",
+    "producer": "paper_drafting",
+    "summary": "Compiled paper PDF",
+    "metadata": {
+      "paperId": "paper_5b9936f89900"
+    }
+  },
+  {
+    "id": "faros_773fe86d0477:reviewer_simulation:review",
+    "type": "review_report",
+    "uri": "review://rev_369eb99d696e",
+    "producer": "reviewer_simulation",
+    "summary": "Review rev_369eb99d696e with 2 action items",
+    "metadata": {
+      "reviewId": "rev_369eb99d696e",
+      "paperId": "paper_5b9936f89900"
+    }
+  }
+]

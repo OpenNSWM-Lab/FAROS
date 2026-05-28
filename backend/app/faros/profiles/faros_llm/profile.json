@@ -1,8 +1,8 @@
 {
   "id": "faros_llm",
   "name": "FAROS-LLM",
-  "version": "0.1.0",
-  "description": "LLM-backed FAROS profile using the existing provider settings and module implementations.",
+  "version": "0.2.0",
+  "description": "LLM-backed FAROS profile using existing provider settings and module implementations.",
   "capability_bindings": {
     "idea_refinement": {
       "provider_type": "llm",
@@ -23,6 +23,72 @@
       "options": {}
     }
   },
+  "agent_bindings": {
+    "researcher": {
+      "agent_id": "researcher",
+      "provider_type": "llm",
+      "preferred_provider": "minimax",
+      "preferred_model": "MiniMax-M2.5",
+      "skill_overrides": [
+        "literature-grounding",
+        "idea-analysis"
+      ],
+      "runtime_policy": {}
+    },
+    "experimenter": {
+      "agent_id": "experimenter",
+      "provider_type": "llm",
+      "preferred_provider": "minimax",
+      "preferred_model": "MiniMax-M2.5",
+      "skill_overrides": [
+        "experiment-scaffold",
+        "artifact-packaging"
+      ],
+      "runtime_policy": {}
+    },
+    "writer": {
+      "agent_id": "writer",
+      "provider_type": "llm",
+      "preferred_provider": "minimax",
+      "preferred_model": "MiniMax-M2.5",
+      "skill_overrides": [
+        "paper-outline",
+        "section-drafting",
+        "latex-assembly"
+      ],
+      "runtime_policy": {}
+    },
+    "reviewer": {
+      "agent_id": "reviewer",
+      "provider_type": "llm",
+      "preferred_provider": "minimax",
+      "preferred_model": "MiniMax-M2.5",
+      "skill_overrides": [
+        "review-critique",
+        "consistency-audit"
+      ],
+      "runtime_policy": {}
+    }
+  },
+  "skill_defaults": {
+    "researcher": [
+      "literature-grounding",
+      "idea-analysis"
+    ],
+    "experimenter": [
+      "experiment-scaffold",
+      "artifact-packaging"
+    ],
+    "writer": [
+      "paper-outline",
+      "section-drafting",
+      "latex-assembly"
+    ],
+    "reviewer": [
+      "review-critique",
+      "consistency-audit"
+    ]
+  },
   "defaults": {
     "paperType": "algorithm",
     "targetVenue": "generic",
@@ -30,5 +96,28 @@
   },
   "verification_policy": {
     "mode": "baseline"
+  },
+  "memory_policy": {
+    "mode": "persistent",
+    "summary_keys": [
+      "selectedCandidateId",
+      "projectId",
+      "experimentId",
+      "paperId",
+      "reviewId",
+      "lastNodeId"
+    ],
+    "scope_strategy": "node",
+    "max_history_entries": 32,
+    "compaction_mode": "summary_only",
+    "volatile_prefixes": [
+      "tmp_",
+      "draft_",
+      "scratch_"
+    ],
+    "retained_scopes": [
+      "run"
+    ],
+    "remove_archived_keys": false
   }
 }

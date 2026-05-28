@@ -1,0 +1,23 @@
+{
+  "id": "api-rollback-skill",
+  "name": "API Rollback Skill",
+  "version": "0.1.0",
+  "manifest_version": "1.0",
+  "kind": "runtime",
+  "description": "rollback api test",
+  "agent_roles": [
+    "researcher"
+  ],
+  "tags": [
+    "test"
+  ],
+  "artifact_types": [
+    "run_manifest"
+  ],
+  "verification_hooks": [
+    "schema-check"
+  ],
+  "provider_requirements": {
+    "storage": "local"
+  }
+}

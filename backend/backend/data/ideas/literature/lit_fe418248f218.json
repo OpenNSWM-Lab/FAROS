@@ -1,0 +1,19 @@
+{
+  "id": "lit_fe418248f218",
+  "sessionId": "idea_c9ad227677d0",
+  "title": "On the Convergence of Experience Replay in Policy Optimization: Characterizing Bias, Variance, and Finite-Time Convergence",
+  "authors": [
+    "Hua Zheng",
+    "Wei Xie",
+    "M. Ben Feng"
+  ],
+  "venue": "arXiv",
+  "year": 2021,
+  "url": "http://arxiv.org/abs/2110.08902v5",
+  "doi": null,
+  "arxivId": "2110.08902v5",
+  "snippet": "Experience replay is a core ingredient of modern deep reinforcement learning, yet its benefits in policy optimization are poorly understood beyond empirical heuristics. This paper develops a novel theoretical framework for experience replay in modern policy gradient methods, where two sources of dependence fundamentally complicate analysis: Markovian correlations along trajectories and policy drift across optimization iterations. We introduce a new proof technique based on auxiliary Markov chain",
+  "relevanceScore": 0.85,
+  "source": "arxiv",
+  "createdAt": "2026-05-15T15:03:14.863625"
+}

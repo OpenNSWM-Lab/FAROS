@@ -1,0 +1,43 @@
+{
+  "id": "cand_3e1112c32b3d",
+  "sessionId": "idea_3cf1a8782322",
+  "title": "Interpretable Agent executor smoke test via Concept Bottlenecks",
+  "problem": "Agent executor smoke test models lack interpretability.",
+  "keyInsight": "Concept bottleneck layers provide human-understandable explanations.",
+  "novelty": 8.3,
+  "noveltyRationale": "Heuristic assessment",
+  "feasibility": 8.1,
+  "feasibilityRationale": "Heuristic assessment",
+  "impact": 6.9,
+  "impactRationale": "Heuristic assessment",
+  "clarity": 5.2,
+  "clarityRationale": "Based on description quality",
+  "risk": 4.5,
+  "riskRationale": "Based on risk identification",
+  "alignment": 10.0,
+  "alignmentRationale": "Based on topic overlap",
+  "referenceSupport": 3.6,
+  "referenceSupportRationale": "Based on reference count",
+  "experimentSpecificity": 5.4,
+  "experimentSpecificityRationale": "Based on experiment plan",
+  "overallRationale": "Scored using heuristic analysis",
+  "scoringConfidence": 0.6,
+  "scoringMethod": "heuristic",
+  "risks": [],
+  "requiredExperiments": [],
+  "expectedMetrics": [],
+  "draftPlan": {
+    "researchQuestion": "Agent executor smoke test models lack interpretability.",
+    "hypothesis": "Concept bottleneck layers provide human-understandable explanations.",
+    "variables": {},
+    "methodology": "To be defined",
+    "expectedOutcomes": [
+      "Improved performance",
+      "Novel insights"
+    ],
+    "tags": [],
+    "notes": ""
+  },
+  "references": [],
+  "createdAt": "2026-05-24T02:36:22.483635+00:00"
+}

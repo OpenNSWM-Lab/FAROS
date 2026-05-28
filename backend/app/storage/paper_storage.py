@@ -8,7 +8,7 @@ import uuid
 import shutil
 import zipfile
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Optional, Dict, Any, List
 
 logger = logging.getLogger(__name__)
@@ -16,6 +16,10 @@ logger = logging.getLogger(__name__)
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 PAPERS_DIR = os.path.join(_BASE_DIR, "data", "papers")
 os.makedirs(PAPERS_DIR, exist_ok=True)
+
+
+def _utcnow_iso() -> str:
+    return datetime.now(UTC).isoformat()
 
 
 def _gen_id() -> str:
@@ -33,7 +37,7 @@ def _normalize_record(record: Dict[str, Any]) -> Dict[str, Any]:
 
 def create_paper(data: Dict[str, Any]) -> Dict[str, Any]:
     paper_id = _gen_id()
-    now = datetime.utcnow().isoformat()
+    now = _utcnow_iso()
     record = {
         "id": paper_id,
         "title": data.get("title", "Untitled Paper"),
@@ -88,7 +92,7 @@ def update_paper(paper_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, A
     if not record:
         return None
     record.update(updates)
-    record["updatedAt"] = datetime.utcnow().isoformat()
+    record["updatedAt"] = _utcnow_iso()
     _save_record(paper_id, record)
     return record
 
@@ -97,7 +101,7 @@ def add_log(paper_id: str, message: str):
     record = get_paper(paper_id)
     if record:
         record.setdefault("logs", []).append({
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": _utcnow_iso(),
             "message": message,
         })
         _save_record(paper_id, record)
