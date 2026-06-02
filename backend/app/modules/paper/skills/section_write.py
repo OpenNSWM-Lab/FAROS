@@ -17,6 +17,7 @@ SECTION_PROMPT = """You are writing the "{section_title}" section of a {paper_ty
 **Special requirements:** {requirements}
 **Metrics data (if relevant):** {metrics_data}
 **Run evidence:** {runs_data}
+**Available paper figures:** {figures_data}
 **Context from previous sections:** {prev_context}
 **References available:** {refs_summary}
 
@@ -69,7 +70,7 @@ FIGURE_TEMPLATE = """- MUST reference figures using:
 \\caption{Figure caption}
 \\label{fig:name}
 \\end{figure}
-Reference each figure in the text."""
+Reference each figure in the text. If Available paper figures lists concrete paths, labels, or captions, use those exact values instead of inventing placeholder filenames."""
 
 
 def run(ctx: PaperSkillContext) -> PaperSkillResult:
@@ -85,6 +86,7 @@ def run(ctx: PaperSkillContext) -> PaperSkillResult:
 
     sections_content: Dict[str, str] = {}
     prev_context = ""
+    figures_summary = context.get("figures_summary", "N/A")
 
     for i, section in enumerate(sections):
         sec_title = section.get("title", f"Section {i+1}")
@@ -95,7 +97,16 @@ def run(ctx: PaperSkillContext) -> PaperSkillResult:
         n_tab = 2 if section.get("hasTables") else 0
         table_req = TABLE_TEMPLATE.format(n=n_tab) if n_tab > 0 else ""
         fig_descs = section.get("figureDescriptions", [])
-        fig_req = FIGURE_TEMPLATE if section.get("hasFigures") or fig_descs else ""
+        section_lower = sec_title.lower()
+        figures_needed = (
+            section.get("hasFigures")
+            or fig_descs
+            or (
+                figures_summary != "N/A"
+                and any(kw in section_lower for kw in ["experiment", "result", "analysis", "method", "ablation"])
+            )
+        )
+        fig_req = FIGURE_TEMPLATE if figures_needed else ""
 
         prompt = SECTION_PROMPT.format(
             section_title=sec_title,
@@ -114,6 +125,7 @@ def run(ctx: PaperSkillContext) -> PaperSkillResult:
             ] if r]),
             metrics_data=context.get("metrics_summary", "N/A")[:1000],
             runs_data=context.get("runs_summary", "N/A")[:1500],
+            figures_data=figures_summary[:1500],
             prev_context=prev_context[:600],
             refs_summary=refs_summary,
             min_words=section.get("minWords", 500),

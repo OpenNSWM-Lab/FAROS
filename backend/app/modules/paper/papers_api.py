@@ -259,7 +259,7 @@ async def render_paper_pdf_endpoint(paper_id: str):
         try:
             from app.services.pdf_renderer import compile_latex_project, render_paper_pdf
             from app.modules.paper.storage import get_paper, update_paper, get_paper_latex_dir, list_paper_files, read_paper_file
-            from app.modules.paper.service import _copy_template_assets
+            from app.modules.paper.skills.utils import copy_template_assets, dedupe_figure_entries, get_linked_figure_entries
             import os
             
             paper = get_paper(paper_id)
@@ -270,7 +270,8 @@ async def render_paper_pdf_endpoint(paper_id: str):
             pdf_path = os.path.join(latex_dir, "main.pdf")
             figures_dir = os.path.join(latex_dir, "figures")
             venue = paper.get("targetVenue", "generic")
-            _copy_template_assets(venue, paper_id)
+            copy_template_assets(venue, paper_id)
+            figure_entries = get_linked_figure_entries(paper, ensure_copied=True)
             
             try:
                 compile_latex_project(latex_dir)
@@ -298,16 +299,19 @@ async def render_paper_pdf_endpoint(paper_id: str):
                     sections.append({"id": section_id, "title": section_id.capitalize()})
                     sections_content[section_id] = content
             
-            figure_entries = []
             if os.path.isdir(figures_dir):
                 for fname in sorted(os.listdir(figures_dir)):
-                    if fname.endswith(".png") or fname.endswith(".jpg"):
+                    lower = fname.lower()
+                    if lower.endswith((".png", ".jpg", ".jpeg", ".pdf")):
                         base_name = os.path.splitext(fname)[0]
+                        ext = os.path.splitext(fname)[1].lstrip(".")
                         figure_entries.append({
                             "filename": base_name,
+                            "ext": ext,
                             "caption": f"Figure: {base_name}",
                             "label": f"fig:{base_name}"
                         })
+            figure_entries = dedupe_figure_entries(figure_entries)
             
             sections_for_pdf = [
                 {"title": s.get("title", s["id"]), "content": sections_content.get(s["id"], "")}

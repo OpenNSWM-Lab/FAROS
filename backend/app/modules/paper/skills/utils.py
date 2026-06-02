@@ -50,6 +50,121 @@ def _extract_json(text: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _clean_label_part(value: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9]+", "_", value or "").strip("_").lower()
+    return cleaned or "figure"
+
+
+def figure_record_to_entry(fig: Dict[str, Any], source: str = "selected") -> Optional[Dict[str, Any]]:
+    """Normalize an experiment figure record into the paper figure entry shape."""
+    file_name = (
+        fig.get("fileNamePdf")
+        or fig.get("fileNamePng")
+        or fig.get("fileName")
+    )
+    if not file_name:
+        for path_key in ("pdfPath", "pngPath", "pathPdf", "pathPng"):
+            path_value = fig.get(path_key)
+            if path_value:
+                file_name = os.path.basename(path_value)
+                break
+    if not file_name:
+        return None
+
+    base_name, ext = os.path.splitext(os.path.basename(file_name))
+    ext = ext.lstrip(".") or "png"
+    figure_id = fig.get("figureId") or fig.get("id") or base_name
+    title = fig.get("title") or fig.get("figureType") or base_name.replace("_", " ")
+    caption = fig.get("caption") or title
+    label = fig.get("latexLabel") or fig.get("label") or f"fig:{_clean_label_part(str(figure_id))}"
+
+    return {
+        "figureId": figure_id,
+        "filename": base_name,
+        "ext": ext,
+        "path": f"figures/{base_name}.{ext}",
+        "caption": caption,
+        "label": label,
+        "title": title,
+        "figureType": fig.get("figureType"),
+        "experimentId": fig.get("experimentId"),
+        "source": source,
+    }
+
+
+def dedupe_figure_entries(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    seen = set()
+    unique: List[Dict[str, Any]] = []
+    for entry in entries:
+        key = entry.get("filename") or entry.get("label")
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(entry)
+    return unique
+
+
+def load_linked_figure_records(paper: Dict[str, Any], max_figures: int = 8) -> List[Dict[str, Any]]:
+    records: List[Dict[str, Any]] = []
+    seen = set()
+
+    def add_figure(fig: Optional[Dict[str, Any]]) -> None:
+        if not fig or len(records) >= max_figures:
+            return
+        fig_id = fig.get("id") or fig.get("figureId")
+        key = fig_id or fig.get("fileNamePng") or fig.get("fileNamePdf") or fig.get("title")
+        if key in seen:
+            return
+        seen.add(key)
+        records.append(fig)
+
+    try:
+        from app.storage.experiment_storage import get_figure, list_figures
+
+        for fig_id in paper.get("figureIds", [])[:max_figures]:
+            add_figure(get_figure(fig_id))
+
+        if len(records) < max_figures:
+            for exp_id in paper.get("experimentIds", [])[:3]:
+                for fig in list_figures(exp_id)[:max_figures]:
+                    add_figure(fig)
+                    if len(records) >= max_figures:
+                        break
+    except Exception:
+        pass
+
+    return records
+
+
+def get_linked_figure_entries(
+    paper: Dict[str, Any],
+    ensure_copied: bool = False,
+    max_figures: int = 8,
+) -> List[Dict[str, Any]]:
+    entries: List[Dict[str, Any]] = []
+    paper_id = paper.get("id")
+
+    for fig in load_linked_figure_records(paper, max_figures=max_figures):
+        source_record = fig
+        if ensure_copied and paper_id:
+            try:
+                from app.modules.paper.storage import copy_figure_to_paper
+
+                figure_id = fig.get("id") or fig.get("figureId")
+                if figure_id:
+                    copied = copy_figure_to_paper(paper_id, figure_id)
+                    if copied:
+                        source_record = {**fig, **copied}
+            except Exception:
+                source_record = fig
+
+        entry = figure_record_to_entry(source_record, source="selected")
+        if entry:
+            entries.append(entry)
+
+    return dedupe_figure_entries(entries)
+
+
 def collect_context(paper: Dict[str, Any]) -> Dict[str, str]:
     ctx = {
         "plan_context": "N/A",
@@ -130,6 +245,22 @@ def collect_context(paper: Dict[str, Any]) -> Dict[str, str]:
                 ctx["runs_summary"] = json.dumps(run_entries, default=str)[:3000]
         except Exception:
             pass
+
+    figure_entries = get_linked_figure_entries(paper, ensure_copied=False)
+    if figure_entries:
+        ctx["figures_summary"] = json.dumps([
+            {
+                "figureId": f.get("figureId"),
+                "title": f.get("title"),
+                "caption": f.get("caption"),
+                "path": f.get("path"),
+                "label": f.get("label"),
+                "figureType": f.get("figureType"),
+                "experimentId": f.get("experimentId"),
+                "source": f.get("source"),
+            }
+            for f in figure_entries
+        ], default=str)[:2000]
 
     notes = paper.get("notes", "")
     if notes:

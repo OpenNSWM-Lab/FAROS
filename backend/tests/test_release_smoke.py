@@ -1,5 +1,6 @@
 import os
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -11,7 +12,11 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from app.modules.paper.skills.constants import TEMPLATE_ROOT
-from app.modules.paper.skills.utils import normalize_section_figure_references
+from app.modules.paper.skills.utils import (
+    dedupe_figure_entries,
+    figure_record_to_entry,
+    normalize_section_figure_references,
+)
 from app.version import APP_NAME, APP_VERSION, API_VERSION, CAPABILITIES, RELEASE_PHASE, SERVICE_NAME
 
 client = TestClient(app)
@@ -69,6 +74,39 @@ def test_paper_latex_rewrites_missing_figure_references(tmp_path):
 
     assert r"\includegraphics[width=\linewidth]{figures/fig_performance.pdf}" in normalized
     assert rewrites == [{"from": "figures/framework.pdf", "to": "figures/fig_performance.pdf"}]
+
+
+def test_paper_experiment_figure_records_normalize_to_entries():
+    entry = figure_record_to_entry({
+        "id": "fig_abc123",
+        "experimentId": "exp_1",
+        "figureType": "bar",
+        "title": "Router pass rate",
+        "caption": "Pass-rate comparison across routing policies.",
+        "fileNamePdf": "fig_abc123_bar_router_pass_rate.pdf",
+        "fileNamePng": "fig_abc123_bar_router_pass_rate.png",
+    })
+
+    assert entry["figureId"] == "fig_abc123"
+    assert entry["filename"] == "fig_abc123_bar_router_pass_rate"
+    assert entry["ext"] == "pdf"
+    assert entry["path"] == "figures/fig_abc123_bar_router_pass_rate.pdf"
+    assert entry["label"] == "fig:fig_abc123"
+    assert entry["caption"] == "Pass-rate comparison across routing policies."
+
+    unique = dedupe_figure_entries([
+        entry,
+        {**entry, "ext": "png", "path": "figures/fig_abc123_bar_router_pass_rate.png"},
+    ])
+    assert len(unique) == 1
+
+
+def test_paper_render_pdf_uses_modular_template_helper():
+    source = Path(__file__).parents[1] / "app" / "modules" / "paper" / "papers_api.py"
+    content = source.read_text(encoding="utf-8")
+
+    assert "_copy_template_assets" not in content
+    assert "copy_template_assets" in content
 
 
 def test_paper_latex_templates_support_generated_algorithm_keywords():

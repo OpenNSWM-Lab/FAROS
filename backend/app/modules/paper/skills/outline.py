@@ -15,12 +15,14 @@ OUTLINE_PROMPT = """You are a senior ML researcher writing a {paper_type} paper 
 **Context from plan/project:** {plan_context}
 **Experiment metrics:** {metrics_summary}
 **Run execution results:** {runs_summary}
+**Available paper figures:** {figures_summary}
 **User notes:** {user_notes}
 
 Generate a DETAILED paper outline. You MUST include:
 - At least 7 sections (Introduction, Related Work, Background/Preliminaries, Method, Experiments, Analysis/Discussion, Conclusion)
 - At least {min_refs} references — use REAL, well-known papers in the field. DO NOT invent DOIs. Use format: authors, title, venue, year. If uncertain about a reference, include it but add "note": "to verify".
 - Mark which sections need: algorithms (at least {min_algos}), equations (at least {min_eqs}), tables (at least {min_tables}), figures (at least {min_figs})
+- If Available paper figures are listed, assign them to the most relevant sections using their exact path, label, and caption. Do not invent alternate filenames.
 
 Return strict JSON:
 {{
@@ -63,6 +65,7 @@ def run(ctx: PaperSkillContext) -> PaperSkillResult:
         plan_context=context.get("plan_context", "N/A")[:1500],
         metrics_summary=context.get("metrics_summary", "N/A")[:1500],
         runs_summary=context.get("runs_summary", "N/A")[:1500],
+        figures_summary=context.get("figures_summary", "N/A")[:1500],
         user_notes=context.get("user_notes", "N/A"),
         min_refs=MIN_REFERENCES,
         min_algos=MIN_ALGORITHMS,

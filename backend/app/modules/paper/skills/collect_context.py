@@ -15,6 +15,7 @@ def run(ctx: PaperSkillContext) -> PaperSkillResult:
         f"project_summary: {'yes' if context['project_summary'] != 'N/A' else 'no'}",
         f"metrics_summary: {'yes' if context['metrics_summary'] != 'N/A' else 'no'}",
         f"runs_summary: {'yes' if context['runs_summary'] != 'N/A' else 'no'}",
+        f"figures_summary: {'yes' if context['figures_summary'] != 'N/A' else 'no'}",
     ]
     artifacts = write_artifact(ctx.paper_id, STEP_ID, context, summary_lines)
     return PaperSkillResult(
