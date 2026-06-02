@@ -3,7 +3,7 @@ import os
 import re
 import shutil
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from app.modules.paper.storage import get_paper_latex_dir, write_paper_file
 from .constants import MIN_ALGORITHMS, MIN_EQUATIONS, MIN_FIGURES, MIN_REFERENCES, MIN_TABLES, TEMPLATE_ROOT
@@ -198,6 +198,57 @@ def copy_template_assets(venue: str, paper_id: str) -> None:
         if asset.name in {"main.tex", "refs.bib", "references.bib"}:
             continue
         shutil.copy2(asset, latex_dir / asset.name)
+
+
+def normalize_section_figure_references(
+    content: str,
+    figure_entries: List[Dict[str, str]],
+    figures_dir: str,
+) -> Tuple[str, List[Dict[str, str]]]:
+    """Point missing includegraphics references at generated figure files."""
+    if not content or not figure_entries:
+        return content, []
+
+    generated_paths = []
+    for entry in figure_entries:
+        filename = entry.get("filename")
+        if not filename:
+            continue
+        ext = (entry.get("ext") or "pdf").lstrip(".")
+        generated_paths.append(f"figures/{filename}.{ext}")
+
+    if not generated_paths:
+        return content, []
+
+    rewrites: List[Dict[str, str]] = []
+    replacement_index = 0
+
+    def include_exists(path: str) -> bool:
+        normalized = path.strip()
+        if os.path.isabs(normalized):
+            return os.path.isfile(normalized)
+        relative = normalized
+        if relative.startswith("figures/"):
+            relative = relative[len("figures/"):]
+        return os.path.isfile(os.path.join(figures_dir, relative))
+
+    def replace_include(match: re.Match[str]) -> str:
+        nonlocal replacement_index
+        prefix, path, suffix = match.group(1), match.group(2).strip(), match.group(3)
+        if include_exists(path):
+            return match.group(0)
+
+        target = generated_paths[min(replacement_index, len(generated_paths) - 1)]
+        replacement_index += 1
+        rewrites.append({"from": path, "to": target})
+        return f"{prefix}{target}{suffix}"
+
+    normalized = re.sub(
+        r"(\\includegraphics(?:\[[^\]]*\])?\{)([^}]+)(\})",
+        replace_include,
+        content,
+    )
+    return normalized, rewrites
 
 
 def build_main_tex(outline: Dict[str, Any], sections: List[Dict[str, Any]], venue: str) -> str:

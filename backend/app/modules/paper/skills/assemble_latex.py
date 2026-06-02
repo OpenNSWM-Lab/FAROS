@@ -1,6 +1,14 @@
+import os
+
 from app.modules.paper.storage import write_paper_file
 from .base import PaperSkillContext, PaperSkillResult
-from .utils import build_bibtex, build_main_tex, copy_template_assets, write_artifact
+from .utils import (
+    build_bibtex,
+    build_main_tex,
+    copy_template_assets,
+    normalize_section_figure_references,
+    write_artifact,
+)
 
 
 STEP_ID = "07_assemble_latex"
@@ -10,8 +18,29 @@ def run(ctx: PaperSkillContext) -> PaperSkillResult:
     outline = ctx.get("outline", {})
     sections = ctx.get("sections", [])
     refs = outline.get("references", [])
+    sections_content = ctx.get("sections_content", {})
+    figure_entries = ctx.get("figure_entries", [])
+    figures_dir = os.path.join(ctx.latex_dir, "figures")
 
     copy_template_assets(ctx.venue, ctx.paper_id)
+    figure_rewrites = []
+    for section in sections:
+        section_id = section.get("id")
+        if not section_id or section_id not in sections_content:
+            continue
+        normalized_content, rewrites = normalize_section_figure_references(
+            sections_content[section_id],
+            figure_entries,
+            figures_dir,
+        )
+        if rewrites:
+            write_paper_file(ctx.paper_id, f"sections/{section_id}.tex", normalized_content)
+            sections_content[section_id] = normalized_content
+            figure_rewrites.extend(
+                {"section": section_id, "from": r["from"], "to": r["to"]}
+                for r in rewrites
+            )
+
     main_tex = build_main_tex(outline, sections, ctx.venue)
     write_paper_file(ctx.paper_id, "main.tex", main_tex)
 
@@ -38,11 +67,12 @@ def run(ctx: PaperSkillContext) -> PaperSkillResult:
         "# Assemble LaTeX",
         f"sections: {len(sections)}",
         f"refs: {len(refs)}",
+        f"figure reference rewrites: {len(figure_rewrites)}",
     ]
     artifacts = write_artifact(
         ctx.paper_id,
         STEP_ID,
-        {"sections": len(sections), "references": len(refs)},
+        {"sections": len(sections), "references": len(refs), "figure_rewrites": figure_rewrites},
         summary_lines,
     )
     return PaperSkillResult(
