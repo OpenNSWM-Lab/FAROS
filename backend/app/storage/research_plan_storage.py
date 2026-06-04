@@ -73,7 +73,7 @@ class ResearchPlanStorage:
         with open(temp_path, 'w', encoding='utf-8') as f:
             json.dump(plan_dict, f, indent=2, default=str)
         
-        temp_path.rename(plan_path)
+        temp_path.replace(plan_path)
         
         return plan
     

@@ -90,7 +90,7 @@ class IdeaSessionStorage:
         temp_path = path.with_suffix('.tmp')
         with open(temp_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, default=str)
-        temp_path.rename(path)
+        temp_path.replace(path)
         
         return session
     
@@ -114,7 +114,7 @@ class IdeaSessionStorage:
         temp_path = path.with_suffix('.tmp')
         with open(temp_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, default=str)
-        temp_path.rename(path)
+        temp_path.replace(path)
         
         return session
     
@@ -152,7 +152,7 @@ class LiteratureStorage:
         temp_path = path.with_suffix('.tmp')
         with open(temp_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2)
-        temp_path.rename(path)
+        temp_path.replace(path)
         
         return item
     
@@ -203,7 +203,7 @@ class CandidateStorage:
         temp_path = path.with_suffix('.tmp')
         with open(temp_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2)
-        temp_path.rename(path)
+        temp_path.replace(path)
         
         return candidate
     
