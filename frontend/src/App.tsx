@@ -26,6 +26,8 @@ const CodeDashboard = lazy(() => import('@/pages/Code/CodeDashboard').then(m => 
 const CodeSessionPage = lazy(() => import('@/pages/Code/CodeSession').then(m => ({ default: m.CodeSessionPage })))
 const NewCodeSession = lazy(() => import('@/pages/Code/NewCodeSession').then(m => ({ default: m.NewCodeSession })))
 const CodeSessionDebug = lazy(() => import('@/pages/Code/CodeSessionDebug').then(m => ({ default: m.CodeSessionDebug })))
+const CodeBlueprint = lazy(() => import('@/pages/Code/CodeBlueprint').then(m => ({ default: m.CodeBlueprint })))
+const CodeStepDetail = lazy(() => import('@/pages/Code/CodeStepDetail').then(m => ({ default: m.CodeStepDetail })))
 const CodeProjects = lazy(() => import('@/pages/Code/CodeProjects').then(m => ({ default: m.CodeProjects })))
 const CodeProjectBrowser = lazy(() => import('@/pages/Code/CodeProjectBrowser').then(m => ({ default: m.CodeProjectBrowser })))
 const CodeProjectWorkspace = lazy(() => import('@/pages/Code/CodeProjectWorkspace').then(m => ({ default: m.CodeProjectWorkspace })))
@@ -91,6 +93,8 @@ function App() {
 
               {/* Code Generation */}
               <Route path="/code" element={<CodeProjectWorkspace />} />
+              <Route path="/code/blueprint" element={<CodeBlueprint />} />
+              <Route path="/code/blueprint/step/:stepId" element={<CodeStepDetail />} />
               <Route path="/code/projects" element={<CodeProjects />} />
               <Route path="/code/projects/:projectId" element={<CodeProjectBrowser />} />
               <Route path="/code/sessions" element={<CodeDashboard />} />

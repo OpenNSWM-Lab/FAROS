@@ -18,8 +18,9 @@ import {
   Code2, Loader2, CheckCircle2, XCircle, Clock, Play,
   FileText, FolderTree, Download,
   AlertTriangle, Sparkles,
-  SkipForward, Wrench, Eye,
+  SkipForward, Wrench, Eye, GitBranch,
 } from 'lucide-react'
+import { BlueprintGraph } from '@/components/code/BlueprintGraph'
 const API_BASE = import.meta.env.VITE_API_BASE_URL || ''
 
 interface PlanContextSession {
@@ -128,7 +129,7 @@ export function CodeProjectWorkspace() {
   const [loadingTree, setLoadingTree] = useState(false)
 
   // Tabs
-  const [activeTab, setActiveTab] = useState<'plan' | 'generation'>('plan')
+  const [activeTab, setActiveTab] = useState<'plan' | 'generation' | 'blueprint'>('plan')
 
   // Past sessions
   const [pastSessions, setPastSessions] = useState<CodeGenSessionData[]>([])
@@ -558,76 +559,97 @@ export function CodeProjectWorkspace() {
       iconColor="violet"
       accentColor="violet"
     >
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* LEFT: Project Tree + File Viewer */}
-        <div className="lg:col-span-2 space-y-4">
-          {projectId && renderFileTree()}
+      {/* Tab bar — always visible at top */}
+      <div className="flex border-b mb-4">
+        <button
+          className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'plan' ? 'border-teal-500 text-teal-700' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
+          onClick={() => setActiveTab('plan')}
+        >
+          <FileText className="h-4 w-4 inline mr-1" />Plan Context
+        </button>
+        <button
+          className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'generation' ? 'border-violet-500 text-violet-700' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
+          onClick={() => setActiveTab('generation')}
+        >
+          <Wrench className="h-4 w-4 inline mr-1" />Generation
+          {codeGenSession?.status === 'running' && <Loader2 className="h-3 w-3 inline ml-1 animate-spin" />}
+        </button>
+        <button
+          className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'blueprint' ? 'border-emerald-500 text-emerald-700' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
+          onClick={() => setActiveTab('blueprint')}
+        >
+          <GitBranch className="h-4 w-4 inline mr-1" />Blueprint
+        </button>
+      </div>
 
-          {/* File content viewer */}
-          {selectedFile && fileContent !== null && (
-            <div className="border rounded-lg overflow-hidden">
-              <div className="bg-slate-50 px-3 py-2 border-b flex items-center gap-2">
-                <FileText className="h-4 w-4 text-violet-500" />
-                <span className="text-sm font-medium truncate">{selectedFile}</span>
-                <Button variant="ghost" size="sm" className="ml-auto h-6 text-xs" onClick={() => { setSelectedFile(null); setFileContent(null) }}>Close</Button>
-              </div>
-              <pre className="p-4 text-xs font-mono overflow-auto max-h-[500px] bg-slate-900 text-slate-100">
-                {fileContent}
-              </pre>
-            </div>
-          )}
-
-          {/* When no project yet and no linkId, show past sessions */}
-          {!projectId && !linkId && renderPastSessions()}
-
-          {/* When linkId but no project yet, show welcome */}
-          {!projectId && linkId && planContext && !codeGenSession && (
-            <Card>
-              <CardContent className="py-8 text-center">
-                <Sparkles className="h-10 w-10 text-violet-400 mx-auto mb-3" />
-                <h3 className="text-lg font-medium mb-1">Ready to Generate</h3>
-                <p className="text-sm text-muted-foreground mb-4">
-                  Plan loaded: <strong>{planContext.candidate?.title || 'Research Plan'}</strong>
-                </p>
-                <p className="text-xs text-muted-foreground">Configure options and click "Generate Project Code" in the right panel →</p>
-              </CardContent>
-            </Card>
-          )}
+      {activeTab === 'blueprint' ? (
+        <div className="relative border rounded-xl overflow-hidden bg-white" style={{ height: 'calc(100vh - 240px)' }}>
+          <div className="absolute top-3 left-3 z-10 bg-white/90 backdrop-blur rounded-lg border px-3 py-2 text-xs flex items-center gap-3">
+            <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-full bg-emerald-500" /> 已完成</span>
+            <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-full bg-blue-500 animate-pulse" /> 进行中</span>
+            <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-full bg-red-500" /> 失败</span>
+            <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-full bg-slate-300" /> 待执行</span>
+            <span className="border-l pl-3 text-muted-foreground">滚轮缩放 · 拖拽平移 · 悬停查看 · 点击详情</span>
+          </div>
+          <BlueprintGraph
+            height="100%"
+            onNodeClick={(nodeId) => navigate(`/code/blueprint/step/${nodeId}`)}
+          />
         </div>
+      ) : (
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          {/* LEFT: Project Tree + File Viewer */}
+          <div className="lg:col-span-2 space-y-4">
+            {projectId && renderFileTree()}
 
-        {/* RIGHT: Tabs */}
-        <div className="space-y-4">
-          {/* Tab headers */}
-          <div className="flex border-b">
-            <button
-              className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'plan' ? 'border-teal-500 text-teal-700' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
-              onClick={() => setActiveTab('plan')}
-            >
-              <FileText className="h-4 w-4 inline mr-1" />Plan Context
-            </button>
-            <button
-              className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'generation' ? 'border-violet-500 text-violet-700' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
-              onClick={() => setActiveTab('generation')}
-            >
-              <Wrench className="h-4 w-4 inline mr-1" />Generation
-              {codeGenSession?.status === 'running' && <Loader2 className="h-3 w-3 inline ml-1 animate-spin" />}
-            </button>
+            {/* File content viewer */}
+            {selectedFile && fileContent !== null && (
+              <div className="border rounded-lg overflow-hidden">
+                <div className="bg-slate-50 px-3 py-2 border-b flex items-center gap-2">
+                  <FileText className="h-4 w-4 text-violet-500" />
+                  <span className="text-sm font-medium truncate">{selectedFile}</span>
+                  <Button variant="ghost" size="sm" className="ml-auto h-6 text-xs" onClick={() => { setSelectedFile(null); setFileContent(null) }}>Close</Button>
+                </div>
+                <pre className="p-4 text-xs font-mono overflow-auto max-h-[500px] bg-slate-900 text-slate-100">
+                  {fileContent}
+                </pre>
+              </div>
+            )}
+
+            {/* When no project yet and no linkId, show past sessions */}
+            {!projectId && !linkId && renderPastSessions()}
+
+            {/* When linkId but no project yet, show welcome */}
+            {!projectId && linkId && planContext && !codeGenSession && (
+              <Card>
+                <CardContent className="py-8 text-center">
+                  <Sparkles className="h-10 w-10 text-violet-400 mx-auto mb-3" />
+                  <h3 className="text-lg font-medium mb-1">Ready to Generate</h3>
+                  <p className="text-sm text-muted-foreground mb-4">
+                    Plan loaded: <strong>{planContext.candidate?.title || 'Research Plan'}</strong>
+                  </p>
+                  <p className="text-xs text-muted-foreground">Configure options and click "Generate Project Code" in the right panel →</p>
+                </CardContent>
+              </Card>
+            )}
           </div>
 
-          {/* Tab content */}
-          <Card>
-            <CardContent className="p-0">
-              {activeTab === 'plan' ? renderPlanContext() : renderGeneration()}
-            </CardContent>
-          </Card>
+          {/* RIGHT: Plan / Generation content */}
+          <div className="space-y-4">
+            <Card>
+              <CardContent className="p-0">
+                {activeTab === 'plan' ? renderPlanContext() : renderGeneration()}
+              </CardContent>
+            </Card>
 
-          {genError && (
-            <div className="p-3 rounded bg-red-50 border border-red-200 text-sm text-red-700">
-              <AlertTriangle className="h-4 w-4 inline mr-1" />{genError}
-            </div>
-          )}
+            {genError && (
+              <div className="p-3 rounded bg-red-50 border border-red-200 text-sm text-red-700">
+                <AlertTriangle className="h-4 w-4 inline mr-1" />{genError}
+              </div>
+            )}
+          </div>
         </div>
-      </div>
+      )}
     </AppPageLayout>
   )
 }
