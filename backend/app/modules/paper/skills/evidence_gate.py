@@ -3,7 +3,7 @@ from .base import PaperSkillContext, PaperSkillResult
 from .utils import gate_evidence, write_artifact
 
 
-STEP_ID = "05_evidence_gate"
+STEP_ID = "06_evidence_gate"
 
 
 def run(ctx: PaperSkillContext) -> PaperSkillResult:

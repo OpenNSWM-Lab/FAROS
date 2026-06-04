@@ -18,7 +18,7 @@ Endpoints:
 import os
 import logging
 import threading
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 
 from fastapi import APIRouter, HTTPException, status, Query
 from fastapi.responses import FileResponse
@@ -61,6 +61,16 @@ class CreatePaperRequest(BaseModel):
 class SaveFileRequest(BaseModel):
     path: str
     content: str
+
+
+class GeneratePaperBriefRequest(BaseModel):
+    briefUserEdits: Optional[str] = None
+    force: bool = True
+
+
+class UpdatePaperBriefRequest(BaseModel):
+    briefJson: Optional[Dict[str, Any]] = None
+    briefUserEdits: Optional[str] = None
 
 
 class UpdatePaperContextRequest(BaseModel):
@@ -125,6 +135,65 @@ async def update_paper_context_endpoint(paper_id: str, req: UpdatePaperContextRe
         "notes": req.notes,
     }
     return _update_paper(paper_id, updates)
+
+
+@router.get("/{paper_id}/brief", status_code=status.HTTP_200_OK)
+async def get_paper_brief_endpoint(paper_id: str):
+    record = _get_paper(paper_id)
+    if not record:
+        raise HTTPException(status_code=404, detail=f"Paper '{paper_id}' not found")
+    return {
+        "paperId": paper_id,
+        "brief": record.get("briefJson"),
+        "briefUserEdits": record.get("briefUserEdits", ""),
+        "briefStatus": record.get("briefStatus", "missing"),
+    }
+
+
+@router.patch("/{paper_id}/brief", status_code=status.HTTP_200_OK)
+async def update_paper_brief_endpoint(paper_id: str, req: UpdatePaperBriefRequest):
+    record = _get_paper(paper_id)
+    if not record:
+        raise HTTPException(status_code=404, detail=f"Paper '{paper_id}' not found")
+    updates: Dict[str, Any] = {}
+    if req.briefJson is not None:
+        updates["briefJson"] = req.briefJson
+        updates["briefStatus"] = "user_edited"
+    if req.briefUserEdits is not None:
+        updates["briefUserEdits"] = req.briefUserEdits
+    updated = _update_paper(paper_id, updates) if updates else record
+    return {
+        "paperId": paper_id,
+        "brief": updated.get("briefJson"),
+        "briefUserEdits": updated.get("briefUserEdits", ""),
+        "briefStatus": updated.get("briefStatus", "missing"),
+    }
+
+
+@router.post("/{paper_id}/brief/generate", status_code=status.HTTP_200_OK)
+async def generate_paper_brief_endpoint(paper_id: str, req: GeneratePaperBriefRequest):
+    record = _get_paper(paper_id)
+    if not record:
+        raise HTTPException(status_code=404, detail=f"Paper '{paper_id}' not found")
+    if record.get("status") == "generating":
+        raise HTTPException(status_code=409, detail="Paper generation already in progress")
+    try:
+        from app.modules.paper.service import generate_paper_brief
+        updated = generate_paper_brief(
+            paper_id,
+            brief_user_edits=req.briefUserEdits,
+            force=req.force,
+        )
+    except Exception as exc:
+        logger.error(f"Paper brief generation failed: {exc}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc)[:500]) from exc
+    return {
+        "paperId": paper_id,
+        "brief": updated.get("briefJson"),
+        "briefUserEdits": updated.get("briefUserEdits", ""),
+        "briefStatus": updated.get("briefStatus", "missing"),
+    }
+
 
 @router.post("/{paper_id}/generate", status_code=status.HTTP_202_ACCEPTED)
 async def generate_paper_endpoint(paper_id: str):

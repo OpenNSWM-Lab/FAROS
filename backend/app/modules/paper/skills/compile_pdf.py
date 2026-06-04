@@ -5,7 +5,7 @@ from .base import PaperSkillContext, PaperSkillResult
 from .utils import write_artifact
 
 
-STEP_ID = "08_compile_pdf"
+STEP_ID = "09_compile_pdf"
 
 
 def run(ctx: PaperSkillContext) -> PaperSkillResult:

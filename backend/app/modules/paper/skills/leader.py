@@ -4,6 +4,7 @@ from typing import Callable, List
 from app.modules.paper.storage import add_log
 from .base import PaperSkillContext, PaperSkillResult
 from .collect_context import run as collect_context
+from .paper_brief import run as paper_brief
 from .outline import run as outline
 from .outline_gate import run as outline_gate
 from .section_write import run as section_write
@@ -17,6 +18,7 @@ from .qa_audit import run as qa_audit
 def build_default_skill_chain() -> List[Callable[[PaperSkillContext], PaperSkillResult]]:
     return [
         collect_context,
+        paper_brief,
         outline,
         outline_gate,
         section_write,

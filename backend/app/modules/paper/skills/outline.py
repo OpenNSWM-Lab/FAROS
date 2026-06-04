@@ -7,7 +7,7 @@ from .constants import MIN_ALGORITHMS, MIN_EQUATIONS, MIN_FIGURES, MIN_REFERENCE
 from .utils import _extract_json, write_artifact
 
 
-STEP_ID = "02_outline"
+STEP_ID = "03_outline"
 
 OUTLINE_PROMPT = """You are a senior ML researcher writing a {paper_type} paper for {venue_name}.
 
@@ -16,6 +16,7 @@ OUTLINE_PROMPT = """You are a senior ML researcher writing a {paper_type} paper 
 **Experiment metrics:** {metrics_summary}
 **Run execution results:** {runs_summary}
 **Available paper figures:** {figures_summary}
+**Paper writing brief:** {paper_brief}
 **User notes:** {user_notes}
 
 Generate a DETAILED paper outline. You MUST include:
@@ -23,6 +24,7 @@ Generate a DETAILED paper outline. You MUST include:
 - At least {min_refs} references — use REAL, well-known papers in the field. DO NOT invent DOIs. Use format: authors, title, venue, year. If uncertain about a reference, include it but add "note": "to verify".
 - Mark which sections need: algorithms (at least {min_algos}), equations (at least {min_eqs}), tables (at least {min_tables}), figures (at least {min_figs})
 - If Available paper figures are listed, assign them to the most relevant sections using their exact path, label, and caption. Do not invent alternate filenames.
+- Follow the Paper writing brief. Preserve its research question, core claim, must-use evidence, and avoid-claims constraints.
 
 Return strict JSON:
 {{
@@ -58,6 +60,7 @@ Return ONLY valid JSON, no markdown fences.
 
 def run(ctx: PaperSkillContext) -> PaperSkillResult:
     context = ctx.get("context", {})
+    paper_brief = ctx.get("paper_brief", {})
     outline_prompt = OUTLINE_PROMPT.format(
         paper_type=ctx.paper_type,
         venue_name=ctx.venue_cfg["name"],
@@ -66,6 +69,7 @@ def run(ctx: PaperSkillContext) -> PaperSkillResult:
         metrics_summary=context.get("metrics_summary", "N/A")[:1500],
         runs_summary=context.get("runs_summary", "N/A")[:1500],
         figures_summary=context.get("figures_summary", "N/A")[:1500],
+        paper_brief=json.dumps(paper_brief, ensure_ascii=False)[:2000] if paper_brief else "N/A",
         user_notes=context.get("user_notes", "N/A"),
         min_refs=MIN_REFERENCES,
         min_algos=MIN_ALGORITHMS,

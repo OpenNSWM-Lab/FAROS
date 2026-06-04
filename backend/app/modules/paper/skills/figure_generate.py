@@ -2,7 +2,7 @@ from .base import PaperSkillContext, PaperSkillResult
 from .utils import dedupe_figure_entries, get_linked_figure_entries, write_artifact
 
 
-STEP_ID = "06_figure_generate"
+STEP_ID = "07_figure_generate"
 
 
 def run(ctx: PaperSkillContext) -> PaperSkillResult:

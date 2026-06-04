@@ -11,7 +11,7 @@ from .utils import (
 )
 
 
-STEP_ID = "07_assemble_latex"
+STEP_ID = "08_assemble_latex"
 
 
 def run(ctx: PaperSkillContext) -> PaperSkillResult:

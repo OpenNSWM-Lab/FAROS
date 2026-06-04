@@ -2,7 +2,7 @@ from .base import PaperSkillContext, PaperSkillResult
 from .utils import gate_outline, write_artifact
 
 
-STEP_ID = "03_outline_gate"
+STEP_ID = "04_outline_gate"
 
 
 def run(ctx: PaperSkillContext) -> PaperSkillResult:

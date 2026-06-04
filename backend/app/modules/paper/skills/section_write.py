@@ -7,7 +7,7 @@ from .base import PaperSkillContext, PaperSkillResult
 from .utils import write_artifact
 
 
-STEP_ID = "04_section_write"
+STEP_ID = "05_section_write"
 
 SECTION_PROMPT = """You are writing the "{section_title}" section of a {paper_type} paper titled "{title}" for {venue_name}.
 
@@ -18,6 +18,7 @@ SECTION_PROMPT = """You are writing the "{section_title}" section of a {paper_ty
 **Metrics data (if relevant):** {metrics_data}
 **Run evidence:** {runs_data}
 **Available paper figures:** {figures_data}
+**Paper writing brief:** {paper_brief}
 **Context from previous sections:** {prev_context}
 **References available:** {refs_summary}
 
@@ -33,6 +34,7 @@ Write COMPLETE LaTeX content for this section. MANDATORY requirements:
 - Professional academic tone appropriate for {venue_name}
 - Do NOT use placeholder text like "Lorem ipsum" or "TODO"
 - Every claim must be supported by citation or evidence
+- Follow the Paper writing brief, especially core claim, must-use evidence, must-use figures, and avoid-claims.
 
 Return ONLY the LaTeX content (no markdown fences, no explanations).
 """
@@ -79,6 +81,7 @@ def run(ctx: PaperSkillContext) -> PaperSkillResult:
     refs = outline.get("references", [])
     contributions = outline.get("contributions", [])
     context = ctx.get("context", {})
+    paper_brief = ctx.get("paper_brief", {})
 
     refs_summary = ", ".join(
         f"{r.get('key', 'ref')}: {r.get('title', '')[:40]}" for r in refs[:15]
@@ -126,6 +129,7 @@ def run(ctx: PaperSkillContext) -> PaperSkillResult:
             metrics_data=context.get("metrics_summary", "N/A")[:1000],
             runs_data=context.get("runs_summary", "N/A")[:1500],
             figures_data=figures_summary[:1500],
+            paper_brief=json.dumps(paper_brief, ensure_ascii=False)[:1800] if paper_brief else "N/A",
             prev_context=prev_context[:600],
             refs_summary=refs_summary,
             min_words=section.get("minWords", 500),
