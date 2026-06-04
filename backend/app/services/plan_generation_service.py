@@ -298,6 +298,7 @@ class PlanGenerationService:
     def _call_llm(self, session: PlanSession, prompt: str) -> str:
         config = session.config
         client = get_provider_client(config.providerName)
+        timeout = max(client.config.timeout, client.settings.PLAN_GENERATION_TIMEOUT)
         messages = [
             ChatMessage(role="system", content="You are a senior research scientist who generates detailed research plans in strict JSON format."),
             ChatMessage(role="user", content=prompt),
@@ -308,6 +309,7 @@ class PlanGenerationService:
             model=config.model,
             temperature=0.8,
             max_tokens=4096,
+            timeout=timeout,
         )
         return response.text
 
@@ -327,7 +329,14 @@ class PlanGenerationService:
                 f"{raw[:3000]}"
             )
             messages = [ChatMessage(role="user", content=repair_prompt)]
-            response = client.chat(messages=messages, model=config.model, temperature=0, max_tokens=4096)
+            timeout = max(client.config.timeout, client.settings.PLAN_GENERATION_TIMEOUT)
+            response = client.chat(
+                messages=messages,
+                model=config.model,
+                temperature=0,
+                max_tokens=4096,
+                timeout=timeout,
+            )
             return self._parse_response(response.text, session, retry_count + 1)
 
         raise ValueError(f"Failed to parse LLM response as JSON after retries. Raw: {raw[:500]}")

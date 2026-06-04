@@ -90,7 +90,7 @@ class RunStorage:
         with open(temp_path, 'w', encoding='utf-8') as f:
             json.dump(run_dict, f, indent=2, default=str)
         
-        temp_path.rename(run_path)
+        temp_path.replace(run_path)
         
         return run
     
@@ -154,7 +154,7 @@ class RunStorage:
         with open(temp_path, 'w', encoding='utf-8') as f:
             json.dump(run_dict, f, indent=2, default=str)
         
-        temp_path.rename(run_path)
+        temp_path.replace(run_path)
         
         return run
     

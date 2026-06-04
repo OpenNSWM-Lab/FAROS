@@ -70,6 +70,14 @@ class Settings(BaseModel):
         default_factory=lambda: int(os.getenv("REQUEST_TIMEOUT", "60")),
         description="Default request timeout"
     )
+    PLAN_GENERATION_TIMEOUT: int = Field(
+        default_factory=lambda: int(os.getenv("PLAN_GENERATION_TIMEOUT", "180")),
+        description="Request timeout for long plan-generation LLM calls"
+    )
+    PAPER_GENERATION_TIMEOUT: int = Field(
+        default_factory=lambda: int(os.getenv("PAPER_GENERATION_TIMEOUT", "300")),
+        description="Request timeout for long paper-generation LLM calls"
+    )
     MAX_RETRIES: int = Field(
         default_factory=lambda: int(os.getenv("MAX_RETRIES", "3")),
         description="Maximum retry attempts"
