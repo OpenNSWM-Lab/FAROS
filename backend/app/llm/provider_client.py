@@ -112,10 +112,9 @@ class ProviderClient:
         messages_dict = [{"role": m.role, "content": m.content} for m in messages]
 
         start_time = time.time()
-        retries = 0
-        last_error = None
+        last_error: Optional[Exception] = None
 
-        while retries <= self.settings.MAX_RETRIES:
+        for attempt in range(1, self.settings.MAX_RETRIES + 1):
             try:
                 response = litellm.completion(
                     model=model_string,
@@ -147,20 +146,19 @@ class ProviderClient:
                 )
             except Exception as e:
                 last_error = e
-                retries += 1
-                if retries <= self.settings.MAX_RETRIES:
-                    backoff = self.settings.RETRY_BACKOFF * (2 ** (retries - 1))
+                if attempt < self.settings.MAX_RETRIES:
+                    backoff = self.settings.RETRY_BACKOFF * (2 ** (attempt - 1))
                     logger.warning(
                         "Provider request failed (attempt %s/%s): %s. Retrying in %ss...",
-                        retries,
+                        attempt,
                         self.settings.MAX_RETRIES,
                         e,
                         backoff,
                     )
                     time.sleep(backoff)
 
-        error_msg = str(last_error)
-        logger.error("Provider request failed after %s retries: %s", self.settings.MAX_RETRIES, error_msg)
+        error_msg = str(last_error) if last_error else "unknown error"
+        logger.error("Provider request failed after %s attempt(s): %s", self.settings.MAX_RETRIES, error_msg)
         raise ProviderError(
             f"Provider '{self.provider_name}' request failed: {error_msg}",
             self.provider_name,
