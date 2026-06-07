@@ -831,7 +831,7 @@ class PathSeedStorage:
             except Exception:
                 continue
         return sorted(seeds, key=lambda s: (
-            s.scores.novelty + s.scores.feasibility + s.scores.impact
+            s.scores.noveltyPrior + s.scores.feasibilityPrior + s.scores.evidencePrior
         ) if s.scores else 0.0, reverse=True)
 
 

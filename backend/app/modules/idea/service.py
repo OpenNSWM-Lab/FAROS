@@ -531,9 +531,9 @@ class IdeaGenerationService:
                 doi=result.doi,
                 arxivId=result.arxiv_id,
                 semanticScholarId=s2_id,
-                citationCount=result.citation_count,
+                citationCount=result.citation_count or 0,
                 abstract=result.abstract or "",
-                source=result.source,
+                source=[result.source] if result.source else [],
                 normalizedTitleHash=title_hash,
                 relevanceScore=min(1.0, max(0.0, base_score)),
             )
@@ -608,7 +608,7 @@ class IdeaGenerationService:
         graph = self.graph_builder.cluster_papers(graph)
 
         # Step 3b: Select papers by role
-        num_select = min(15, max(3, len(raw_papers) // 3))
+        num_select = min(40, max(5, len(raw_papers) // 2))
         graph, selected_paper_ids = self.graph_builder.select_papers(
             graph, num_select=num_select, must_cite_list=must_cite_list
         )

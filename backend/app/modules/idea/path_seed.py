@@ -22,6 +22,8 @@ from app.models.idea import (
     PathSeedScores,
     KGEntity,
     KGRelation,
+    GapEvidence,
+    FrontierSignal,
 )
 
 logger = logging.getLogger(__name__)
@@ -105,9 +107,12 @@ class PathSeedGenerator:
             queue: List[Tuple[str, List[PathSeedStep]]] = [
                 (root.entityId, [PathSeedStep(
                     stepIndex=0,
+                    stepType="observation",
                     entityId=root.entityId,
                     relationId=None,
+                    text=root.name,
                     description=f"Start: {root.name}",
+                    required=True,
                 )])
             ]
             visited: Set[str] = {root.entityId}
@@ -127,12 +132,17 @@ class PathSeedGenerator:
                         None,
                     )
                     desc = f"{rel.relationType}: {next_entity.name if next_entity else next_id}"
+                    step_type = self._relation_to_step_type(rel.relationType)
 
                     new_steps = steps + [PathSeedStep(
                         stepIndex=len(steps),
+                        stepType=step_type,
                         entityId=next_id,
                         relationId=rel.relationId,
+                        text=desc,
                         description=desc,
+                        required=True,
+                        evidencePaperIds=list(dict.fromkeys(rel.sourcePaperIds))[:5],
                     )]
                     queue.append((next_id, new_steps))
 
@@ -179,19 +189,19 @@ class PathSeedGenerator:
         # 4. Filter and sort
         scored_seeds = [
             s for s in scored_seeds
-            if s[3].evidenceStrength >= 0.2  # Minimum grounding
+            if s[3].evidencePrior >= 0.2  # Minimum grounding
         ]
         scored_seeds.sort(
-            key=lambda s: s[3].novelty + s[3].feasibility + s[3].impact,
+            key=lambda s: s[3].noveltyPrior + s[3].feasibilityPrior + s[3].evidencePrior,
             reverse=True,
         )
 
         # 5. Build ReasoningPathSeed objects
         result = []
         evidence_link_ids = [l.linkId for l in evidence_links]
+        gap_ids = [g.direction for g in getattr(literature_map, 'gaps', [])][:5]
 
         for steps, papers, claims, scores in scored_seeds[:max_seeds]:
-            # Determine paper type from entity names
             entity_names = []
             for step in steps:
                 entity = next(
@@ -202,17 +212,26 @@ class PathSeedGenerator:
                     entity_names.append(entity.name.lower())
 
             paper_types = self._classify_paper_types(entity_names)
+            template_type = paper_types[0] if paper_types else "generic"
 
             result.append(ReasoningPathSeed(
                 seedId=f"rps_{uuid.uuid4().hex[:12]}",
                 sessionId=session_id,
                 reasoningKgId=reasoning_kg.id,
+                templateType=template_type,
+                anchorEntityIds=[steps[0].entityId] if steps else [],
                 steps=steps,
+                skeleton=steps[:3],  # First 3 steps as skeleton
                 sourcePaperIds=papers,
                 sourceClaimIds=claims,
                 evidenceLinkIds=evidence_link_ids[:5],
+                linkedGapIds=gap_ids,
+                linkedFrontierIds=[],
+                linkedNoveltyEvidenceIds=[],
                 paperTypes=paper_types,
+                initialScores=scores,
                 scores=scores,
+                rationale=f"Path from {entity_names[0] if entity_names else 'root'} via {len(steps)-1} relations",
             ))
 
         logger.info(
@@ -231,8 +250,8 @@ class PathSeedGenerator:
         novelty_directions: Set[str],
         reasoning_kg: ReasoningKG,
     ) -> PathSeedScores:
-        """Score a reasoning path on 4 dimensions."""
-        # Novelty: fraction of entities linked to novelty evidence
+        """Score a reasoning path on 4 dimensions (PDF naming)."""
+        # Novelty prior: fraction of entities linked to novelty evidence
         novelty_linked = 0
         for step in steps:
             elinks = evidence_by_entity.get(step.entityId, [])
@@ -240,7 +259,7 @@ class PathSeedGenerator:
                 novelty_linked += 1
         novelty = novelty_linked / max(len(steps), 1)
 
-        # Feasibility: fraction of entities that are method-type (established knowledge)
+        # Feasibility prior: fraction of entities that are method-type
         method_count = 0
         for step in steps:
             entity = next(
@@ -251,18 +270,7 @@ class PathSeedGenerator:
                 method_count += 1
         feasibility = min(1.0, (method_count / max(len(steps), 1)) + 0.3)
 
-        # Impact: mean importance score of entities in path
-        impact_scores = []
-        for step in steps:
-            entity = next(
-                (e for e in reasoning_kg.entities if e.entityId == step.entityId),
-                None,
-            )
-            if entity:
-                impact_scores.append(entity.importanceScore)
-        impact = sum(impact_scores) / max(len(impact_scores), 1) if impact_scores else 0.3
-
-        # Evidence strength: fraction of steps backed by claims (vs. inferred)
+        # Evidence prior: fraction of steps backed by claims
         total_relations = sum(1 for s in steps if s.relationId is not None)
         if total_relations == 0:
             evidence = 0.0
@@ -276,7 +284,6 @@ class PathSeedGenerator:
                         None,
                     )
                     if rel and rel.sourceClaimIds:
-                        # Check claim confidence
                         confs = [
                             claim_confidence.get(cid, 0.5)
                             for cid in rel.sourceClaimIds
@@ -285,12 +292,37 @@ class PathSeedGenerator:
                             backed_relations += 1
             evidence = backed_relations / total_relations
 
+        # Graph alignment prior: entity importance along path
+        impact_scores = []
+        for step in steps:
+            entity = next(
+                (e for e in reasoning_kg.entities if e.entityId == step.entityId),
+                None,
+            )
+            if entity:
+                impact_scores.append(entity.importanceScore)
+        alignment = sum(impact_scores) / max(len(impact_scores), 1) if impact_scores else 0.3
+
         return PathSeedScores(
-            novelty=round(min(1.0, novelty + 0.2), 3),
-            feasibility=round(feasibility, 3),
-            impact=round(impact, 3),
-            evidenceStrength=round(evidence, 3),
+            noveltyPrior=round(min(1.0, novelty + 0.2), 3),
+            feasibilityPrior=round(feasibility, 3),
+            evidencePrior=round(evidence, 3),
+            graphAlignmentPrior=round(alignment, 3),
         )
+
+    @staticmethod
+    def _relation_to_step_type(relation_type: str) -> str:
+        """Map KGRelation type to PathSeedStep stepType."""
+        mapping = {
+            "implies": "mechanism",
+            "hypothesizes": "gap",
+            "generalizes": "observation",
+            "supports": "validation",
+            "contradicts": "gap",
+            "uses": "method",
+            "produces": "prediction",
+        }
+        return mapping.get(relation_type, "observation")
 
     @staticmethod
     def _classify_paper_types(entity_names: List[str]) -> List[str]:

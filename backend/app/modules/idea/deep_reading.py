@@ -24,9 +24,12 @@ from app.models.idea import (
     Finding,
     MethodMention,
     NoveltyEvidence,
+    ContradictionMention,
     LiteratureGraph,
     LiteratureMap,
     LiteratureCluster,
+    GapEvidence,
+    FrontierSignal,
 )
 from app.llm.provider_client import get_provider_client, ChatMessage, ProviderError
 from app.services import prompts
@@ -165,17 +168,34 @@ class DeepReader:
 
         summary = data.get("summary", "")
 
+        # Parse extra fields from LLM response
+        datasets = data.get("datasets", [])
+        metrics = data.get("metrics", [])
+        limitations = data.get("limitations", [])
+        baselines = data.get("baselines", [])
+
         return StructuredPaper(
-            id=paper.id,  # Use raw paper ID as structured paper ID
+            id=paper.id,
             sessionId=session.id,
             rawPaperId=paper.id,
             title=paper.title,
+            abstract=paper.abstract or "",
+            authors=paper.authors,
+            year=paper.year,
+            venue=paper.venue or "",
+            citationCount=paper.citationCount or 0,
+            source=list(paper.source) if isinstance(paper.source, list) else [paper.source],
             claims=claims,
             findings=findings,
             methods=methods,
+            datasets=datasets,
+            metrics=metrics,
+            limitations=limitations,
+            baselines=baselines,
             noveltyEvidence=novelty_evidence,
             summary=summary,
             extractionMethod="llm",
+            qualityScore=0.7,
             extractionConfidence=0.7,
         )
 
@@ -244,12 +264,23 @@ class DeepReader:
             sessionId=session_id,
             rawPaperId=paper.id,
             title=paper.title,
+            abstract=abstract,
+            authors=paper.authors,
+            year=paper.year,
+            venue=paper.venue or "",
+            citationCount=paper.citationCount or 0,
+            source=list(paper.source) if isinstance(paper.source, list) else [paper.source],
             claims=claims,
             findings=findings,
             methods=methods,
+            datasets=[],
+            metrics=[],
+            limitations=[],
+            baselines=[],
             noveltyEvidence=[],
             summary=abstract[:300] if abstract else "",
             extractionMethod="heuristic",
+            qualityScore=0.3,
             extractionConfidence=0.3,
         )
 
@@ -299,19 +330,23 @@ class DeepReader:
             )
             map_clusters.append(updated_cluster)
 
-        # Frontier paper IDs
-        frontiers: List[str] = [
-            node.paperId
+        # Frontier signals
+        frontiers: List[FrontierSignal] = [
+            FrontierSignal(
+                paperId=node.paperId,
+                direction=f"Frontier research from {node.title[:60]}",
+                entityHints=[],
+                confidence=0.7,
+            )
             for node in graph.nodes
             if node.role == "frontier" and node.isSelected
         ]
 
         # Gap detection
-        gaps: List[Dict[str, Any]] = []
+        gaps: List[GapEvidence] = []
         for sp in structured_papers:
             for ne in sp.noveltyEvidence:
                 if ne.assessment in ("supports", "overlaps"):
-                    # Check if any paper directly addresses this direction
                     addressing_papers = [
                         sp2.rawPaperId
                         for sp2 in structured_papers
@@ -321,30 +356,28 @@ class DeepReader:
                         )
                     ]
                     if len(addressing_papers) <= 1:
-                        gaps.append({
-                            "direction": ne.direction,
-                            "evidence": ne.rationale,
-                            "paperIds": [sp.rawPaperId] + addressing_papers,
-                            "assessment": ne.assessment,
-                        })
+                        gaps.append(GapEvidence(
+                            direction=ne.direction,
+                            evidence=ne.rationale,
+                            paperIds=[sp.rawPaperId] + addressing_papers,
+                            clusterIds=[],
+                            entityHints=ne.entityHints,
+                            confidence=ne.confidence,
+                        ))
 
-        # Novelty evidence aggregation
-        novelty_evidence: List[Dict[str, Any]] = []
+        # Novelty evidence aggregation: use the NoveltyEvidence objects directly
+        all_evidence: List[NoveltyEvidence] = []
         for sp in structured_papers:
-            for ne in sp.noveltyEvidence:
-                novelty_evidence.append({
-                    "paperId": sp.rawPaperId,
-                    "direction": ne.direction,
-                    "assessment": ne.assessment,
-                    "rationale": ne.rationale,
-                })
+            all_evidence.extend(sp.noveltyEvidence)
 
         return LiteratureMap(
             id=map_id,
             sessionId=session_id,
+            paperCount=len(structured_papers),
             clusters=map_clusters,
             frontiers=frontiers,
             gaps=gaps,
-            noveltyEvidence=novelty_evidence,
+            noveltyEvidence=all_evidence,
             selectedPaperIds=selected_paper_ids,
+            selectionReport={"totalSelected": len(selected_paper_ids)},
         )

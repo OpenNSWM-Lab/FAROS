@@ -55,11 +55,17 @@ class LiteratureGraphBuilder:
         graph_id = f"lg_{uuid.uuid4().hex[:12]}"
 
         # Create nodes
+        max_citations = max((p.citationCount or 0) for p in raw_papers) or 1
+        current_year = max((p.year or 2000) for p in raw_papers) or 2024
         nodes = [
             PaperNode(
                 paperId=paper.id,
                 title=paper.title,
                 year=paper.year,
+                relevanceScore=paper.relevanceScore,
+                citationScore=min(1.0, (paper.citationCount or 0) / max_citations),
+                recencyScore=min(1.0, max(0.0, (paper.year or 2000) - (current_year - 10)) / 10.0),
+                centralityScore=0.0,  # computed later
             )
             for paper in raw_papers
         ]
@@ -425,6 +431,10 @@ class LiteratureGraphBuilder:
                 paperId=node.paperId,
                 title=node.title,
                 year=node.year,
+                relevanceScore=node.relevanceScore,
+                citationScore=node.citationScore,
+                recencyScore=node.recencyScore,
+                centralityScore=round(degree_centrality.get(node.paperId, 0.0), 3),
                 clusterId=node.clusterId,
                 role=node.role,
                 isSelected=node.isSelected,
@@ -526,6 +536,10 @@ class LiteratureGraphBuilder:
                         paperId=node.paperId,
                         title=node.title,
                         year=node.year,
+                        relevanceScore=node.relevanceScore,
+                        citationScore=node.citationScore,
+                        recencyScore=node.recencyScore,
+                        centralityScore=node.centralityScore,
                         clusterId=cluster_id,
                         role=node.role,
                         isSelected=node.isSelected,
@@ -664,7 +678,7 @@ class LiteratureGraphBuilder:
     def select_papers(
         self,
         graph: LiteratureGraph,
-        num_select: int = 15,
+        num_select: int = 40,
         must_cite_list: Optional[List[str]] = None,
     ) -> Tuple[LiteratureGraph, List[str]]:
         """Select papers by role distribution.
@@ -805,6 +819,10 @@ class LiteratureGraphBuilder:
                 paperId=node.paperId,
                 title=node.title,
                 year=node.year,
+                relevanceScore=node.relevanceScore,
+                citationScore=node.citationScore,
+                recencyScore=node.recencyScore,
+                centralityScore=node.centralityScore,
                 clusterId=node.clusterId,
                 role=role,
                 isSelected=node.paperId in selected,

@@ -182,11 +182,13 @@ class LiteratureMapResponse(BaseModel):
     """Response for literature map."""
     id: str
     sessionId: str
+    paperCount: int = 0
     clusters: List[dict]
-    frontiers: List[str]
+    frontiers: List[dict]
     gaps: List[dict]
     noveltyEvidence: List[dict]
     selectedPaperIds: List[str]
+    selectionReport: dict = {}
     createdAt: str
 
 
@@ -711,11 +713,13 @@ async def get_literature_map(session_id: str) -> LiteratureMapResponse:
     return LiteratureMapResponse(
         id=lit_map.id,
         sessionId=lit_map.sessionId,
+        paperCount=lit_map.paperCount,
         clusters=[c.model_dump() for c in lit_map.clusters],
-        frontiers=lit_map.frontiers,
-        gaps=lit_map.gaps,
-        noveltyEvidence=lit_map.noveltyEvidence,
+        frontiers=[f.model_dump() for f in lit_map.frontiers],
+        gaps=[g.model_dump() for g in lit_map.gaps],
+        noveltyEvidence=[n.model_dump() for n in lit_map.noveltyEvidence],
         selectedPaperIds=lit_map.selectedPaperIds,
+        selectionReport=lit_map.selectionReport,
         createdAt=lit_map.createdAt.isoformat() if lit_map.createdAt else "",
     )
 

@@ -67,7 +67,8 @@ class GraphLinker:
                 ))
 
         # 2. Frontier signals: entities from frontier papers
-        for frontier_pid in literature_map.frontiers:
+        for frontier in literature_map.frontiers:
+            frontier_pid = frontier.paperId if hasattr(frontier, 'paperId') else str(frontier)
             frontier_entities = entity_by_paper.get(frontier_pid, [])
             if frontier_entities:
                 links.append(GraphEvidenceLink(
@@ -82,7 +83,7 @@ class GraphLinker:
 
         # 3. Gap signals: match gap text to entities + hypothesizes relations
         for i, gap in enumerate(literature_map.gaps):
-            direction = gap.get("direction", "")
+            direction = gap.direction if hasattr(gap, 'direction') else gap.get("direction", "")
             gap_entities = self._match_text_to_entities(direction, entity_by_name)
             # Also find "hypothesizes" relations
             hyp_rels = relation_by_type.get("hypothesizes", [])
@@ -104,8 +105,8 @@ class GraphLinker:
 
         # 4. Novelty evidence signals
         for i, ne in enumerate(literature_map.noveltyEvidence):
-            direction = ne.get("direction", "")
-            assessment = ne.get("assessment", "")
+            direction = ne.direction if hasattr(ne, 'direction') else ne.get("direction", "")
+            assessment = ne.assessment if hasattr(ne, 'assessment') else ne.get("assessment", "")
             ne_entities = self._match_text_to_entities(direction, entity_by_name)
 
             # Find supports/contradicts relations
@@ -130,8 +131,10 @@ class GraphLinker:
         # 5. Contradiction signals: from novelty evidence with "contradicts" assessment
         contradiction_entities: Set[str] = set()
         for ne in literature_map.noveltyEvidence:
-            if ne.get("assessment") == "contradicts":
-                for e in self._match_text_to_entities(ne.get("direction", ""), entity_by_name):
+            assessment = ne.assessment if hasattr(ne, 'assessment') else ne.get("assessment", "")
+            direction = ne.direction if hasattr(ne, 'direction') else ne.get("direction", "")
+            if assessment == "contradicts":
+                for e in self._match_text_to_entities(direction, entity_by_name):
                     contradiction_entities.add(e.entityId)
 
         if contradiction_entities:

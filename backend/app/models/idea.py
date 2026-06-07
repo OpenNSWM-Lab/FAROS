@@ -299,20 +299,31 @@ def _compute_title_hash(title: str) -> str:
 
 class BFTSConfig(BaseModel):
     """BFTS search configuration carried through the pipeline."""
-    searchBudget: int = Field(default=50, ge=10, le=500)
-    maxDepth: int = Field(default=5, ge=1, le=20)
-    beamWidth: int = Field(default=3, ge=1, le=10)
-    scoringWeights: Dict[str, float] = Field(default_factory=lambda: {
-        "novelty": 0.35, "feasibility": 0.30, "impact": 0.35
+    maxNodes: int = Field(default=40, ge=10, le=200)
+    maxIterations: int = Field(default=4, ge=1, le=10)
+    beamWidth: int = Field(default=6, ge=1, le=20)
+    expansionWidth: int = Field(default=3, ge=1, le=10)
+    maxLiteratureProbes: int = Field(default=24, ge=0, le=100)
+    maxReflectionRounds: int = Field(default=3, ge=1, le=10)
+    minEvidenceSupport: float = Field(default=0.45, ge=0.0, le=1.0)
+    minGraphGrounding: float = Field(default=0.55, ge=0.0, le=1.0)
+    pruneDuplicateThreshold: float = Field(default=0.82, ge=0.0, le=1.0)
+    scoreWeights: Dict[str, float] = Field(default_factory=lambda: {
+        "novelty": 0.35, "feasibility": 0.20, "impact": 0.15,
+        "specificity": 0.10, "evidenceSupport": 0.10, "graphGrounding": 0.10,
     })
     model_config = ConfigDict(frozen=True)
 
 
 class QueryFamily(BaseModel):
     """A family of related search queries."""
-    name: str = Field(..., description="Label for this family, e.g. 'core', 'frontier', 'application'")
+    id: str = Field(default="", description="Unique family ID")
+    name: str = Field(..., description="Label, e.g. 'core', 'frontier'")
+    query: str = Field(default="", description="Primary query string")
     queries: List[str] = Field(default_factory=list)
     keyConcepts: List[str] = Field(default_factory=list)
+    intent: str = Field(default="core", description="core | method | dataset | metric | adjacent | contradiction | survey")
+    priority: float = Field(default=1.0, ge=0.0, le=2.0)
     model_config = ConfigDict(frozen=True)
 
 
@@ -337,14 +348,19 @@ class RawPaper(BaseModel):
     authors: List[str] = Field(default_factory=list)
     year: Optional[int] = None
     venue: Optional[str] = None
-    url: Optional[str] = None
+    url: str = ""
     doi: Optional[str] = None
     arxivId: Optional[str] = None
+    openalexId: Optional[str] = None
     semanticScholarId: Optional[str] = None
-    citationCount: Optional[int] = None
+    citationCount: int = 0
     abstract: str = ""
-    source: str = Field(..., description="semantic_scholar, arxiv, or local")
+    source: List[str] = Field(default_factory=list, description="List of sources: semantic_scholar, arxiv, local, openalex, crossref")
     normalizedTitleHash: str = Field(default="", description="SHA256 of normalized title for dedup")
+    references: List[str] = Field(default_factory=list, description="Paper IDs cited by this paper")
+    citedBy: List[str] = Field(default_factory=list, description="Paper IDs citing this paper")
+    concepts: List[str] = Field(default_factory=list, description="Concept tags from source APIs")
+    retrievalScore: float = Field(default=0.0, ge=0.0, le=1.0)
     relevanceScore: float = Field(default=0.0, ge=0.0, le=1.0)
     createdAt: datetime = Field(default_factory=_utcnow)
     model_config = ConfigDict(frozen=True)
@@ -355,10 +371,14 @@ class PaperNode(BaseModel):
     paperId: str
     title: str
     year: Optional[int] = None
+    relevanceScore: float = 0.0
+    citationScore: float = 0.0
+    recencyScore: float = 0.0
+    centralityScore: float = 0.0
     clusterId: Optional[str] = None
     role: Optional[str] = Field(default=None, description="core, representative, frontier, bridge, contradiction, must_cite")
     isSelected: bool = False
-    metadata: Dict[str, Any] = Field(default_factory=dict, description="Computed metrics: degree centrality, betweenness, clustering coefficient")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Extra computed metrics: degree_centrality, betweenness, clustering_coefficient")
     model_config = ConfigDict(frozen=True)
 
 
@@ -401,9 +421,20 @@ class Claim(BaseModel):
     claimId: str = Field(..., description="Auto-generated, prefixed 'cl_'")
     paperId: str
     text: str
-    claimType: str = Field(default="finding", description="finding, method, hypothesis, limitation, gap, comparison, premise_conclusion, cause_effect, method_result")
+    claimType: str = Field(default="finding", description="finding, method, comparison, limitation, assumption, hypothesis, gap, premise_conclusion, cause_effect, method_result")
+    evidenceText: str = Field(default="", description="The source text supporting this claim")
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)
     evidenceSpan: str = Field(default="", description="The sentence or passage this claim is extracted from")
+    model_config = ConfigDict(frozen=True)
+
+
+class ContradictionMention(BaseModel):
+    """A contradiction mentioned in a paper."""
+    contradictionId: str = Field(..., description="Auto-generated, prefixed 'cm_'")
+    paperId: str
+    description: str
+    conflictingPaperIds: List[str] = Field(default_factory=list)
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
     model_config = ConfigDict(frozen=True)
 
 
@@ -431,26 +462,65 @@ class NoveltyEvidence(BaseModel):
     """Evidence for or against novelty of a direction."""
     evidenceId: str = Field(..., description="Auto-generated, prefixed 'ne_'")
     paperId: str
+    evidenceType: str = Field(default="sparse_combination", description="sparse_combination, emerging_method, underexplored_dataset, contradiction, weak_baseline, missing_evaluation")
     direction: str
+    description: str = ""
     assessment: str = Field(default="neutral", description="supports, contradicts, overlaps, neutral")
+    paperIds: List[str] = Field(default_factory=list)
+    clusterIds: List[str] = Field(default_factory=list)
+    entityHints: List[str] = Field(default_factory=list)
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
     rationale: str = ""
     model_config = ConfigDict(frozen=True)
 
 
 class StructuredPaper(BaseModel):
     """A paper after deep-reading with structured extraction."""
-    id: str = Field(..., description="Matches RawPaper.id of the source paper")
+    id: str = Field(..., description="Matches RawPaper.id")
     sessionId: str
     rawPaperId: str
     title: str
+    abstract: str = ""
+    authors: List[str] = Field(default_factory=list)
+    year: Optional[int] = None
+    venue: str = ""
+    citationCount: int = 0
+    source: List[str] = Field(default_factory=list)
+    graph1Roles: List[str] = Field(default_factory=list, description="core, representative, frontier, bridge, contradiction, must_cite")
     claims: List[Claim] = Field(default_factory=list)
     findings: List[Finding] = Field(default_factory=list)
     methods: List[MethodMention] = Field(default_factory=list)
+    datasets: List[str] = Field(default_factory=list)
+    metrics: List[str] = Field(default_factory=list)
+    limitations: List[str] = Field(default_factory=list)
+    baselines: List[str] = Field(default_factory=list)
+    contradictions: List[ContradictionMention] = Field(default_factory=list)
     noveltyEvidence: List[NoveltyEvidence] = Field(default_factory=list)
     summary: str = ""
     extractionMethod: str = Field(default="llm", description="llm, heuristic, hybrid")
+    qualityScore: float = Field(default=0.0, ge=0.0, le=1.0)
     extractionConfidence: float = Field(default=0.5, ge=0.0, le=1.0)
     createdAt: datetime = Field(default_factory=_utcnow)
+    model_config = ConfigDict(frozen=True)
+
+
+class GapEvidence(BaseModel):
+    """Structured gap evidence in LiteratureMap."""
+    direction: str = ""
+    evidence: str = ""
+    paperIds: List[str] = Field(default_factory=list)
+    clusterIds: List[str] = Field(default_factory=list)
+    entityHints: List[str] = Field(default_factory=list)
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+    model_config = ConfigDict(frozen=True)
+
+
+class FrontierSignal(BaseModel):
+    """Frontier signal in LiteratureMap."""
+    paperId: str
+    direction: str = ""
+    entityHints: List[str] = Field(default_factory=list)
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
     model_config = ConfigDict(frozen=True)
 
 
@@ -458,11 +528,13 @@ class LiteratureMap(BaseModel):
     """Structured map of the literature space produced in Step 3."""
     id: str = Field(..., description="Unique map ID, prefixed 'lm_'")
     sessionId: str
+    paperCount: int = 0
     clusters: List[LiteratureCluster] = Field(default_factory=list)
-    frontiers: List[str] = Field(default_factory=list, description="Frontier paper IDs")
-    gaps: List[Dict[str, Any]] = Field(default_factory=list, description="Gap descriptions with evidence")
-    noveltyEvidence: List[Dict[str, Any]] = Field(default_factory=list)
+    frontiers: List[FrontierSignal] = Field(default_factory=list)
+    gaps: List[GapEvidence] = Field(default_factory=list)
+    noveltyEvidence: List[NoveltyEvidence] = Field(default_factory=list)
     selectedPaperIds: List[str] = Field(default_factory=list)
+    selectionReport: Dict[str, Any] = Field(default_factory=dict)
     createdAt: datetime = Field(default_factory=_utcnow)
     model_config = ConfigDict(frozen=True)
 
@@ -535,33 +607,45 @@ class GraphEvidenceLink(BaseModel):
 
 
 class PathSeedStep(BaseModel):
-    """A single step in a reasoning path seed. Phase 2 implementation."""
+    """A single step in a reasoning path seed."""
     stepIndex: int
+    stepType: str = Field(default="observation", description="observation, gap, method, mechanism, prediction, validation")
     entityId: str
     relationId: Optional[str] = None
+    text: str = ""
     description: str = ""
+    required: bool = True
+    evidencePaperIds: List[str] = Field(default_factory=list)
     model_config = ConfigDict(frozen=True)
 
 
 class PathSeedScores(BaseModel):
-    """Scores for a reasoning path seed. Phase 2 implementation."""
-    novelty: float = Field(default=0.0, ge=0.0, le=1.0)
-    feasibility: float = Field(default=0.0, ge=0.0, le=1.0)
-    impact: float = Field(default=0.0, ge=0.0, le=1.0)
-    evidenceStrength: float = Field(default=0.0, ge=0.0, le=1.0)
+    """Scores for a reasoning path seed."""
+    noveltyPrior: float = Field(default=0.0, ge=0.0, le=1.0)
+    feasibilityPrior: float = Field(default=0.0, ge=0.0, le=1.0)
+    evidencePrior: float = Field(default=0.0, ge=0.0, le=1.0)
+    graphAlignmentPrior: float = Field(default=0.0, ge=0.0, le=1.0)
     model_config = ConfigDict(frozen=True)
 
 
 class ReasoningPathSeed(BaseModel):
-    """A reasoning path seed for BFTS exploration. Phase 2 implementation."""
+    """A reasoning path seed for BFTS exploration."""
     seedId: str = Field(..., description="Auto-generated, prefixed 'rps_'")
     sessionId: str
     reasoningKgId: str
+    templateType: str = Field(default="generic", description="algorithm, system, benchmark, theory, survey, generic")
+    anchorEntityIds: List[str] = Field(default_factory=list)
     steps: List[PathSeedStep] = Field(default_factory=list)
+    skeleton: List[PathSeedStep] = Field(default_factory=list)
     sourcePaperIds: List[str] = Field(default_factory=list)
     sourceClaimIds: List[str] = Field(default_factory=list)
     evidenceLinkIds: List[str] = Field(default_factory=list)
+    linkedGapIds: List[str] = Field(default_factory=list)
+    linkedFrontierIds: List[str] = Field(default_factory=list)
+    linkedNoveltyEvidenceIds: List[str] = Field(default_factory=list)
     paperTypes: List[str] = Field(default_factory=list)
+    initialScores: Optional[PathSeedScores] = None
     scores: Optional[PathSeedScores] = None
+    rationale: str = ""
     createdAt: datetime = Field(default_factory=_utcnow)
     model_config = ConfigDict(frozen=True)
