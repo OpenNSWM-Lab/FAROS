@@ -8,6 +8,8 @@ Scientific Responsibility:
 - Maintain full traceability from session to candidates
 """
 
+import hashlib
+import re as _re
 from datetime import UTC, datetime
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, ConfigDict, Field
@@ -55,9 +57,9 @@ class IdeaSessionConfig(BaseModel):
         description="Maximum number of candidate ideas to generate"
     )
     maxPapers: int = Field(
-        default=10,
+        default=120,
         ge=1,
-        le=50,
+        le=200,
         description="Maximum papers to retrieve in literature search"
     )
     domain: Optional[str] = Field(
@@ -71,6 +73,12 @@ class IdeaSessionConfig(BaseModel):
     mustCiteList: Optional[List[str]] = Field(
         default=None,
         description="Papers that must be cited"
+    )
+    searchBudget: Optional[int] = Field(
+        default=None,
+        ge=10,
+        le=500,
+        description="Optional search budget for BFTS; defaults to maxPapers if unset"
     )
 
 
@@ -268,5 +276,292 @@ class IdeaCandidate(BaseModel):
             "referenceSupport": {"value": round(self.referenceSupport, 1), "rationale": self.referenceSupportRationale},
             "experimentSpecificity": {"value": round(self.experimentSpecificity, 1), "rationale": self.experimentSpecificityRationale},
         }
-    
+
+    model_config = ConfigDict(frozen=True)
+
+
+# =============================================================================
+# Dual-Graph Workflow Models (Phase 1: LiteratureGraph + Deep Reading)
+# =============================================================================
+
+
+def _normalize_title(title: str) -> str:
+    """Normalize a title for dedup hashing: lowercase, strip punctuation, collapse whitespace."""
+    return _re.sub(r'\s+', ' ', _re.sub(r'[^\w\s]', '', title.lower())).strip()
+
+
+def _compute_title_hash(title: str) -> str:
+    """Compute SHA256 hash of normalized title for dedup."""
+    return hashlib.sha256(_normalize_title(title).encode('utf-8')).hexdigest()
+
+
+# --- Step 1 Output: QueryPlan ---
+
+class BFTSConfig(BaseModel):
+    """BFTS search configuration carried through the pipeline."""
+    searchBudget: int = Field(default=50, ge=10, le=500)
+    maxDepth: int = Field(default=5, ge=1, le=20)
+    beamWidth: int = Field(default=3, ge=1, le=10)
+    scoringWeights: Dict[str, float] = Field(default_factory=lambda: {
+        "novelty": 0.35, "feasibility": 0.30, "impact": 0.35
+    })
+    model_config = ConfigDict(frozen=True)
+
+
+class QueryFamily(BaseModel):
+    """A family of related search queries."""
+    name: str = Field(..., description="Label for this family, e.g. 'core', 'frontier', 'application'")
+    queries: List[str] = Field(default_factory=list)
+    keyConcepts: List[str] = Field(default_factory=list)
+    model_config = ConfigDict(frozen=True)
+
+
+class QueryPlan(BaseModel):
+    """Output of expandQuery step -- structured search strategy."""
+    refinedQuestion: str
+    queryFamilies: List[QueryFamily] = Field(default_factory=list)
+    expandedTerms: List[str] = Field(default_factory=list)
+    keyConcepts: List[str] = Field(default_factory=list)
+    pathTemplates: List[str] = Field(default_factory=list)
+    bftsConfig: BFTSConfig = Field(default_factory=BFTSConfig)
+    model_config = ConfigDict(frozen=True)
+
+
+# --- Step 2 Output: RawPaper + LiteratureGraph v0 ---
+
+class RawPaper(BaseModel):
+    """A paper retrieved from literature search, before structured extraction."""
+    id: str = Field(..., description="Unique ID, prefixed 'raw_'")
+    sessionId: str
+    title: str
+    authors: List[str] = Field(default_factory=list)
+    year: Optional[int] = None
+    venue: Optional[str] = None
+    url: Optional[str] = None
+    doi: Optional[str] = None
+    arxivId: Optional[str] = None
+    semanticScholarId: Optional[str] = None
+    citationCount: Optional[int] = None
+    abstract: str = ""
+    source: str = Field(..., description="semantic_scholar, arxiv, or local")
+    normalizedTitleHash: str = Field(default="", description="SHA256 of normalized title for dedup")
+    relevanceScore: float = Field(default=0.0, ge=0.0, le=1.0)
+    createdAt: datetime = Field(default_factory=_utcnow)
+    model_config = ConfigDict(frozen=True)
+
+
+class PaperNode(BaseModel):
+    """A node in the LiteratureGraph representing a paper."""
+    paperId: str
+    title: str
+    year: Optional[int] = None
+    clusterId: Optional[str] = None
+    role: Optional[str] = Field(default=None, description="core, representative, frontier, bridge, contradiction, must_cite")
+    isSelected: bool = False
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Computed metrics: degree centrality, betweenness, clustering coefficient")
+    model_config = ConfigDict(frozen=True)
+
+
+class PaperEdge(BaseModel):
+    """An edge in the LiteratureGraph."""
+    sourceId: str
+    targetId: str
+    edgeType: str = Field(..., description="semantic_similar, citation, concept, author, evidence")
+    weight: float = Field(default=0.5, ge=0.0, le=1.0)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    model_config = ConfigDict(frozen=True)
+
+
+class LiteratureCluster(BaseModel):
+    """A cluster of papers in the LiteratureGraph."""
+    clusterId: str
+    label: str = ""
+    paperIds: List[str] = Field(default_factory=list)
+    centroidPaperId: Optional[str] = None
+    themeTokens: List[str] = Field(default_factory=list)
+    model_config = ConfigDict(frozen=True)
+
+
+class LiteratureGraph(BaseModel):
+    """Graph 1: paper-level literature graph. Version 0 after Step 2, version 1 after Step 3."""
+    id: str = Field(..., description="Unique graph ID, prefixed 'lg_'")
+    sessionId: str
+    version: int = Field(default=0, description="0 after Step 2, 1 after Step 3")
+    nodes: List[PaperNode] = Field(default_factory=list)
+    edges: List[PaperEdge] = Field(default_factory=list)
+    clusters: List[LiteratureCluster] = Field(default_factory=list)
+    createdAt: datetime = Field(default_factory=_utcnow)
+    model_config = ConfigDict(frozen=True)
+
+
+# --- Step 3 Output: StructuredPaper + LiteratureMap ---
+
+class Claim(BaseModel):
+    """A claim extracted from a paper."""
+    claimId: str = Field(..., description="Auto-generated, prefixed 'cl_'")
+    paperId: str
+    text: str
+    claimType: str = Field(default="finding", description="finding, method, hypothesis, limitation, gap, comparison, premise_conclusion, cause_effect, method_result")
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+    evidenceSpan: str = Field(default="", description="The sentence or passage this claim is extracted from")
+    model_config = ConfigDict(frozen=True)
+
+
+class Finding(BaseModel):
+    """A research finding extracted from a paper."""
+    findingId: str = Field(..., description="Auto-generated, prefixed 'fn_'")
+    paperId: str
+    description: str
+    category: str = Field(default="empirical", description="empirical, theoretical, methodological, negative")
+    relatedClaims: List[str] = Field(default_factory=list)
+    model_config = ConfigDict(frozen=True)
+
+
+class MethodMention(BaseModel):
+    """A method mentioned in a paper."""
+    methodId: str = Field(..., description="Auto-generated, prefixed 'mm_'")
+    paperId: str
+    name: str
+    description: str = ""
+    category: str = Field(default="algorithm", description="algorithm, framework, metric, dataset, technique")
+    model_config = ConfigDict(frozen=True)
+
+
+class NoveltyEvidence(BaseModel):
+    """Evidence for or against novelty of a direction."""
+    evidenceId: str = Field(..., description="Auto-generated, prefixed 'ne_'")
+    paperId: str
+    direction: str
+    assessment: str = Field(default="neutral", description="supports, contradicts, overlaps, neutral")
+    rationale: str = ""
+    model_config = ConfigDict(frozen=True)
+
+
+class StructuredPaper(BaseModel):
+    """A paper after deep-reading with structured extraction."""
+    id: str = Field(..., description="Matches RawPaper.id of the source paper")
+    sessionId: str
+    rawPaperId: str
+    title: str
+    claims: List[Claim] = Field(default_factory=list)
+    findings: List[Finding] = Field(default_factory=list)
+    methods: List[MethodMention] = Field(default_factory=list)
+    noveltyEvidence: List[NoveltyEvidence] = Field(default_factory=list)
+    summary: str = ""
+    extractionMethod: str = Field(default="llm", description="llm, heuristic, hybrid")
+    extractionConfidence: float = Field(default=0.5, ge=0.0, le=1.0)
+    createdAt: datetime = Field(default_factory=_utcnow)
+    model_config = ConfigDict(frozen=True)
+
+
+class LiteratureMap(BaseModel):
+    """Structured map of the literature space produced in Step 3."""
+    id: str = Field(..., description="Unique map ID, prefixed 'lm_'")
+    sessionId: str
+    clusters: List[LiteratureCluster] = Field(default_factory=list)
+    frontiers: List[str] = Field(default_factory=list, description="Frontier paper IDs")
+    gaps: List[Dict[str, Any]] = Field(default_factory=list, description="Gap descriptions with evidence")
+    noveltyEvidence: List[Dict[str, Any]] = Field(default_factory=list)
+    selectedPaperIds: List[str] = Field(default_factory=list)
+    createdAt: datetime = Field(default_factory=_utcnow)
+    model_config = ConfigDict(frozen=True)
+
+
+# --- Step 4→5 Handoff: BFTSHandoff (Phase 1: preliminary, Phase 2: enriched) ---
+
+class BFTSHandoff(BaseModel):
+    """Handoff from Step 4 to Step 5. Preliminary in Phase 1, enriched in Phase 2."""
+    id: str = Field(..., description="Unique handoff ID, prefixed 'bh_'")
+    sessionId: str
+    reasoningKgId: Optional[str] = Field(default=None, description="Graph 2 ID; None until Phase 2")
+    literatureMapId: str
+    pathSeedIds: List[str] = Field(default_factory=list, description="Empty until Phase 2")
+    selectedPaperIds: List[str] = Field(default_factory=list)
+    bftsConfig: BFTSConfig = Field(default_factory=BFTSConfig)
+    createdAt: datetime = Field(default_factory=_utcnow)
+    model_config = ConfigDict(frozen=True)
+
+
+# --- Phase 2 Models (forward declaration: Graph 2 + Path Seeds) ---
+
+class KGEntity(BaseModel):
+    """An entity in the ReasoningKG (Graph 2). Phase 2 implementation."""
+    entityId: str = Field(..., description="Auto-generated, prefixed 'ke_'")
+    name: str
+    entityType: str = Field(default="concept", description="concept, method, metric, dataset, claim, gap")
+    normalizedName: str = ""
+    sourcePaperIds: List[str] = Field(default_factory=list)
+    sourceClaimIds: List[str] = Field(default_factory=list)
+    importanceScore: float = Field(default=0.0, ge=0.0, le=1.0)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    model_config = ConfigDict(frozen=True)
+
+
+class KGRelation(BaseModel):
+    """A relation between entities in the ReasoningKG (Graph 2). Phase 2 implementation."""
+    relationId: str = Field(..., description="Auto-generated, prefixed 'kr_'")
+    sourceEntityId: str
+    targetEntityId: str
+    relationType: str = Field(..., description="implies (deduction), hypothesizes (abduction), generalizes (induction), supports, contradicts, uses, produces")
+    weight: float = Field(default=0.5, ge=0.0, le=1.0)
+    sourcePaperIds: List[str] = Field(default_factory=list)
+    sourceClaimIds: List[str] = Field(default_factory=list)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    model_config = ConfigDict(frozen=True)
+
+
+class ReasoningKG(BaseModel):
+    """Graph 2: concept-level reasoning knowledge graph. Phase 2 implementation."""
+    id: str = Field(..., description="Unique graph ID, prefixed 'rkg_'")
+    sessionId: str
+    literatureGraphId: str
+    literatureMapId: str
+    entities: List[KGEntity] = Field(default_factory=list)
+    relations: List[KGRelation] = Field(default_factory=list)
+    createdAt: datetime = Field(default_factory=_utcnow)
+    model_config = ConfigDict(frozen=True)
+
+
+class GraphEvidenceLink(BaseModel):
+    """Links a Graph 1 signal to Graph 2 entities/relations. Phase 2 implementation."""
+    linkId: str = Field(..., description="Auto-generated, prefixed 'gel_'")
+    signalType: str = Field(..., description="cluster, frontier, gap, contradiction, novelty")
+    signalId: str
+    targetEntityIds: List[str] = Field(default_factory=list)
+    targetRelationIds: List[str] = Field(default_factory=list)
+    evidenceType: str = Field(default="semantic", description="semantic (from text) or symbolic (from structured claims)")
+    rationale: str = ""
+    model_config = ConfigDict(frozen=True)
+
+
+class PathSeedStep(BaseModel):
+    """A single step in a reasoning path seed. Phase 2 implementation."""
+    stepIndex: int
+    entityId: str
+    relationId: Optional[str] = None
+    description: str = ""
+    model_config = ConfigDict(frozen=True)
+
+
+class PathSeedScores(BaseModel):
+    """Scores for a reasoning path seed. Phase 2 implementation."""
+    novelty: float = Field(default=0.0, ge=0.0, le=1.0)
+    feasibility: float = Field(default=0.0, ge=0.0, le=1.0)
+    impact: float = Field(default=0.0, ge=0.0, le=1.0)
+    evidenceStrength: float = Field(default=0.0, ge=0.0, le=1.0)
+    model_config = ConfigDict(frozen=True)
+
+
+class ReasoningPathSeed(BaseModel):
+    """A reasoning path seed for BFTS exploration. Phase 2 implementation."""
+    seedId: str = Field(..., description="Auto-generated, prefixed 'rps_'")
+    sessionId: str
+    reasoningKgId: str
+    steps: List[PathSeedStep] = Field(default_factory=list)
+    sourcePaperIds: List[str] = Field(default_factory=list)
+    sourceClaimIds: List[str] = Field(default_factory=list)
+    evidenceLinkIds: List[str] = Field(default_factory=list)
+    paperTypes: List[str] = Field(default_factory=list)
+    scores: Optional[PathSeedScores] = None
+    createdAt: datetime = Field(default_factory=_utcnow)
     model_config = ConfigDict(frozen=True)

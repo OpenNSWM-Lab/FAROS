@@ -14,6 +14,8 @@ EXPAND_QUERY_USER = """Given the following research topic, expand it into:
 2. 3-5 related search queries for literature search
 3. Key concepts and terms to look for
 4. Related research areas to explore
+5. Query families: group queries into named families (e.g., 'core', 'frontier', 'application') with their key concepts
+6. Path templates: potential reasoning paths for gap analysis (e.g., "method A → limitation B → opportunity C")
 
 Research Topic: {seed_query}
 Paper Type: {paper_type}
@@ -24,7 +26,12 @@ Respond in JSON format:
   "refinedQuestion": "...",
   "searchQueries": ["query1", "query2", ...],
   "keyConcepts": ["concept1", "concept2", ...],
-  "relatedAreas": ["area1", "area2", ...]
+  "relatedAreas": ["area1", "area2", ...],
+  "queryFamilies": [
+    {{"name": "core", "queries": ["q1"], "keyConcepts": ["c1", "c2"]}},
+    {{"name": "frontier", "queries": ["q2"], "keyConcepts": ["c3"]}}
+  ],
+  "pathTemplates": ["template1", "template2"]
 }}"""
 
 # Step 2: Literature Search (used for relevance scoring)
@@ -237,4 +244,166 @@ Respond in JSON format:
   "commonThemes": ["theme1", "theme2"],
   "keyMethodologies": ["method1", "method2"],
   "openQuestions": ["question1", "question2"]
+}}"""
+
+
+# =============================================================================
+# Dual-Graph: Structured Paper Extraction (Step 3 - Deep Reading)
+# =============================================================================
+
+EXTRACT_STRUCTURED_PAPER_SYSTEM = """You are a research paper analyst specializing in structured information extraction from scientific papers.
+Your task is to extract claims, findings, methods, and novelty evidence from a paper's title and abstract.
+
+For each extraction:
+- Claims: specific assertions the paper makes. Identify the logical connection type (premise→conclusion, cause→effect, method→result, or simple finding/method/hypothesis/limitation/gap/comparison).
+- Findings: key research results. Categorize as empirical, theoretical, methodological, or negative.
+- Methods: techniques, algorithms, frameworks, metrics, datasets mentioned. Categorize as algorithm, framework, metric, dataset, or technique.
+- Novelty Evidence: for each claimed novel contribution, assess whether the evidence supports, contradicts, or overlaps with existing work.
+- Always include the evidence span (the sentence or passage from which the claim was extracted).
+- Provide a 2-3 sentence summary of the paper's contribution."""
+
+EXTRACT_STRUCTURED_PAPER_USER = """Analyze the following paper and extract structured information.
+
+Paper Title: {title}
+Authors: {authors}
+Year: {year}
+Venue: {venue}
+Abstract: {abstract}
+
+Context: this paper is being evaluated as part of a literature review on: {seed_query}
+
+Extract:
+1. Claims (up to 5): specific assertions with logical connection types
+2. Findings (up to 3): key research results with categories
+3. Methods (up to 5): techniques, algorithms, frameworks, metrics, datasets
+4. Novelty Evidence (up to 3): assessment of whether evidence supports, contradicts, or overlaps with known work
+
+Respond in JSON format:
+{{
+  "claims": [
+    {{
+      "text": "The paper claims that...",
+      "claimType": "premise_conclusion",
+      "confidence": 0.8,
+      "evidenceSpan": "We show that X leads to Y..."
+    }}
+  ],
+  "findings": [
+    {{
+      "description": "Key result description",
+      "category": "empirical",
+      "relatedClaims": ["claim_index_0"]
+    }}
+  ],
+  "methods": [
+    {{
+      "name": "Method name",
+      "description": "Brief description of the method",
+      "category": "algorithm"
+    }}
+  ],
+  "noveltyEvidence": [
+    {{
+      "direction": "Novel direction being claimed",
+      "assessment": "supports",
+      "rationale": "Why this evidence supports/contradicts the novelty claim"
+    }}
+  ],
+  "summary": "A 2-3 sentence summary of the paper's contribution."
+}}"""
+
+
+# =============================================================================
+# Dual-Graph Phase 2: Knowledge Graph Extraction (Step 4 - gapAnalysis)
+# =============================================================================
+
+EXTRACT_KG_ENTITIES_SYSTEM = """You are a knowledge graph engineer specializing in scientific entity extraction.
+Your task is to extract entities from structured paper claims, findings, and methods.
+
+Entity types:
+- concept: abstract ideas, phenomena, theories (e.g., "attention mechanism", "scaling laws")
+- method: algorithms, techniques, frameworks (e.g., "BERT", "gradient descent")
+- metric: evaluation measures, benchmarks (e.g., "BLEU score", "perplexity")
+- dataset: corpora, benchmarks, data collections (e.g., "ImageNet", "SQuAD")
+- claim: a specific assertion that can be reasoned about
+- gap: a research gap or open problem identified in the literature
+
+For each entity, provide:
+- name: concise label
+- type: one of the above
+- sourcePaperIds: list of paper IDs where this entity appears
+- sourceClaimIds: list of claim IDs that mention this entity
+
+Normalize names: use lowercase, standard terminology, avoid abbreviations unless standard."""
+
+EXTRACT_KG_ENTITIES_USER = """Extract knowledge graph entities from the following structured paper data.
+
+Claims:
+{claims_text}
+
+Findings:
+{findings_text}
+
+Methods:
+{methods_text}
+
+Research Context: {seed_query}
+
+Respond in JSON format:
+{{
+  "entities": [
+    {{
+      "name": "entity name",
+      "type": "concept",
+      "sourcePaperIds": ["paper_id_1"],
+      "sourceClaimIds": ["claim_id_1"]
+    }}
+  ]
+}}"""
+
+EXTRACT_KG_RELATIONS_SYSTEM = """You are a knowledge graph engineer specializing in scientific relation extraction.
+Your task is to identify relationships between known entities based on structured paper claims.
+
+Relation types (LECTOR-inspired logical reasoning framework):
+- implies: Entity A deductively entails Entity B (A → B)
+- hypothesizes: Entity A abductively explains Entity B (A might explain B)
+- generalizes: Entity A inductively generalizes Entity B (specific → general pattern)
+- supports: Entity A provides evidence for Entity B
+- contradicts: Entity A conflicts with Entity B
+- uses: Entity A utilizes Entity B (method uses dataset, etc.)
+- produces: Entity A generates/outputs Entity B
+
+For each relation, specify:
+- sourceEntityId: the entity name (use normalized form)
+- targetEntityId: the entity name (use normalized form)
+- relationType: one of the above
+- sourcePaperIds: paper IDs that support this relation
+- sourceClaimIds: claim IDs that support this relation
+- weight: 0.0-1.0 confidence based on claim confidence and evidence quality"""
+
+EXTRACT_KG_RELATIONS_USER = """Identify relationships between the following entities based on the claims and findings.
+
+Entities:
+{entities_text}
+
+Claims:
+{claims_text}
+
+Findings:
+{findings_text}
+
+Research Context: {seed_query}
+
+Respond in JSON format:
+{{
+  "relations": [
+    {{
+      "sourceEntityId": "entity_name_1",
+      "targetEntityId": "entity_name_2",
+      "relationType": "implies",
+      "sourcePaperIds": ["paper_id_1"],
+      "sourceClaimIds": ["claim_id_1"],
+      "weight": 0.8
+    }}
+  ]
 }}"""

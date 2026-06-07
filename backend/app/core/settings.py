@@ -41,7 +41,7 @@ class Settings(BaseModel):
     
     # Data storage
     DATA_DIR: str = Field(
-        default_factory=lambda: os.getenv("DATA_DIR", "backend/data"),
+        default_factory=lambda: os.getenv("DATA_DIR", "data"),
         description="Directory for persistent data storage"
     )
     

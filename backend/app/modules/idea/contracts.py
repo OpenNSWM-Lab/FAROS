@@ -5,6 +5,7 @@ shared `app.models` package directly.
 """
 
 from app.models.idea import (
+    # Existing
     DraftPlan,
     ExperimentSpec,
     IdeaCandidate,
@@ -15,6 +16,30 @@ from app.models.idea import (
     RiskItem,
     StepResult,
     WorkflowTrace,
+    # Dual-Graph Phase 1
+    BFTSConfig,
+    BFTSHandoff,
+    Claim,
+    Finding,
+    LiteratureCluster,
+    LiteratureGraph,
+    LiteratureMap,
+    MethodMention,
+    NoveltyEvidence,
+    PaperEdge,
+    PaperNode,
+    QueryFamily,
+    QueryPlan,
+    RawPaper,
+    StructuredPaper,
+    # Dual-Graph Phase 2 (models defined, logic in Phase 2)
+    GraphEvidenceLink,
+    KGEntity,
+    KGRelation,
+    PathSeedScores,
+    PathSeedStep,
+    ReasoningKG,
+    ReasoningPathSeed,
 )
 
 __all__ = [
@@ -28,4 +53,28 @@ __all__ = [
     "RiskItem",
     "StepResult",
     "WorkflowTrace",
+    # Dual-Graph Phase 1
+    "BFTSConfig",
+    "BFTSHandoff",
+    "Claim",
+    "Finding",
+    "LiteratureCluster",
+    "LiteratureGraph",
+    "LiteratureMap",
+    "MethodMention",
+    "NoveltyEvidence",
+    "PaperEdge",
+    "PaperNode",
+    "QueryFamily",
+    "QueryPlan",
+    "RawPaper",
+    "StructuredPaper",
+    # Dual-Graph Phase 2
+    "GraphEvidenceLink",
+    "KGEntity",
+    "KGRelation",
+    "PathSeedScores",
+    "PathSeedStep",
+    "ReasoningKG",
+    "ReasoningPathSeed",
 ]

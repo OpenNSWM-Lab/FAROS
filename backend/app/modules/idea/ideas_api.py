@@ -20,7 +20,17 @@ from app.modules.idea.contracts import (
 )
 from app.modules.idea.service import get_idea_service
 from app.services.plan_builder import build_research_plan_from_candidate, candidate_to_plan_dict
-from app.modules.idea.storage import get_plan_storage
+from app.modules.idea.storage import (
+    get_plan_storage,
+    get_raw_paper_storage,
+    get_literature_graph_storage,
+    get_structured_paper_storage,
+    get_literature_map_storage,
+    get_handoff_storage,
+    get_reasoning_kg_storage,
+    get_evidence_link_storage,
+    get_path_seed_storage,
+)
 from app.core.settings import get_settings
 from pydantic import ValidationError
 import logging
@@ -40,10 +50,11 @@ class CreateSessionRequest(BaseModel):
     seedQuery: str = Field(..., min_length=3)
     paperType: str = Field(default="algorithm", description="Type of paper: algorithm, system, application, benchmark, survey, position, theory, evaluation, reproducibility, safety")
     maxCandidates: int = Field(default=5, ge=1, le=20)
-    maxPapers: int = Field(default=10, ge=1, le=50)
+    maxPapers: int = Field(default=120, ge=1, le=200)
     domain: Optional[str] = None
     constraints: Optional[List[str]] = None
     mustCiteList: Optional[List[str]] = None
+    searchBudget: Optional[int] = Field(default=None, ge=10, le=500)
 
 
 class SessionResponse(BaseModel):
@@ -138,6 +149,84 @@ class SessionListResponse(BaseModel):
     total: int
 
 
+# --- Dual-Graph Response Schemas ---
+
+class QueryPlanResponse(BaseModel):
+    """Response for query plan."""
+    refinedQuestion: str
+    queryFamilies: List[dict]
+    expandedTerms: List[str]
+    keyConcepts: List[str]
+    pathTemplates: List[str]
+    bftsConfig: dict
+
+
+class RawPapersResponse(BaseModel):
+    """Response for raw papers list."""
+    papers: List[dict]
+    total: int
+
+
+class LiteratureGraphResponse(BaseModel):
+    """Response for literature graph."""
+    id: str
+    sessionId: str
+    version: int
+    nodes: List[dict]
+    edges: List[dict]
+    clusters: List[dict]
+    createdAt: str
+
+
+class LiteratureMapResponse(BaseModel):
+    """Response for literature map."""
+    id: str
+    sessionId: str
+    clusters: List[dict]
+    frontiers: List[str]
+    gaps: List[dict]
+    noveltyEvidence: List[dict]
+    selectedPaperIds: List[str]
+    createdAt: str
+
+
+class StructuredPapersResponse(BaseModel):
+    """Response for structured papers list."""
+    papers: List[dict]
+    total: int
+
+
+class BFTSHandoffResponse(BaseModel):
+    """Response for BFTS handoff."""
+    id: str
+    sessionId: str
+    reasoningKgId: Optional[str] = None
+    literatureMapId: str
+    pathSeedIds: List[str]
+    selectedPaperIds: List[str]
+    bftsConfig: dict
+    createdAt: str
+
+
+class ReasoningKGResponse(BaseModel):
+    """Response for reasoning knowledge graph (Graph 2)."""
+    id: str
+    sessionId: str
+    literatureGraphId: str
+    literatureMapId: str
+    entityCount: int
+    relationCount: int
+    entities: List[dict]
+    relations: List[dict]
+    createdAt: str
+
+
+class PathSeedsResponse(BaseModel):
+    """Response for reasoning path seeds."""
+    seeds: List[dict]
+    total: int
+
+
 def _session_to_response(session: IdeaSession) -> SessionResponse:
     """Convert session to response format."""
     return SessionResponse(
@@ -219,6 +308,7 @@ async def create_session(request: CreateSessionRequest) -> SessionResponse:
         domain=request.domain,
         constraints=request.constraints,
         mustCiteList=request.mustCiteList,
+        searchBudget=request.searchBudget,
     )
     
     session = service.create_session(config)
@@ -423,6 +513,276 @@ async def get_session_candidates(session_id: str) -> CandidatesResponse:
     return CandidatesResponse(
         candidates=[_candidate_to_response(c) for c in candidates],
         total=len(candidates),
+    )
+
+
+# =============================================================================
+# Dual-Graph Endpoints (Phase 2)
+# =============================================================================
+
+
+@router.get(
+    "/sessions/{session_id}/graph/reasoning",
+    response_model=ReasoningKGResponse,
+    summary="Get Reasoning Knowledge Graph",
+    description="Get the concept-level reasoning knowledge graph (Graph 2)."
+)
+async def get_reasoning_graph(session_id: str) -> ReasoningKGResponse:
+    """Get reasoning KG for a session."""
+    service = get_idea_service()
+    session = service.get_session(session_id)
+    if not session:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Session {session_id} not found"
+        )
+
+    kg_storage = get_reasoning_kg_storage()
+    kg = kg_storage.get_by_session(session_id)
+    if not kg:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Reasoning KG not yet generated. Run the pipeline first."
+        )
+
+    return ReasoningKGResponse(
+        id=kg.id,
+        sessionId=kg.sessionId,
+        literatureGraphId=kg.literatureGraphId,
+        literatureMapId=kg.literatureMapId,
+        entityCount=len(kg.entities),
+        relationCount=len(kg.relations),
+        entities=[e.model_dump() for e in kg.entities],
+        relations=[r.model_dump() for r in kg.relations],
+        createdAt=kg.createdAt.isoformat() if kg.createdAt else "",
+    )
+
+
+@router.get(
+    "/sessions/{session_id}/path-seeds",
+    response_model=PathSeedsResponse,
+    summary="Get Reasoning Path Seeds",
+    description="Get the reasoning path seeds for BFTS exploration."
+)
+async def get_path_seeds(session_id: str) -> PathSeedsResponse:
+    """Get path seeds for a session."""
+    service = get_idea_service()
+    session = service.get_session(session_id)
+    if not session:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Session {session_id} not found"
+        )
+
+    seed_storage = get_path_seed_storage()
+    seeds = seed_storage.list_by_session(session_id)
+    if not seeds:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Path seeds not yet generated. Run the pipeline first."
+        )
+
+    return PathSeedsResponse(
+        seeds=[s.model_dump() for s in seeds],
+        total=len(seeds),
+    )
+
+
+# =============================================================================
+# Dual-Graph Endpoints (Phase 1)
+# =============================================================================
+
+
+@router.get(
+    "/sessions/{session_id}/query-plan",
+    response_model=QueryPlanResponse,
+    summary="Get Query Plan",
+    description="Get the structured query plan produced in Step 1 (expandQuery)."
+)
+async def get_query_plan(session_id: str) -> QueryPlanResponse:
+    """Get query plan for a session."""
+    service = get_idea_service()
+    session = service.get_session(session_id)
+    if not session:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Session {session_id} not found"
+        )
+
+    query_plan_dict = service._get_step_output(session, "expandQuery", "queryPlan")
+    if not query_plan_dict:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Query plan not yet generated. Start the session pipeline first."
+        )
+
+    return QueryPlanResponse(**query_plan_dict)
+
+
+@router.get(
+    "/sessions/{session_id}/literature/raw",
+    response_model=RawPapersResponse,
+    summary="Get Raw Papers",
+    description="Get raw papers from literature search with full metadata and dedup keys."
+)
+async def get_raw_papers(session_id: str) -> RawPapersResponse:
+    """Get raw papers for a session."""
+    service = get_idea_service()
+    session = service.get_session(session_id)
+    if not session:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Session {session_id} not found"
+        )
+
+    raw_storage = get_raw_paper_storage()
+    papers = raw_storage.list_by_session(session_id)
+    if not papers:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Raw papers not yet generated. Run the pipeline first."
+        )
+
+    return RawPapersResponse(
+        papers=[p.model_dump() for p in papers],
+        total=len(papers),
+    )
+
+
+@router.get(
+    "/sessions/{session_id}/graph/literature",
+    response_model=LiteratureGraphResponse,
+    summary="Get Literature Graph",
+    description="Get the paper-level literature graph (Graph 1)."
+)
+async def get_literature_graph(session_id: str) -> LiteratureGraphResponse:
+    """Get literature graph for a session."""
+    service = get_idea_service()
+    session = service.get_session(session_id)
+    if not session:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Session {session_id} not found"
+        )
+
+    graph_storage = get_literature_graph_storage()
+    graph = graph_storage.get_by_session(session_id)
+    if not graph:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Literature graph not yet generated. Run the pipeline first."
+        )
+
+    return LiteratureGraphResponse(
+        id=graph.id,
+        sessionId=graph.sessionId,
+        version=graph.version,
+        nodes=[n.model_dump() for n in graph.nodes],
+        edges=[e.model_dump() for e in graph.edges],
+        clusters=[c.model_dump() for c in graph.clusters],
+        createdAt=graph.createdAt.isoformat() if graph.createdAt else "",
+    )
+
+
+@router.get(
+    "/sessions/{session_id}/literature-map",
+    response_model=LiteratureMapResponse,
+    summary="Get Literature Map",
+    description="Get the structured literature map with clusters, frontiers, and gaps."
+)
+async def get_literature_map(session_id: str) -> LiteratureMapResponse:
+    """Get literature map for a session."""
+    service = get_idea_service()
+    session = service.get_session(session_id)
+    if not session:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Session {session_id} not found"
+        )
+
+    map_storage = get_literature_map_storage()
+    lit_map = map_storage.get_by_session(session_id)
+    if not lit_map:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Literature map not yet generated. Run the pipeline first."
+        )
+
+    return LiteratureMapResponse(
+        id=lit_map.id,
+        sessionId=lit_map.sessionId,
+        clusters=[c.model_dump() for c in lit_map.clusters],
+        frontiers=lit_map.frontiers,
+        gaps=lit_map.gaps,
+        noveltyEvidence=lit_map.noveltyEvidence,
+        selectedPaperIds=lit_map.selectedPaperIds,
+        createdAt=lit_map.createdAt.isoformat() if lit_map.createdAt else "",
+    )
+
+
+@router.get(
+    "/sessions/{session_id}/literature/structured",
+    response_model=StructuredPapersResponse,
+    summary="Get Structured Papers",
+    description="Get deep-read structured papers with extracted claims, findings, and methods."
+)
+async def get_structured_papers(session_id: str) -> StructuredPapersResponse:
+    """Get structured papers for a session."""
+    service = get_idea_service()
+    session = service.get_session(session_id)
+    if not session:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Session {session_id} not found"
+        )
+
+    structured_storage = get_structured_paper_storage()
+    papers = structured_storage.list_by_session(session_id)
+    if not papers:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Structured papers not yet generated. Run the pipeline first."
+        )
+
+    return StructuredPapersResponse(
+        papers=[p.model_dump() for p in papers],
+        total=len(papers),
+    )
+
+
+@router.get(
+    "/sessions/{session_id}/bfts-handoff",
+    response_model=BFTSHandoffResponse,
+    summary="Get BFTS Handoff",
+    description="Get the BFTS handoff artifact for Step 5 consumption."
+)
+async def get_bfts_handoff(session_id: str) -> BFTSHandoffResponse:
+    """Get BFTS handoff for a session."""
+    service = get_idea_service()
+    session = service.get_session(session_id)
+    if not session:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Session {session_id} not found"
+        )
+
+    handoff_storage = get_handoff_storage()
+    handoff = handoff_storage.get_by_session(session_id)
+    if not handoff:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="BFTS handoff not yet generated. Run the pipeline first."
+        )
+
+    return BFTSHandoffResponse(
+        id=handoff.id,
+        sessionId=handoff.sessionId,
+        reasoningKgId=handoff.reasoningKgId,
+        literatureMapId=handoff.literatureMapId,
+        pathSeedIds=handoff.pathSeedIds,
+        selectedPaperIds=handoff.selectedPaperIds,
+        bftsConfig=handoff.bftsConfig.model_dump(),
+        createdAt=handoff.createdAt.isoformat() if handoff.createdAt else "",
     )
 
 

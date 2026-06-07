@@ -1,0 +1,45 @@
+# Python caches and virtual environments
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+backend/.venv/
+
+# Node dependencies and frontend build output
+frontend/node_modules/
+frontend/dist/
+
+# Local environment files
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+!.env.example
+!frontend/.env.example
+
+# Logs
+*.log
+.dev/logs/
+
+# Local runtime data
+backend/data/app.db
+backend/data/artifacts/
+backend/data/codegen_sessions/
+backend/data/experiment_datasets/
+backend/data/experiments/
+backend/data/figures/
+backend/data/ideas/
+backend/data/improvement_requests/
+backend/data/papers/
+backend/data/plan_sessions/
+backend/data/research_plans/
+backend/data/reviews/
+backend/data/runs/
+backend/app/data/plan_links/

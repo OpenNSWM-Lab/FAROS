@@ -17,6 +17,16 @@ from app.models.idea import (
     IdeaSessionStatus,
     LiteratureItem,
     IdeaCandidate,
+    # Dual-Graph models
+    RawPaper,
+    LiteratureGraph,
+    StructuredPaper,
+    LiteratureMap,
+    BFTSHandoff,
+    # Phase 2 models
+    ReasoningKG,
+    GraphEvidenceLink,
+    ReasoningPathSeed,
 )
 
 
@@ -38,7 +48,7 @@ def generate_candidate_id() -> str:
 class IdeaSessionStorage:
     """Storage for idea generation sessions."""
     
-    def __init__(self, data_dir: str = "backend/data"):
+    def __init__(self, data_dir: str = "data"):
         self.base_path = Path(data_dir) / "ideas" / "sessions"
         self.base_path.mkdir(parents=True, exist_ok=True)
     
@@ -90,7 +100,7 @@ class IdeaSessionStorage:
         temp_path = path.with_suffix('.tmp')
         with open(temp_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, default=str)
-        temp_path.rename(path)
+        os.replace(temp_path, path)
         
         return session
     
@@ -114,7 +124,7 @@ class IdeaSessionStorage:
         temp_path = path.with_suffix('.tmp')
         with open(temp_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, default=str)
-        temp_path.rename(path)
+        os.replace(temp_path, path)
         
         return session
     
@@ -135,8 +145,8 @@ class IdeaSessionStorage:
 
 class LiteratureStorage:
     """Storage for literature items."""
-    
-    def __init__(self, data_dir: str = "backend/data"):
+
+    def __init__(self, data_dir: str = "data"):
         self.base_path = Path(data_dir) / "ideas" / "literature"
         self.base_path.mkdir(parents=True, exist_ok=True)
     
@@ -152,7 +162,7 @@ class LiteratureStorage:
         temp_path = path.with_suffix('.tmp')
         with open(temp_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2)
-        temp_path.rename(path)
+        os.replace(temp_path, path)
         
         return item
     
@@ -186,8 +196,8 @@ class LiteratureStorage:
 
 class CandidateStorage:
     """Storage for idea candidates."""
-    
-    def __init__(self, data_dir: str = "backend/data"):
+
+    def __init__(self, data_dir: str = "data"):
         self.base_path = Path(data_dir) / "ideas" / "candidates"
         self.base_path.mkdir(parents=True, exist_ok=True)
     
@@ -203,7 +213,7 @@ class CandidateStorage:
         temp_path = path.with_suffix('.tmp')
         with open(temp_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2)
-        temp_path.rename(path)
+        os.replace(temp_path, path)
         
         return candidate
     
@@ -261,3 +271,595 @@ def get_candidate_storage() -> CandidateStorage:
     if _candidate_storage is None:
         _candidate_storage = CandidateStorage()
     return _candidate_storage
+
+
+# =============================================================================
+# Dual-Graph Storage: ID Generators
+# =============================================================================
+
+
+def generate_raw_paper_id() -> str:
+    """Generate unique raw paper ID."""
+    return f"raw_{uuid.uuid4().hex[:12]}"
+
+
+def generate_graph_id() -> str:
+    """Generate unique literature graph ID."""
+    return f"lg_{uuid.uuid4().hex[:12]}"
+
+
+def generate_map_id() -> str:
+    """Generate unique literature map ID."""
+    return f"lm_{uuid.uuid4().hex[:12]}"
+
+
+def generate_handoff_id() -> str:
+    """Generate unique handoff ID."""
+    return f"bh_{uuid.uuid4().hex[:12]}"
+
+
+# =============================================================================
+# Dual-Graph Storage: RawPaper Storage
+# =============================================================================
+
+
+class RawPaperStorage:
+    """Storage for raw papers from literature search."""
+
+    def __init__(self, data_dir: str = "data"):
+        self.base_path = Path(data_dir) / "ideas" / "raw_papers"
+        self.base_path.mkdir(parents=True, exist_ok=True)
+
+    def _get_path(self, paper_id: str) -> Path:
+        return self.base_path / f"{paper_id}.json"
+
+    def create(self, paper: RawPaper) -> RawPaper:
+        """Create a new raw paper."""
+        path = self._get_path(paper.id)
+        if path.exists():
+            raise ValueError(f"RawPaper {paper.id} already exists")
+
+        data = paper.model_dump()
+        data['createdAt'] = data['createdAt'].isoformat() if isinstance(data['createdAt'], datetime) else data['createdAt']
+
+        temp_path = path.with_suffix('.tmp')
+        with open(temp_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, default=str)
+        os.replace(temp_path, path)
+
+        return paper
+
+    def get(self, paper_id: str) -> Optional[RawPaper]:
+        """Get raw paper by ID."""
+        path = self._get_path(paper_id)
+        if not path.exists():
+            return None
+
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        if data.get('createdAt') and isinstance(data['createdAt'], str):
+            data['createdAt'] = datetime.fromisoformat(data['createdAt'])
+        return RawPaper(**data)
+
+    def list_by_session(self, session_id: str) -> List[RawPaper]:
+        """List all raw papers for a session."""
+        papers = []
+        for path in self.base_path.glob("raw_*.json"):
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                if data.get('sessionId') == session_id:
+                    if data.get('createdAt') and isinstance(data['createdAt'], str):
+                        data['createdAt'] = datetime.fromisoformat(data['createdAt'])
+                    papers.append(RawPaper(**data))
+            except Exception:
+                continue
+        return sorted(papers, key=lambda p: p.relevanceScore, reverse=True)
+
+
+# =============================================================================
+# Dual-Graph Storage: LiteratureGraph Storage
+# =============================================================================
+
+
+class LiteratureGraphStorage:
+    """Storage for literature graphs."""
+
+    def __init__(self, data_dir: str = "data"):
+        self.base_path = Path(data_dir) / "ideas" / "graphs"
+        self.base_path.mkdir(parents=True, exist_ok=True)
+
+    def _get_path(self, graph_id: str) -> Path:
+        return self.base_path / f"{graph_id}.json"
+
+    def create(self, graph: LiteratureGraph) -> LiteratureGraph:
+        """Create a new literature graph."""
+        path = self._get_path(graph.id)
+        if path.exists():
+            raise ValueError(f"LiteratureGraph {graph.id} already exists")
+
+        data = graph.model_dump()
+        data['createdAt'] = data['createdAt'].isoformat() if isinstance(data['createdAt'], datetime) else data['createdAt']
+
+        temp_path = path.with_suffix('.tmp')
+        with open(temp_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, default=str)
+        os.replace(temp_path, path)
+
+        return graph
+
+    def get(self, graph_id: str) -> Optional[LiteratureGraph]:
+        """Get graph by ID."""
+        path = self._get_path(graph_id)
+        if not path.exists():
+            return None
+
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        if data.get('createdAt') and isinstance(data['createdAt'], str):
+            data['createdAt'] = datetime.fromisoformat(data['createdAt'])
+        return LiteratureGraph(**data)
+
+    def update(self, graph: LiteratureGraph) -> LiteratureGraph:
+        """Update an existing graph (e.g., v0 -> v1)."""
+        path = self._get_path(graph.id)
+        if not path.exists():
+            raise ValueError(f"LiteratureGraph {graph.id} not found")
+
+        data = graph.model_dump()
+        data['createdAt'] = data['createdAt'].isoformat() if isinstance(data['createdAt'], datetime) else data['createdAt']
+
+        temp_path = path.with_suffix('.tmp')
+        with open(temp_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, default=str)
+        os.replace(temp_path, path)
+
+        return graph
+
+    def get_by_session(self, session_id: str) -> Optional[LiteratureGraph]:
+        """Get the graph for a session (latest version)."""
+        graphs = []
+        for path in self.base_path.glob("lg_*.json"):
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                if data.get('sessionId') == session_id:
+                    if data.get('createdAt') and isinstance(data['createdAt'], str):
+                        data['createdAt'] = datetime.fromisoformat(data['createdAt'])
+                    graphs.append(LiteratureGraph(**data))
+            except Exception:
+                continue
+        # Return the one with highest version
+        graphs.sort(key=lambda g: g.version, reverse=True)
+        return graphs[0] if graphs else None
+
+
+# =============================================================================
+# Dual-Graph Storage: StructuredPaper Storage
+# =============================================================================
+
+
+class StructuredPaperStorage:
+    """Storage for deep-read structured papers."""
+
+    def __init__(self, data_dir: str = "data"):
+        self.base_path = Path(data_dir) / "ideas" / "structured_papers"
+        self.base_path.mkdir(parents=True, exist_ok=True)
+
+    def _get_path(self, paper_id: str) -> Path:
+        return self.base_path / f"{paper_id}.json"
+
+    def create(self, paper: StructuredPaper) -> StructuredPaper:
+        """Create a new structured paper."""
+        path = self._get_path(paper.id)
+        if path.exists():
+            raise ValueError(f"StructuredPaper {paper.id} already exists")
+
+        data = paper.model_dump()
+        data['createdAt'] = data['createdAt'].isoformat() if isinstance(data['createdAt'], datetime) else data['createdAt']
+
+        temp_path = path.with_suffix('.tmp')
+        with open(temp_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, default=str)
+        os.replace(temp_path, path)
+
+        return paper
+
+    def get(self, paper_id: str) -> Optional[StructuredPaper]:
+        """Get structured paper by ID."""
+        path = self._get_path(paper_id)
+        if not path.exists():
+            return None
+
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        if data.get('createdAt') and isinstance(data['createdAt'], str):
+            data['createdAt'] = datetime.fromisoformat(data['createdAt'])
+        return StructuredPaper(**data)
+
+    def list_by_session(self, session_id: str) -> List[StructuredPaper]:
+        """List all structured papers for a session."""
+        papers = []
+        for path in self.base_path.glob("raw_*.json"):
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                if data.get('sessionId') == session_id:
+                    if data.get('createdAt') and isinstance(data['createdAt'], str):
+                        data['createdAt'] = datetime.fromisoformat(data['createdAt'])
+                    papers.append(StructuredPaper(**data))
+            except Exception:
+                continue
+        return sorted(papers, key=lambda p: p.createdAt, reverse=True)
+
+
+# =============================================================================
+# Dual-Graph Storage: LiteratureMap Storage
+# =============================================================================
+
+
+class LiteratureMapStorage:
+    """Storage for literature maps."""
+
+    def __init__(self, data_dir: str = "data"):
+        self.base_path = Path(data_dir) / "ideas" / "literature_maps"
+        self.base_path.mkdir(parents=True, exist_ok=True)
+
+    def _get_path(self, map_id: str) -> Path:
+        return self.base_path / f"{map_id}.json"
+
+    def create(self, lit_map: LiteratureMap) -> LiteratureMap:
+        """Create a new literature map."""
+        path = self._get_path(lit_map.id)
+        if path.exists():
+            raise ValueError(f"LiteratureMap {lit_map.id} already exists")
+
+        data = lit_map.model_dump()
+        data['createdAt'] = data['createdAt'].isoformat() if isinstance(data['createdAt'], datetime) else data['createdAt']
+
+        temp_path = path.with_suffix('.tmp')
+        with open(temp_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, default=str)
+        os.replace(temp_path, path)
+
+        return lit_map
+
+    def get(self, map_id: str) -> Optional[LiteratureMap]:
+        """Get literature map by ID."""
+        path = self._get_path(map_id)
+        if not path.exists():
+            return None
+
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        if data.get('createdAt') and isinstance(data['createdAt'], str):
+            data['createdAt'] = datetime.fromisoformat(data['createdAt'])
+        return LiteratureMap(**data)
+
+    def get_by_session(self, session_id: str) -> Optional[LiteratureMap]:
+        """Get the literature map for a session."""
+        for path in self.base_path.glob("lm_*.json"):
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                if data.get('sessionId') == session_id:
+                    if data.get('createdAt') and isinstance(data['createdAt'], str):
+                        data['createdAt'] = datetime.fromisoformat(data['createdAt'])
+                    return LiteratureMap(**data)
+            except Exception:
+                continue
+        return None
+
+
+# =============================================================================
+# Dual-Graph Storage: BFTSHandoff Storage
+# =============================================================================
+
+
+class HandoffStorage:
+    """Storage for BFTS handoffs."""
+
+    def __init__(self, data_dir: str = "data"):
+        self.base_path = Path(data_dir) / "ideas" / "handoffs"
+        self.base_path.mkdir(parents=True, exist_ok=True)
+
+    def _get_path(self, handoff_id: str) -> Path:
+        return self.base_path / f"{handoff_id}.json"
+
+    def create(self, handoff: BFTSHandoff) -> BFTSHandoff:
+        """Create a new handoff."""
+        path = self._get_path(handoff.id)
+        if path.exists():
+            raise ValueError(f"BFTSHandoff {handoff.id} already exists")
+
+        data = handoff.model_dump()
+        data['createdAt'] = data['createdAt'].isoformat() if isinstance(data['createdAt'], datetime) else data['createdAt']
+
+        temp_path = path.with_suffix('.tmp')
+        with open(temp_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, default=str)
+        os.replace(temp_path, path)
+
+        return handoff
+
+    def get(self, handoff_id: str) -> Optional[BFTSHandoff]:
+        """Get handoff by ID."""
+        path = self._get_path(handoff_id)
+        if not path.exists():
+            return None
+
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        if data.get('createdAt') and isinstance(data['createdAt'], str):
+            data['createdAt'] = datetime.fromisoformat(data['createdAt'])
+        return BFTSHandoff(**data)
+
+    def get_by_session(self, session_id: str) -> Optional[BFTSHandoff]:
+        """Get the handoff for a session (latest version)."""
+        handoffs = []
+        for path in self.base_path.glob("bh_*.json"):
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                if data.get('sessionId') == session_id:
+                    if data.get('createdAt') and isinstance(data['createdAt'], str):
+                        data['createdAt'] = datetime.fromisoformat(data['createdAt'])
+                    handoffs.append(BFTSHandoff(**data))
+            except Exception:
+                continue
+        handoffs.sort(key=lambda h: h.createdAt, reverse=True)
+        return handoffs[0] if handoffs else None
+
+    def delete(self, handoff_id: str) -> None:
+        """Delete a handoff by ID."""
+        path = self._get_path(handoff_id)
+        if path.exists():
+            os.remove(path)
+
+
+# =============================================================================
+# Dual-Graph Storage: Global Instances
+# =============================================================================
+
+_raw_paper_storage: Optional[RawPaperStorage] = None
+_graph_storage: Optional[LiteratureGraphStorage] = None
+_structured_storage: Optional[StructuredPaperStorage] = None
+_map_storage: Optional[LiteratureMapStorage] = None
+_handoff_storage: Optional[HandoffStorage] = None
+
+
+def get_raw_paper_storage() -> RawPaperStorage:
+    global _raw_paper_storage
+    if _raw_paper_storage is None:
+        _raw_paper_storage = RawPaperStorage()
+    return _raw_paper_storage
+
+
+def get_literature_graph_storage() -> LiteratureGraphStorage:
+    global _graph_storage
+    if _graph_storage is None:
+        _graph_storage = LiteratureGraphStorage()
+    return _graph_storage
+
+
+def get_structured_paper_storage() -> StructuredPaperStorage:
+    global _structured_storage
+    if _structured_storage is None:
+        _structured_storage = StructuredPaperStorage()
+    return _structured_storage
+
+
+def get_literature_map_storage() -> LiteratureMapStorage:
+    global _map_storage
+    if _map_storage is None:
+        _map_storage = LiteratureMapStorage()
+    return _map_storage
+
+
+def get_handoff_storage() -> HandoffStorage:
+    global _handoff_storage
+    if _handoff_storage is None:
+        _handoff_storage = HandoffStorage()
+    return _handoff_storage
+
+
+# =============================================================================
+# Phase 2 Storage: ID Generators
+# =============================================================================
+
+
+def generate_reasoning_kg_id() -> str:
+    """Generate unique reasoning KG ID."""
+    return f"rkg_{uuid.uuid4().hex[:12]}"
+
+
+def generate_evidence_link_id() -> str:
+    """Generate unique evidence link ID."""
+    return f"gel_{uuid.uuid4().hex[:12]}"
+
+
+def generate_path_seed_id() -> str:
+    """Generate unique path seed ID."""
+    return f"rps_{uuid.uuid4().hex[:12]}"
+
+
+# =============================================================================
+# Phase 2 Storage: ReasoningKG Storage
+# =============================================================================
+
+
+class ReasoningKGStorage:
+    """Storage for reasoning knowledge graphs (Graph 2)."""
+
+    def __init__(self, data_dir: str = "data"):
+        self.base_path = Path(data_dir) / "ideas" / "reasoning_kgs"
+        self.base_path.mkdir(parents=True, exist_ok=True)
+
+    def _get_path(self, kg_id: str) -> Path:
+        return self.base_path / f"{kg_id}.json"
+
+    def create(self, kg: ReasoningKG) -> ReasoningKG:
+        path = self._get_path(kg.id)
+        if path.exists():
+            raise ValueError(f"ReasoningKG {kg.id} already exists")
+        data = kg.model_dump()
+        data['createdAt'] = data['createdAt'].isoformat() if isinstance(data['createdAt'], datetime) else data['createdAt']
+        temp_path = path.with_suffix('.tmp')
+        with open(temp_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, default=str)
+        os.replace(temp_path, path)
+        return kg
+
+    def get(self, kg_id: str) -> Optional[ReasoningKG]:
+        path = self._get_path(kg_id)
+        if not path.exists():
+            return None
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        if data.get('createdAt') and isinstance(data['createdAt'], str):
+            data['createdAt'] = datetime.fromisoformat(data['createdAt'])
+        return ReasoningKG(**data)
+
+    def get_by_session(self, session_id: str) -> Optional[ReasoningKG]:
+        for path in self.base_path.glob("rkg_*.json"):
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                if data.get('sessionId') == session_id:
+                    if data.get('createdAt') and isinstance(data['createdAt'], str):
+                        data['createdAt'] = datetime.fromisoformat(data['createdAt'])
+                    return ReasoningKG(**data)
+            except Exception:
+                continue
+        return None
+
+
+# =============================================================================
+# Phase 2 Storage: GraphEvidenceLink Storage
+# =============================================================================
+
+
+class GraphEvidenceLinkStorage:
+    """Storage for GraphEvidenceLinks between Graph 1 and Graph 2."""
+
+    def __init__(self, data_dir: str = "data"):
+        self.base_path = Path(data_dir) / "ideas" / "evidence_links"
+        self.base_path.mkdir(parents=True, exist_ok=True)
+
+    def _get_path(self, link_id: str) -> Path:
+        return self.base_path / f"{link_id}.json"
+
+    def create(self, link: GraphEvidenceLink) -> GraphEvidenceLink:
+        path = self._get_path(link.linkId)
+        if path.exists():
+            raise ValueError(f"GraphEvidenceLink {link.linkId} already exists")
+        data = link.model_dump()
+        temp_path = path.with_suffix('.tmp')
+        with open(temp_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, default=str)
+        os.replace(temp_path, path)
+        return link
+
+    def get(self, link_id: str) -> Optional[GraphEvidenceLink]:
+        path = self._get_path(link_id)
+        if not path.exists():
+            return None
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        return GraphEvidenceLink(**data)
+
+    def list_by_session(self, session_id: str) -> List[GraphEvidenceLink]:
+        links = []
+        for path in self.base_path.glob("gel_*.json"):
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                # Evidence links don't have sessionId directly; we load all and filter
+                links.append(GraphEvidenceLink(**data))
+            except Exception:
+                continue
+        return links
+
+
+# =============================================================================
+# Phase 2 Storage: PathSeed Storage
+# =============================================================================
+
+
+class PathSeedStorage:
+    """Storage for ReasoningPathSeeds."""
+
+    def __init__(self, data_dir: str = "data"):
+        self.base_path = Path(data_dir) / "ideas" / "path_seeds"
+        self.base_path.mkdir(parents=True, exist_ok=True)
+
+    def _get_path(self, seed_id: str) -> Path:
+        return self.base_path / f"{seed_id}.json"
+
+    def create(self, seed: ReasoningPathSeed) -> ReasoningPathSeed:
+        path = self._get_path(seed.seedId)
+        if path.exists():
+            raise ValueError(f"ReasoningPathSeed {seed.seedId} already exists")
+        data = seed.model_dump()
+        data['createdAt'] = data['createdAt'].isoformat() if isinstance(data['createdAt'], datetime) else data['createdAt']
+        temp_path = path.with_suffix('.tmp')
+        with open(temp_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, default=str)
+        os.replace(temp_path, path)
+        return seed
+
+    def get(self, seed_id: str) -> Optional[ReasoningPathSeed]:
+        path = self._get_path(seed_id)
+        if not path.exists():
+            return None
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        if data.get('createdAt') and isinstance(data['createdAt'], str):
+            data['createdAt'] = datetime.fromisoformat(data['createdAt'])
+        return ReasoningPathSeed(**data)
+
+    def list_by_session(self, session_id: str) -> List[ReasoningPathSeed]:
+        seeds = []
+        for path in self.base_path.glob("rps_*.json"):
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                if data.get('sessionId') == session_id:
+                    if data.get('createdAt') and isinstance(data['createdAt'], str):
+                        data['createdAt'] = datetime.fromisoformat(data['createdAt'])
+                    seeds.append(ReasoningPathSeed(**data))
+            except Exception:
+                continue
+        return sorted(seeds, key=lambda s: (
+            s.scores.novelty + s.scores.feasibility + s.scores.impact
+        ) if s.scores else 0.0, reverse=True)
+
+
+# =============================================================================
+# Phase 2 Storage: Global Instances
+# =============================================================================
+
+_reasoning_kg_storage: Optional[ReasoningKGStorage] = None
+_evidence_link_storage: Optional[GraphEvidenceLinkStorage] = None
+_path_seed_storage: Optional[PathSeedStorage] = None
+
+
+def get_reasoning_kg_storage() -> ReasoningKGStorage:
+    global _reasoning_kg_storage
+    if _reasoning_kg_storage is None:
+        _reasoning_kg_storage = ReasoningKGStorage()
+    return _reasoning_kg_storage
+
+
+def get_evidence_link_storage() -> GraphEvidenceLinkStorage:
+    global _evidence_link_storage
+    if _evidence_link_storage is None:
+        _evidence_link_storage = GraphEvidenceLinkStorage()
+    return _evidence_link_storage
+
+
+def get_path_seed_storage() -> PathSeedStorage:
+    global _path_seed_storage
+    if _path_seed_storage is None:
+        _path_seed_storage = PathSeedStorage()
+    return _path_seed_storage
