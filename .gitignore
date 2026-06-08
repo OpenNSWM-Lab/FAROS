@@ -1,3 +1,6 @@
+# IDE
+.idea/
+
 # Python caches and virtual environments
 __pycache__/
 *.py[cod]
@@ -27,6 +30,9 @@ frontend/dist/
 # Logs
 *.log
 .dev/logs/
+
+# Local runtime data (test-generated)
+data/
 
 # Local runtime data
 backend/data/app.db

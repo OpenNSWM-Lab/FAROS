@@ -9,6 +9,7 @@ Inspirations:
 - LECTOR: reasoning logic graph edge types (deduction/abduction/induction)
 """
 
+import os
 import logging
 import uuid
 import hashlib
@@ -53,6 +54,17 @@ class LiteratureGraphBuilder:
             LiteratureGraph with version=0 (nodes + edges, no clusters/selection).
         """
         graph_id = f"lg_{uuid.uuid4().hex[:12]}"
+
+        if not raw_papers:
+            logger.warning("build_graph_v0: no raw papers provided, returning empty graph")
+            return LiteratureGraph(
+                id=graph_id,
+                sessionId=session_id,
+                version=0,
+                nodes=[],
+                edges=[],
+                clusters=[],
+            )
 
         # Create nodes
         max_citations = max((p.citationCount or 0) for p in raw_papers) or 1
@@ -116,8 +128,11 @@ class LiteratureGraphBuilder:
                 f"{p.title}. {p.abstract[:2000]}"
                 for p in papers
             ]
+            embedding_model = os.getenv("EMBEDDING_MODEL", "").strip()
+            if not embedding_model:
+                raise ValueError("EMBEDDING_MODEL not set, using Jaccard fallback")
             response = litellm.embedding(
-                model="text-embedding-3-small",
+                model=embedding_model,
                 input=texts,
             )
             embeddings = [d["embedding"] for d in response.data]

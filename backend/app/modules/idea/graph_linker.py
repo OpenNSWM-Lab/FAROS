@@ -83,7 +83,7 @@ class GraphLinker:
 
         # 3. Gap signals: match gap text to entities + hypothesizes relations
         for i, gap in enumerate(literature_map.gaps):
-            direction = gap.direction if hasattr(gap, 'direction') else gap.get("direction", "")
+            direction = gap.direction
             gap_entities = self._match_text_to_entities(direction, entity_by_name)
             # Also find "hypothesizes" relations
             hyp_rels = relation_by_type.get("hypothesizes", [])
@@ -105,8 +105,8 @@ class GraphLinker:
 
         # 4. Novelty evidence signals
         for i, ne in enumerate(literature_map.noveltyEvidence):
-            direction = ne.direction if hasattr(ne, 'direction') else ne.get("direction", "")
-            assessment = ne.assessment if hasattr(ne, 'assessment') else ne.get("assessment", "")
+            direction = ne.direction
+            assessment = ne.assessment
             ne_entities = self._match_text_to_entities(direction, entity_by_name)
 
             # Find supports/contradicts relations

@@ -31,6 +31,53 @@ from app.services import prompts
 logger = logging.getLogger(__name__)
 
 
+def _extract_json_from_text(text: str) -> dict:
+    """Robust JSON extraction from LLM text output.
+
+    Tries multiple strategies in order:
+    1. Direct json.loads (if the whole text is clean JSON)
+    2. Extract from ```json ... ``` code block
+    3. Bracket-balanced extraction (handles nested braces, avoids greedy regex issues)
+    """
+    # Strategy 1: direct parse
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    # Strategy 2: markdown code block
+    code_match = _re.search(r'```(?:json)?\s*(\{[\s\S]*?\})\s*```', text)
+    if code_match:
+        try:
+            return json.loads(code_match.group(1))
+        except json.JSONDecodeError:
+            pass
+
+    # Strategy 3: bracket-balanced extraction
+    start = text.find('{')
+    if start == -1:
+        return {}
+
+    depth = 0
+    end = start
+    for i in range(start, len(text)):
+        if text[i] == '{':
+            depth += 1
+        elif text[i] == '}':
+            depth -= 1
+            if depth == 0:
+                end = i + 1
+                break
+
+    if end > start:
+        try:
+            return json.loads(text[start:end])
+        except json.JSONDecodeError:
+            pass
+
+    return {}
+
+
 class ReasoningKGBuilder:
     """Stateless builder for concept-level reasoning knowledge graphs."""
 
@@ -55,6 +102,13 @@ class ReasoningKGBuilder:
 
         # 3. Relation extraction (LLM primary, rule fallback)
         relations = self._extract_relations(session, entities, structured_papers)
+
+        # 4. Connectivity post-processing: ensure high-importance entities
+        #    are reachable via co-occurrence bridge edges when the LLM
+        #    relation graph has disconnected components
+        relations = self._ensure_connectivity(
+            session, entities, relations, structured_papers,
+        )
 
         kg = ReasoningKG(
             id=kg_id,
@@ -116,11 +170,7 @@ class ReasoningKGBuilder:
 
             response = client.chat(messages, model=session.config.model, max_tokens=2000)
 
-            try:
-                data = json.loads(response.text)
-            except json.JSONDecodeError:
-                json_match = _re.search(r'\{[\s\S]*\}', response.text)
-                data = json.loads(json_match.group()) if json_match else {}
+            data = _extract_json_from_text(response.text)
 
             # Collect valid paper IDs from structured papers
             valid_paper_ids = {sp.rawPaperId for sp in structured_papers}
@@ -345,11 +395,7 @@ class ReasoningKGBuilder:
 
             response = client.chat(messages, model=session.config.model, max_tokens=2000)
 
-            try:
-                data = json.loads(response.text)
-            except json.JSONDecodeError:
-                json_match = _re.search(r'\{[\s\S]*\}', response.text)
-                data = json.loads(json_match.group()) if json_match else {}
+            data = _extract_json_from_text(response.text)
 
             # Collect valid IDs for source paper/claim constraint enforcement
             valid_paper_ids = {sp.rawPaperId for sp in structured_papers}
@@ -434,3 +480,292 @@ class ReasoningKGBuilder:
                     ))
 
         return relations[:30]
+
+    # ------------------------------------------------------------------
+    # Connectivity Post-Processing (Graph Component Analysis)
+    # ------------------------------------------------------------------
+
+    def _ensure_connectivity(
+        self,
+        session: IdeaSession,
+        entities: List[KGEntity],
+        relations: List[KGRelation],
+        structured_papers: List[StructuredPaper],
+    ) -> List[KGRelation]:
+        """Post-process relation graph to ensure BFS can traverse from root entities.
+
+        Strategy:
+        1. Build adjacency list from existing relations
+        2. Find connected components via BFS
+        3. Identify "bridge gaps": high-importance entities in different components
+        4. Add co-occurrence edges to bridge disconnected components
+        5. Optionally ask LLM to label bridge edges (falls back to weight=0.4)
+        """
+        if len(entities) < 2:
+            return relations
+
+        # --- Step 1: build adjacency list ---
+        adj: Dict[str, Set[str]] = defaultdict(set)
+        entity_ids = {e.entityId for e in entities}
+        for rel in relations:
+            if rel.sourceEntityId in entity_ids and rel.targetEntityId in entity_ids:
+                adj[rel.sourceEntityId].add(rel.targetEntityId)
+                adj[rel.targetEntityId].add(rel.sourceEntityId)
+
+        # --- Step 2: find connected components ---
+        visited: Set[str] = set()
+        components: List[Set[str]] = []
+
+        for eid in entity_ids:
+            if eid in visited:
+                continue
+            comp: Set[str] = set()
+            queue = [eid]
+            while queue:
+                cur = queue.pop(0)
+                if cur in comp:
+                    continue
+                comp.add(cur)
+                for nb in adj.get(cur, set()):
+                    if nb not in comp:
+                        queue.append(nb)
+            visited |= comp
+            components.append(comp)
+
+        # Build entity lookup
+        entity_by_id: Dict[str, KGEntity] = {e.entityId: e for e in entities}
+
+        # --- Step 3: identify bridge gaps ---
+        # Sort entities by importance; root = top entities by importanceScore
+        sorted_entities = sorted(entities, key=lambda e: e.importanceScore, reverse=True)
+        root_entity_ids = {e.entityId for e in sorted_entities[:5]}
+
+        # Find which component contains the majority of root entities
+        comp_root_counts: Dict[int, int] = {}
+        for i, comp in enumerate(components):
+            comp_root_counts[i] = len(comp & root_entity_ids)
+
+        if not comp_root_counts:
+            return relations
+
+        main_comp_idx = max(comp_root_counts, key=comp_root_counts.get)
+        main_comp = components[main_comp_idx]
+        root_in_main = comp_root_counts[main_comp_idx]
+
+        # If all root entities already in the same component, no bridging needed
+        # UNLESS the component is just the root entities themselves (no edges to non-root
+        # entities), which would starve BFS after depth 1.
+        root_only_clique = (
+            root_in_main >= len(root_entity_ids)
+            and root_in_main >= 3
+            and len(main_comp) <= len(root_entity_ids) + 2  # ≤ roots + 2 others
+        )
+        if root_in_main >= len(root_entity_ids) and root_in_main >= 3 and not root_only_clique:
+            logger.info(
+                "Connectivity check: %d components, all %d root entities in main "
+                "component (size=%d) — no bridging needed",
+                len(components), root_in_main, len(main_comp),
+            )
+            return relations
+
+        logger.info(
+            "Connectivity check: %d components, only %d/%d root entities in main "
+            "component — adding bridge edges",
+            len(components), root_in_main, len(root_entity_ids),
+        )
+
+        # --- Step 4: add co-occurrence bridge edges ---
+        # Strategy: add co-occurrence edges for pairs NOT already connected by LLM.
+        # This guarantees BFS can traverse from any root entity to any co-occurring
+        # entity, regardless of LLM relation quality.
+        #
+        # Two cases:
+        #   (a) Cross-component bridging: entities in different components
+        #   (b) Root out-edge expansion: root entities that only connect to other
+        #       roots (root-only clique) need edges to non-root entities in the
+        #       same paper to allow BFS depth > 1
+
+        existing_pairs: Set[Tuple[str, str]] = set()
+        for rel in relations:
+            pair = tuple(sorted([rel.sourceEntityId, rel.targetEntityId]))
+            existing_pairs.add(pair)
+
+        # Build paper → entity mapping
+        paper_entities: Dict[str, List[KGEntity]] = defaultdict(list)
+        for e in entities:
+            for pid in set(e.sourcePaperIds):
+                paper_entities[pid].append(e)
+
+        bridge_relations: List[KGRelation] = []
+        new_pairs: List[Tuple[KGEntity, KGEntity, str, int]] = []
+
+        # Find root entity IDs
+        root_set = {e.entityId for e in sorted_entities[:5]}
+
+        # Check if we're in root-only clique situation
+        root_adj: Dict[str, Set[str]] = defaultdict(set)
+        for rel in relations:
+            if rel.sourceEntityId in root_set and rel.targetEntityId in root_set:
+                root_adj[rel.sourceEntityId].add(rel.targetEntityId)
+                root_adj[rel.targetEntityId].add(rel.sourceEntityId)
+            elif rel.sourceEntityId in root_set:
+                root_adj[rel.sourceEntityId].add(rel.targetEntityId)
+            elif rel.targetEntityId in root_set:
+                root_adj[rel.targetEntityId].add(rel.sourceEntityId)
+
+        roots_with_no_external = [
+            rid for rid in root_set
+            if all(nb in root_set for nb in root_adj.get(rid, set()))
+        ]
+        need_out_expansion = len(roots_with_no_external) >= 3
+
+        if need_out_expansion:
+            logger.info(
+                "Root-out expansion: %d/%d root entities have no edges to non-root "
+                "entities — adding co-occurrence expansion edges",
+                len(roots_with_no_external), len(root_set),
+            )
+
+        for pid, paper_ents in paper_entities.items():
+            for i in range(len(paper_ents)):
+                for j in range(i + 1, len(paper_ents)):
+                    ea, eb = paper_ents[i], paper_ents[j]
+                    pair = tuple(sorted([ea.entityId, eb.entityId]))
+                    if pair in existing_pairs:
+                        continue
+
+                    is_root_a = ea.entityId in root_set
+                    is_root_b = eb.entityId in root_set
+
+                    # Skip root↔root pairs (already handled by LLM if present)
+                    if is_root_a and is_root_b:
+                        continue
+
+                    comp_a = next((k for k, c in enumerate(components) if ea.entityId in c), None)
+                    comp_b = next((k for k, c in enumerate(components) if eb.entityId in c), None)
+
+                    priority = 0
+
+                    # Case (a): cross-component bridging
+                    if comp_a is not None and comp_b is not None and comp_a != comp_b:
+                        in_main_a = ea.entityId in main_comp
+                        in_main_b = eb.entityId in main_comp
+                        if (is_root_a and in_main_b) or (is_root_b and in_main_a):
+                            priority = 3
+                        elif is_root_a or is_root_b:
+                            priority = 2
+                        else:
+                            priority = 1
+
+                    # Case (b): root out-edge expansion (same paper, different entities)
+                    elif need_out_expansion and (
+                        (is_root_a and not is_root_b) or (is_root_b and not is_root_a)
+                    ):
+                        priority = 2  # High priority for root→non-root expansion
+
+                    if priority == 0:
+                        continue
+
+                    new_pairs.append((ea, eb, pid, priority))
+                    existing_pairs.add(pair)
+
+        # Sort by priority (high first), then take top candidates
+        new_pairs.sort(key=lambda x: x[3], reverse=True)
+
+        # --- Step 5: LLM label bridge edges (or use default) ---
+        bridge_pairs_to_label = new_pairs[:20]  # Cap at 20 for LLM batch
+        if bridge_pairs_to_label:
+            llm_labels = self._label_bridge_edges(
+                session, bridge_pairs_to_label,
+            )
+
+            for (ea, eb, pid, priority), (rel_type, weight) in zip(
+                bridge_pairs_to_label, llm_labels,
+            ):
+                claims_i = set(ea.sourceClaimIds)
+                claims_j = set(eb.sourceClaimIds)
+                bridge_relations.append(KGRelation(
+                    relationId=f"kr_{uuid.uuid4().hex[:8]}",
+                    sourceEntityId=ea.entityId,
+                    targetEntityId=eb.entityId,
+                    relationType=rel_type,
+                    weight=weight,
+                    sourcePaperIds=[pid],
+                    sourceClaimIds=list(claims_i | claims_j)[:5],
+                    metadata={
+                        "method": "connectivity_bridge",
+                        "priority": priority,
+                    },
+                ))
+
+        logger.info(
+            "Added %d bridge edges (%d pairs considered, %d components)",
+            len(bridge_relations), len(new_pairs), len(components),
+        )
+
+        return relations + bridge_relations
+
+    def _label_bridge_edges(
+        self,
+        session: IdeaSession,
+        pairs: List[Tuple[KGEntity, KGEntity, str, int]],
+    ) -> List[Tuple[str, float]]:
+        """Ask LLM to label co-occurrence bridge edges with relation types.
+
+        Returns list of (relationType, weight) aligned with input pairs.
+        Falls back to ("supports", 0.4) for all pairs on any failure.
+        """
+        if not pairs:
+            return []
+
+        # Build prompt input
+        pair_lines = []
+        for i, (ea, eb, pid, priority) in enumerate(pairs):
+            pair_lines.append(
+                f"{i}: \"{ea.name}\" [{ea.entityType}] ↔ \"{eb.name}\" [{eb.entityType}] "
+                f"(co-occur in paper {pid})"
+            )
+
+        pairs_text = "\n".join(pair_lines)
+
+        try:
+            client = get_provider_client(session.config.providerName)
+            messages = [
+                ChatMessage(role="system", content=(
+                    "You label co-occurrence relations between scientific entities. "
+                    "For each pair, choose the best relation type from: "
+                    "supports, uses, produces, implies, hypothesizes, generalizes, contradicts. "
+                    "Assign weight 0.3-0.7 reflecting how strongly the co-occurrence implies "
+                    "a real relationship. "
+                    "Respond ONLY with a JSON array of {\"type\": \"...\", \"weight\": 0.X} objects, "
+                    "one per pair in the same order."
+                )),
+                ChatMessage(role="user", content=(
+                    f"Label these entity pairs that co-occur in the same papers:\n\n{pairs_text}\n\n"
+                    "Respond with JSON array:\n"
+                    "[{\"type\": \"supports\", \"weight\": 0.5}, ...]"
+                )),
+            ]
+            response = client.chat(messages, model=session.config.model, max_tokens=500)
+            data = _extract_json_from_text(response.text)
+
+            labels = data if isinstance(data, list) else data.get("labels", [])
+            result = []
+            for i, label in enumerate(labels):
+                if i >= len(pairs):
+                    break
+                rel_type = label.get("type", "supports") if isinstance(label, dict) else "supports"
+                weight = float(label.get("weight", 0.4)) if isinstance(label, dict) else 0.4
+                weight = max(0.1, min(0.9, weight))  # Clamp
+                result.append((rel_type, weight))
+
+            # Pad with defaults if LLM returned fewer labels
+            while len(result) < len(pairs):
+                result.append(("supports", 0.4))
+
+            logger.debug("LLM labeled %d/%d bridge edges", len(result), len(pairs))
+            return result
+
+        except Exception as e:
+            logger.warning("LLM bridge edge labeling failed: %s, using defaults", e)
+            return [("supports", 0.4)] * len(pairs)

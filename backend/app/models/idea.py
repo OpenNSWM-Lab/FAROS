@@ -298,13 +298,17 @@ def _compute_title_hash(title: str) -> str:
 # --- Step 1 Output: QueryPlan ---
 
 class BFTSConfig(BaseModel):
-    """BFTS search configuration carried through the pipeline."""
-    maxNodes: int = Field(default=40, ge=10, le=200)
-    maxIterations: int = Field(default=4, ge=1, le=10)
-    beamWidth: int = Field(default=6, ge=1, le=20)
-    expansionWidth: int = Field(default=3, ge=1, le=10)
-    maxLiteratureProbes: int = Field(default=24, ge=0, le=100)
-    maxReflectionRounds: int = Field(default=3, ge=1, le=10)
+    """BFTS search configuration carried through the pipeline.
+
+    Conservative defaults to avoid overwhelming Relay API with too many
+    concurrent LLM calls (beamWidth * maxReflectionRounds = total calls).
+    """
+    maxNodes: int = Field(default=10, ge=5, le=200)
+    maxIterations: int = Field(default=2, ge=1, le=10)
+    beamWidth: int = Field(default=2, ge=1, le=20)
+    expansionWidth: int = Field(default=2, ge=1, le=10)
+    maxLiteratureProbes: int = Field(default=6, ge=0, le=100)
+    maxReflectionRounds: int = Field(default=1, ge=1, le=10)
     minEvidenceSupport: float = Field(default=0.45, ge=0.0, le=1.0)
     minGraphGrounding: float = Field(default=0.55, ge=0.0, le=1.0)
     pruneDuplicateThreshold: float = Field(default=0.82, ge=0.0, le=1.0)
@@ -649,3 +653,59 @@ class ReasoningPathSeed(BaseModel):
     rationale: str = ""
     createdAt: datetime = Field(default_factory=_utcnow)
     model_config = ConfigDict(frozen=True)
+
+# --- Step 5: BFTS Search Tree Nodes ---
+
+
+def generate_candidate_id() -> str:
+    """Generate a unique IdeaCandidate ID."""
+    import uuid
+    return "ic_" + uuid.uuid4().hex[:12]
+
+def generate_idea_node_id() -> str:
+    """Generate a unique IdeaNode ID."""
+    import uuid
+    return "in_" + uuid.uuid4().hex[:12]
+
+
+class IdeaNode(BaseModel):
+    """BFTS search tree node representing a research idea being explored.
+
+    Each node can be expanded (generating child ideas via ReflectionLoop)
+    or terminal (finalized by the LLM via FinalizeIdea action).
+    """
+    nodeId: str = Field(default_factory=generate_idea_node_id)
+    sessionId: str
+    parentNodeId: Optional[str] = Field(default=None, description="None for root nodes")
+    depth: int = Field(default=0, ge=0, le=10)
+
+    # Idea content (populated by ReflectionLoop)
+    title: str = ""
+    hypothesis: str = ""
+    abstract: str = ""
+    experiments: List[Dict[str, Any]] = Field(default_factory=list)
+    risks: List[Dict[str, str]] = Field(default_factory=list)
+
+    # Scoring (computed by BFTSSearchTree._score_node)
+    noveltyScore: float = Field(default=0.0, ge=0.0, le=10.0)
+    feasibilityScore: float = Field(default=0.0, ge=0.0, le=10.0)
+    impactScore: float = Field(default=0.0, ge=0.0, le=10.0)
+    specificityScore: float = Field(default=0.0, ge=0.0, le=1.0)
+    evidenceSupportScore: float = Field(default=0.0, ge=0.0, le=1.0)
+    graphGroundingScore: float = Field(default=0.0, ge=0.0, le=1.0)
+    combinedScore: float = Field(default=0.0, ge=0.0, le=10.0)
+
+    # Source tracking
+    sourceSeedId: Optional[str] = Field(default=None, description="ReasoningPathSeed.seedId that spawned this node")
+    reflectionRounds: int = Field(default=0, ge=0, le=20)
+
+    # Reflection history (for debugging / replay)
+    reflectionHistory: List[str] = Field(default_factory=list, description="LLM response texts from each reflection round")
+
+    # Status
+    isExpanded: bool = False
+    isTerminal: bool = False
+    finalizedAt: Optional[datetime] = None
+    createdAt: datetime = Field(default_factory=_utcnow)
+
+    model_config = ConfigDict(frozen=False)  # Mutable: mutated by ReflectionLoop & BFTSSearchTree

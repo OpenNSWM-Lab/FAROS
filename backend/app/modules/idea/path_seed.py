@@ -88,8 +88,8 @@ class PathSeedGenerator:
         # Novelty evidence index from LiteratureMap
         novelty_directions: Set[str] = set()
         for ne in literature_map.noveltyEvidence:
-            if ne.get("assessment") == "supports":
-                novelty_directions.add(ne.get("direction", "").lower())
+            if ne.assessment == "supports":
+                novelty_directions.add(ne.direction.lower())
 
         # 1. Select root entities
         entities_by_importance = sorted(
@@ -176,6 +176,36 @@ class PathSeedGenerator:
                     if len(new_steps) >= 2:  # At least one relation step
                         all_seeds.append((new_steps, source_papers, source_claims))
 
+        # Fallback: if BFS produced no paths (sparse relation graph),
+        # build single-step seeds from root entities directly
+        if not all_seeds:
+            if root_entities:
+                logger.info(
+                    "BFS produced 0 paths (relations=%d, entities=%d, root_entities=%d), "
+                    "falling back to root-entity seeds",
+                    len(reasoning_kg.relations), len(reasoning_kg.entities), len(root_entities),
+                )
+                for root in root_entities[:3]:
+                    source_papers = list(dict.fromkeys(root.sourcePaperIds))[:10]
+                    source_claims = list(dict.fromkeys(root.sourceClaimIds))[:10]
+                    steps = [PathSeedStep(
+                        stepIndex=0,
+                        stepType="observation",
+                        entityId=root.entityId,
+                        relationId=None,
+                        text=root.name,
+                        description=f"Explore: {root.name}",
+                        required=True,
+                    )]
+                    all_seeds.append((steps, source_papers, source_claims))
+                    logger.debug("Added root-entity fallback seed for %s", root.name)
+            else:
+                logger.warning(
+                    "BFS produced 0 paths AND root_entities is empty "
+                    "(relations=%d, entities=%d)",
+                    len(reasoning_kg.relations), len(reasoning_kg.entities),
+                )
+
         # 3. Score paths
         scored_seeds = []
         for steps, papers, claims in all_seeds:
@@ -186,11 +216,23 @@ class PathSeedGenerator:
             )
             scored_seeds.append((steps, papers, claims, scores))
 
+        logger.info(
+            "Path seed scoring: all_seeds=%d, scored=%d",
+            len(all_seeds), len(scored_seeds),
+        )
+
         # 4. Filter and sort
+        # Root-entity fallback seeds (len(steps)==1) skip the evidence threshold
+        # since they have no relations by design
+        before_filter = len(scored_seeds)
         scored_seeds = [
             s for s in scored_seeds
-            if s[3].evidencePrior >= 0.2  # Minimum grounding
+            if s[3].evidencePrior >= 0.2 or len(s[0]) == 1
         ]
+        logger.info(
+            "Path seed filter: %d -> %d (min evidencePrior=0.2 or single-step)",
+            before_filter, len(scored_seeds),
+        )
         scored_seeds.sort(
             key=lambda s: s[3].noveltyPrior + s[3].feasibilityPrior + s[3].evidencePrior,
             reverse=True,

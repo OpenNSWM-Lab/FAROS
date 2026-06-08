@@ -313,7 +313,7 @@ class IdeaGenerationService:
 
         # Build BFTS config from session settings
         search_budget = session.config.searchBudget or session.config.maxPapers
-        bfts_config = BFTSConfig(searchBudget=search_budget)
+        bfts_config = BFTSConfig(maxLiteratureProbes=min(search_budget, 100))
 
         try:
             client = get_provider_client(session.config.providerName)
@@ -905,13 +905,180 @@ class IdeaGenerationService:
         }
         return inputs, outputs, []
     
+    def _step_idea_brainstorm_bfts(self, session: IdeaSession) -> tuple:
+        """Generate candidate ideas using BFTS tree search + reflection loop.
+
+        Replaces the single-shot LLM call with:
+          1. Load BFTSHandoff from Step 4
+          2. Initialize BFTSSearchTree with path seeds
+          3. Run tree search (each node gets reflection loop)
+          4. Convert terminal nodes to IdeaCandidate[]
+
+        Falls back to _step_idea_brainstorm_legacy() when BFTSHandoff is unavailable.
+        """
+        seed = session.config.seedQuery
+        paper_type = session.config.paperType
+        max_candidates = session.config.maxCandidates
+
+        # Try to load BFTSHandoff (output of Step 4)
+        handoff = None
+        try:
+            handoff = self.handoff_storage.get_by_session(session.id)
+        except Exception as e:
+            logger.warning(f"BFTSHandoff not available: {e}, using legacy brainstorm")
+
+        if not handoff:
+            logger.info("No BFTSHandoff found, falling back to legacy brainstorm")
+            return self._step_idea_brainstorm_legacy(session)
+
+        # Load BFTS config
+        bfts_config = handoff.bftsConfig or BFTSConfig(
+            maxNodes=min(20, max(10, max_candidates * 2)),
+            beamWidth=min(2, max(1, max_candidates // 2)),
+            maxReflectionRounds=2,
+        )
+
+        # Override with conservative defaults (user chose conservative)
+        bfts_config = BFTSConfig(
+            maxNodes=min(bfts_config.maxNodes, 20),
+            maxIterations=min(bfts_config.maxIterations, 4),
+            beamWidth=max(1, min(bfts_config.beamWidth, 2)),
+            expansionWidth=max(1, min(bfts_config.expansionWidth, 2)),
+            maxLiteratureProbes=min(bfts_config.maxLiteratureProbes, 12),
+            maxReflectionRounds=max(1, min(bfts_config.maxReflectionRounds, 2)),
+            minEvidenceSupport=bfts_config.minEvidenceSupport,
+            minGraphGrounding=bfts_config.minGraphGrounding,
+            pruneDuplicateThreshold=bfts_config.pruneDuplicateThreshold,
+            scoreWeights=bfts_config.scoreWeights,
+        )
+
+        # Load path seeds
+        path_seeds: List[ReasoningPathSeed] = []
+        if handoff.pathSeedIds:
+            for sid in handoff.pathSeedIds[:bfts_config.beamWidth]:
+                try:
+                    seed_obj = self.path_seed_storage.get(sid)
+                    if seed_obj:
+                        path_seeds.append(seed_obj)
+                except Exception:
+                    pass
+
+        if not path_seeds:
+            logger.info("No path seeds available, falling back to legacy brainstorm")
+            return self._step_idea_brainstorm_legacy(session)
+
+        # Load structured papers for literature context
+        structured_papers: List[StructuredPaper] = []
+        try:
+            structured_papers = self.structured_storage.list_by_session(session.id)
+        except Exception:
+            pass
+
+        # Build literature context string
+        literature_context = self._build_bfts_literature_context(structured_papers)
+
+        logger.info(
+            f"BFTS: {len(path_seeds)} seeds, "
+            f"maxNodes={bfts_config.maxNodes}, "
+            f"beamWidth={bfts_config.beamWidth}, "
+            f"maxReflectionRounds={bfts_config.maxReflectionRounds}"
+        )
+
+        try:
+            from app.modules.idea.bfts_search import BFTSSearchTree
+
+            tree = BFTSSearchTree(
+                session_id=session.id,
+                bfts_config=bfts_config,
+                provider_name=session.config.providerName,
+                model=session.config.model,
+                path_seeds=path_seeds,
+                structured_papers=structured_papers,
+                literature_context=literature_context,
+                seed_query=seed,
+                paper_type=paper_type,
+            )
+
+            candidates = tree.run()
+
+            if not candidates:
+                logger.warning("BFTS produced no candidates, falling back to legacy")
+                return self._step_idea_brainstorm_legacy(session)
+
+            # Store candidates
+            candidate_ids = []
+            for candidate in candidates:
+                self.candidate_storage.create(candidate)
+                candidate_ids.append(candidate.id)
+                if candidate.id not in session.candidateIds:
+                    session.candidateIds.append(candidate.id)
+
+            inputs = {
+                "seedQuery": seed,
+                "paperType": paper_type,
+                "method": "bfts_tree_search",
+                "seedCount": len(path_seeds),
+                "maxNodes": bfts_config.maxNodes,
+                "beamWidth": bfts_config.beamWidth,
+                "maxReflectionRounds": bfts_config.maxReflectionRounds,
+            }
+            outputs = {
+                "candidateCount": len(candidates),
+                "candidateIds": candidate_ids,
+                "method": "bfts_tree_search",
+                "bftsConfig": bfts_config.model_dump(),
+            }
+
+            logger.info(f"BFTS: generated {len(candidates)} candidates from tree search")
+
+        except Exception as e:
+            logger.error(f"BFTS search failed: {e}, falling back to legacy brainstorm")
+            import traceback
+            logger.error(traceback.format_exc())
+            return self._step_idea_brainstorm_legacy(session)
+
+        return inputs, outputs, []
+
+    def _build_bfts_literature_context(
+        self, structured_papers: List[StructuredPaper], limit: int = 8
+    ) -> str:
+        """Build literature context string for BFTS reflection loops."""
+        if not structured_papers:
+            return "(No structured literature available yet)"
+
+        lines = []
+        for i, sp in enumerate(structured_papers[:limit]):
+            title = sp.title or "(untitled)"
+            year = sp.year or "N/A"
+            claims_str = ""
+            if sp.claims:
+                claims_str = ". ".join(c.text[:100] for c in sp.claims[:2])
+            lines.append(
+                f"[{i+1}] {title} ({year})\n"
+                f"    Key claims: {claims_str}"
+            )
+        return "\n\n".join(lines)
+
     def _step_idea_brainstorm(self, session: IdeaSession) -> tuple:
-        """Generate candidate ideas using LLM with structured prompts."""
+        """Generate candidate ideas — routes to BFTS or legacy based on availability."""
+        # Use BFTS if handoff is available
+        try:
+            handoff = self.handoff_storage.get_by_session(session.id)
+            if handoff and handoff.pathSeedIds:
+                return self._step_idea_brainstorm_bfts(session)
+        except Exception:
+            pass
+
+        # Fallback: legacy single-shot LLM
+        return self._step_idea_brainstorm_legacy(session)
+
+    def _step_idea_brainstorm_legacy(self, session: IdeaSession) -> tuple:
+        """Original single-shot LLM brainstorm (fallback)."""
         seed = session.config.seedQuery
         paper_type = session.config.paperType
         max_candidates = session.config.maxCandidates
         literature = self.get_literature(session.id)
-        
+
         # Get gap analysis results
         gap_analysis = []
         opportunities = []
@@ -923,19 +1090,19 @@ class IdeaGenerationService:
                     opportunities = step.outputs.get("researchOpportunities", [])
                     prioritized_gaps = step.outputs.get("prioritizedGaps", [])
                     break
-        
+
         # Build context
         key_papers = "\n".join([
             f"- {item.title} ({item.year or 'N/A'})"
             for item in literature[:5]
         ])
-        
+
         gap_text = json.dumps(gap_analysis[:3], indent=2) if gap_analysis else "\n".join([f"- {g}" for g in prioritized_gaps[:3]])
         opp_text = "\n".join([f"- {o}" for o in opportunities[:3]]) if opportunities else "Based on identified gaps"
-        
+
         try:
             client = get_provider_client(session.config.providerName)
-            
+
             user_prompt = prompts.IDEA_BRAINSTORM_USER.format(
                 seed_query=seed,
                 paper_type=paper_type,
@@ -944,57 +1111,59 @@ class IdeaGenerationService:
                 opportunities=opp_text,
                 key_papers=key_papers
             )
-            
+
             messages = [
                 ChatMessage(role="system", content=prompts.IDEA_BRAINSTORM_SYSTEM),
                 ChatMessage(role="user", content=user_prompt)
             ]
-            
+
             response = client.chat(messages, model=session.config.model, max_tokens=3000)
-            
+
             # Parse ideas from response
             candidates = self._parse_ideas_json(session.id, response.text, max_candidates)
-            
+
             if not candidates:
                 # Fallback to text parsing
                 candidates = self._parse_ideas(session.id, response.text, max_candidates)
-            
+
             if not candidates:
                 # Generate fallback
                 candidates = self._generate_fallback_candidates(session.id, seed, min(3, max_candidates))
-            
+
             # Store candidates
             candidate_ids = []
             for candidate in candidates:
                 self.candidate_storage.create(candidate)
                 candidate_ids.append(candidate.id)
                 session.candidateIds.append(candidate.id)
-            
+
             inputs = {"topic": seed, "maxCandidates": max_candidates, "paperType": paper_type}
             outputs = {
                 "candidateCount": len(candidates),
                 "candidateIds": candidate_ids,
                 "llmLatencyMs": response.latency_ms,
+                "method": "legacy_single_shot",
             }
-            
+
         except Exception as e:
             logger.error(f"LLM brainstorm failed: {e}")
             # Generate fallback candidates
             candidates = self._generate_fallback_candidates(session.id, seed, min(3, max_candidates))
-            
+
             candidate_ids = []
             for candidate in candidates:
                 self.candidate_storage.create(candidate)
                 candidate_ids.append(candidate.id)
                 session.candidateIds.append(candidate.id)
-            
+
             inputs = {"topic": seed}
             outputs = {
                 "candidateCount": len(candidates),
                 "candidateIds": candidate_ids,
                 "error": str(e),
+                "method": "legacy_fallback",
             }
-        
+
         return inputs, outputs, []
     
     def _parse_ideas_json(self, session_id: str, text: str, max_count: int) -> List[IdeaCandidate]:
