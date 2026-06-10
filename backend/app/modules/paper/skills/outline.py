@@ -6,7 +6,7 @@ from app.llm.provider_client import ChatMessage
 from app.modules.paper.storage import update_paper
 from .base import PaperSkillContext, PaperSkillResult
 from .constants import MIN_ALGORITHMS, MIN_EQUATIONS, MIN_FIGURES, MIN_REFERENCES, MIN_TABLES
-from .utils import _extract_json, write_artifact
+from .utils import _extract_json, load_venue_style_guide, write_artifact
 
 
 STEP_ID = "03_outline"
@@ -14,6 +14,7 @@ STEP_ID = "03_outline"
 OUTLINE_PROMPT = """You are a senior ML researcher writing a {paper_type} paper for {venue_name}.
 
 **Title:** {title}
+**Venue style guide:** {venue_style_guide}
 **Context from plan/project:** {plan_context}
 **Experiment metrics:** {metrics_summary}
 **Run execution results:** {runs_summary}
@@ -27,6 +28,7 @@ Generate a DETAILED paper outline. You MUST include:
 - Mark which sections need: algorithms (at least {min_algos}), equations (at least {min_eqs}), tables (at least {min_tables}), figures (at least {min_figs})
 - If Available paper figures are listed, assign them to the most relevant sections using their exact path, label, and caption. Do not invent alternate filenames.
 - Follow the Paper writing brief. Preserve its research question, core claim, must-use evidence, and avoid-claims constraints.
+- Follow the Venue style guide when choosing section order, contribution framing, evaluation emphasis, limitations, and appendix-worthy material.
 
 Return strict JSON:
 {{
@@ -135,6 +137,7 @@ def build_outline(ctx: PaperSkillContext, force: bool = False) -> PaperSkillResu
             paper_type=ctx.paper_type,
             venue_name=ctx.venue_cfg["name"],
             title=ctx.paper.get("title", "Untitled"),
+            venue_style_guide=load_venue_style_guide(ctx.venue)[:3000],
             plan_context=context.get("plan_context", "N/A")[:1500],
             metrics_summary=context.get("metrics_summary", "N/A")[:1500],
             runs_summary=context.get("runs_summary", "N/A")[:1500],

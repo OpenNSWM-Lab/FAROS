@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+from pathlib import Path
 from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException
@@ -13,15 +14,16 @@ from app.modules.paper.storage import add_log, get_paper, get_paper_latex_dir, u
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/templates", tags=["templates"])
 
-_BACKEND_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-_TEMPLATES_DIR = os.path.join(_BACKEND_ROOT, "templates", "latex")
+_BACKEND_ROOT = Path(__file__).resolve().parents[3]
+_TEMPLATES_DIR = _BACKEND_ROOT / "templates" / "latex"
+_PROMPT_GUIDE_FILENAMES = {"style_guide.md", "writing_guide.md", "prompt_guide.md"}
 
 
 def _load_registry() -> list:
-    path = os.path.join(_TEMPLATES_DIR, "templates.json")
-    if not os.path.isfile(path):
+    path = _TEMPLATES_DIR / "templates.json"
+    if not path.is_file():
         return []
-    with open(path) as handle:
+    with path.open(encoding="utf-8") as handle:
         return json.load(handle)
 
 
@@ -140,6 +142,8 @@ async def apply_template(req: ApplyTemplateRequest) -> ApplyTemplateResponse:
 
     files_written = 0
     for filename in os.listdir(template_dir):
+        if filename in _PROMPT_GUIDE_FILENAMES:
+            continue
         source = os.path.join(template_dir, filename)
         if not os.path.isfile(source):
             continue

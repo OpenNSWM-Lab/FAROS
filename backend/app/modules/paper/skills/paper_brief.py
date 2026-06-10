@@ -4,7 +4,7 @@ from typing import Any, Dict
 from app.llm.provider_client import ChatMessage
 from app.modules.paper.storage import update_paper
 from .base import PaperSkillContext, PaperSkillResult
-from .utils import _extract_json, write_artifact
+from .utils import _extract_json, load_venue_style_guide, write_artifact
 
 
 STEP_ID = "02_paper_brief"
@@ -14,6 +14,7 @@ BRIEF_PROMPT = """You are preparing a writing brief before drafting an academic 
 **Title:** {title}
 **Paper type:** {paper_type}
 **Venue:** {venue_name}
+**Venue style guide:** {venue_style_guide}
 **Plan context:** {plan_context}
 **Project summary:** {project_summary}
 **Experiment metrics:** {metrics_summary}
@@ -22,7 +23,7 @@ BRIEF_PROMPT = """You are preparing a writing brief before drafting an academic 
 **User notes:** {user_notes}
 **User brief edits:** {brief_user_edits}
 
-Create a concise, concrete paper writing brief. The brief must guide the outline and section writing. It must not invent unsupported experiments, datasets, baselines, or claims.
+Create a concise, concrete paper writing brief. The brief must guide the outline and section writing. It must not invent unsupported experiments, datasets, baselines, or claims. Use the Venue style guide to adapt the paper angle, content ordering, evidence emphasis, and tone to the target venue.
 
 Return strict JSON:
 {{
@@ -120,6 +121,7 @@ def build_brief(ctx: PaperSkillContext, force: bool = False) -> PaperSkillResult
             title=ctx.paper.get("title", "Untitled"),
             paper_type=ctx.paper_type,
             venue_name=ctx.venue_cfg["name"],
+            venue_style_guide=load_venue_style_guide(ctx.venue)[:2500],
             plan_context=context.get("plan_context", "N/A")[:1500],
             project_summary=context.get("project_summary", "N/A")[:1500],
             metrics_summary=context.get("metrics_summary", "N/A")[:1500],

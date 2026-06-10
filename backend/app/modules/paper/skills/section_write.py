@@ -4,7 +4,7 @@ from typing import Dict
 from app.llm.provider_client import ChatMessage
 from app.modules.paper.storage import write_paper_file
 from .base import PaperSkillContext, PaperSkillResult
-from .utils import write_artifact
+from .utils import load_venue_style_guide, write_artifact
 
 
 STEP_ID = "05_section_write"
@@ -15,6 +15,7 @@ SECTION_PROMPT = """You are writing the "{section_title}" section of a {paper_ty
 **Section key points:** {key_points}
 **Contributions:** {contributions}
 **Special requirements:** {requirements}
+**Venue style guide:** {venue_style_guide}
 **Metrics data (if relevant):** {metrics_data}
 **Run evidence:** {runs_data}
 **Available paper figures:** {figures_data}
@@ -32,6 +33,7 @@ Write COMPLETE LaTeX content for this section. MANDATORY requirements:
 {table_req}
 {fig_req}
 - Professional academic tone appropriate for {venue_name}
+- Follow the Venue style guide for argument structure, evidence density, and section-specific emphasis.
 - Do NOT use placeholder text like "Lorem ipsum" or "TODO"
 - Every claim must be supported by citation or evidence
 - Follow the Paper writing brief, especially core claim, must-use evidence, must-use figures, and avoid-claims.
@@ -39,7 +41,7 @@ Write COMPLETE LaTeX content for this section. MANDATORY requirements:
 Return ONLY the LaTeX content (no markdown fences, no explanations).
 """
 
-ALGORITHM_TEMPLATE = """- MUST include algorithm block(s) using:
+ALGORITHM2E_TEMPLATE = """- MUST include algorithm block(s) using:
 \\begin{algorithm}[H]
 \\SetAlgoLined
 \\caption{Algorithm Name}
@@ -50,6 +52,21 @@ Step 1\\;
 Step 2\\;
 \\end{algorithm}
 Include detailed pseudocode with proper notation."""
+
+ICML_ALGORITHM_TEMPLATE = """- MUST include algorithm block(s) using the ICML template's algorithm/algorithmic packages:
+\\begin{algorithm}[tb]
+\\caption{Algorithm Name}
+\\label{alg:name}
+\\begin{algorithmic}
+\\STATE \\textbf{Input:} Input description
+\\STATE \\textbf{Output:} Output description
+\\FOR{$t = 1$ to $T$}
+\\STATE Step description
+\\ENDFOR
+\\STATE \\textbf{return} Output
+\\end{algorithmic}
+\\end{algorithm}
+Do not use algorithm2e commands such as \\SetAlgoLined, \\KwIn, \\KwOut, \\KwTo, or \\Return in ICML papers."""
 
 EQUATION_TEMPLATE = """- MUST include at least {n} numbered equations using \\begin{{equation}} ... \\end{{equation}}
   Each equation must be meaningful and referenced in text."""
@@ -94,7 +111,8 @@ def run(ctx: PaperSkillContext) -> PaperSkillResult:
     for i, section in enumerate(sections):
         sec_title = section.get("title", f"Section {i+1}")
 
-        algo_req = ALGORITHM_TEMPLATE if section.get("hasAlgorithm") else ""
+        algorithm_template = ICML_ALGORITHM_TEMPLATE if ctx.venue == "icml" else ALGORITHM2E_TEMPLATE
+        algo_req = algorithm_template if section.get("hasAlgorithm") else ""
         n_eq = section.get("numEquations", 2 if section.get("hasEquations") else 0)
         eq_req = EQUATION_TEMPLATE.format(n=max(n_eq, 2)) if section.get("hasEquations") else ""
         n_tab = 2 if section.get("hasTables") else 0
@@ -126,6 +144,7 @@ def run(ctx: PaperSkillContext) -> PaperSkillResult:
                 f"{n_tab} tables" if n_tab else "",
                 "Include figures" if fig_req else "",
             ] if r]),
+            venue_style_guide=load_venue_style_guide(ctx.venue)[:2500],
             metrics_data=context.get("metrics_summary", "N/A")[:1000],
             runs_data=context.get("runs_summary", "N/A")[:1500],
             figures_data=figures_summary[:1500],

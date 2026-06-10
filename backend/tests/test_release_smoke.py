@@ -13,8 +13,11 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.modules.paper.skills.constants import TEMPLATE_ROOT
 from app.modules.paper.skills.utils import (
+    build_bibtex,
     dedupe_figure_entries,
     figure_record_to_entry,
+    load_venue_style_guide,
+    normalize_bibtex_authors,
     normalize_section_figure_references,
 )
 from app.version import APP_NAME, APP_VERSION, API_VERSION, CAPABILITIES, RELEASE_PHASE, SERVICE_NAME
@@ -101,6 +104,24 @@ def test_paper_experiment_figure_records_normalize_to_entries():
     assert len(unique) == 1
 
 
+def test_bibtex_author_strings_are_normalized_for_bst_files():
+    assert normalize_bibtex_authors("Reddi, S. S., Kale, S., and Kumar, S.") == (
+        "Reddi, S. S. and Kale, S. and Kumar, S."
+    )
+    assert normalize_bibtex_authors("Vaswani, A. et al.") == "Vaswani, A. and others"
+
+    bibtex = build_bibtex([
+        {
+            "key": "reddi2018adaptive",
+            "authors": "Reddi, S. S., Kale, S., and Kumar, S.",
+            "title": "On the Convergence of Adam and Beyond",
+            "venue": "ICLR",
+            "year": 2018,
+        }
+    ])
+    assert "author = {Reddi, S. S. and Kale, S. and Kumar, S.}" in bibtex
+
+
 def test_paper_render_pdf_uses_modular_template_helper():
     source = Path(__file__).parents[1] / "app" / "modules" / "paper" / "papers_api.py"
     content = source.read_text(encoding="utf-8")
@@ -110,8 +131,37 @@ def test_paper_render_pdf_uses_modular_template_helper():
 
 
 def test_paper_latex_templates_support_generated_algorithm_keywords():
-    for venue in ["generic", "icml", "iclr", "neurips", "acl"]:
+    for venue in ["generic", "iclr", "neurips", "acl"]:
         template = (TEMPLATE_ROOT / venue / "main.tex").read_text(encoding="utf-8")
         assert "algorithm2e" in template
         assert r"\SetKw{KwAnd}{and}" in template
         assert r"\SetKw{Return}{return}" in template
+
+
+def test_icml_template_uses_bundled_algorithm_package():
+    template = (TEMPLATE_ROOT / "icml" / "main.tex").read_text(encoding="utf-8")
+    style = (TEMPLATE_ROOT / "icml" / "icml2025.sty").read_text(encoding="utf-8")
+
+    assert "algorithm2e" not in template
+    assert r"\RequirePackage{algorithm}" in style
+    assert r"\RequirePackage{algorithmic}" in style
+
+
+def test_templates_api_lists_latex_templates():
+    response = client.get("/api/v1/templates")
+
+    assert response.status_code == 200
+    payload = response.json()
+    template_ids = {template["id"] for template in payload["templates"]}
+    assert {"icml", "neurips", "iclr", "acl", "generic"}.issubset(template_ids)
+
+
+def test_icml_template_includes_prompt_style_guide():
+    template_dir = TEMPLATE_ROOT / "icml"
+
+    assert (template_dir / "main.tex").is_file()
+    assert (template_dir / "style_guide.md").is_file()
+
+    guide = load_venue_style_guide("icml")
+    assert "Reviewer Expectations" in guide
+    assert "Outline Guidance" in guide

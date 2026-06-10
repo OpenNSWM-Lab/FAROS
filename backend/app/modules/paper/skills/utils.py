@@ -269,6 +269,21 @@ def collect_context(paper: Dict[str, Any]) -> Dict[str, str]:
     return ctx
 
 
+def load_venue_style_guide(venue: str, max_chars: int = 4000) -> str:
+    """Load optional venue-specific writing guidance from the template directory."""
+    template_dir = TEMPLATE_ROOT / venue
+    if not template_dir.is_dir():
+        return "N/A"
+
+    for filename in ("style_guide.md", "writing_guide.md", "prompt_guide.md"):
+        guide_path = template_dir / filename
+        if guide_path.is_file():
+            content = guide_path.read_text(encoding="utf-8").strip()
+            return content[:max_chars] if content else "N/A"
+
+    return "N/A"
+
+
 def gate_outline(outline: Dict[str, Any]) -> List[str]:
     issues = []
     sections = outline.get("sections", [])
@@ -407,11 +422,36 @@ def build_main_tex(outline: Dict[str, Any], sections: List[Dict[str, Any]], venu
     )
 
 
+def normalize_bibtex_authors(authors: Any) -> str:
+    if isinstance(authors, list):
+        return " and ".join(str(author).strip() for author in authors if str(author).strip()) or "Unknown"
+
+    text = str(authors or "Unknown").strip()
+    if not text:
+        return "Unknown"
+
+    text = re.sub(r"\bet\s+al\.?", "and others", text)
+    text = re.sub(r"\s+", " ", text)
+    if " and " in text and ", and " not in text:
+        return text
+
+    parts = [
+        re.sub(r"^and\s+", "", part.strip())
+        for part in text.split(",")
+        if part.strip()
+    ]
+    if len(parts) >= 4 and len(parts) % 2 == 0:
+        names = [f"{parts[i]}, {parts[i + 1]}" for i in range(0, len(parts), 2)]
+        return " and ".join(names)
+
+    return text
+
+
 def build_bibtex(references: List[Dict[str, Any]]) -> str:
     entries = []
     for ref in references:
         key = ref.get("key", f"ref{len(entries)+1}")
-        authors = ref.get("authors", "Unknown")
+        authors = normalize_bibtex_authors(ref.get("authors", "Unknown"))
         title = ref.get("title", "Untitled")
         venue = ref.get("venue", "arXiv preprint")
         year = ref.get("year", 2024)
