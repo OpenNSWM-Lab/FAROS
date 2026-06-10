@@ -30,6 +30,10 @@ from app.modules.idea.storage import (
     get_reasoning_kg_storage,
     get_evidence_link_storage,
     get_path_seed_storage,
+    get_ranked_output_storage,
+    get_search_tree_storage,
+    get_graph_patch_storage,
+    get_probe_literature_storage,
 )
 from app.core.settings import get_settings
 from pydantic import ValidationError
@@ -89,12 +93,21 @@ class LiteratureResponse(BaseModel):
 
 
 class CandidateResponse(BaseModel):
-    """Response for a single candidate."""
+    """Response for a single candidate (PDF v5 compatible)."""
     id: str
     sessionId: str
     title: str
+    # PDF v5 traceability
+    searchNodeId: Optional[str] = None
+    pathSeedId: Optional[str] = None
+    reasoningPathId: Optional[str] = None
+    # Core content
     problem: str
+    hypothesisStatement: str = ""
     keyInsight: str
+    proposedMethod: str = ""
+    expectedOutcome: str = ""
+    # Scoring
     novelty: float
     noveltyRationale: str
     feasibility: float
@@ -113,14 +126,20 @@ class CandidateResponse(BaseModel):
     experimentSpecificityRationale: str = ""
     overallScore: float
     scoreBreakdown: dict = {}
+    scores: dict = {}
     overallRationale: str = ""
     scoringConfidence: float = 0.5
     scoringMethod: str = "pending"
+    # Details
     risks: List[dict] = []
     requiredExperiments: List[dict] = []
     expectedMetrics: List[str] = []
     draftPlan: Optional[dict] = None
     references: List[str] = []
+    # PDF v5 embedded evidence
+    graphEvidence: Optional[dict] = None
+    closestPriorWork: List[dict] = []
+    critique: Optional[dict] = None
     createdAt: str
 
 
@@ -229,6 +248,49 @@ class PathSeedsResponse(BaseModel):
     total: int
 
 
+class RankedIdeaOutputResponse(BaseModel):
+    """Response for Step 6 ranking output."""
+    id: str
+    sessionId: str
+    rankedCandidates: List[dict]
+    evidence: List[dict]
+    priorWorkComparisons: List[dict]
+    critiques: List[dict]
+    scoreVariance: float
+    minScore: float
+    maxScore: float
+    rankedCount: int
+    topCandidateId: Optional[str] = None
+    rankingMethod: str
+    createdAt: str
+
+
+class SearchTreeResponse(BaseModel):
+    """Response for Step 5 BFTS search tree."""
+    id: str
+    sessionId: str
+    rootNodeIds: List[str]
+    nodeCount: int
+    edgeCount: int
+    nodes: List[dict]
+    edges: List[dict]
+    config: dict
+    searchReport: dict
+    createdAt: str
+
+
+class GraphPatchesResponse(BaseModel):
+    """Response for Step 5 graph patches."""
+    patches: List[dict]
+    total: int
+
+
+class ProbeResultsResponse(BaseModel):
+    """Response for Step 5 literature probe results."""
+    results: List[dict]
+    total: int
+
+
 def _session_to_response(session: IdeaSession) -> SessionResponse:
     """Convert session to response format."""
     return SessionResponse(
@@ -246,13 +308,27 @@ def _session_to_response(session: IdeaSession) -> SessionResponse:
 
 
 def _candidate_to_response(candidate: IdeaCandidate) -> CandidateResponse:
-    """Convert candidate to response format."""
+    """Convert candidate to response format (PDF v5 compatible)."""
+    def _dump_optional(value):
+        if value is None:
+            return None
+        return value.model_dump() if hasattr(value, 'model_dump') else value
+
     return CandidateResponse(
         id=candidate.id,
         sessionId=candidate.sessionId,
         title=candidate.title,
+        # PDF v5 traceability
+        searchNodeId=getattr(candidate, 'searchNodeId', None),
+        pathSeedId=getattr(candidate, 'pathSeedId', None),
+        reasoningPathId=getattr(candidate, 'reasoningPathId', None),
+        # Core content
         problem=candidate.problem,
+        hypothesisStatement=getattr(candidate, 'hypothesisStatement', '') or '',
         keyInsight=candidate.keyInsight,
+        proposedMethod=getattr(candidate, 'proposedMethod', '') or '',
+        expectedOutcome=getattr(candidate, 'expectedOutcome', '') or '',
+        # Scoring
         novelty=candidate.novelty,
         noveltyRationale=candidate.noveltyRationale,
         feasibility=candidate.feasibility,
@@ -271,14 +347,20 @@ def _candidate_to_response(candidate: IdeaCandidate) -> CandidateResponse:
         experimentSpecificityRationale=getattr(candidate, 'experimentSpecificityRationale', ''),
         overallScore=candidate.overallScore,
         scoreBreakdown=candidate.scoreBreakdown,
+        scores=getattr(candidate, 'scores', None).model_dump() if getattr(candidate, 'scores', None) else {},
         overallRationale=getattr(candidate, 'overallRationale', ''),
         scoringConfidence=getattr(candidate, 'scoringConfidence', 0.5),
         scoringMethod=getattr(candidate, 'scoringMethod', 'pending'),
+        # Details
         risks=[r.model_dump() for r in candidate.risks],
         requiredExperiments=[e.model_dump() for e in candidate.requiredExperiments],
         expectedMetrics=candidate.expectedMetrics,
         draftPlan=candidate.draftPlan.model_dump() if candidate.draftPlan else None,
         references=candidate.references,
+        # PDF v5 embedded evidence
+        graphEvidence=_dump_optional(getattr(candidate, 'graphEvidence', None)),
+        closestPriorWork=[p.model_dump() if hasattr(p, 'model_dump') else p for p in (getattr(candidate, 'closestPriorWork', None) or [])],
+        critique=_dump_optional(getattr(candidate, 'critique', None)),
         createdAt=candidate.createdAt.isoformat() if candidate.createdAt else "",
     )
 
@@ -587,6 +669,145 @@ async def get_path_seeds(session_id: str) -> PathSeedsResponse:
     return PathSeedsResponse(
         seeds=[s.model_dump() for s in seeds],
         total=len(seeds),
+    )
+
+
+# =============================================================================
+# Step 6 Endpoint: Ranking Output
+# =============================================================================
+
+
+@router.get(
+    "/sessions/{session_id}/ranking-output",
+    response_model=RankedIdeaOutputResponse,
+    summary="Get Ranking Output (Step 6)",
+    description="Get the full Step 6 ranking output with evidence binding, prior work comparisons, and critiques."
+)
+async def get_ranking_output(session_id: str) -> RankedIdeaOutputResponse:
+    """Get Step 6 ranking output for a session."""
+    service = get_idea_service()
+    session = service.get_session(session_id)
+    if not session:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Session {session_id} not found"
+        )
+
+    ranked_storage = get_ranked_output_storage()
+    ranked_output = ranked_storage.get_by_session(session_id)
+    if not ranked_output:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Ranking output not yet generated. Run the pipeline to Step 6 first."
+        )
+
+    return RankedIdeaOutputResponse(
+        id=ranked_output.id,
+        sessionId=ranked_output.sessionId,
+        rankedCandidates=[c.model_dump() for c in ranked_output.rankedCandidates],
+        evidence=[e.model_dump() for e in ranked_output.evidence],
+        priorWorkComparisons=[p.model_dump() for p in ranked_output.priorWorkComparisons],
+        critiques=[c.model_dump() for c in ranked_output.critiques],
+        scoreVariance=ranked_output.scoreVariance,
+        minScore=ranked_output.minScore,
+        maxScore=ranked_output.maxScore,
+        rankedCount=ranked_output.rankedCount,
+        topCandidateId=ranked_output.topCandidateId,
+        rankingMethod=ranked_output.rankingMethod,
+        createdAt=ranked_output.createdAt.isoformat() if ranked_output.createdAt else "",
+    )
+
+
+# =============================================================================
+# Step 5 Endpoints: Search Tree + Graph Patches + Probe Results (PDF v5)
+# =============================================================================
+
+
+@router.get(
+    "/sessions/{session_id}/search-tree",
+    response_model=SearchTreeResponse,
+    summary="Get BFTS Search Tree",
+    description="Get the full BFTS idea search tree (Step 5 output)."
+)
+async def get_search_tree(session_id: str) -> SearchTreeResponse:
+    """Get BFTS search tree for a session."""
+    service = get_idea_service()
+    session = service.get_session(session_id)
+    if not session:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Session {session_id} not found"
+        )
+
+    tree_storage = get_search_tree_storage()
+    tree = tree_storage.get_by_session(session_id)
+    if not tree:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Search tree not yet generated. Run the pipeline through Step 5 first."
+        )
+
+    return SearchTreeResponse(
+        id=tree.id,
+        sessionId=tree.sessionId,
+        rootNodeIds=tree.rootNodeIds,
+        nodeCount=len(tree.nodes),
+        edgeCount=len(tree.edges),
+        nodes=[n.model_dump() for n in tree.nodes],
+        edges=[e.model_dump() for e in tree.edges],
+        config=tree.config.model_dump(),
+        searchReport=tree.searchReport.model_dump(),
+        createdAt=tree.createdAt.isoformat() if tree.createdAt else "",
+    )
+
+
+@router.get(
+    "/sessions/{session_id}/graph-patches",
+    response_model=GraphPatchesResponse,
+    summary="Get Graph Patches",
+    description="Get graph patches applied during BFTS literature probes (Step 5)."
+)
+async def get_graph_patches(session_id: str) -> GraphPatchesResponse:
+    """Get graph patches for a session."""
+    service = get_idea_service()
+    session = service.get_session(session_id)
+    if not session:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Session {session_id} not found"
+        )
+
+    patch_storage = get_graph_patch_storage()
+    patches = patch_storage.list_by_session(session_id)
+
+    return GraphPatchesResponse(
+        patches=[p.model_dump() for p in patches],
+        total=len(patches),
+    )
+
+
+@router.get(
+    "/sessions/{session_id}/probe-results",
+    response_model=ProbeResultsResponse,
+    summary="Get Literature Probe Results",
+    description="Get literature probe results from BFTS literature probes (Step 5)."
+)
+async def get_probe_results(session_id: str) -> ProbeResultsResponse:
+    """Get literature probe results for a session."""
+    service = get_idea_service()
+    session = service.get_session(session_id)
+    if not session:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Session {session_id} not found"
+        )
+
+    probe_storage = get_probe_literature_storage()
+    results = probe_storage.list_by_session(session_id)
+
+    return ProbeResultsResponse(
+        results=[r.model_dump() for r in results],
+        total=len(results),
     )
 
 

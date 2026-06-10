@@ -27,6 +27,16 @@ from app.models.idea import (
     ReasoningKG,
     GraphEvidenceLink,
     ReasoningPathSeed,
+    # Step 5 models
+    IdeaNode,
+    IdeaSearchTree,
+    IdeaSearchEdge,
+    IdeaSearchReport,
+    LiteratureProbeQuery,
+    LiteratureProbeResult,
+    GraphPatch,
+    # Step 6 models
+    RankedIdeaOutput,
 )
 
 
@@ -863,3 +873,291 @@ def get_path_seed_storage() -> PathSeedStorage:
     if _path_seed_storage is None:
         _path_seed_storage = PathSeedStorage()
     return _path_seed_storage
+
+
+# =============================================================================
+# Step 6 Storage: RankedIdeaOutput Storage
+# =============================================================================
+
+
+def generate_ranked_output_id() -> str:
+    """Generate unique ranked output ID."""
+    return f"rio_{uuid.uuid4().hex[:12]}"
+
+
+class RankedIdeaOutputStorage:
+    """Storage for Step 6 ranking output (RankedIdeaOutput)."""
+
+    def __init__(self, data_dir: str = "data"):
+        self.base_path = Path(data_dir) / "ideas" / "ranked_outputs"
+        self.base_path.mkdir(parents=True, exist_ok=True)
+
+    def _get_path(self, output_id: str) -> Path:
+        return self.base_path / f"{output_id}.json"
+
+    def create(self, ranked_output: RankedIdeaOutput) -> RankedIdeaOutput:
+        """Create a new ranked output."""
+        path = self._get_path(ranked_output.id)
+        if path.exists():
+            raise ValueError(f"RankedIdeaOutput {ranked_output.id} already exists")
+
+        data = ranked_output.model_dump()
+        # Serialize datetime fields
+        data['createdAt'] = data['createdAt'].isoformat() if isinstance(data['createdAt'], datetime) else data['createdAt']
+        for c in data.get('rankedCandidates', []):
+            if c.get('createdAt') and isinstance(c['createdAt'], datetime):
+                c['createdAt'] = c['createdAt'].isoformat()
+
+        temp_path = path.with_suffix('.tmp')
+        with open(temp_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, default=str)
+        os.replace(temp_path, path)
+
+        return ranked_output
+
+    def get(self, output_id: str) -> Optional[RankedIdeaOutput]:
+        """Get ranked output by ID."""
+        path = self._get_path(output_id)
+        if not path.exists():
+            return None
+
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        if data.get('createdAt') and isinstance(data['createdAt'], str):
+            data['createdAt'] = datetime.fromisoformat(data['createdAt'])
+        for c in data.get('rankedCandidates', []):
+            if c.get('createdAt') and isinstance(c['createdAt'], str):
+                c['createdAt'] = datetime.fromisoformat(c['createdAt'])
+        return RankedIdeaOutput(**data)
+
+    def get_by_session(self, session_id: str) -> Optional[RankedIdeaOutput]:
+        """Get the ranked output for a session (most recent if multiple)."""
+        outputs = []
+        for path in self.base_path.glob("rio_*.json"):
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                if data.get('sessionId') == session_id:
+                    if data.get('createdAt') and isinstance(data['createdAt'], str):
+                        data['createdAt'] = datetime.fromisoformat(data['createdAt'])
+                    for c in data.get('rankedCandidates', []):
+                        if c.get('createdAt') and isinstance(c['createdAt'], str):
+                            c['createdAt'] = datetime.fromisoformat(c['createdAt'])
+                    outputs.append(RankedIdeaOutput(**data))
+            except Exception:
+                continue
+        outputs.sort(key=lambda o: o.createdAt, reverse=True)
+        return outputs[0] if outputs else None
+
+
+_ranked_output_storage: Optional[RankedIdeaOutputStorage] = None
+
+
+def get_ranked_output_storage() -> RankedIdeaOutputStorage:
+    global _ranked_output_storage
+    if _ranked_output_storage is None:
+        _ranked_output_storage = RankedIdeaOutputStorage()
+    return _ranked_output_storage
+
+
+# =============================================================================
+# Step 5 Storage: IdeaSearchTree, ProbeLiterature, GraphPatch (PDF v5)
+# =============================================================================
+
+
+def generate_search_tree_id() -> str:
+    """Generate unique search tree ID."""
+    return f"ist_{uuid.uuid4().hex[:12]}"
+
+
+def generate_probe_result_id() -> str:
+    """Generate unique literature probe result ID."""
+    return f"lpr_{uuid.uuid4().hex[:12]}"
+
+
+def generate_graph_patch_id() -> str:
+    """Generate unique graph patch ID."""
+    return f"gp_{uuid.uuid4().hex[:12]}"
+
+
+class IdeaSearchTreeStorage:
+    """Storage for BFTS idea search trees (PDF v5 section 7.10)."""
+
+    def __init__(self, data_dir: str = "data"):
+        self.base_path = Path(data_dir) / "ideas" / "search_trees"
+        self.base_path.mkdir(parents=True, exist_ok=True)
+
+    def _get_path(self, tree_id: str) -> Path:
+        return self.base_path / f"{tree_id}.json"
+
+    def create(self, tree: IdeaSearchTree) -> IdeaSearchTree:
+        path = self._get_path(tree.id)
+        if path.exists():
+            raise ValueError(f"IdeaSearchTree {tree.id} already exists")
+
+        data = tree.model_dump()
+        data['createdAt'] = data['createdAt'].isoformat() if isinstance(data['createdAt'], datetime) else data['createdAt']
+
+        temp_path = path.with_suffix('.tmp')
+        with open(temp_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, default=str)
+        os.replace(temp_path, path)
+        return tree
+
+    def get(self, tree_id: str) -> Optional[IdeaSearchTree]:
+        path = self._get_path(tree_id)
+        if not path.exists():
+            return None
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        if data.get('createdAt') and isinstance(data['createdAt'], str):
+            data['createdAt'] = datetime.fromisoformat(data['createdAt'])
+        return IdeaSearchTree(**data)
+
+    def get_by_session(self, session_id: str) -> Optional[IdeaSearchTree]:
+        trees = []
+        for path in self.base_path.glob("ist_*.json"):
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                if data.get('sessionId') == session_id:
+                    if data.get('createdAt') and isinstance(data['createdAt'], str):
+                        data['createdAt'] = datetime.fromisoformat(data['createdAt'])
+                    trees.append(IdeaSearchTree(**data))
+            except Exception:
+                continue
+        trees.sort(key=lambda t: t.createdAt, reverse=True)
+        return trees[0] if trees else None
+
+
+class ProbeLiteratureStorage:
+    """Storage for literature probe results (PDF v5 section 7.10)."""
+
+    def __init__(self, data_dir: str = "data"):
+        self.base_path = Path(data_dir) / "ideas" / "probe_results"
+        self.base_path.mkdir(parents=True, exist_ok=True)
+
+    def _get_path(self, result_id: str) -> Path:
+        return self.base_path / f"{result_id}.json"
+
+    def create(self, result: LiteratureProbeResult) -> LiteratureProbeResult:
+        path = self._get_path(result.id)
+        data = result.model_dump()
+        data['createdAt'] = data['createdAt'].isoformat() if isinstance(data['createdAt'], datetime) else data['createdAt']
+
+        temp_path = path.with_suffix('.tmp')
+        with open(temp_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, default=str)
+        os.replace(temp_path, path)
+        return result
+
+    def get(self, result_id: str) -> Optional[LiteratureProbeResult]:
+        path = self._get_path(result_id)
+        if not path.exists():
+            return None
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        if data.get('createdAt') and isinstance(data['createdAt'], str):
+            data['createdAt'] = datetime.fromisoformat(data['createdAt'])
+        return LiteratureProbeResult(**data)
+
+    def list_by_session(self, session_id: str) -> List[LiteratureProbeResult]:
+        results = []
+        for path in self.base_path.glob("lpr_*.json"):
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                if data.get('sessionId') == session_id:
+                    if data.get('createdAt') and isinstance(data['createdAt'], str):
+                        data['createdAt'] = datetime.fromisoformat(data['createdAt'])
+                    results.append(LiteratureProbeResult(**data))
+            except Exception:
+                continue
+        return sorted(results, key=lambda r: r.createdAt, reverse=True)
+
+    def list_by_node(self, node_id: str) -> List[LiteratureProbeResult]:
+        results = []
+        for path in self.base_path.glob("lpr_*.json"):
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                if data.get('nodeId') == node_id:
+                    if data.get('createdAt') and isinstance(data['createdAt'], str):
+                        data['createdAt'] = datetime.fromisoformat(data['createdAt'])
+                    results.append(LiteratureProbeResult(**data))
+            except Exception:
+                continue
+        return sorted(results, key=lambda r: r.createdAt, reverse=True)
+
+
+class GraphPatchStorage:
+    """Storage for graph patches applied during BFTS (PDF v5 section 7.10)."""
+
+    def __init__(self, data_dir: str = "data"):
+        self.base_path = Path(data_dir) / "ideas" / "graph_patches"
+        self.base_path.mkdir(parents=True, exist_ok=True)
+
+    def _get_path(self, patch_id: str) -> Path:
+        return self.base_path / f"{patch_id}.json"
+
+    def create(self, patch: GraphPatch) -> GraphPatch:
+        path = self._get_path(patch.id)
+        data = patch.model_dump()
+        data['createdAt'] = data['createdAt'].isoformat() if isinstance(data['createdAt'], datetime) else data['createdAt']
+
+        temp_path = path.with_suffix('.tmp')
+        with open(temp_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, default=str)
+        os.replace(temp_path, path)
+        return patch
+
+    def get(self, patch_id: str) -> Optional[GraphPatch]:
+        path = self._get_path(patch_id)
+        if not path.exists():
+            return None
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        if data.get('createdAt') and isinstance(data['createdAt'], str):
+            data['createdAt'] = datetime.fromisoformat(data['createdAt'])
+        return GraphPatch(**data)
+
+    def list_by_session(self, session_id: str) -> List[GraphPatch]:
+        patches = []
+        for path in self.base_path.glob("gp_*.json"):
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                if data.get('sessionId') == session_id:
+                    if data.get('createdAt') and isinstance(data['createdAt'], str):
+                        data['createdAt'] = datetime.fromisoformat(data['createdAt'])
+                    patches.append(GraphPatch(**data))
+            except Exception:
+                continue
+        return sorted(patches, key=lambda p: p.createdAt, reverse=True)
+
+
+# Singleton instances
+_search_tree_storage: Optional[IdeaSearchTreeStorage] = None
+_probe_literature_storage: Optional[ProbeLiteratureStorage] = None
+_graph_patch_storage: Optional[GraphPatchStorage] = None
+
+
+def get_search_tree_storage() -> IdeaSearchTreeStorage:
+    global _search_tree_storage
+    if _search_tree_storage is None:
+        _search_tree_storage = IdeaSearchTreeStorage()
+    return _search_tree_storage
+
+
+def get_probe_literature_storage() -> ProbeLiteratureStorage:
+    global _probe_literature_storage
+    if _probe_literature_storage is None:
+        _probe_literature_storage = ProbeLiteratureStorage()
+    return _probe_literature_storage
+
+
+def get_graph_patch_storage() -> GraphPatchStorage:
+    global _graph_patch_storage
+    if _graph_patch_storage is None:
+        _graph_patch_storage = GraphPatchStorage()
+    return _graph_patch_storage

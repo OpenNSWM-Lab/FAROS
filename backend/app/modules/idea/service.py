@@ -33,6 +33,11 @@ from app.modules.idea.contracts import (
     ReasoningKG,
     GraphEvidenceLink,
     ReasoningPathSeed,
+    # Step 6 models
+    CandidateGraphEvidence,
+    IdeaCritique,
+    PriorWorkComparison,
+    RankedIdeaOutput,
 )
 from app.modules.idea.storage import (
     get_session_storage,
@@ -58,6 +63,9 @@ from app.modules.idea.storage import (
     generate_reasoning_kg_id,
     generate_evidence_link_id,
     generate_path_seed_id,
+    # Step 6 storage
+    get_ranked_output_storage,
+    generate_ranked_output_id,
 )
 from app.models.idea import _compute_title_hash
 from app.modules.idea.literature_graph import LiteratureGraphBuilder
@@ -103,6 +111,8 @@ class IdeaGenerationService:
         self.reasoning_kg_storage = get_reasoning_kg_storage()
         self.evidence_link_storage = get_evidence_link_storage()
         self.path_seed_storage = get_path_seed_storage()
+        # Step 6 storage
+        self.ranked_output_storage = get_ranked_output_storage()
 
     def _get_step_output(self, session: IdeaSession, step_name: str, key: str, default=None):
         """Read a specific output key from a pipeline step's trace."""
@@ -1339,18 +1349,27 @@ class IdeaGenerationService:
         return candidates
     
     def _step_rank_candidates(self, session: IdeaSession) -> tuple:
-        """Rank candidates using discriminative multi-criteria scoring."""
+        """Rank candidates with multi-criteria scoring, evidence binding, and critique.
+
+        Step 6 delivers:
+          1. Numeric multi-criteria scoring (via ranking_service)
+          2. CandidateGraphEvidence — rule-based dual-graph mapping
+          3. PriorWorkComparison — LLM comparison vs selected papers
+          4. IdeaCritique — LLM structured critique
+          5. RankedIdeaOutput — persisted to storage
+
+        Falls back gracefully when dual-graph artifacts are unavailable.
+        """
         seed = session.config.seedQuery
         paper_type = session.config.paperType
         domain = session.config.domain or "general"
         candidates = self.get_candidates(session.id)
-        
+
         if not candidates:
             return {"candidateCount": 0}, {"rankings": [], "error": "No candidates to rank"}, []
-        
-        # Use the ranking service for discriminative scoring
+
+        # --- Phase 1: Numeric multi-criteria scoring ---
         ranking_service = get_ranking_service()
-        
         try:
             updated_candidates, ranking_results = ranking_service.rank_candidates(
                 candidates=candidates,
@@ -1363,14 +1382,127 @@ class IdeaGenerationService:
             )
         except Exception as e:
             logger.error(f"Ranking service failed: {e}")
-            # Fallback: use existing scores
             updated_candidates = candidates
             ranking_results = []
-        
-        # Build rankings output with full criteria breakdown
+
+        # Sort by overallScore descending
+        ranked = sorted(updated_candidates, key=lambda c: c.overallScore, reverse=True)
+
+        # --- Phase 2: Load dual-graph artifacts for evidence binding ---
+        structured_papers = []
+        reasoning_kg = None
+        path_seeds = []
+        evidence_links = []
+        handoff = None
+        try:
+            structured_papers = self.structured_storage.list_by_session(session.id)
+            reasoning_kg = self.reasoning_kg_storage.get_by_session(session.id)
+            path_seeds = self.path_seed_storage.list_by_session(session.id)
+            evidence_links = self.evidence_link_storage.list_by_session(session.id)
+        except Exception as e:
+            logger.warning(f"Dual-graph artifact loading failed: {e}, evidence binding will be partial")
+
+        try:
+            handoff = self.handoff_storage.get_by_session(session.id)
+        except Exception:
+            pass
+
+        # --- Phase 3: Build CandidateGraphEvidence per candidate (rule-based) ---
+        evidence_list: List[CandidateGraphEvidence] = []
+        for candidate in ranked:
+            evidence = self._build_candidate_evidence(
+                candidate=candidate,
+                structured_papers=structured_papers,
+                reasoning_kg=reasoning_kg,
+                path_seeds=path_seeds,
+                evidence_links=evidence_links,
+            )
+            evidence_list.append(evidence)
+
+        # --- Phase 4: LLM-driven PriorWorkComparison + IdeaCritique ---
+        prior_work_comparisons: List[PriorWorkComparison] = []
+        critiques: List[IdeaCritique] = []
+        top_k = min(5, len(ranked))  # Deep analysis on top 5 candidates
+
+        if structured_papers and ranked:
+            literature_context = self._build_ranking_literature_context(
+                structured_papers, reasoning_kg, path_seeds
+            )
+            try:
+                for candidate in ranked[:top_k]:
+                    comparison, critique = self._llm_analyze_candidate(
+                        candidate=candidate,
+                        seed_query=seed,
+                        paper_type=paper_type,
+                        domain=domain,
+                        literature_context=literature_context,
+                        provider_name=session.config.providerName,
+                        model=session.config.model,
+                    )
+                    prior_work_comparisons.append(comparison)
+                    critiques.append(critique)
+            except Exception as e:
+                logger.warning(f"LLM candidate analysis failed: {e}")
+
+        # --- Phase 5: Backfill evidence/critique into final candidates (PDF v5) ---
+        evidence_by_candidate = {e.candidateId: e for e in evidence_list}
+        comparison_by_candidate: Dict[str, list] = {}
+        for pc in prior_work_comparisons:
+            comparison_by_candidate.setdefault(pc.candidateId, []).append(pc)
+        critique_by_candidate = {c.candidateId: c for c in critiques}
+
+        for candidate in ranked:
+            # Embed graphEvidence into the candidate itself
+            ev = evidence_by_candidate.get(candidate.id)
+            if ev:
+                candidate.graphEvidence = ev
+
+            # Embed closest prior work comparisons
+            comparisons = comparison_by_candidate.get(candidate.id, [])
+            if comparisons and not candidate.closestPriorWork:
+                candidate.closestPriorWork = comparisons
+
+            # Embed critique
+            crit = critique_by_candidate.get(candidate.id)
+            if crit and not candidate.critique:
+                candidate.critique = crit
+
+            # Keep GET /ideas/sessions/{id}/candidates aligned with the final Step 6 candidate.
+            try:
+                self.candidate_storage.create(candidate)
+            except Exception as e:
+                logger.warning(f"Failed to persist final candidate {candidate.id}: {e}")
+
+        # --- Phase 6: Assemble and persist RankedIdeaOutput ---
+        scores_list = [c.overallScore for c in ranked]
+        variance = 0.0
+        if len(scores_list) > 1:
+            mean = sum(scores_list) / len(scores_list)
+            variance = sum((s - mean) ** 2 for s in scores_list) / len(scores_list)
+
+        ranked_output = RankedIdeaOutput(
+            id=generate_ranked_output_id(),
+            sessionId=session.id,
+            rankedCandidates=ranked,
+            evidence=evidence_list,
+            priorWorkComparisons=prior_work_comparisons,
+            critiques=critiques,
+            scoreVariance=round(variance, 3),
+            minScore=round(min(scores_list), 2) if scores_list else 0.0,
+            maxScore=round(max(scores_list), 2) if scores_list else 0.0,
+            rankedCount=len(ranked),
+            topCandidateId=ranked[0].id if ranked else None,
+            rankingMethod="llm_multi_criteria" if ranking_results else "heuristic",
+        )
+        try:
+            self.ranked_output_storage.create(ranked_output)
+        except Exception as e:
+            logger.warning(f"Failed to persist RankedIdeaOutput: {e}")
+
+        # --- Build output for trace ---
         rankings = []
-        for rank_idx, candidate in enumerate(sorted(updated_candidates, key=lambda c: c.overallScore, reverse=True), 1):
-            ranking_entry = {
+        for rank_idx, candidate in enumerate(ranked, 1):
+            rankings.append({
                 "id": candidate.id,
                 "title": candidate.title,
                 "totalScore": round(candidate.overallScore, 2),
@@ -1379,25 +1511,250 @@ class IdeaGenerationService:
                 "overallRationale": getattr(candidate, 'overallRationale', ''),
                 "scoringConfidence": getattr(candidate, 'scoringConfidence', 0.5),
                 "scoringMethod": getattr(candidate, 'scoringMethod', 'heuristic'),
-            }
-            rankings.append(ranking_entry)
-        
-        # Calculate variance for diagnostics
-        scores = [r["totalScore"] for r in rankings]
-        variance = 0.0
-        if len(scores) > 1:
-            mean = sum(scores) / len(scores)
-            variance = sum((s - mean) ** 2 for s in scores) / len(scores)
-        
+            })
+
         inputs = {"candidateCount": len(candidates)}
         outputs = {
             "rankings": rankings,
             "scoreVariance": round(variance, 3),
-            "minScore": round(min(scores), 2) if scores else 0,
-            "maxScore": round(max(scores), 2) if scores else 0,
+            "minScore": round(min(scores_list), 2) if scores_list else 0,
+            "maxScore": round(max(scores_list), 2) if scores_list else 0,
+            "rankedOutputId": ranked_output.id,
+            "evidenceCount": len(evidence_list),
+            "comparisonCount": len(prior_work_comparisons),
+            "critiqueCount": len(critiques),
         }
-        
+
         return inputs, outputs, []
+
+    # =========================================================================
+    # Step 6 Helpers
+    # =========================================================================
+
+    def _build_candidate_evidence(
+        self,
+        candidate: IdeaCandidate,
+        structured_papers: List[StructuredPaper],
+        reasoning_kg: ReasoningKG | None,
+        path_seeds: List[ReasoningPathSeed],
+        evidence_links: List[GraphEvidenceLink],
+    ) -> CandidateGraphEvidence:
+        """Build CandidateGraphEvidence by matching candidate to dual-graph artifacts."""
+        existing_evidence = getattr(candidate, 'graphEvidence', None)
+
+        def _existing_list(field: str) -> List[Any]:
+            if isinstance(existing_evidence, dict):
+                value = existing_evidence.get(field, [])
+            else:
+                value = getattr(existing_evidence, field, []) if existing_evidence else []
+            return list(value or [])
+
+        supporting_paper_ids: List[str] = _existing_list("supportingPaperIds")
+        supporting_claim_ids: List[str] = _existing_list("supportingClaimIds")
+        supporting_entity_ids: List[str] = _existing_list("supportingEntityIds")
+        supporting_path_seed_ids: List[str] = _existing_list("supportingPathSeedIds")
+        evidence_link_ids: List[str] = _existing_list("evidenceLinkIds")
+        probe_paper_ids: List[str] = _existing_list("probePaperIds")
+        reasoning_trace: List[Dict[str, Any]] = _existing_list("reasoningTrace")
+
+        if getattr(candidate, "pathSeedId", None) and candidate.pathSeedId not in supporting_path_seed_ids:
+            supporting_path_seed_ids.append(candidate.pathSeedId)
+
+        trace_entries = []
+        if getattr(candidate, "searchNodeId", None):
+            trace_entries.append({"step": "IdeaSearchNode", "id": candidate.searchNodeId})
+        if getattr(candidate, "pathSeedId", None):
+            trace_entries.append({"step": "ReasoningPathSeed", "id": candidate.pathSeedId})
+        trace_entries.append({"step": "IdeaCandidate", "id": candidate.id})
+        for entry in trace_entries:
+            if entry not in reasoning_trace:
+                reasoning_trace.append(entry)
+
+        # Extract keywords from candidate
+        candidate_text = f"{candidate.title} {candidate.problem} {candidate.keyInsight}".lower()
+        keywords = set(
+            w for w in candidate_text.replace(',', ' ').split()
+            if len(w) > 3 and w not in ('this', 'that', 'the', 'and', 'for', 'with', 'from')
+        )
+
+        # Match keywords against structured paper titles and claims
+        for sp in structured_papers:
+            paper_text = f"{sp.title} {' '.join(c.text for c in sp.claims)}".lower()
+            if any(kw in paper_text for kw in keywords):
+                if sp.id not in supporting_paper_ids:
+                    supporting_paper_ids.append(sp.id)
+                for claim in sp.claims:
+                    if any(kw in claim.text.lower() for kw in keywords):
+                        if claim.claimId not in supporting_claim_ids:
+                            supporting_claim_ids.append(claim.claimId)
+
+        # Match against ReasoningKG entities
+        if reasoning_kg:
+            for entity in reasoning_kg.entities:
+                entity_text = f"{entity.name} {entity.normalizedName}".lower()
+                if any(kw in entity_text for kw in keywords):
+                    if entity.entityId not in supporting_entity_ids:
+                        supporting_entity_ids.append(entity.entityId)
+
+        # Match against PathSeeds via candidate reference fields
+        candidate_refs = getattr(candidate, 'references', []) or []
+        for ps in path_seeds:
+            # Path seeds with overlapping paper IDs or anchor entities
+            if any(pid in ps.sourcePaperIds for pid in supporting_paper_ids):
+                supporting_path_seed_ids.append(ps.seedId)
+                evidence_link_ids.extend(ps.evidenceLinkIds)
+
+        # Dedup
+        supporting_paper_ids = list(dict.fromkeys(supporting_paper_ids))
+        supporting_claim_ids = list(dict.fromkeys(supporting_claim_ids))
+        supporting_entity_ids = list(dict.fromkeys(supporting_entity_ids))
+        evidence_link_ids = list(dict.fromkeys(evidence_link_ids))
+        supporting_path_seed_ids = list(dict.fromkeys(supporting_path_seed_ids))
+        probe_paper_ids = list(dict.fromkeys(probe_paper_ids))
+
+        # Build evidence summary
+        parts = []
+        if supporting_paper_ids:
+            parts.append(f"Supported by {len(supporting_paper_ids)} papers")
+        if supporting_entity_ids:
+            parts.append(f"Linked to {len(supporting_entity_ids)} KG entities")
+        if supporting_path_seed_ids:
+            parts.append(f"Derived from {len(supporting_path_seed_ids)} path seeds")
+
+        return CandidateGraphEvidence(
+            candidateId=candidate.id,
+            supportingPaperIds=supporting_paper_ids,
+            supportingClaimIds=supporting_claim_ids,
+            supportingEntityIds=supporting_entity_ids,
+            supportingPathSeedIds=supporting_path_seed_ids,
+            evidenceLinkIds=evidence_link_ids,
+            probePaperIds=probe_paper_ids,
+            reasoningTrace=reasoning_trace,
+            evidenceSummary=". ".join(parts) if parts else "No direct dual-graph evidence found",
+        )
+
+    def _build_ranking_literature_context(
+        self,
+        structured_papers: List[StructuredPaper],
+        reasoning_kg: ReasoningKG | None,
+        path_seeds: List[ReasoningPathSeed],
+        limit: int = 8,
+    ) -> str:
+        """Build literature context string for LLM ranking analysis."""
+        lines = []
+        for i, sp in enumerate(structured_papers[:limit]):
+            title = sp.title or "(untitled)"
+            year = sp.year or "N/A"
+            claims_str = ". ".join(
+                c.text[:120] for c in (sp.claims or [])[:2]
+            ) or "N/A"
+            lines.append(
+                f"[{i+1}] {title} ({year})\n"
+                f"    Claims: {claims_str}"
+            )
+
+        # Add key gaps / path seeds summary
+        if path_seeds:
+            seed_summaries = []
+            for ps in path_seeds[:3]:
+                seed_summaries.append(
+                    f"  - Path: {ps.templateType}, rationale: {ps.rationale[:150]}"
+                )
+            if seed_summaries:
+                lines.append("\nReasoning Path Seeds:")
+                lines.extend(seed_summaries)
+
+        return "\n\n".join(lines) if lines else "(No literature available)"
+
+    def _llm_analyze_candidate(
+        self,
+        candidate: IdeaCandidate,
+        seed_query: str,
+        paper_type: str,
+        domain: str,
+        literature_context: str,
+        provider_name: str,
+        model: str,
+    ) -> tuple[PriorWorkComparison, IdeaCritique]:
+        """Run LLM analysis for PriorWorkComparison + IdeaCritique in one call."""
+        user_prompt = RANK_CANDIDATE_ANALYSIS_USER.format(
+            seed_query=seed_query,
+            paper_type=paper_type,
+            domain=domain,
+            title=candidate.title,
+            problem=candidate.problem,
+            key_insight=candidate.keyInsight,
+            approach=candidate.draftPlan.methodology if candidate.draftPlan else "Not specified",
+            literature_context=literature_context,
+        )
+
+        messages = [
+            ChatMessage(role="system", content=RANK_CANDIDATE_ANALYSIS_SYSTEM),
+            ChatMessage(role="user", content=user_prompt),
+        ]
+
+        client = get_provider_client(provider_name)
+        response = client.chat(messages, model=model, max_tokens=1200)
+
+        # Parse JSON response
+        try:
+            text = response.text.strip()
+            if "```json" in text:
+                text = text.split("```json")[1].split("```")[0]
+            elif "```" in text:
+                text = text.split("```")[1].split("```")[0]
+            data = json.loads(text)
+        except (json.JSONDecodeError, AttributeError, IndexError):
+            # Try regex fallback
+            json_match = re.search(r'\{[\s\S]*\}', response.text)
+            if json_match:
+                try:
+                    data = json.loads(json_match.group())
+                except json.JSONDecodeError:
+                    return self._fallback_analysis(candidate)
+            else:
+                return self._fallback_analysis(candidate)
+
+        prior_work = PriorWorkComparison(
+            candidateId=candidate.id,
+            comparedPaperIds=data.get("comparedPaperIds", []),
+            differences=data.get("differences", []),
+            advantages=data.get("advantages", []),
+            risks=data.get("risks", []),
+            overallAssessment=data.get("overallAssessment", ""),
+            comparisonConfidence=float(data.get("comparisonConfidence", 0.7)),
+        )
+
+        critique = IdeaCritique(
+            candidateId=candidate.id,
+            strengths=data.get("strengths", []),
+            weaknesses=data.get("weaknesses", []),
+            assumptions=data.get("assumptions", []),
+            failureModes=data.get("failureModes", []),
+            suggestedImprovements=data.get("suggestedImprovements", []),
+            overallCritique=data.get("overallCritique", ""),
+            critiqueConfidence=float(data.get("critiqueConfidence", 0.7)),
+        )
+
+        return prior_work, critique
+
+    def _fallback_analysis(
+        self, candidate: IdeaCandidate
+    ) -> tuple[PriorWorkComparison, IdeaCritique]:
+        """Generate fallback analysis when LLM fails."""
+        prior_work = PriorWorkComparison(
+            candidateId=candidate.id,
+            overallAssessment="LLM analysis unavailable — scored heuristically.",
+            comparisonConfidence=0.3,
+        )
+        critique = IdeaCritique(
+            candidateId=candidate.id,
+            strengths=[f"Addresses {candidate.problem[:80]}..."],
+            weaknesses=["Not assessed by LLM"],
+            overallCritique="LLM critique unavailable.",
+            critiqueConfidence=0.3,
+        )
+        return prior_work, critique
     
     def _step_finalize(self, session: IdeaSession) -> tuple:
         """Finalize the session."""
@@ -1423,3 +1780,55 @@ def get_idea_service() -> IdeaGenerationService:
     if _service is None:
         _service = IdeaGenerationService()
     return _service
+
+
+# =============================================================================
+# Step 6 Prompt Templates: Candidate Analysis (PriorWorkComparison + IdeaCritique)
+# =============================================================================
+
+RANK_CANDIDATE_ANALYSIS_SYSTEM = """You are a research reviewer evaluating a candidate research idea against existing literature.
+
+Your task is to:
+1. Compare this idea with the provided literature context — identify key differences and advantages
+2. Critique the idea — identify strengths, weaknesses, assumptions, and failure modes
+3. Suggest concrete improvements
+
+Be specific and evidence-based. Reference paper indices from the literature context when relevant.
+Do NOT fabricate paper IDs or evidence links — only reference what is explicitly provided.
+
+Respond ONLY with valid JSON in this exact format:
+{
+  "comparedPaperIds": ["paper index references from context"],
+  "differences": ["how this idea differs from prior work — be specific"],
+  "advantages": ["advantages over existing approaches"],
+  "risks": ["risks relative to established methods"],
+  "overallAssessment": "Brief overall comparison assessment",
+  "comparisonConfidence": 0.85,
+  "strengths": ["key strengths of the idea"],
+  "weaknesses": ["identified weaknesses or gaps"],
+  "assumptions": ["implicit or explicit assumptions the idea makes"],
+  "failureModes": ["ways the idea could fail or be disproven"],
+  "suggestedImprovements": ["concrete suggestions for strengthening the idea"],
+  "overallCritique": "Brief overall critique summary",
+  "critiqueConfidence": 0.85
+}"""
+
+RANK_CANDIDATE_ANALYSIS_USER = """Evaluate this candidate research idea:
+
+**Research Domain:** {domain}
+**Seed Topic:** {seed_query}
+**Paper Type:** {paper_type}
+
+**Idea Title:** {title}
+
+**Problem Statement:** {problem}
+
+**Key Insight:** {key_insight}
+
+**Proposed Approach:** {approach}
+
+**Existing Literature Context:**
+{literature_context}
+
+Provide a thorough comparison with existing work and a structured critique of this idea.
+Be specific — reference the paper indices from the literature context in your comparison."""

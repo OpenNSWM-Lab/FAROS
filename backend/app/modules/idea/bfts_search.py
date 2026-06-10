@@ -28,7 +28,12 @@ from app.models.idea import (
     RiskItem,
     ExperimentSpec,
     DraftPlan,
+    CandidateGraphEvidence,
+    IdeaSearchTree,
+    IdeaSearchEdge,
+    IdeaSearchReport,
     generate_candidate_id,
+    generate_search_tree_id,
 )
 from app.modules.idea.reflection_loop import ReflectionLoop, FINALIZE_IDEA_DESC
 from app.services.search_service import get_search_service
@@ -159,18 +164,82 @@ def _create_fallback_node(seed: ReasoningPathSeed, session_id: str) -> IdeaNode:
 def _nodes_to_candidates(
     nodes: List[IdeaNode], session_id: str
 ) -> List[IdeaCandidate]:
-    """Convert terminal IdeaNode[] to IdeaCandidate[] for downstream ranking."""
+    """Convert terminal IdeaNode[] to IdeaCandidate[] (PDF v5: bind searchNodeId/pathSeedId)."""
     candidates = []
     for node in nodes:
-        if not node.isTerminal and node.title:
-            # Non-terminal nodes: still include if they have content
-            pass
+        if not node.isTerminal and not node.title:
+            continue
+
+        # Build embedded graph evidence from node.
+        probe_paper_ids: List[str] = []
+        reasoning_trace: List[Dict[str, Any]] = [
+            {"step": "IdeaSearchNode", "id": node.nodeId},
+        ]
+        if node.sourceSeedId:
+            reasoning_trace.append({"step": "ReasoningPathSeed", "id": node.sourceSeedId})
+        for probe_id in node.literatureProbeIds:
+            reasoning_trace.append({"step": "LiteratureProbeResult", "id": probe_id})
+        for patch_id in node.graphPatchIds:
+            reasoning_trace.append({"step": "GraphPatch", "id": patch_id})
+
+        try:
+            from app.storage.idea_storage import get_probe_literature_storage
+            probe_storage = get_probe_literature_storage()
+            for probe_id in node.literatureProbeIds:
+                probe = probe_storage.get(probe_id)
+                if not probe:
+                    continue
+                probe_paper_ids.extend(probe.closestPriorWorkIds)
+                probe_paper_ids.extend([paper.id for paper in probe.papers])
+        except Exception:
+            probe_paper_ids = []
+        probe_paper_ids = list(dict.fromkeys(probe_paper_ids))
+
+        from app.models.idea import CandidateGraphEvidence
+        graph_evidence = CandidateGraphEvidence(
+            candidateId="",  # filled after candidate ID generated
+            supportingPaperIds=[],
+            supportingClaimIds=[],
+            supportingEntityIds=[],
+            supportingPathSeedIds=[node.sourceSeedId] if node.sourceSeedId else [],
+            evidenceLinkIds=[],
+            probePaperIds=probe_paper_ids,
+            reasoningTrace=reasoning_trace,
+            evidenceSummary=f"BFTS node {node.nodeId}: "
+                          f"reflection rounds={node.reflectionRounds}, "
+                          f"graph grounding={node.graphGroundingScore:.2f}, "
+                          f"evidence support={node.evidenceSupportScore:.2f}",
+        )
+
+        candidate_id = generate_candidate_id()
+        # Patch the graph evidence with the actual candidate ID
+        graph_evidence = CandidateGraphEvidence(
+            candidateId=candidate_id,
+            supportingPaperIds=graph_evidence.supportingPaperIds,
+            supportingClaimIds=graph_evidence.supportingClaimIds,
+            supportingEntityIds=graph_evidence.supportingEntityIds,
+            supportingPathSeedIds=graph_evidence.supportingPathSeedIds,
+            evidenceLinkIds=graph_evidence.evidenceLinkIds,
+            probePaperIds=graph_evidence.probePaperIds,
+            reasoningTrace=[{"step": "IdeaCandidate", "id": candidate_id}, *graph_evidence.reasoningTrace],
+            evidenceSummary=graph_evidence.evidenceSummary,
+        )
+
         candidate = IdeaCandidate(
-            id=generate_candidate_id(),
+            id=candidate_id,
             sessionId=session_id,
+            # PDF v5 traceability
+            searchNodeId=node.nodeId,
+            pathSeedId=node.sourceSeedId,
+            reasoningPathId=None,  # populated by Step 6 if available
+            # Core content
             title=node.title or "Untitled Idea",
             problem=node.hypothesis or "Problem statement pending.",
+            hypothesisStatement=node.hypothesis or "",
             keyInsight=node.hypothesis or node.abstract[:200] if node.abstract else "Key insight pending.",
+            proposedMethod=node.abstract[:300] if node.abstract else "",
+            expectedOutcome="",
+            # Scoring
             novelty=node.noveltyScore,
             noveltyRationale=f"From BFTS node {node.nodeId}, "
                          f"reflection rounds: {node.reflectionRounds}",
@@ -180,6 +249,7 @@ def _nodes_to_candidates(
             impact=node.impactScore,
             impactRationale=f"Combined score: {node.combinedScore:.2f}",
             scoringMethod="bfts_tree_search",
+            # Details
             risks=[
                 RiskItem(
                     risk=r.get("risk", str(r)) if isinstance(r, dict) else str(r),
@@ -188,6 +258,15 @@ def _nodes_to_candidates(
                 for r in (node.risks or [])
             ],
             requiredExperiments=[
+                ExperimentSpec(
+                    name=e.get("name", "Experiment") if isinstance(e, dict) else str(e),
+                    description=e.get("description", "") if isinstance(e, dict) else "",
+                    metrics=e.get("metrics", []) if isinstance(e, dict) else [],
+                    datasets=e.get("datasets", []) if isinstance(e, dict) else [],
+                )
+                for e in (node.experiments or [])
+            ],
+            experimentSpecs=[
                 ExperimentSpec(
                     name=e.get("name", "Experiment") if isinstance(e, dict) else str(e),
                     description=e.get("description", "") if isinstance(e, dict) else "",
@@ -206,6 +285,8 @@ def _nodes_to_candidates(
                     if isinstance(m, str)
                 ][:5],
             ),
+            # PDF v5: embedded evidence
+            graphEvidence=graph_evidence,
         )
         candidates.append(candidate)
     return candidates
@@ -245,6 +326,7 @@ class BFTSSearchTree:
         self.literature_context = literature_context
         self.seed_query = seed_query
         self.paper_type = paper_type
+        self.structured_papers = structured_papers  # Stored for literature probe context
 
         # Tree storage
         self.nodes: List[IdeaNode] = []
@@ -348,6 +430,11 @@ class BFTSSearchTree:
                     self._add_child(parent, child)
                     expansion_count += 1
 
+                    # PDF v5: Run literature probe on child's idea to find closest prior work
+                    probe_result = self._run_literature_probe(child)
+                    if probe_result and probe_result.id not in child.literatureProbeIds:
+                        child.literatureProbeIds.append(probe_result.id)
+
                 parent.isExpanded = True
 
             # Check convergence
@@ -372,6 +459,9 @@ class BFTSSearchTree:
             f"{len(terminal_nodes)} terminal ideas"
         )
 
+        # Persist search tree (PDF v5 requirement)
+        self._persist_search_tree(terminal_nodes)
+
         return _nodes_to_candidates(terminal_nodes, self.session_id)
 
     def _expand_node(self, parent: IdeaNode, max_reflection: int) -> Optional[IdeaNode]:
@@ -381,8 +471,8 @@ class BFTSSearchTree:
         loop = ReflectionLoop(
             provider_name=self.provider_name,
             model=self.model,
-            seed_query=self.session_id,  # Will be overridden by service.py
-            paper_type="algorithm",  # Overridden by service.py
+            seed_query=self.seed_query or self.session_id,
+            paper_type=self.paper_type or "algorithm",
             max_rounds=max_reflection,
             literature_context=literature_context,
         )
@@ -396,7 +486,10 @@ class BFTSSearchTree:
                 nodeId=generate_idea_node_id(),
                 sessionId=self.session_id,
                 parentNodeId=parent.nodeId,
+                parentIds=[parent.nodeId] + (parent.parentIds or []),
                 depth=parent.depth + 1,
+                operator="reflect",
+                status="candidate",
                 sourceSeedId=parent.sourceSeedId,
                 title=result_node.title,
                 hypothesis=result_node.hypothesis,
@@ -427,6 +520,110 @@ class BFTSSearchTree:
         heapq.heappush(
             self._beam, (-child.combinedScore, child.nodeId, child.depth)
         )
+
+    def _run_literature_probe(self, node: IdeaNode) -> Optional[Any]:
+        """Run a simplified literature probe to find closest prior work (PDF v5 section 7.8).
+
+        Uses Step 3 structured papers as the search corpus (MVP stub — full external
+        search via SearchService comes in MVP3). Creates LiteratureProbeResult +
+        GraphPatch and persists both.
+
+        Returns the LiteratureProbeResult if any matching papers found, None otherwise.
+        """
+        if not self.structured_papers:
+            return None
+
+        try:
+            from app.storage.idea_storage import get_probe_literature_storage, get_graph_patch_storage
+            from app.models.idea import (
+                LiteratureProbeQuery, LiteratureProbeResult, GraphPatch,
+                generate_probe_result_id, generate_graph_patch_id,
+            )
+
+            # Build probe query from node title + hypothesis
+            idea_text = f"{node.title} {node.hypothesis}".lower()
+            idea_keywords = set(
+                w for w in idea_text.replace(',', ' ').split()
+                if len(w) > 3 and w not in ('this', 'that', 'the', 'and', 'for', 'with', 'from')
+            )
+
+            # Search structured papers for keyword matches
+            matched_papers: List[Any] = []
+            for sp in self.structured_papers:
+                paper_text = f"{sp.title} {sp.abstract}".lower()
+                match_count = sum(1 for kw in idea_keywords if kw in paper_text)
+                if match_count >= 2:  # At least 2 keyword matches
+                    matched_papers.append(sp)
+
+            if not matched_papers:
+                return None
+
+            # Build probe query
+            probe_query = LiteratureProbeQuery(
+                nodeId=node.nodeId,
+                query=" ".join(sorted(idea_keywords)[:8]),
+                intent="closest_prior",
+                maxPapers=8,
+            )
+
+            # Get raw papers from storage for the result
+            from app.storage.idea_storage import get_raw_paper_storage
+            raw_storage = get_raw_paper_storage()
+            raw_papers_for_result = []
+            for sp in matched_papers[:8]:
+                rp = raw_storage.get(sp.rawPaperId) or raw_storage.get(sp.id)
+                if rp:
+                    raw_papers_for_result.append(rp)
+
+            # Create LiteratureProbeResult
+            probe_result = LiteratureProbeResult(
+                id=generate_probe_result_id(),
+                nodeId=node.nodeId,
+                sessionId=self.session_id,
+                query=probe_query,
+                papers=raw_papers_for_result,
+                closestPriorWorkIds=[sp.id for sp in matched_papers[:3]],
+                summary=f"Found {len(matched_papers)} papers with keyword overlap. "
+                       f"Top matches: {', '.join(sp.title[:60] for sp in matched_papers[:3])}.",
+                noveltyRisk=max(0.0, min(1.0, 1.0 - len(matched_papers) / max(1, len(self.structured_papers)))),
+                shouldUpdateGraph=len(matched_papers) > 0,
+            )
+
+            # Persist probe result
+            probe_storage = get_probe_literature_storage()
+            probe_storage.create(probe_result)
+            if probe_result.id not in node.literatureProbeIds:
+                node.literatureProbeIds.append(probe_result.id)
+
+            # Create GraphPatch
+            graph_patch = GraphPatch(
+                id=generate_graph_patch_id(),
+                sessionId=self.session_id,
+                sourceNodeId=node.nodeId,
+                patchType="new_prior_work",
+                addedPaperIds=[sp.id for sp in matched_papers[:5]],
+                affectedNodeIds=[node.nodeId],
+                summary=f"Literature probe found {len(matched_papers)} closest prior work papers for node {node.nodeId}.",
+            )
+
+            # Persist graph patch
+            patch_storage = get_graph_patch_storage()
+            patch_storage.create(graph_patch)
+
+            # Update node with probe/patch IDs
+            node.graphPatchIds.append(graph_patch.id)
+
+            logger.info(
+                f"BFTS probe: node {node.nodeId} — "
+                f"found {len(matched_papers)} prior work papers, "
+                f"patch {graph_patch.id}"
+            )
+
+            return probe_result
+
+        except Exception as e:
+            logger.warning(f"BFTS literature probe failed for node {node.nodeId}: {e}")
+            return None
 
     def _score_node(self, node: IdeaNode) -> None:
         """Score a node using BFTSConfig.scoreWeights + PathSeed priors."""
@@ -529,6 +726,67 @@ class BFTSSearchTree:
         # Use the top selected papers from storage
         # Simplified: just return a generic context
         return "(Literature context available from Step 3 selected papers)"
+
+    def _persist_search_tree(self, terminal_nodes: List[IdeaNode]) -> None:
+        """Build and persist IdeaSearchTree from current tree state (PDF v5 section 7.10)."""
+        try:
+            from app.storage.idea_storage import get_search_tree_storage
+
+            # Build edges from parent_map and children_map
+            edges: List[IdeaSearchEdge] = []
+            for child_id, parent_id in self._parent_map.items():
+                child_node = next((n for n in self.nodes if n.nodeId == child_id), None)
+                operator = child_node.operator if child_node else "expand_path"
+                edges.append(IdeaSearchEdge(
+                    sourceNodeId=parent_id,
+                    targetNodeId=child_id,
+                    operator=operator,
+                    rationale=f"depth={child_node.depth}" if child_node else "",
+                ))
+
+            # Build search report
+            pruned = sum(1 for n in self.nodes if n.status == "pruned")
+            avg_reflection = 0.0
+            reflected = [n for n in self.nodes if n.reflectionRounds > 0]
+            if reflected:
+                avg_reflection = sum(n.reflectionRounds for n in reflected) / len(reflected)
+
+            report = IdeaSearchReport(
+                totalNodes=len(self.nodes),
+                prunedNodes=pruned,
+                candidateNodes=len(terminal_nodes),
+                literatureProbes=sum(1 for n in self.nodes if n.literatureProbeIds),
+                graphPatches=sum(1 for n in self.nodes if n.graphPatchIds),
+                avgReflectionRounds=round(avg_reflection, 1),
+                convergenceReason="max_nodes" if len(self.nodes) >= self.config.maxNodes else "converged",
+            )
+
+            # Root nodes are those with no parent
+            root_ids = [
+                n.nodeId for n in self.nodes
+                if n.parentNodeId is None or n.parentNodeId not in {
+                    nn.nodeId for nn in self.nodes
+                }
+            ]
+
+            tree = IdeaSearchTree(
+                id=generate_search_tree_id(),
+                sessionId=self.session_id,
+                rootNodeIds=root_ids,
+                nodes=list(self.nodes),  # copy
+                edges=edges,
+                config=self.config,
+                searchReport=report,
+            )
+
+            storage = get_search_tree_storage()
+            storage.create(tree)
+            logger.info(
+                f"BFTS: persisted IdeaSearchTree '{tree.id}' "
+                f"({tree.searchReport.totalNodes} nodes, {len(edges)} edges)"
+            )
+        except Exception as e:
+            logger.warning(f"Failed to persist IdeaSearchTree: {e}")
 
     def _has_converged(self) -> bool:
         """Check convergence: - Scores have low variance, or

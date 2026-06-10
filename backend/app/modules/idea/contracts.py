@@ -36,7 +36,7 @@ from app.models.idea import (
     QueryPlan,
     RawPaper,
     StructuredPaper,
-    # Dual-Graph Phase 2 (models defined, logic in Phase 2)
+    # Dual-Graph Phase 2
     GraphEvidenceLink,
     KGEntity,
     KGRelation,
@@ -44,6 +44,19 @@ from app.models.idea import (
     PathSeedStep,
     ReasoningKG,
     ReasoningPathSeed,
+    # Step 5 Outputs
+    CandidateScores,
+    GraphPatch,
+    IdeaSearchEdge,
+    IdeaSearchReport,
+    IdeaSearchTree,
+    LiteratureProbeQuery,
+    LiteratureProbeResult,
+    # Step 6 Outputs
+    CandidateGraphEvidence,
+    IdeaCritique,
+    PriorWorkComparison,
+    RankedIdeaOutput,
 )
 
 __all__ = [
@@ -82,4 +95,17 @@ __all__ = [
     "PathSeedStep",
     "ReasoningKG",
     "ReasoningPathSeed",
+    # Step 5 Outputs
+    "CandidateScores",
+    "GraphPatch",
+    "IdeaSearchEdge",
+    "IdeaSearchReport",
+    "IdeaSearchTree",
+    "LiteratureProbeQuery",
+    "LiteratureProbeResult",
+    # Step 6 Outputs
+    "CandidateGraphEvidence",
+    "IdeaCritique",
+    "PriorWorkComparison",
+    "RankedIdeaOutput",
 ]

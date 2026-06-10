@@ -27,6 +27,16 @@ from app.storage.idea_storage import (
     get_evidence_link_storage,
     get_path_seed_storage,
     get_reasoning_kg_storage,
+    # Step 5
+    generate_graph_patch_id,
+    generate_probe_result_id,
+    generate_search_tree_id,
+    get_graph_patch_storage,
+    get_probe_literature_storage,
+    get_search_tree_storage,
+    # Step 6
+    generate_ranked_output_id,
+    get_ranked_output_storage,
 )
 from app.storage.research_plan_storage import get_storage as get_plan_storage
 
@@ -55,4 +65,14 @@ __all__ = [
     "get_evidence_link_storage",
     "get_path_seed_storage",
     "get_reasoning_kg_storage",
+    # Step 5
+    "generate_graph_patch_id",
+    "generate_probe_result_id",
+    "generate_search_tree_id",
+    "get_graph_patch_storage",
+    "get_probe_literature_storage",
+    "get_search_tree_storage",
+    # Step 6
+    "generate_ranked_output_id",
+    "get_ranked_output_storage",
 ]

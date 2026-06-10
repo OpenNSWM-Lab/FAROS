@@ -186,6 +186,20 @@ class ExperimentSpec(BaseModel):
     datasets: List[str] = Field(default_factory=list)
 
 
+class CandidateScores(BaseModel):
+    """Structured scores for an idea candidate (PDF v5 section 8.2)."""
+    novelty: float = Field(default=0.0, ge=0, le=10)
+    feasibility: float = Field(default=0.0, ge=0, le=10)
+    impact: float = Field(default=0.0, ge=0, le=10)
+    clarity: float = Field(default=0.0, ge=0, le=10)
+    risk: float = Field(default=0.0, ge=0, le=10)
+    alignment: float = Field(default=0.0, ge=0, le=10)
+    referenceSupport: float = Field(default=0.0, ge=0, le=10)
+    experimentSpecificity: float = Field(default=0.0, ge=0, le=10)
+    total: float = Field(default=0.0, ge=0, le=10)
+    model_config = ConfigDict(frozen=True)
+
+
 class DraftPlan(BaseModel):
     """Draft research plan that can be converted to ResearchPlan."""
     researchQuestion: str
@@ -199,17 +213,29 @@ class DraftPlan(BaseModel):
 
 class IdeaCandidate(BaseModel):
     """
-    Candidate research idea.
-    
-    Represents a generated idea with scoring and draft plan.
+    Candidate research idea (PDF v5 section 8.2).
+
+    Represents a generated idea with scoring, evidence trace, and critique.
+    searchNodeId/pathSeedId/reasoningPathId link back to BFTS tree nodes
+    and dual-graph artifacts for full evidence-chain traceability.
     """
     id: str = Field(..., description="Unique candidate identifier")
     sessionId: str = Field(..., description="Parent session ID")
     title: str
+
+    # --- BFTS traceability (PDF v5 required) ---
+    searchNodeId: Optional[str] = Field(default=None, description="IdeaSearchNode ID that produced this candidate")
+    pathSeedId: Optional[str] = Field(default=None, description="ReasoningPathSeed ID that seeded this candidate")
+    reasoningPathId: Optional[str] = Field(default=None, description="Reasoning path draft ID")
+
+    # --- Core content ---
     problem: str = Field(description="Problem statement")
+    hypothesisStatement: str = Field(default="", description="Explicit hypothesis (distinct from keyInsight)")
     keyInsight: str = Field(description="Key insight or contribution")
-    
-    # Scoring (0-10) — 8 criteria
+    proposedMethod: str = Field(default="", description="The method sketch")
+    expectedOutcome: str = Field(default="", description="What success looks like")
+
+    # --- Scoring (0-10) — 8 criteria (kept flat for backward compat) ---
     novelty: float = Field(default=5.0, ge=0, le=10, description="Novelty score")
     noveltyRationale: str = ""
     feasibility: float = Field(default=5.0, ge=0, le=10, description="Feasibility score")
@@ -226,28 +252,51 @@ class IdeaCandidate(BaseModel):
     referenceSupportRationale: str = ""
     experimentSpecificity: float = Field(default=5.0, ge=0, le=10, description="Concreteness of proposed experiments")
     experimentSpecificityRationale: str = ""
-    
+
     # Aggregate scoring metadata
     overallRationale: str = Field(default="", description="Overall scoring rationale")
     scoringConfidence: float = Field(default=0.5, ge=0, le=1, description="Confidence in scores")
-    scoringMethod: str = Field(default="pending", description="How scores were determined: llm | heuristic | pending")
-    
-    # Details
+    scoringMethod: str = Field(default="pending", description="How scores were determined: llm | heuristic | tree_search | pending")
+
+    # --- Details ---
     risks: List[RiskItem] = Field(default_factory=list)
-    requiredExperiments: List[ExperimentSpec] = Field(default_factory=list)
+    requiredExperiments: List[ExperimentSpec] = Field(default_factory=list, description="Backward compat alias for experimentSpecs")
+    experimentSpecs: List[ExperimentSpec] = Field(default_factory=list, description="PDF v5: experiment specifications")
     expectedMetrics: List[str] = Field(default_factory=list)
-    
+
     # Draft plan for conversion to ResearchPlan
     draftPlan: Optional[DraftPlan] = None
-    
+
     # References
     references: List[str] = Field(
         default_factory=list,
         description="List of LiteratureItem IDs or citation strings"
     )
-    
+
+    # --- PDF v5: embedded evidence + critique + prior work ---
+    graphEvidence: Optional[Any] = Field(default=None, description="CandidateGraphEvidence embedded in candidate")
+    closestPriorWork: List[Any] = Field(default_factory=list, description="PriorWorkComparison list")
+    critique: Optional[Any] = Field(default=None, description="IdeaCritique embedded in candidate")
+
     createdAt: datetime = Field(default_factory=_utcnow)
-    
+
+    # --- Computed properties (backward compat) ---
+
+    @property
+    def scores(self) -> CandidateScores:
+        """PDF v5 structured scores object, computed from flat fields."""
+        return CandidateScores(
+            novelty=self.novelty,
+            feasibility=self.feasibility,
+            impact=self.impact,
+            clarity=self.clarity,
+            risk=self.risk,
+            alignment=self.alignment,
+            referenceSupport=self.referenceSupport,
+            experimentSpecificity=self.experimentSpecificity,
+            total=self.overallScore,
+        )
+
     @property
     def overallScore(self) -> float:
         """Calculate overall score as weighted average of all 8 criteria."""
@@ -262,7 +311,7 @@ class IdeaCandidate(BaseModel):
             + self.experimentSpecificity * 0.05,
             2,
         )
-    
+
     @property
     def scoreBreakdown(self) -> dict:
         """Return full score breakdown dict for API responses."""
@@ -277,7 +326,7 @@ class IdeaCandidate(BaseModel):
             "experimentSpecificity": {"value": round(self.experimentSpecificity, 1), "rationale": self.experimentSpecificityRationale},
         }
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=False)  # Mutable: BFTS + ranking update scores in place
 
 
 # =============================================================================
@@ -669,7 +718,7 @@ def generate_idea_node_id() -> str:
 
 
 class IdeaNode(BaseModel):
-    """BFTS search tree node representing a research idea being explored.
+    """BFTS search tree node representing a research idea being explored (PDF v5 section 7.2).
 
     Each node can be expanded (generating child ideas via ReflectionLoop)
     or terminal (finalized by the LLM via FinalizeIdea action).
@@ -677,7 +726,18 @@ class IdeaNode(BaseModel):
     nodeId: str = Field(default_factory=generate_idea_node_id)
     sessionId: str
     parentNodeId: Optional[str] = Field(default=None, description="None for root nodes")
+    parentIds: List[str] = Field(default_factory=list, description="All ancestor node IDs (for graph traceability)")
     depth: int = Field(default=0, ge=0, le=10)
+
+    # --- PDF v5: operator tracing ---
+    operator: str = Field(default="seed", description="seed | expand_path | reflect | literature_probe | mutate | combine | specialize_experiment | repair_evidence")
+    status: str = Field(default="open", description="open | expanded | pruned | failed | candidate")
+    failureReason: str = Field(default="", description="Why this node failed or was pruned")
+
+    # --- PDF v5: linked artifacts ---
+    graphPatchIds: List[str] = Field(default_factory=list, description="GraphPatch IDs from literature probes")
+    literatureProbeIds: List[str] = Field(default_factory=list, description="LiteratureProbeResult IDs")
+    reflectionIds: List[str] = Field(default_factory=list, description="ReflectionReport IDs (for debugging)")
 
     # Idea content (populated by ReflectionLoop)
     title: str = ""
@@ -695,6 +755,9 @@ class IdeaNode(BaseModel):
     graphGroundingScore: float = Field(default=0.0, ge=0.0, le=1.0)
     combinedScore: float = Field(default=0.0, ge=0.0, le=10.0)
 
+    # PDF v5: detailed scoring breakdown
+    scoringBreakdown: Dict[str, Any] = Field(default_factory=dict, description="Per-dimension scoring detail")
+
     # Source tracking
     sourceSeedId: Optional[str] = Field(default=None, description="ReasoningPathSeed.seedId that spawned this node")
     reflectionRounds: int = Field(default=0, ge=0, le=20)
@@ -709,3 +772,200 @@ class IdeaNode(BaseModel):
     createdAt: datetime = Field(default_factory=_utcnow)
 
     model_config = ConfigDict(frozen=False)  # Mutable: mutated by ReflectionLoop & BFTSSearchTree
+
+
+# =============================================================================
+# Step 5 Output: IdeaSearchTree + LiteratureProbe + GraphPatch (PDF v5 section 7)
+# =============================================================================
+
+
+def generate_search_tree_id() -> str:
+    """Generate unique search tree ID."""
+    import uuid
+    return "ist_" + uuid.uuid4().hex[:12]
+
+
+def generate_probe_result_id() -> str:
+    """Generate unique literature probe result ID."""
+    import uuid
+    return "lpr_" + uuid.uuid4().hex[:12]
+
+
+def generate_graph_patch_id() -> str:
+    """Generate unique graph patch ID."""
+    import uuid
+    return "gp_" + uuid.uuid4().hex[:12]
+
+
+class IdeaSearchEdge(BaseModel):
+    """Edge in the idea search tree (PDF v5 section 7.3)."""
+    sourceNodeId: str
+    targetNodeId: str
+    operator: str = Field(..., description="seed | expand_path | reflect | literature_probe | mutate | combine | specialize_experiment | repair_evidence")
+    rationale: str = ""
+    model_config = ConfigDict(frozen=True)
+
+
+class IdeaSearchReport(BaseModel):
+    """Search tree run report (PDF v5 section 7.3)."""
+    totalNodes: int = 0
+    prunedNodes: int = 0
+    candidateNodes: int = 0
+    literatureProbes: int = 0
+    graphPatches: int = 0
+    avgReflectionRounds: float = 0.0
+    convergenceReason: str = Field(default="", description="Why the search stopped")
+    model_config = ConfigDict(frozen=True)
+
+
+class IdeaSearchTree(BaseModel):
+    """Complete BFTS idea search tree (PDF v5 section 7.3).
+
+    Persisted after Step 5 completes. Stores all nodes, edges, and run stats.
+    """
+    id: str = Field(default_factory=generate_search_tree_id, description="Unique ID, prefixed 'ist_'")
+    sessionId: str
+    rootNodeIds: List[str] = Field(default_factory=list)
+    nodes: List[IdeaNode] = Field(default_factory=list)
+    edges: List[IdeaSearchEdge] = Field(default_factory=list)
+    config: BFTSConfig = Field(default_factory=BFTSConfig)
+    searchReport: IdeaSearchReport = Field(default_factory=IdeaSearchReport)
+    createdAt: datetime = Field(default_factory=_utcnow)
+    model_config = ConfigDict(frozen=True)
+
+
+# =============================================================================
+# Step 5: LiteratureProbe + GraphPatch (PDF v5 section 7.8)
+# =============================================================================
+
+
+class LiteratureProbeQuery(BaseModel):
+    """Targeted literature search query for idea validation (PDF v5 section 7.8)."""
+    nodeId: str
+    query: str
+    intent: str = Field(..., description="closest_prior | missing_baseline | dataset_check | contradiction_check | feasibility_check")
+    maxPapers: int = Field(default=8, ge=1, le=50)
+    model_config = ConfigDict(frozen=True)
+
+
+class LiteratureProbeResult(BaseModel):
+    """Result of a targeted literature probe (PDF v5 section 7.8)."""
+    id: str = Field(default_factory=generate_probe_result_id, description="Unique ID, prefixed 'lpr_'")
+    nodeId: str
+    sessionId: str
+    query: LiteratureProbeQuery
+    papers: List[RawPaper] = Field(default_factory=list)
+    closestPriorWorkIds: List[str] = Field(default_factory=list)
+    contradictionPaperIds: List[str] = Field(default_factory=list)
+    baselinePaperIds: List[str] = Field(default_factory=list)
+    summary: str = ""
+    noveltyRisk: float = Field(default=0.5, ge=0.0, le=1.0)
+    shouldUpdateGraph: bool = True
+    createdAt: datetime = Field(default_factory=_utcnow)
+    model_config = ConfigDict(frozen=True)
+
+
+class GraphPatch(BaseModel):
+    """Graph patch applied during BFTS (PDF v5 section 7.8).
+
+    Captures new prior work, baselines, contradictions, datasets, or metrics
+    discovered during literature probes that augment the dual-graph.
+    """
+    id: str = Field(default_factory=generate_graph_patch_id, description="Unique ID, prefixed 'gp_'")
+    sessionId: str
+    sourceNodeId: str
+    patchType: str = Field(..., description="new_prior_work | new_baseline | contradiction | dataset | metric")
+    addedPaperIds: List[str] = Field(default_factory=list)
+    addedEntityIds: List[str] = Field(default_factory=list)
+    addedRelationIds: List[str] = Field(default_factory=list)
+    affectedNodeIds: List[str] = Field(default_factory=list)
+    summary: str = ""
+    createdAt: datetime = Field(default_factory=_utcnow)
+    model_config = ConfigDict(frozen=True)
+
+
+# =============================================================================
+# Step 6 Output: RankedIdeaOutput + Evidence + Critique + PriorWorkComparison
+# =============================================================================
+
+
+def generate_ranked_output_id() -> str:
+    """Generate unique ranked output ID."""
+    import uuid
+    return "rio_" + uuid.uuid4().hex[:12]
+
+
+class CandidateGraphEvidence(BaseModel):
+    """Per-candidate evidence binding to dual-graph artifacts.
+
+    Links a ranked candidate back to the StructuredPaper claims,
+    ReasoningKG entities, and PathSeeds that support it.
+    """
+    candidateId: str
+    # Step 2-4: Dual-graph evidence
+    supportingPaperIds: List[str] = Field(default_factory=list, description="Step 3 StructuredPaper IDs that support this candidate")
+    supportingClaimIds: List[str] = Field(default_factory=list, description="Claim IDs from structured papers")
+    supportingEntityIds: List[str] = Field(default_factory=list, description="ReasoningKG entity IDs linked to this candidate")
+    supportingPathSeedIds: List[str] = Field(default_factory=list, description="PathSeed IDs that spawned this candidate")
+    evidenceLinkIds: List[str] = Field(default_factory=list, description="GraphEvidenceLink IDs connecting Graph1→Graph2")
+    # Step 5: Probe evidence (PDF v5 required)
+    probePaperIds: List[str] = Field(default_factory=list, description="Paper IDs discovered via literature probes (Step 5)")
+    # Reasoning trace (PDF v5 section 15.3)
+    reasoningTrace: List[Dict[str, Any]] = Field(default_factory=list, description="Structured evidence chain: [{step, id}, ...]")
+    # Summary
+    evidenceSummary: str = Field(default="", description="Human-readable summary of how evidence supports this candidate")
+    model_config = ConfigDict(frozen=True)
+
+
+class PriorWorkComparison(BaseModel):
+    """Comparison of a candidate idea against existing literature.
+
+    Generated by LLM analysis of candidate vs selected papers.
+    """
+    candidateId: str
+    comparedPaperIds: List[str] = Field(default_factory=list, description="Paper IDs used in comparison")
+    differences: List[str] = Field(default_factory=list, description="Key differences from prior work")
+    advantages: List[str] = Field(default_factory=list, description="Advantages over existing approaches")
+    risks: List[str] = Field(default_factory=list, description="Risks relative to established methods")
+    overallAssessment: str = Field(default="", description="Overall comparison assessment")
+    comparisonConfidence: float = Field(default=0.5, ge=0.0, le=1.0, description="LLM confidence in comparison")
+    model_config = ConfigDict(frozen=True)
+
+
+class IdeaCritique(BaseModel):
+    """Structured critique of a candidate idea.
+
+    Generated by LLM review of the candidate's strengths, weaknesses,
+    assumptions, and potential failure modes.
+    """
+    candidateId: str
+    strengths: List[str] = Field(default_factory=list, description="Key strengths of the idea")
+    weaknesses: List[str] = Field(default_factory=list, description="Identified weaknesses or gaps")
+    assumptions: List[str] = Field(default_factory=list, description="Implicit or explicit assumptions")
+    failureModes: List[str] = Field(default_factory=list, description="Ways the idea could fail")
+    suggestedImprovements: List[str] = Field(default_factory=list, description="Suggestions for strengthening the idea")
+    overallCritique: str = Field(default="", description="Summary critique")
+    critiqueConfidence: float = Field(default=0.5, ge=0.0, le=1.0, description="LLM confidence in critique")
+    model_config = ConfigDict(frozen=True)
+
+
+class RankedIdeaOutput(BaseModel):
+    """Top-level Step 6 output: complete ranking result with evidence and analysis.
+
+    This is the final deliverable of the idea pipeline before handing off
+    to the IdeaPlanPackage assembly or downstream modules.
+    """
+    id: str = Field(default_factory=generate_ranked_output_id, description="Unique ID, prefixed 'rio_'")
+    sessionId: str
+    rankedCandidates: List[IdeaCandidate] = Field(default_factory=list, description="Candidates sorted by overallScore desc")
+    evidence: List[CandidateGraphEvidence] = Field(default_factory=list, description="Per-candidate dual-graph evidence binding")
+    priorWorkComparisons: List[PriorWorkComparison] = Field(default_factory=list, description="Prior work comparisons for top candidates")
+    critiques: List[IdeaCritique] = Field(default_factory=list, description="Structured critiques for top candidates")
+    scoreVariance: float = Field(default=0.0, description="Variance of candidate scores (diagnostic)")
+    minScore: float = Field(default=0.0)
+    maxScore: float = Field(default=0.0)
+    rankedCount: int = Field(default=0, description="Number of candidates ranked")
+    topCandidateId: Optional[str] = Field(default=None, description="ID of highest-scoring candidate")
+    rankingMethod: str = Field(default="llm_multi_criteria", description="Method used for ranking")
+    createdAt: datetime = Field(default_factory=_utcnow)
+    model_config = ConfigDict(frozen=True)
