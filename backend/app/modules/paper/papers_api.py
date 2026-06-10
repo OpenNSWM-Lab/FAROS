@@ -73,6 +73,14 @@ class UpdatePaperBriefRequest(BaseModel):
     briefUserEdits: Optional[str] = None
 
 
+class GeneratePaperOutlineRequest(BaseModel):
+    force: bool = True
+
+
+class UpdatePaperOutlineRequest(BaseModel):
+    outlineJson: Dict[str, Any]
+
+
 class UpdatePaperContextRequest(BaseModel):
     planLinkId: Optional[str] = None
     projectId: Optional[str] = None
@@ -192,6 +200,54 @@ async def generate_paper_brief_endpoint(paper_id: str, req: GeneratePaperBriefRe
         "brief": updated.get("briefJson"),
         "briefUserEdits": updated.get("briefUserEdits", ""),
         "briefStatus": updated.get("briefStatus", "missing"),
+    }
+
+
+@router.get("/{paper_id}/outline", status_code=status.HTTP_200_OK)
+async def get_paper_outline_endpoint(paper_id: str):
+    record = _get_paper(paper_id)
+    if not record:
+        raise HTTPException(status_code=404, detail=f"Paper '{paper_id}' not found")
+    return {
+        "paperId": paper_id,
+        "outline": record.get("outlineJson"),
+        "outlineStatus": record.get("outlineStatus", "missing"),
+    }
+
+
+@router.patch("/{paper_id}/outline", status_code=status.HTTP_200_OK)
+async def update_paper_outline_endpoint(paper_id: str, req: UpdatePaperOutlineRequest):
+    record = _get_paper(paper_id)
+    if not record:
+        raise HTTPException(status_code=404, detail=f"Paper '{paper_id}' not found")
+    updated = _update_paper(paper_id, {
+        "outlineJson": req.outlineJson,
+        "outlineStatus": "user_edited",
+    })
+    return {
+        "paperId": paper_id,
+        "outline": updated.get("outlineJson") if updated else req.outlineJson,
+        "outlineStatus": updated.get("outlineStatus", "user_edited") if updated else "user_edited",
+    }
+
+
+@router.post("/{paper_id}/outline/generate", status_code=status.HTTP_200_OK)
+async def generate_paper_outline_endpoint(paper_id: str, req: GeneratePaperOutlineRequest):
+    record = _get_paper(paper_id)
+    if not record:
+        raise HTTPException(status_code=404, detail=f"Paper '{paper_id}' not found")
+    if record.get("status") == "generating":
+        raise HTTPException(status_code=409, detail="Paper generation already in progress")
+    try:
+        from app.modules.paper.service import generate_paper_outline
+        updated = generate_paper_outline(paper_id, force=req.force)
+    except Exception as exc:
+        logger.error(f"Paper outline generation failed: {exc}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc)[:500]) from exc
+    return {
+        "paperId": paper_id,
+        "outline": updated.get("outlineJson"),
+        "outlineStatus": updated.get("outlineStatus", "missing"),
     }
 
 

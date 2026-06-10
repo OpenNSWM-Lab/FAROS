@@ -35,6 +35,8 @@ def _normalize_record(record: Dict[str, Any]) -> Dict[str, Any]:
     record.setdefault("briefJson", None)
     record.setdefault("briefUserEdits", "")
     record.setdefault("briefStatus", "missing")
+    record.setdefault("outlineJson", None)
+    record.setdefault("outlineStatus", "missing")
     return record
 
 
@@ -58,7 +60,8 @@ def create_paper(data: Dict[str, Any]) -> Dict[str, Any]:
         "briefJson": data.get("briefJson"),
         "briefUserEdits": data.get("briefUserEdits", ""),
         "briefStatus": data.get("briefStatus", "missing"),
-        "outlineJson": None,
+        "outlineJson": data.get("outlineJson"),
+        "outlineStatus": data.get("outlineStatus", "missing"),
         "pdfAvailable": False,
         "logs": [],
         "createdAt": now,

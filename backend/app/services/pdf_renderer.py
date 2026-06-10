@@ -66,7 +66,7 @@ def render_paper_pdf(
                 self.set_font("Helvetica", "I", 8)
                 self.set_text_color(128, 128, 128)
                 short_title = title[:60] + "..." if len(title) > 60 else title
-                self.cell(0, 5, short_title, align="C")
+                self.cell(0, 5, _sanitize_unicode(short_title), align="C")
                 self.ln(8)
 
         def footer(self):
@@ -290,7 +290,7 @@ def _insert_figure(pdf, figures_dir: str, fig_entry: Dict[str, str]):
                 pdf.ln(2)
                 pdf.set_font("Helvetica", "I", 8)
                 pdf.set_text_color(80, 80, 80)
-                pdf.multi_cell(0, 4, f"Figure: {caption}")
+                pdf.multi_cell(0, 4, _sanitize_unicode(f"Figure: {caption}"))
                 pdf.ln(4)
                 pdf.set_font("Helvetica", "", 9.5)
                 pdf.set_text_color(30, 30, 30)
@@ -302,7 +302,7 @@ def _insert_figure(pdf, figures_dir: str, fig_entry: Dict[str, str]):
         pdf.ln(2)
         pdf.set_font("Helvetica", "I", 8)
         pdf.set_text_color(80, 80, 80)
-        pdf.multi_cell(0, 4, f"[Figure: {caption}]")
+        pdf.multi_cell(0, 4, _sanitize_unicode(f"[Figure: {caption}]"))
         pdf.ln(2)
         pdf.set_font("Helvetica", "", 9.5)
         pdf.set_text_color(30, 30, 30)

@@ -14,6 +14,7 @@ from app.modules.paper.storage import add_log, get_paper, get_paper_latex_dir, u
 from app.modules.paper.skills import PaperSkillContext, PaperSkillLeader, build_default_skill_chain
 from app.modules.paper.skills.collect_context import run as collect_context_skill
 from app.modules.paper.skills.constants import VENUE_CONFIGS
+from app.modules.paper.skills.outline import build_outline
 from app.modules.paper.skills.paper_brief import build_brief
 from app.modules.paper.skills.utils import ensure_artifacts_dir
 
@@ -75,6 +76,37 @@ def generate_paper_brief(paper_id: str, brief_user_edits: str | None = None, for
     add_log(paper_id, f"paper_brief: {brief_result.summary}")
     if brief_result.artifacts:
         add_log(paper_id, f"Artifacts: {', '.join(brief_result.artifacts)}")
+
+    return get_paper(paper_id)
+
+
+def generate_paper_outline(paper_id: str, force: bool = True) -> Dict[str, Any]:
+    paper = get_paper(paper_id)
+    if not paper:
+        raise ValueError(f"Paper not found: {paper_id}")
+
+    step_log: list[Dict[str, Any]] = []
+    ctx = _build_skill_context(paper_id, paper, step_log)
+
+    add_log(paper_id, "Running skill: collect_context")
+    context_result = collect_context_skill(ctx)
+    _apply_result_data(ctx, context_result)
+    add_log(paper_id, f"collect_context: {context_result.summary}")
+
+    add_log(paper_id, "Running skill: paper_brief")
+    brief_result = build_brief(ctx, force=False)
+    _apply_result_data(ctx, brief_result)
+    add_log(paper_id, f"paper_brief: {brief_result.summary}")
+
+    refreshed = get_paper(paper_id) or paper
+    ctx.paper = refreshed
+
+    add_log(paper_id, "Running skill: outline")
+    outline_result = build_outline(ctx, force=force)
+    _apply_result_data(ctx, outline_result)
+    add_log(paper_id, f"outline: {outline_result.summary}")
+    if outline_result.artifacts:
+        add_log(paper_id, f"Artifacts: {', '.join(outline_result.artifacts)}")
 
     return get_paper(paper_id)
 

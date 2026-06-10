@@ -3,7 +3,7 @@ import { AppPageLayout } from '@/components/layout/AppPageLayout'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
-import { BookOpen, Plus, Download, Code2, Loader2, RefreshCw, Save, Eye, Copy, CheckCircle, ImagePlus, FileText } from 'lucide-react'
+import { BookOpen, Plus, Download, Code2, Loader2, RefreshCw, Save, Eye, Copy, CheckCircle, ImagePlus, FileText, ListTree, Trash2 } from 'lucide-react'
 import { LLM_PROVIDERS, getModelsByProvider } from '@/lib/models/providers'
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || ''
@@ -31,6 +31,30 @@ interface PaperBrief {
   [key: string]: unknown
 }
 
+interface PaperOutlineSection {
+  id: string
+  title: string
+  keyPoints: string[]
+  minWords: number
+  hasAlgorithm: boolean
+  hasEquations: boolean
+  numEquations: number
+  hasTables: boolean
+  hasFigures: boolean
+  figureDescriptions: string[]
+}
+
+interface PaperOutline {
+  title: string
+  authors: string[]
+  abstract: string
+  sections: PaperOutlineSection[]
+  references?: unknown[]
+  algorithms?: unknown[]
+  contributions: string[]
+  [key: string]: unknown
+}
+
 interface PaperRecord {
   id: string
   title: string
@@ -48,7 +72,8 @@ interface PaperRecord {
   briefJson?: PaperBrief | null
   briefUserEdits?: string
   briefStatus?: string
-  outlineJson?: Record<string, unknown>
+  outlineJson?: PaperOutline | null
+  outlineStatus?: string
   evidenceGates?: Record<string, unknown>
   sectionCount?: number
   referenceCount?: number
@@ -119,6 +144,69 @@ const statusColors: Record<string, string> = {
   failed: 'bg-red-100 text-red-800',
 }
 
+const toStringList = (value: unknown): string[] => {
+  if (!Array.isArray(value)) return []
+  return value.map(item => String(item || '').trim()).filter(Boolean)
+}
+
+const listToText = (value: string[] = []) => value.join('\n')
+
+const textToList = (value: string) => value.split('\n').map(item => item.trim()).filter(Boolean)
+
+const cleanSectionId = (value: string, fallback: string) => {
+  const cleaned = value.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '')
+  return cleaned || fallback
+}
+
+const createBlankSection = (index: number): PaperOutlineSection => ({
+  id: `section_${index}`,
+  title: `Section ${index}`,
+  keyPoints: [],
+  minWords: 500,
+  hasAlgorithm: false,
+  hasEquations: false,
+  numEquations: 0,
+  hasTables: false,
+  hasFigures: false,
+  figureDescriptions: [],
+})
+
+const normalizeOutline = (outline: PaperOutline | null | undefined, fallbackTitle: string): PaperOutline | null => {
+  if (!outline || typeof outline !== 'object') return null
+  const raw = outline as Record<string, unknown>
+  const rawSections = Array.isArray(raw.sections) ? raw.sections : []
+  const sections = rawSections.map((section, idx) => {
+    const item = (section || {}) as Record<string, unknown>
+    const title = String(item.title || `Section ${idx + 1}`)
+    const id = cleanSectionId(String(item.id || title), `section_${idx + 1}`)
+    const minWords = Number(item.minWords)
+    const numEquations = Number(item.numEquations)
+    return {
+      id,
+      title,
+      keyPoints: toStringList(item.keyPoints),
+      minWords: Number.isFinite(minWords) ? Math.max(150, Math.round(minWords)) : 500,
+      hasAlgorithm: Boolean(item.hasAlgorithm),
+      hasEquations: Boolean(item.hasEquations),
+      numEquations: Number.isFinite(numEquations) ? Math.max(0, Math.round(numEquations)) : 0,
+      hasTables: Boolean(item.hasTables),
+      hasFigures: Boolean(item.hasFigures),
+      figureDescriptions: toStringList(item.figureDescriptions),
+    }
+  })
+
+  return {
+    ...outline,
+    title: String(raw.title || fallbackTitle || 'Untitled Paper'),
+    authors: toStringList(raw.authors).length > 0 ? toStringList(raw.authors) : ['Auto-LLM Draft'],
+    abstract: String(raw.abstract || ''),
+    sections,
+    references: Array.isArray(raw.references) ? raw.references : [],
+    algorithms: Array.isArray(raw.algorithms) ? raw.algorithms : [],
+    contributions: toStringList(raw.contributions),
+  }
+}
+
 export function PapersList() {
   const [papers, setPapers] = useState<PaperRecord[]>([])
   const [loading, setLoading] = useState(true)
@@ -170,6 +258,10 @@ export function PapersList() {
   const [briefUserEdits, setBriefUserEdits] = useState('')
   const [generatingBrief, setGeneratingBrief] = useState(false)
   const [savingBrief, setSavingBrief] = useState(false)
+  const [outlineDraft, setOutlineDraft] = useState<PaperOutline | null>(null)
+  const [outlineDirty, setOutlineDirty] = useState(false)
+  const [generatingOutline, setGeneratingOutline] = useState(false)
+  const [savingOutline, setSavingOutline] = useState(false)
 
   const fetchPapers = useCallback(async () => {
     try {
@@ -374,6 +466,8 @@ export function PapersList() {
     setContextRunIds(selectedPaper?.runIds || [])
     setContextExperimentIds(selectedPaper?.experimentIds || [])
     setBriefUserEdits(selectedPaper?.briefUserEdits || '')
+    setOutlineDraft(normalizeOutline(selectedPaper?.outlineJson, selectedPaper?.title || 'Untitled Paper'))
+    setOutlineDirty(false)
   }, [selectedPaper])
 
   const selectPaper = async (p: PaperRecord) => {
@@ -518,6 +612,114 @@ export function PapersList() {
     finally { setSavingBrief(false) }
   }
 
+  const updateOutline = (updates: Partial<PaperOutline>) => {
+    setOutlineDraft(current => current ? { ...current, ...updates } : current)
+    setOutlineDirty(true)
+  }
+
+  const updateOutlineSection = (index: number, updates: Partial<PaperOutlineSection>) => {
+    setOutlineDraft(current => {
+      if (!current) return current
+      const sections = current.sections.map((section, idx) => (
+        idx === index ? { ...section, ...updates } : section
+      ))
+      return { ...current, sections }
+    })
+    setOutlineDirty(true)
+  }
+
+  const addOutlineSection = () => {
+    setOutlineDraft(current => {
+      if (!current) return current
+      return {
+        ...current,
+        sections: [...current.sections, createBlankSection(current.sections.length + 1)],
+      }
+    })
+    setOutlineDirty(true)
+  }
+
+  const removeOutlineSection = (index: number) => {
+    setOutlineDraft(current => {
+      if (!current) return current
+      return {
+        ...current,
+        sections: current.sections.filter((_, idx) => idx !== index),
+      }
+    })
+    setOutlineDirty(true)
+  }
+
+  const persistOutlineDraft = async (skipIfClean = true) => {
+    if (!selectedPaper || !outlineDraft) return true
+    if (skipIfClean && !outlineDirty) return true
+    setSavingOutline(true)
+    try {
+      const resp = await fetch(`${API_BASE}/api/v1/papers/${selectedPaper.id}/outline`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ outlineJson: outlineDraft }),
+      })
+      if (!resp.ok) return false
+      const data = await resp.json()
+      const normalized = normalizeOutline(data.outline, selectedPaper.title)
+      const updated = {
+        ...selectedPaper,
+        outlineJson: normalized,
+        outlineStatus: data.outlineStatus,
+      }
+      setSelectedPaper(updated)
+      setOutlineDraft(normalized)
+      setOutlineDirty(false)
+      await fetchPapers()
+      return true
+    } catch (err) {
+      console.error(err)
+      return false
+    } finally {
+      setSavingOutline(false)
+    }
+  }
+
+  const saveOutline = async () => {
+    await persistOutlineDraft(false)
+  }
+
+  const generateOutline = async () => {
+    if (!selectedPaper) return
+    setGeneratingOutline(true)
+    try {
+      if (briefUserEdits !== (selectedPaper.briefUserEdits || '')) {
+        await fetch(`${API_BASE}/api/v1/papers/${selectedPaper.id}/brief`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ briefUserEdits }),
+        }).catch(() => { void 0 })
+      }
+
+      const resp = await fetch(`${API_BASE}/api/v1/papers/${selectedPaper.id}/outline/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ force: true }),
+      })
+      if (resp.ok) {
+        const data = await resp.json()
+        const normalized = normalizeOutline(data.outline, selectedPaper.title)
+        const updated = {
+          ...selectedPaper,
+          briefUserEdits,
+          outlineJson: normalized,
+          outlineStatus: data.outlineStatus,
+        }
+        setSelectedPaper(updated)
+        setOutlineDraft(normalized)
+        setOutlineDirty(false)
+        await fetchPapers()
+      }
+    } catch (err) { console.error(err) }
+    finally { setGeneratingOutline(false) }
+  }
+
   const createPaper = async () => {
     setCreating(true)
     try {
@@ -574,6 +776,10 @@ export function PapersList() {
     if (!selectedPaper) return
     setGenerating(true)
     try {
+      if (outlineDraft) {
+        const saved = await persistOutlineDraft(true)
+        if (!saved) return
+      }
       await fetch(`${API_BASE}/api/v1/papers/${selectedPaper.id}/generate`, { method: 'POST' })
       for (let i = 0; i < 60; i++) {
         await new Promise(r => setTimeout(r, 3000))
@@ -592,6 +798,7 @@ export function PapersList() {
   }
 
   const brief = selectedPaper?.briefJson || null
+  const outline = outlineDraft
   const briefItems = (items: unknown): string[] => {
     if (!Array.isArray(items)) return []
     return items.map(item => {
@@ -751,6 +958,12 @@ export function PapersList() {
                   <Button size="sm" variant="outline" onClick={generateBrief} disabled={generatingBrief} className="h-7 text-xs">
                     {generatingBrief ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <FileText className="h-3 w-3 mr-1" />}
                     Brief
+                  </Button>
+                )}
+                {selectedPaper.status !== 'generating' && (
+                  <Button size="sm" variant="outline" onClick={generateOutline} disabled={generatingOutline} className="h-7 text-xs">
+                    {generatingOutline ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <ListTree className="h-3 w-3 mr-1" />}
+                    Outline
                   </Button>
                 )}
                 {(selectedPaper.status === 'created' || selectedPaper.status === 'failed') && (
@@ -1129,6 +1342,165 @@ export function PapersList() {
                       </Button>
                       <Button size="sm" variant="secondary" onClick={generateBrief} disabled={generatingBrief} className="h-7 text-xs">
                         {generatingBrief ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <RefreshCw className="h-3 w-3 mr-1" />}
+                        Generate
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Editable Outline */}
+                <div className="border rounded-lg bg-white overflow-hidden">
+                  <div className="px-3 py-1.5 border-b bg-slate-50 flex items-center justify-between">
+                    <div className="text-xs font-medium text-muted-foreground flex items-center gap-1">
+                      <ListTree className="h-3 w-3" /> Outline
+                    </div>
+                    <div className="flex items-center gap-1">
+                      {outlineDirty && <Badge variant="outline" className="text-[10px] text-amber-700 border-amber-300">unsaved</Badge>}
+                      <Badge variant="outline" className="text-[10px]">{selectedPaper.outlineStatus || 'missing'}</Badge>
+                    </div>
+                  </div>
+                  <div className="p-2 space-y-2 text-xs text-muted-foreground">
+                    {outline ? (
+                      <>
+                        <div className="space-y-1">
+                          <label className="text-[11px] font-medium text-slate-700">Title</label>
+                          <input
+                            className="w-full border rounded px-2 py-1.5 text-xs"
+                            value={outline.title}
+                            onChange={e => updateOutline({ title: e.target.value })}
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-[11px] font-medium text-slate-700">Authors</label>
+                          <textarea
+                            className="w-full border rounded px-2 py-1.5 text-xs resize-none"
+                            rows={2}
+                            value={listToText(outline.authors)}
+                            onChange={e => updateOutline({ authors: textToList(e.target.value) })}
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-[11px] font-medium text-slate-700">Abstract</label>
+                          <textarea
+                            className="w-full border rounded px-2 py-1.5 text-xs resize-y"
+                            rows={4}
+                            value={outline.abstract}
+                            onChange={e => updateOutline({ abstract: e.target.value })}
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-[11px] font-medium text-slate-700">Contributions</label>
+                          <textarea
+                            className="w-full border rounded px-2 py-1.5 text-xs resize-none"
+                            rows={3}
+                            value={listToText(outline.contributions)}
+                            onChange={e => updateOutline({ contributions: textToList(e.target.value) })}
+                          />
+                        </div>
+
+                        <div className="space-y-2 border-t pt-2">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[11px] font-medium text-slate-700">Sections ({outline.sections.length})</span>
+                            <Button size="sm" variant="outline" onClick={addOutlineSection} className="h-6 text-[10px] px-2">
+                              <Plus className="h-3 w-3 mr-1" /> Add
+                            </Button>
+                          </div>
+                          <div className="space-y-2 max-h-96 overflow-y-auto pr-1">
+                            {outline.sections.map((section, index) => (
+                              <div key={`${section.id}-${index}`} className="rounded border p-2 bg-slate-50/60 space-y-2">
+                                <div className="flex items-center gap-1">
+                                  <span className="text-[10px] text-muted-foreground w-5">{index + 1}</span>
+                                  <input
+                                    className="flex-1 border rounded px-2 py-1 text-xs bg-white"
+                                    value={section.title}
+                                    onChange={e => {
+                                      const title = e.target.value
+                                      updateOutlineSection(index, {
+                                        title,
+                                        id: cleanSectionId(title, `section_${index + 1}`),
+                                      })
+                                    }}
+                                  />
+                                  <button
+                                    className="h-6 w-6 rounded border bg-white text-slate-500 hover:text-red-600 hover:border-red-200 inline-flex items-center justify-center disabled:opacity-40"
+                                    onClick={() => removeOutlineSection(index)}
+                                    disabled={outline.sections.length <= 1}
+                                    title="Remove section"
+                                  >
+                                    <Trash2 className="h-3 w-3" />
+                                  </button>
+                                </div>
+                                <div className="grid grid-cols-2 gap-2">
+                                  <div>
+                                    <label className="text-[10px] font-medium text-slate-600">Min words</label>
+                                    <input
+                                      type="number"
+                                      min={150}
+                                      className="w-full border rounded px-2 py-1 text-xs bg-white"
+                                      value={section.minWords}
+                                      onChange={e => updateOutlineSection(index, { minWords: Number(e.target.value) || 150 })}
+                                    />
+                                  </div>
+                                  <div>
+                                    <label className="text-[10px] font-medium text-slate-600">Equations</label>
+                                    <input
+                                      type="number"
+                                      min={0}
+                                      className="w-full border rounded px-2 py-1 text-xs bg-white"
+                                      value={section.numEquations}
+                                      onChange={e => updateOutlineSection(index, { numEquations: Number(e.target.value) || 0, hasEquations: Number(e.target.value) > 0 })}
+                                    />
+                                  </div>
+                                </div>
+                                <textarea
+                                  className="w-full border rounded px-2 py-1.5 text-xs resize-none bg-white"
+                                  rows={3}
+                                  placeholder="Key points, one per line"
+                                  value={listToText(section.keyPoints)}
+                                  onChange={e => updateOutlineSection(index, { keyPoints: textToList(e.target.value) })}
+                                />
+                                <div className="grid grid-cols-2 gap-1 text-[11px]">
+                                  <label className="flex items-center gap-1">
+                                    <input type="checkbox" checked={section.hasAlgorithm} onChange={e => updateOutlineSection(index, { hasAlgorithm: e.target.checked })} />
+                                    Algorithm
+                                  </label>
+                                  <label className="flex items-center gap-1">
+                                    <input type="checkbox" checked={section.hasTables} onChange={e => updateOutlineSection(index, { hasTables: e.target.checked })} />
+                                    Tables
+                                  </label>
+                                  <label className="flex items-center gap-1">
+                                    <input type="checkbox" checked={section.hasFigures} onChange={e => updateOutlineSection(index, { hasFigures: e.target.checked })} />
+                                    Figures
+                                  </label>
+                                  <label className="flex items-center gap-1">
+                                    <input type="checkbox" checked={section.hasEquations} onChange={e => updateOutlineSection(index, { hasEquations: e.target.checked, numEquations: e.target.checked ? Math.max(1, section.numEquations) : 0 })} />
+                                    Equations
+                                  </label>
+                                </div>
+                                {section.hasFigures && (
+                                  <textarea
+                                    className="w-full border rounded px-2 py-1.5 text-xs resize-none bg-white"
+                                    rows={2}
+                                    placeholder="Figure notes, one per line"
+                                    value={listToText(section.figureDescriptions)}
+                                    onChange={e => updateOutlineSection(index, { figureDescriptions: textToList(e.target.value) })}
+                                  />
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      </>
+                    ) : (
+                      <div className="rounded border border-dashed p-2 text-[11px]">No outline generated</div>
+                    )}
+                    <div className="grid grid-cols-2 gap-2">
+                      <Button size="sm" variant="outline" onClick={saveOutline} disabled={savingOutline || !outline} className="h-7 text-xs">
+                        {savingOutline ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <Save className="h-3 w-3 mr-1" />}
+                        Save
+                      </Button>
+                      <Button size="sm" variant="secondary" onClick={generateOutline} disabled={generatingOutline} className="h-7 text-xs">
+                        {generatingOutline ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <RefreshCw className="h-3 w-3 mr-1" />}
                         Generate
                       </Button>
                     </div>
