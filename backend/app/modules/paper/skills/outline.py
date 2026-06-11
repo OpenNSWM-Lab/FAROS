@@ -24,6 +24,7 @@ OUTLINE_PROMPT = """You are a senior ML researcher writing a {paper_type} paper 
 
 Generate a DETAILED paper outline. You MUST include:
 - At least 7 sections (Introduction, Related Work, Background/Preliminaries, Method, Experiments, Analysis/Discussion, Conclusion)
+- If the Venue style guide defines mandatory standardized fields or sections, use those fields as the required section list even when they differ from the default academic-paper sections above.
 - At least {min_refs} references — use REAL, well-known papers in the field. DO NOT invent DOIs. Use format: authors, title, venue, year. If uncertain about a reference, include it but add "note": "to verify".
 - Mark which sections need: algorithms (at least {min_algos}), equations (at least {min_eqs}), tables (at least {min_tables}), figures (at least {min_figs})
 - If Available paper figures are listed, assign them to the most relevant sections using their exact path, label, and caption. Do not invent alternate filenames.

@@ -41,7 +41,7 @@ PAPER_TYPES = [
 ]
 
 
-VENUES = ["icml", "neurips", "iclr", "acl", "generic"]
+VENUES = ["icml", "neurips", "iclr", "acl", "generic", "challenge_cup"]
 
 
 class CreatePaperRequest(BaseModel):

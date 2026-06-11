@@ -16,7 +16,11 @@ interface TemplateInfo {
   bibStyle: string
 }
 
-const VENUES = ['icml', 'neurips', 'iclr', 'acl', 'generic']
+const VENUES = ['icml', 'neurips', 'iclr', 'acl', 'generic', 'challenge_cup']
+const VENUE_LABELS: Record<string, string> = {
+  challenge_cup: '挑战杯模版',
+}
+const formatVenue = (venue?: string) => venue ? (VENUE_LABELS[venue] || venue.toUpperCase()) : ''
 
 interface PaperBrief {
   research_question?: string
@@ -843,7 +847,7 @@ export function PapersList() {
                   {PAPER_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
                 </select>
                 <select className="w-full border rounded px-2 py-1.5 text-sm" value={newVenue} onChange={e => setNewVenue(e.target.value)}>
-                  {VENUES.map(v => <option key={v} value={v}>{v.toUpperCase()}</option>)}
+                  {VENUES.map(v => <option key={v} value={v}>{formatVenue(v)}</option>)}
                 </select>
                 <select className="w-full border rounded px-2 py-1.5 text-sm" value={newTemplate} onChange={e => setNewTemplate(e.target.value)}>
                   <option value="">No template</option>
@@ -915,7 +919,7 @@ export function PapersList() {
                   </div>
                   <div className="flex items-center gap-1.5 mt-1 text-[10px] text-muted-foreground">
                     <Badge variant="outline" className="text-[10px] py-0">{p.paperType}</Badge>
-                    {p.targetVenue && <Badge variant="outline" className="text-[10px] py-0">{p.targetVenue.toUpperCase()}</Badge>}
+                    {p.targetVenue && <Badge variant="outline" className="text-[10px] py-0">{formatVenue(p.targetVenue)}</Badge>}
                     <span>{new Date(p.createdAt).toLocaleDateString()}</span>
                     {p.pdfAvailable && <span className="text-green-600 font-medium">PDF</span>}
                   </div>
@@ -1513,7 +1517,7 @@ export function PapersList() {
                   <div className="p-2 space-y-1 text-xs text-muted-foreground">
                     <div><span className="font-medium">ID:</span> {selectedPaper.id}</div>
                     <div><span className="font-medium">Type:</span> {selectedPaper.paperType}</div>
-                    {selectedPaper.targetVenue && <div><span className="font-medium">Venue:</span> {selectedPaper.targetVenue.toUpperCase()}</div>}
+                    {selectedPaper.targetVenue && <div><span className="font-medium">Venue:</span> {formatVenue(selectedPaper.targetVenue)}</div>}
                     <div><span className="font-medium">Provider:</span> {selectedPaper.providerName} / {selectedPaper.model}</div>
                     <div><span className="font-medium">Created:</span> {new Date(selectedPaper.createdAt).toLocaleString()}</div>
                     {selectedPaper.sectionCount != null && <div><span className="font-medium">Sections:</span> {selectedPaper.sectionCount}</div>}

@@ -24,7 +24,14 @@ def compile_latex_project(project_dir: str, main_tex: str = "main.tex") -> str:
         "-halt-on-error",
         main_tex,
     ]
-    result = subprocess.run(cmd, cwd=project_dir, capture_output=True, text=True)
+    result = subprocess.run(
+        cmd,
+        cwd=project_dir,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
     if result.returncode != 0 or not os.path.isfile(pdf_path):
         tail = "\n".join((result.stdout or "").splitlines()[-20:] + (result.stderr or "").splitlines()[-20:])
         raise RuntimeError(f"latexmk failed for {main_tex}: {tail[:2000]}")
@@ -115,7 +122,7 @@ def render_paper_pdf(
         # Section heading
         pdf.set_font("Helvetica", "B", 12)
         pdf.set_text_color(0, 0, 0)
-        pdf.multi_cell(0, 7, sec_title)
+        pdf.multi_cell(0, 7, _sanitize_unicode(sec_title))
         pdf.ln(2)
 
         # Section body — strip LaTeX commands for readable text

@@ -397,12 +397,173 @@ def normalize_section_figure_references(
     return normalized, rewrites
 
 
+def sanitize_latex_text_specials(content: str) -> str:
+    """Escape text-mode LaTeX specials commonly emitted by LLM prose."""
+    if not content:
+        return content
+
+    skip_arg_commands = {
+        "bibliography",
+        "bibliographystyle",
+        "cite",
+        "citep",
+        "citet",
+        "eqref",
+        "href",
+        "includegraphics",
+        "input",
+        "label",
+        "ref",
+        "url",
+    }
+    specials = {"_": r"\_", "%": r"\%", "#": r"\#"}
+    out: List[str] = []
+    i = 0
+    in_math = False
+
+    def copy_balanced_group(start: int) -> int:
+        depth = 0
+        j = start
+        while j < len(content):
+            out.append(content[j])
+            if content[j] == "\\" and j + 1 < len(content):
+                j += 2
+                if j <= len(content):
+                    out.append(content[j - 1])
+                continue
+            if content[j] == "{":
+                depth += 1
+            elif content[j] == "}":
+                depth -= 1
+                if depth == 0:
+                    return j + 1
+            j += 1
+        return j
+
+    while i < len(content):
+        ch = content[i]
+
+        if ch == "\\":
+            match = re.match(r"\\([A-Za-z]+)\*?", content[i:])
+            if match:
+                command = match.group(1)
+                command_text = match.group(0)
+                out.append(command_text)
+                i += len(command_text)
+                if command in skip_arg_commands:
+                    while i < len(content) and content[i].isspace():
+                        out.append(content[i])
+                        i += 1
+                    if i < len(content) and content[i] == "[":
+                        depth = 0
+                        while i < len(content):
+                            out.append(content[i])
+                            if content[i] == "[":
+                                depth += 1
+                            elif content[i] == "]":
+                                depth -= 1
+                                i += 1
+                                if depth == 0:
+                                    break
+                                continue
+                            i += 1
+                    while i < len(content) and content[i].isspace():
+                        out.append(content[i])
+                        i += 1
+                    if i < len(content) and content[i] == "{":
+                        i = copy_balanced_group(i)
+                continue
+
+            out.append(ch)
+            if i + 1 < len(content):
+                out.append(content[i + 1])
+                i += 2
+            else:
+                i += 1
+            continue
+
+        if ch == "$":
+            in_math = not in_math
+            out.append(ch)
+            i += 1
+            continue
+
+        if not in_math and ch in specials:
+            out.append(specials[ch])
+        else:
+            out.append(ch)
+        i += 1
+
+    return "".join(out)
+
+
+def normalize_section_citations(
+    content: str,
+    references: List[Dict[str, Any]],
+) -> Tuple[str, List[Dict[str, str]]]:
+    """Keep generated citations aligned with the BibTeX keys that will be written."""
+    ordered_keys = [str(ref.get("key", "")).strip() for ref in references if str(ref.get("key", "")).strip()]
+    known_keys = set(ordered_keys)
+    if not content or not ordered_keys:
+        return content, []
+
+    rewrites: List[Dict[str, str]] = []
+
+    def replace_cite(match: re.Match[str]) -> str:
+        raw_keys = match.group(1)
+        keys = [key.strip() for key in raw_keys.split(",") if key.strip()]
+        valid_keys = [key for key in keys if key in known_keys]
+        if len(valid_keys) == len(keys) and keys:
+            return match.group(0)
+
+        replacement = ",".join(valid_keys)
+        rewrites.append({"from": raw_keys, "to": replacement})
+        return f"\\cite{{{replacement}}}" if replacement else ""
+
+    normalized = re.sub(r"\\cite\{([^}]+)\}", replace_cite, content)
+    return normalized, rewrites
+
+
+def normalize_duplicate_latex_labels(
+    sections_content: Dict[str, str],
+) -> Tuple[Dict[str, str], List[Dict[str, str]]]:
+    """Rename repeated LaTeX label definitions so pdflatex does not emit duplicate-label warnings."""
+    seen: set[str] = set()
+    rewrites: List[Dict[str, str]] = []
+    normalized_sections: Dict[str, str] = {}
+
+    for section_id, content in sections_content.items():
+        counters: Dict[str, int] = {}
+
+        def replace_label(match: re.Match[str]) -> str:
+            label = match.group(1)
+            if label not in seen:
+                seen.add(label)
+                return match.group(0)
+
+            counters[label] = counters.get(label, 0) + 1
+            suffix = _clean_label_part(section_id)
+            replacement = f"{label}:{suffix}"
+            if counters[label] > 1:
+                replacement = f"{replacement}-{counters[label]}"
+            while replacement in seen:
+                counters[label] += 1
+                replacement = f"{label}:{suffix}-{counters[label]}"
+            seen.add(replacement)
+            rewrites.append({"section": section_id, "from": label, "to": replacement})
+            return f"\\label{{{replacement}}}"
+
+        normalized_sections[section_id] = re.sub(r"\\label\{([^}]+)\}", replace_label, content)
+
+    return normalized_sections, rewrites
+
+
 def build_main_tex(outline: Dict[str, Any], sections: List[Dict[str, Any]], venue: str) -> str:
-    title = outline.get("title", "Untitled Paper")
+    title = sanitize_latex_text_specials(outline.get("title", "Untitled Paper"))
     authors = outline.get("authors", ["Auto-LLM Draft"]) or ["Auto-LLM Draft"]
-    abstract = outline.get("abstract", "")
+    abstract = sanitize_latex_text_specials(outline.get("abstract", ""))
     running_title = title if len(title) <= 70 else title[:67] + "..."
-    authors_text = ", ".join(authors[:4])
+    authors_text = sanitize_latex_text_specials(", ".join(authors[:4]))
     section_inputs = "\n\n".join(f"\\input{{sections/{s['id']}.tex}}" for s in sections)
 
     template_dir = TEMPLATE_ROOT / venue
@@ -424,13 +585,23 @@ def build_main_tex(outline: Dict[str, Any], sections: List[Dict[str, Any]], venu
 
 def normalize_bibtex_authors(authors: Any) -> str:
     if isinstance(authors, list):
-        return " and ".join(str(author).strip() for author in authors if str(author).strip()) or "Unknown"
+        cleaned_authors = [
+            re.sub(r"\s+", " ", str(author).replace("&", "").strip())
+            for author in authors
+            if str(author).strip()
+        ]
+        return " and ".join(cleaned_authors) or "Unknown"
 
     text = str(authors or "Unknown").strip()
     if not text:
         return "Unknown"
 
     text = re.sub(r"\bet\s+al\.?", "and others", text)
+    text = re.sub(r"\band\s*&\s*", "and ", text)
+    text = re.sub(r"\s*&\s*", " and ", text)
+    text = re.sub(r"\s*(?:,?\s+and\s+)?\.{3}\s*(?:and\s+)?", " and others and ", text)
+    text = re.sub(r"\band\s+and\b", "and", text)
+    text = re.sub(r"\band\s+others\s+and\s+[^,]+,\s*[^,]+$", "and others", text)
     text = re.sub(r"\s+", " ", text)
     if " and " in text and ", and " not in text:
         return text
@@ -447,15 +618,28 @@ def normalize_bibtex_authors(authors: Any) -> str:
     return text
 
 
+def escape_bibtex_field(value: Any) -> str:
+    text = str(value or "")
+    replacements = {
+        "\\": r"\textbackslash{}",
+        "&": r"\&",
+        "%": r"\%",
+        "$": r"\$",
+        "#": r"\#",
+        "_": r"\_",
+    }
+    return "".join(replacements.get(char, char) for char in text)
+
+
 def build_bibtex(references: List[Dict[str, Any]]) -> str:
     entries = []
     for ref in references:
         key = ref.get("key", f"ref{len(entries)+1}")
         authors = normalize_bibtex_authors(ref.get("authors", "Unknown"))
-        title = ref.get("title", "Untitled")
-        venue = ref.get("venue", "arXiv preprint")
+        title = escape_bibtex_field(ref.get("title", "Untitled"))
+        venue = escape_bibtex_field(ref.get("venue", "arXiv preprint"))
         year = ref.get("year", 2024)
-        note = ref.get("note", "")
+        note = escape_bibtex_field(ref.get("note", ""))
 
         venue_lower = venue.lower()
         if any(kw in venue_lower for kw in [

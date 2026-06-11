@@ -17,7 +17,10 @@ from app.modules.paper.skills.utils import (
     dedupe_figure_entries,
     figure_record_to_entry,
     load_venue_style_guide,
+    normalize_duplicate_latex_labels,
     normalize_bibtex_authors,
+    sanitize_latex_text_specials,
+    normalize_section_citations,
     normalize_section_figure_references,
 )
 from app.version import APP_NAME, APP_VERSION, API_VERSION, CAPABILITIES, RELEASE_PHASE, SERVICE_NAME
@@ -104,11 +107,56 @@ def test_paper_experiment_figure_records_normalize_to_entries():
     assert len(unique) == 1
 
 
+def test_paper_latex_rewrites_unknown_citation_keys():
+    normalized, rewrites = normalize_section_citations(
+        r"Known \cite{known1,missing1}. Unknown \cite{missing2}.",
+        [{"key": "known1"}, {"key": "known2"}],
+    )
+
+    assert r"\cite{known1}" in normalized
+    assert r"\cite{missing1}" not in normalized
+    assert r"\cite{missing2}" not in normalized
+    assert rewrites == [
+        {"from": "known1,missing1", "to": "known1"},
+        {"from": "missing2", "to": ""},
+    ]
+
+
+def test_paper_latex_escapes_text_specials_without_breaking_commands_or_math():
+    content = (
+        r"类别 nonmotor_vehicle 占比 32.1% #1 "
+        r"\cite{known_key} \label{fig:raw_label} "
+        r"$D_{\text{max}}<0.023$"
+    )
+    normalized = sanitize_latex_text_specials(content)
+
+    assert r"nonmotor\_vehicle" in normalized
+    assert r"32.1\%" in normalized
+    assert r"\#1" in normalized
+    assert r"\cite{known_key}" in normalized
+    assert r"\label{fig:raw_label}" in normalized
+    assert r"$D_{\text{max}}<0.023$" in normalized
+
+
+def test_paper_latex_renames_duplicate_label_definitions():
+    normalized, rewrites = normalize_duplicate_latex_labels({
+        "methods": r"\label{fig:main}",
+        "results": r"\label{fig:main}",
+    })
+
+    assert normalized["methods"] == r"\label{fig:main}"
+    assert normalized["results"] == r"\label{fig:main:results}"
+    assert rewrites == [{"section": "results", "from": "fig:main", "to": "fig:main:results"}]
+
+
 def test_bibtex_author_strings_are_normalized_for_bst_files():
     assert normalize_bibtex_authors("Reddi, S. S., Kale, S., and Kumar, S.") == (
         "Reddi, S. S. and Kale, S. and Kumar, S."
     )
     assert normalize_bibtex_authors("Vaswani, A. et al.") == "Vaswani, A. and others"
+    assert normalize_bibtex_authors(
+        "Jocher, G. and Stoken, A. and Chaurasia, A. and & Qiu, J."
+    ) == "Jocher, G. and Stoken, A. and Chaurasia, A. and Qiu, J."
 
     bibtex = build_bibtex([
         {
@@ -121,6 +169,18 @@ def test_bibtex_author_strings_are_normalized_for_bst_files():
     ])
     assert "author = {Reddi, S. S. and Kale, S. and Kumar, S.}" in bibtex
 
+    bibtex = build_bibtex([
+        {
+            "key": "jocher2020yolov5",
+            "authors": "Jocher, G. and Stoken, A. and Chaurasia, A. and & Qiu, J.",
+            "title": "YOLOv5 & Edge_Deployment",
+            "venue": "GitHub Repository",
+            "year": 2020,
+        }
+    ])
+    assert "author = {Jocher, G. and Stoken, A. and Chaurasia, A. and Qiu, J.}" in bibtex
+    assert r"title = {YOLOv5 \& Edge\_Deployment}" in bibtex
+
 
 def test_paper_render_pdf_uses_modular_template_helper():
     source = Path(__file__).parents[1] / "app" / "modules" / "paper" / "papers_api.py"
@@ -131,11 +191,25 @@ def test_paper_render_pdf_uses_modular_template_helper():
 
 
 def test_paper_latex_templates_support_generated_algorithm_keywords():
-    for venue in ["generic", "iclr", "neurips", "acl"]:
+    for venue in ["generic", "iclr", "neurips", "acl", "challenge_cup"]:
         template = (TEMPLATE_ROOT / venue / "main.tex").read_text(encoding="utf-8")
         assert "algorithm2e" in template
         assert r"\SetKw{KwAnd}{and}" in template
         assert r"\SetKw{Return}{return}" in template
+
+
+def test_latex_templates_include_section_input_anchor():
+    for venue in ["generic", "icml", "iclr", "neurips", "acl", "challenge_cup"]:
+        template = (TEMPLATE_ROOT / venue / "main.tex").read_text(encoding="utf-8")
+        assert "%%SECTION_INPUTS%%" in template
+
+
+def test_challenge_cup_template_supports_generated_table_commands():
+    template = (TEMPLATE_ROOT / "challenge_cup" / "main.tex").read_text(encoding="utf-8")
+
+    assert r"\usepackage{booktabs}" in template
+    assert r"\usepackage{longtable}" in template
+    assert r"\usepackage{multirow}" in template
 
 
 def test_icml_template_uses_bundled_algorithm_package():
@@ -153,15 +227,16 @@ def test_templates_api_lists_latex_templates():
     assert response.status_code == 200
     payload = response.json()
     template_ids = {template["id"] for template in payload["templates"]}
-    assert {"icml", "neurips", "iclr", "acl", "generic"}.issubset(template_ids)
+    assert {"icml", "neurips", "iclr", "acl", "generic", "challenge_cup"}.issubset(template_ids)
 
 
 def test_icml_template_includes_prompt_style_guide():
-    template_dir = TEMPLATE_ROOT / "icml"
+    for venue in ["icml", "neurips", "iclr", "acl", "generic", "challenge_cup"]:
+        template_dir = TEMPLATE_ROOT / venue
 
-    assert (template_dir / "main.tex").is_file()
-    assert (template_dir / "style_guide.md").is_file()
+        assert (template_dir / "main.tex").is_file()
+        assert (template_dir / "style_guide.md").is_file()
 
-    guide = load_venue_style_guide("icml")
-    assert "Reviewer Expectations" in guide
-    assert "Outline Guidance" in guide
+        guide = load_venue_style_guide(venue)
+        assert "Reviewer Expectations" in guide
+        assert "Outline Guidance" in guide
