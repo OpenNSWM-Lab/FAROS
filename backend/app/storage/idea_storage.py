@@ -55,6 +55,12 @@ def generate_candidate_id() -> str:
     return f"cand_{uuid.uuid4().hex[:12]}"
 
 
+def _get_data_dir() -> str:
+    """Return the backend-level data directory regardless of current cwd."""
+    base = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    return os.path.join(base, "data")
+
+
 class IdeaSessionStorage:
     """Storage for idea generation sessions."""
     
@@ -265,21 +271,21 @@ _candidate_storage: Optional[CandidateStorage] = None
 def get_session_storage() -> IdeaSessionStorage:
     global _session_storage
     if _session_storage is None:
-        _session_storage = IdeaSessionStorage()
+        _session_storage = IdeaSessionStorage(_get_data_dir())
     return _session_storage
 
 
 def get_literature_storage() -> LiteratureStorage:
     global _literature_storage
     if _literature_storage is None:
-        _literature_storage = LiteratureStorage()
+        _literature_storage = LiteratureStorage(_get_data_dir())
     return _literature_storage
 
 
 def get_candidate_storage() -> CandidateStorage:
     global _candidate_storage
     if _candidate_storage is None:
-        _candidate_storage = CandidateStorage()
+        _candidate_storage = CandidateStorage(_get_data_dir())
     return _candidate_storage
 
 
@@ -641,35 +647,35 @@ _handoff_storage: Optional[HandoffStorage] = None
 def get_raw_paper_storage() -> RawPaperStorage:
     global _raw_paper_storage
     if _raw_paper_storage is None:
-        _raw_paper_storage = RawPaperStorage()
+        _raw_paper_storage = RawPaperStorage(_get_data_dir())
     return _raw_paper_storage
 
 
 def get_literature_graph_storage() -> LiteratureGraphStorage:
     global _graph_storage
     if _graph_storage is None:
-        _graph_storage = LiteratureGraphStorage()
+        _graph_storage = LiteratureGraphStorage(_get_data_dir())
     return _graph_storage
 
 
 def get_structured_paper_storage() -> StructuredPaperStorage:
     global _structured_storage
     if _structured_storage is None:
-        _structured_storage = StructuredPaperStorage()
+        _structured_storage = StructuredPaperStorage(_get_data_dir())
     return _structured_storage
 
 
 def get_literature_map_storage() -> LiteratureMapStorage:
     global _map_storage
     if _map_storage is None:
-        _map_storage = LiteratureMapStorage()
+        _map_storage = LiteratureMapStorage(_get_data_dir())
     return _map_storage
 
 
 def get_handoff_storage() -> HandoffStorage:
     global _handoff_storage
     if _handoff_storage is None:
-        _handoff_storage = HandoffStorage()
+        _handoff_storage = HandoffStorage(_get_data_dir())
     return _handoff_storage
 
 
@@ -857,21 +863,21 @@ _path_seed_storage: Optional[PathSeedStorage] = None
 def get_reasoning_kg_storage() -> ReasoningKGStorage:
     global _reasoning_kg_storage
     if _reasoning_kg_storage is None:
-        _reasoning_kg_storage = ReasoningKGStorage()
+        _reasoning_kg_storage = ReasoningKGStorage(_get_data_dir())
     return _reasoning_kg_storage
 
 
 def get_evidence_link_storage() -> GraphEvidenceLinkStorage:
     global _evidence_link_storage
     if _evidence_link_storage is None:
-        _evidence_link_storage = GraphEvidenceLinkStorage()
+        _evidence_link_storage = GraphEvidenceLinkStorage(_get_data_dir())
     return _evidence_link_storage
 
 
 def get_path_seed_storage() -> PathSeedStorage:
     global _path_seed_storage
     if _path_seed_storage is None:
-        _path_seed_storage = PathSeedStorage()
+        _path_seed_storage = PathSeedStorage(_get_data_dir())
     return _path_seed_storage
 
 
@@ -956,7 +962,7 @@ _ranked_output_storage: Optional[RankedIdeaOutputStorage] = None
 def get_ranked_output_storage() -> RankedIdeaOutputStorage:
     global _ranked_output_storage
     if _ranked_output_storage is None:
-        _ranked_output_storage = RankedIdeaOutputStorage()
+        _ranked_output_storage = RankedIdeaOutputStorage(_get_data_dir())
     return _ranked_output_storage
 
 
@@ -1145,19 +1151,19 @@ _graph_patch_storage: Optional[GraphPatchStorage] = None
 def get_search_tree_storage() -> IdeaSearchTreeStorage:
     global _search_tree_storage
     if _search_tree_storage is None:
-        _search_tree_storage = IdeaSearchTreeStorage()
+        _search_tree_storage = IdeaSearchTreeStorage(_get_data_dir())
     return _search_tree_storage
 
 
 def get_probe_literature_storage() -> ProbeLiteratureStorage:
     global _probe_literature_storage
     if _probe_literature_storage is None:
-        _probe_literature_storage = ProbeLiteratureStorage()
+        _probe_literature_storage = ProbeLiteratureStorage(_get_data_dir())
     return _probe_literature_storage
 
 
 def get_graph_patch_storage() -> GraphPatchStorage:
     global _graph_patch_storage
     if _graph_patch_storage is None:
-        _graph_patch_storage = GraphPatchStorage()
+        _graph_patch_storage = GraphPatchStorage(_get_data_dir())
     return _graph_patch_storage

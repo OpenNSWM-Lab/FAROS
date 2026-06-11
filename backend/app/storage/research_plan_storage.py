@@ -20,6 +20,12 @@ from datetime import datetime
 from app.models.research_plan import ResearchPlan
 
 
+def _get_data_dir() -> str:
+    """Return the backend-level data directory regardless of current cwd."""
+    base = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    return os.path.join(base, "data")
+
+
 class ResearchPlanStorage:
     """
     File-based storage for ResearchPlans.
@@ -151,5 +157,5 @@ def get_storage() -> ResearchPlanStorage:
     """
     global _storage_instance
     if _storage_instance is None:
-        _storage_instance = ResearchPlanStorage()
+        _storage_instance = ResearchPlanStorage(os.path.join(_get_data_dir(), "research_plans"))
     return _storage_instance
