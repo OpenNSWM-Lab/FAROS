@@ -105,4 +105,3 @@ def get_plan_package_storage() -> PlanPackageStorage:
     if _storage_instance is None:
         _storage_instance = PlanPackageStorage(_get_data_dir())
     return _storage_instance
-

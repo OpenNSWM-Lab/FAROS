@@ -26,7 +26,7 @@ SEARCH_LITERATURE_DESC = """Search for relevant literature using the FAROS searc
 
 This searches across Semantic Scholar, arXiv, and local corpus.
 Provide a specific, targeted query (3-6 words) for best results.
-Returns paper titles, authors, years, and abstracts."""  
+Returns paper titles, authors, years, and abstracts."""
 
 FINALIZE_IDEA_DESC = """Finalize your research idea and provide all details.
 

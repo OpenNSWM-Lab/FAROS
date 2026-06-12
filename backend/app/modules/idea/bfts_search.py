@@ -32,9 +32,9 @@ from app.models.idea import (
     IdeaSearchTree,
     IdeaSearchEdge,
     IdeaSearchReport,
-    generate_candidate_id,
     generate_search_tree_id,
 )
+from app.modules.idea.storage import generate_candidate_id
 from app.modules.idea.reflection_loop import ReflectionLoop, FINALIZE_IDEA_DESC
 from app.services.search_service import get_search_service
 from app.services import prompts as global_prompts

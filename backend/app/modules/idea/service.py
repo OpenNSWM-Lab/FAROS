@@ -914,7 +914,7 @@ class IdeaGenerationService:
             ],
         }
         return inputs, outputs, []
-    
+
     def _step_idea_brainstorm_bfts(self, session: IdeaSession) -> tuple:
         """Generate candidate ideas using BFTS tree search + reflection loop.
 
