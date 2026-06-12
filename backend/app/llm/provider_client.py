@@ -108,14 +108,17 @@ class ProviderClient:
     ) -> ChatResponse:
         litellm = self._get_litellm()
         api_config = self._get_api_config()
+        request_timeout = kwargs.pop("timeout", api_config["timeout"])
         model_string = self._get_model_string(model)
         messages_dict = [{"role": m.role, "content": m.content} for m in messages]
 
         start_time = time.time()
-        retries = 0
+        attempt = 0
+        max_attempts = max(1, self.settings.MAX_RETRIES)
         last_error = None
 
-        while retries <= self.settings.MAX_RETRIES:
+        while attempt < max_attempts:
+            attempt += 1
             try:
                 response = litellm.completion(
                     model=model_string,
@@ -124,7 +127,7 @@ class ProviderClient:
                     max_tokens=max_tokens,
                     api_key=api_config["api_key"],
                     api_base=api_config["api_base"],
-                    timeout=api_config["timeout"],
+                    timeout=request_timeout,
                     **kwargs,
                 )
 
@@ -147,20 +150,19 @@ class ProviderClient:
                 )
             except Exception as e:
                 last_error = e
-                retries += 1
-                if retries <= self.settings.MAX_RETRIES:
-                    backoff = self.settings.RETRY_BACKOFF * (2 ** (retries - 1))
+                if attempt < max_attempts:
+                    backoff = self.settings.RETRY_BACKOFF * (2 ** (attempt - 1))
                     logger.warning(
                         "Provider request failed (attempt %s/%s): %s. Retrying in %ss...",
-                        retries,
-                        self.settings.MAX_RETRIES,
+                        attempt,
+                        max_attempts,
                         e,
                         backoff,
                     )
                     time.sleep(backoff)
 
         error_msg = str(last_error)
-        logger.error("Provider request failed after %s retries: %s", self.settings.MAX_RETRIES, error_msg)
+        logger.error("Provider request failed after %s attempts: %s", max_attempts, error_msg)
         raise ProviderError(
             f"Provider '{self.provider_name}' request failed: {error_msg}",
             self.provider_name,
