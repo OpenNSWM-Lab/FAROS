@@ -50,7 +50,7 @@ def _iso_to_dt(val):
 class PlanSessionStorage:
     """Storage for plan generation sessions."""
 
-    def __init__(self, data_dir: str = "backend/data"):
+    def __init__(self, data_dir: str = "data"):
         self.base_path = Path(data_dir) / "plan_sessions" / "sessions"
         self.base_path.mkdir(parents=True, exist_ok=True)
 
@@ -120,7 +120,7 @@ class PlanSessionStorage:
 class CandidatePlanStorage:
     """Storage for candidate plans."""
 
-    def __init__(self, data_dir: str = "backend/data"):
+    def __init__(self, data_dir: str = "data"):
         self.base_path = Path(data_dir) / "plan_sessions" / "candidates"
         self.base_path.mkdir(parents=True, exist_ok=True)
 
@@ -168,7 +168,7 @@ class CandidatePlanStorage:
 class SelectedPlanStorage:
     """Storage for selected plan records."""
 
-    def __init__(self, data_dir: str = "backend/data"):
+    def __init__(self, data_dir: str = "data"):
         self.base_path = Path(data_dir) / "plan_sessions" / "selections"
         self.base_path.mkdir(parents=True, exist_ok=True)
 
