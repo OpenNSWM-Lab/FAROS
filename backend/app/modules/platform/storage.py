@@ -26,10 +26,11 @@ from app.storage.plan_session_storage import (
     get_candidate_storage as get_plan_candidate_storage,
     get_session_storage as get_plan_session_storage,
 )
+from app.storage.plan_package_storage import get_plan_package_storage
 from app.storage.research_plan_storage import get_storage as get_plan_storage
 from app.storage.run_storage import get_storage as get_run_storage
 
-_BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 _PLAN_LINKS_DIR = os.path.join(_BASE_DIR, "data", "plan_links")
 os.makedirs(_PLAN_LINKS_DIR, exist_ok=True)
 
@@ -111,6 +112,7 @@ __all__ = [
     "get_metrics",
     "get_plan_link",
     "get_plan_link_context",
+    "get_plan_package_storage",
     "ingest_metrics",
     "get_plan_candidate_storage",
     "get_plan_session_storage",
