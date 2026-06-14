@@ -1,25 +1,50 @@
-import { useNavigate } from 'react-router-dom'
+import { useEffect, useState } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { AppPageLayout } from '@/components/layout/AppPageLayout'
 import { Badge } from '@/components/ui/badge'
-import { GitBranch, CheckCircle2, XCircle, Loader2, Circle } from 'lucide-react'
+import { GitBranch, CheckCircle2, XCircle, Loader2, Circle, AlertTriangle } from 'lucide-react'
 import { BlueprintGraph } from '@/components/code/BlueprintGraph'
-import { mockBlueprint } from './blueprintMockData'
+import { mockBlueprint, type ExperimentBlueprint } from './blueprintMockData'
+
+const API_BASE = import.meta.env.VITE_API_BASE_URL || ''
 
 export function CodeBlueprint() {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+  const packageId = searchParams.get('packageId')
+  const [blueprint, setBlueprint] = useState<ExperimentBlueprint | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (packageId) {
+      setLoading(true)
+      setError(null)
+      fetch(`${API_BASE}/api/v1/plans/packages/${encodeURIComponent(packageId)}/blueprint`)
+        .then(res => {
+          if (!res.ok) throw new Error(`HTTP ${res.status}`)
+          return res.json()
+        })
+        .then(data => setBlueprint(data))
+        .catch(err => setError(err.message))
+        .finally(() => setLoading(false))
+    }
+  }, [packageId])
+
+  const data = blueprint || mockBlueprint
 
   const counts = {
-    total: mockBlueprint.nodes.length,
-    success: mockBlueprint.nodes.filter(n => n.status === 'success').length,
-    running: mockBlueprint.nodes.filter(n => n.status === 'running').length,
-    failed: mockBlueprint.nodes.filter(n => n.status === 'failed').length,
-    pending: mockBlueprint.nodes.filter(n => n.status === 'pending').length,
+    total: data.nodes.length,
+    success: data.nodes.filter(n => n.status === 'success').length,
+    running: data.nodes.filter(n => n.status === 'running').length,
+    failed: data.nodes.filter(n => n.status === 'failed').length,
+    pending: data.nodes.filter(n => n.status === 'pending').length,
   }
 
   return (
     <AppPageLayout
       title="Experiment Blueprint"
-      subtitle={mockBlueprint.title}
+      subtitle={loading ? 'Loading...' : data.title}
       icon={GitBranch}
       iconColor="violet"
       accentColor="violet"
@@ -51,10 +76,28 @@ export function CodeBlueprint() {
           <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-full bg-slate-300" /> 待执行</span>
           <span className="border-l pl-3 text-muted-foreground">滚轮缩放 · 拖拽平移 · 悬停查看 · 点击详情</span>
         </div>
-        <BlueprintGraph
-          height="100%"
-          onNodeClick={(nodeId) => navigate(`/code/blueprint/step/${nodeId}`)}
-        />
+        {loading && (
+          <div className="absolute inset-0 z-20 flex items-center justify-center bg-white/80">
+            <div className="text-center">
+              <Loader2 className="h-8 w-8 animate-spin text-violet-500 mx-auto mb-2" />
+              <p className="text-sm text-slate-500">Loading blueprint...</p>
+            </div>
+          </div>
+        )}
+        {error && (
+          <div className="absolute top-3 right-3 z-20 bg-red-50 border border-red-200 rounded-lg px-4 py-3 text-sm text-red-700 flex items-center gap-2">
+            <AlertTriangle className="h-4 w-4" />
+            Failed to load: {error}
+          </div>
+        )}
+        {!loading && !error && (
+          <BlueprintGraph
+            blueprint={data}
+            height="100%"
+            packageId={packageId || data.id}
+            onNodeClick={(nodeId) => navigate(`/code/blueprint/step/${nodeId}?packageId=${packageId || data.id}`)}
+          />
+        )}
       </div>
     </AppPageLayout>
   )

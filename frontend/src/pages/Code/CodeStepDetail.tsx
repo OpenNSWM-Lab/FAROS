@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useEffect, useState } from 'react'
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom'
 import { AppPageLayout } from '@/components/layout/AppPageLayout'
 import { SectionCard } from '@/components/detail/SectionCard'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -10,7 +10,9 @@ import {
   ArrowLeft, CheckCircle2, XCircle, Loader2, Clock, Circle,
   GitBranch, FileText, BarChart3, Terminal, ExternalLink,
 } from 'lucide-react'
-import { mockBlueprint } from './blueprintMockData'
+import { mockBlueprint, type ExperimentStep } from './blueprintMockData'
+
+const API_BASE = import.meta.env.VITE_API_BASE_URL || ''
 
 const statusConfig: Record<string, { label: string; icon: React.ReactNode; badgeVariant: string; badgeClass: string }> = {
   pending:  { label: '待执行', icon: <Circle className="h-4 w-4" />,         badgeVariant: 'outline', badgeClass: 'text-slate-500 border-slate-300' },
@@ -19,7 +21,6 @@ const statusConfig: Record<string, { label: string; icon: React.ReactNode; badge
   failed:   { label: '失败',   icon: <XCircle className="h-4 w-4" />,        badgeVariant: 'outline', badgeClass: 'text-red-600 border-red-300' },
 }
 
-// ---- info row component ----
 function InfoRow({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <div className="flex items-start py-2 border-b border-border/50 last:border-0">
@@ -29,7 +30,6 @@ function InfoRow({ label, value }: { label: string; value: React.ReactNode }) {
   )
 }
 
-// ---- metrics table ----
 function MetricsTable({ metrics }: { metrics: Record<string, string | number> }) {
   return (
     <div className="border rounded-md overflow-hidden">
@@ -53,13 +53,66 @@ function MetricsTable({ metrics }: { metrics: Record<string, string | number> })
   )
 }
 
-// ---- main page component ----
 export function CodeStepDetail() {
   const { stepId } = useParams<{ stepId: string }>()
+  const [searchParams] = useSearchParams()
+  const packageId = searchParams.get('packageId')
   const navigate = useNavigate()
   const [activeTab, setActiveTab] = useState('overview')
+  const [node, setNode] = useState<ExperimentStep | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
-  const node = mockBlueprint.nodes.find(n => n.id === stepId)
+  useEffect(() => {
+    if (packageId) {
+      setLoading(true)
+      setError(null)
+      fetch(`${API_BASE}/api/v1/plans/packages/${encodeURIComponent(packageId)}/blueprint`)
+        .then(res => {
+          if (!res.ok) throw new Error(`HTTP ${res.status}`)
+          return res.json()
+        })
+        .then(data => {
+          const found = (data.nodes as ExperimentStep[]).find(n => n.id === stepId)
+          if (found) {
+            setNode(found)
+          } else {
+            setError('Step not found in blueprint')
+          }
+        })
+        .catch(err => setError(err.message))
+        .finally(() => setLoading(false))
+    } else {
+      const found = mockBlueprint.nodes.find(n => n.id === stepId)
+      if (found) setNode(found)
+    }
+  }, [packageId, stepId])
+
+  if (loading) {
+    return (
+      <AppPageLayout title="加载中..." icon={GitBranch} iconColor="violet" accentColor="violet">
+        <div className="flex flex-col items-center justify-center py-20">
+          <Loader2 className="h-12 w-12 text-violet-500 animate-spin mb-4" />
+          <p className="text-muted-foreground text-sm">正在加载步骤数据...</p>
+        </div>
+      </AppPageLayout>
+    )
+  }
+
+  if (error) {
+    return (
+      <AppPageLayout title="加载失败" icon={GitBranch} iconColor="violet" accentColor="violet">
+        <div className="flex flex-col items-center justify-center py-20">
+          <XCircle className="h-12 w-12 text-muted-foreground mb-4" />
+          <h2 className="text-lg font-medium mb-2">无法加载步骤</h2>
+          <p className="text-muted-foreground text-sm mb-4">{error}</p>
+          <Button variant="outline" onClick={() => navigate(`/code/blueprint?packageId=${packageId}`)}>
+            <ArrowLeft className="h-4 w-4 mr-2" /> 返回蓝图
+          </Button>
+        </div>
+      </AppPageLayout>
+    )
+  }
 
   if (!node) {
     return (
@@ -68,7 +121,7 @@ export function CodeStepDetail() {
           <XCircle className="h-12 w-12 text-muted-foreground mb-4" />
           <h2 className="text-lg font-medium mb-2">步骤不存在</h2>
           <p className="text-muted-foreground text-sm mb-4">ID: {stepId}</p>
-          <Button variant="outline" onClick={() => navigate('/code/blueprint')}>
+          <Button variant="outline" onClick={() => navigate(packageId ? `/code/blueprint?packageId=${packageId}` : '/code/blueprint')}>
             <ArrowLeft className="h-4 w-4 mr-2" /> 返回蓝图
           </Button>
         </div>
@@ -86,12 +139,11 @@ export function CodeStepDetail() {
       iconColor="violet"
       accentColor="violet"
       actions={
-        <Button variant="outline" size="sm" onClick={() => navigate('/code/blueprint')}>
+        <Button variant="outline" size="sm" onClick={() => navigate(packageId ? `/code/blueprint?packageId=${packageId}` : '/code/blueprint')}>
           <ArrowLeft className="h-4 w-4 mr-2" /> 返回蓝图
         </Button>
       }
     >
-      {/* Status strip */}
       <div className="flex items-center gap-3 mb-6">
         <Badge className={cfg.badgeClass + ' flex items-center gap-1'}>
           {cfg.icon} {cfg.label}
@@ -109,7 +161,6 @@ export function CodeStepDetail() {
         )}
       </div>
 
-      {/* Detail tabs */}
       <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
         <TabsList>
           <TabsTrigger value="overview" className="flex items-center gap-1">
@@ -123,7 +174,6 @@ export function CodeStepDetail() {
           </TabsTrigger>
         </TabsList>
 
-        {/* ===== OVERVIEW TAB ===== */}
         <TabsContent value="overview" className="mt-4">
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div className="lg:col-span-2 space-y-6">
@@ -166,7 +216,6 @@ export function CodeStepDetail() {
                 </SectionCard>
               )}
 
-              {/* failed: show error */}
               {node.status === 'failed' && node.result?.error && (
                 <Card className="border-red-200 bg-red-50/50">
                   <CardHeader className="pb-2">
@@ -181,7 +230,6 @@ export function CodeStepDetail() {
               )}
             </div>
 
-            {/* sidebar */}
             <div className="space-y-4">
               <Card>
                 <CardHeader className="pb-2">
@@ -231,7 +279,6 @@ export function CodeStepDetail() {
                 </Card>
               )}
 
-              {/* navigate to prev/next */}
               <Card>
                 <CardHeader className="pb-2">
                   <CardTitle className="text-sm">流程导航</CardTitle>
@@ -241,7 +288,7 @@ export function CodeStepDetail() {
                     variant="ghost"
                     size="sm"
                     className="w-full justify-start text-sm"
-                    onClick={() => navigate('/code/blueprint')}
+                    onClick={() => navigate(packageId ? `/code/blueprint?packageId=${packageId}` : '/code/blueprint')}
                   >
                     <GitBranch className="h-4 w-4 mr-2" /> 返回完整蓝图
                   </Button>
@@ -251,7 +298,6 @@ export function CodeStepDetail() {
           </div>
         </TabsContent>
 
-        {/* ===== RESULTS TAB ===== */}
         <TabsContent value="results" className="mt-4">
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             {node.result ? (
@@ -286,7 +332,6 @@ export function CodeStepDetail() {
           </div>
         </TabsContent>
 
-        {/* ===== LOGS TAB ===== */}
         <TabsContent value="logs" className="mt-4">
           {node.result?.logs && node.result.logs.length > 0 ? (
             <Card>

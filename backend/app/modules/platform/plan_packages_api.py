@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 
 from app.models.plan_package import PlanPackage, PlanQualityGate
+from app.services.blueprint_converter import convert_plan_package_to_blueprint
 from app.services.plan_package_service import (
     PlanPackageConflictError,
     PlanPackageNotFoundError,
@@ -150,6 +151,21 @@ async def validate_plan_package(package_id: str) -> ValidatePlanPackageResponse:
         )
     except PlanPackageNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+
+
+@router.get(
+    "/plans/packages/{package_id}/blueprint",
+    summary="Get PlanPackage as experiment blueprint DAG",
+)
+async def get_plan_package_blueprint(package_id: str):
+    service = get_plan_package_service()
+    package = service.get(package_id)
+    if not package:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"PlanPackage {package_id} not found",
+        )
+    return convert_plan_package_to_blueprint(package)
 
 
 @router.post(

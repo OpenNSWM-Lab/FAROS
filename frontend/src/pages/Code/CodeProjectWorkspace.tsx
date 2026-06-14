@@ -21,6 +21,7 @@ import {
   SkipForward, Wrench, Eye, GitBranch,
 } from 'lucide-react'
 import { BlueprintGraph } from '@/components/code/BlueprintGraph'
+import { mockBlueprint } from './blueprintMockData'
 const API_BASE = import.meta.env.VITE_API_BASE_URL || ''
 
 interface PlanContextSession {
@@ -592,8 +593,9 @@ export function CodeProjectWorkspace() {
             <span className="border-l pl-3 text-muted-foreground">滚轮缩放 · 拖拽平移 · 悬停查看 · 点击详情</span>
           </div>
           <BlueprintGraph
+            blueprint={mockBlueprint}
             height="100%"
-            onNodeClick={(nodeId) => navigate(`/code/blueprint/step/${nodeId}`)}
+            onNodeClick={(nodeId) => navigate(`/code/blueprint/step/${nodeId}?packageId=${mockBlueprint.id}`)}
           />
         </div>
       ) : (
