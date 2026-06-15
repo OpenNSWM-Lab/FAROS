@@ -7,6 +7,7 @@ Follows append-only pattern for scientific integrity.
 
 import json
 import os
+import time
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -61,6 +62,36 @@ def _get_data_dir() -> str:
     return os.path.join(base, "data")
 
 
+def _write_json_atomic(path: Path, data: Dict[str, Any], *, default=None) -> None:
+    """Write JSON via a unique temp file, with Windows-friendly replace retries."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_name(f"{path.stem}.{uuid.uuid4().hex}.tmp")
+    try:
+        with open(temp_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, default=default)
+            f.flush()
+            os.fsync(f.fileno())
+
+        last_error: Optional[OSError] = None
+        for attempt in range(5):
+            try:
+                os.replace(temp_path, path)
+                return
+            except PermissionError as exc:
+                last_error = exc
+                if attempt == 4:
+                    break
+                time.sleep(0.05 * (attempt + 1))
+        if last_error:
+            raise last_error
+    finally:
+        try:
+            if temp_path.exists():
+                temp_path.unlink()
+        except OSError:
+            pass
+
+
 class IdeaSessionStorage:
     """Storage for idea generation sessions."""
     
@@ -113,10 +144,7 @@ class IdeaSessionStorage:
             raise ValueError(f"Session {session.id} already exists")
         
         data = self._serialize_session(session)
-        temp_path = path.with_suffix('.tmp')
-        with open(temp_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, default=str)
-        os.replace(temp_path, path)
+        _write_json_atomic(path, data, default=str)
         
         return session
     
@@ -137,10 +165,7 @@ class IdeaSessionStorage:
             raise ValueError(f"Session {session.id} not found")
         
         data = self._serialize_session(session)
-        temp_path = path.with_suffix('.tmp')
-        with open(temp_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, default=str)
-        os.replace(temp_path, path)
+        _write_json_atomic(path, data, default=str)
         
         return session
     
@@ -174,11 +199,7 @@ class LiteratureStorage:
         path = self._get_item_path(item.id)
         data = item.model_dump()
         data['createdAt'] = data['createdAt'].isoformat() if isinstance(data['createdAt'], datetime) else data['createdAt']
-        
-        temp_path = path.with_suffix('.tmp')
-        with open(temp_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2)
-        os.replace(temp_path, path)
+        _write_json_atomic(path, data)
         
         return item
     
@@ -225,11 +246,7 @@ class CandidateStorage:
         path = self._get_candidate_path(candidate.id)
         data = candidate.model_dump()
         data['createdAt'] = data['createdAt'].isoformat() if isinstance(data['createdAt'], datetime) else data['createdAt']
-        
-        temp_path = path.with_suffix('.tmp')
-        with open(temp_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2)
-        os.replace(temp_path, path)
+        _write_json_atomic(path, data)
         
         return candidate
     
@@ -337,11 +354,7 @@ class RawPaperStorage:
 
         data = paper.model_dump()
         data['createdAt'] = data['createdAt'].isoformat() if isinstance(data['createdAt'], datetime) else data['createdAt']
-
-        temp_path = path.with_suffix('.tmp')
-        with open(temp_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, default=str)
-        os.replace(temp_path, path)
+        _write_json_atomic(path, data, default=str)
 
         return paper
 
@@ -396,11 +409,7 @@ class LiteratureGraphStorage:
 
         data = graph.model_dump()
         data['createdAt'] = data['createdAt'].isoformat() if isinstance(data['createdAt'], datetime) else data['createdAt']
-
-        temp_path = path.with_suffix('.tmp')
-        with open(temp_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, default=str)
-        os.replace(temp_path, path)
+        _write_json_atomic(path, data, default=str)
 
         return graph
 
@@ -424,11 +433,7 @@ class LiteratureGraphStorage:
 
         data = graph.model_dump()
         data['createdAt'] = data['createdAt'].isoformat() if isinstance(data['createdAt'], datetime) else data['createdAt']
-
-        temp_path = path.with_suffix('.tmp')
-        with open(temp_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, default=str)
-        os.replace(temp_path, path)
+        _write_json_atomic(path, data, default=str)
 
         return graph
 
@@ -473,11 +478,7 @@ class StructuredPaperStorage:
 
         data = paper.model_dump()
         data['createdAt'] = data['createdAt'].isoformat() if isinstance(data['createdAt'], datetime) else data['createdAt']
-
-        temp_path = path.with_suffix('.tmp')
-        with open(temp_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, default=str)
-        os.replace(temp_path, path)
+        _write_json_atomic(path, data, default=str)
 
         return paper
 
@@ -532,11 +533,7 @@ class LiteratureMapStorage:
 
         data = lit_map.model_dump()
         data['createdAt'] = data['createdAt'].isoformat() if isinstance(data['createdAt'], datetime) else data['createdAt']
-
-        temp_path = path.with_suffix('.tmp')
-        with open(temp_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, default=str)
-        os.replace(temp_path, path)
+        _write_json_atomic(path, data, default=str)
 
         return lit_map
 
@@ -590,11 +587,7 @@ class HandoffStorage:
 
         data = handoff.model_dump()
         data['createdAt'] = data['createdAt'].isoformat() if isinstance(data['createdAt'], datetime) else data['createdAt']
-
-        temp_path = path.with_suffix('.tmp')
-        with open(temp_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, default=str)
-        os.replace(temp_path, path)
+        _write_json_atomic(path, data, default=str)
 
         return handoff
 
@@ -720,10 +713,7 @@ class ReasoningKGStorage:
             raise ValueError(f"ReasoningKG {kg.id} already exists")
         data = kg.model_dump()
         data['createdAt'] = data['createdAt'].isoformat() if isinstance(data['createdAt'], datetime) else data['createdAt']
-        temp_path = path.with_suffix('.tmp')
-        with open(temp_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, default=str)
-        os.replace(temp_path, path)
+        _write_json_atomic(path, data, default=str)
         return kg
 
     def get(self, kg_id: str) -> Optional[ReasoningKG]:
@@ -770,10 +760,7 @@ class GraphEvidenceLinkStorage:
         if path.exists():
             raise ValueError(f"GraphEvidenceLink {link.linkId} already exists")
         data = link.model_dump()
-        temp_path = path.with_suffix('.tmp')
-        with open(temp_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, default=str)
-        os.replace(temp_path, path)
+        _write_json_atomic(path, data, default=str)
         return link
 
     def get(self, link_id: str) -> Optional[GraphEvidenceLink]:
@@ -818,10 +805,7 @@ class PathSeedStorage:
             raise ValueError(f"ReasoningPathSeed {seed.seedId} already exists")
         data = seed.model_dump()
         data['createdAt'] = data['createdAt'].isoformat() if isinstance(data['createdAt'], datetime) else data['createdAt']
-        temp_path = path.with_suffix('.tmp')
-        with open(temp_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, default=str)
-        os.replace(temp_path, path)
+        _write_json_atomic(path, data, default=str)
         return seed
 
     def get(self, seed_id: str) -> Optional[ReasoningPathSeed]:
@@ -913,11 +897,7 @@ class RankedIdeaOutputStorage:
         for c in data.get('rankedCandidates', []):
             if c.get('createdAt') and isinstance(c['createdAt'], datetime):
                 c['createdAt'] = c['createdAt'].isoformat()
-
-        temp_path = path.with_suffix('.tmp')
-        with open(temp_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, default=str)
-        os.replace(temp_path, path)
+        _write_json_atomic(path, data, default=str)
 
         return ranked_output
 
@@ -1003,11 +983,7 @@ class IdeaSearchTreeStorage:
 
         data = tree.model_dump()
         data['createdAt'] = data['createdAt'].isoformat() if isinstance(data['createdAt'], datetime) else data['createdAt']
-
-        temp_path = path.with_suffix('.tmp')
-        with open(temp_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, default=str)
-        os.replace(temp_path, path)
+        _write_json_atomic(path, data, default=str)
         return tree
 
     def get(self, tree_id: str) -> Optional[IdeaSearchTree]:
@@ -1050,11 +1026,7 @@ class ProbeLiteratureStorage:
         path = self._get_path(result.id)
         data = result.model_dump()
         data['createdAt'] = data['createdAt'].isoformat() if isinstance(data['createdAt'], datetime) else data['createdAt']
-
-        temp_path = path.with_suffix('.tmp')
-        with open(temp_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, default=str)
-        os.replace(temp_path, path)
+        _write_json_atomic(path, data, default=str)
         return result
 
     def get(self, result_id: str) -> Optional[LiteratureProbeResult]:
@@ -1110,11 +1082,7 @@ class GraphPatchStorage:
         path = self._get_path(patch.id)
         data = patch.model_dump()
         data['createdAt'] = data['createdAt'].isoformat() if isinstance(data['createdAt'], datetime) else data['createdAt']
-
-        temp_path = path.with_suffix('.tmp')
-        with open(temp_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, default=str)
-        os.replace(temp_path, path)
+        _write_json_atomic(path, data, default=str)
         return patch
 
     def get(self, patch_id: str) -> Optional[GraphPatch]:

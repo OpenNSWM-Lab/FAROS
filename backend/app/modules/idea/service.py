@@ -5,6 +5,7 @@ Orchestrates the idea generation pipeline with step-based tracing.
 """
 
 import logging
+import threading
 from datetime import UTC, datetime
 from typing import Optional, List, Dict, Any
 
@@ -113,6 +114,8 @@ class IdeaGenerationService:
         self.path_seed_storage = get_path_seed_storage()
         # Step 6 storage
         self.ranked_output_storage = get_ranked_output_storage()
+        self._pipeline_lock_guard = threading.Lock()
+        self._pipeline_locks: Dict[str, threading.Lock] = {}
 
     def _get_step_output(self, session: IdeaSession, step_name: str, key: str, default=None):
         """Read a specific output key from a pipeline step's trace."""
@@ -212,51 +215,64 @@ class IdeaGenerationService:
         6. rankCandidates - Rank and score candidates
         7. finalizeSession - Finalize the session
         """
-        session = self.session_storage.get(session_id)
-        if not session:
-            raise ValueError(f"Session {session_id} not found")
-        
-        if session.status != IdeaSessionStatus.RUNNING:
-            raise ValueError(f"Session must be in RUNNING state, got {session.status}")
-        
+        with self._pipeline_lock_guard:
+            pipeline_lock = self._pipeline_locks.setdefault(session_id, threading.Lock())
+
+        if not pipeline_lock.acquire(blocking=False):
+            logger.warning("Pipeline already running for session %s; duplicate start ignored", session_id)
+            session = self.session_storage.get(session_id)
+            if not session:
+                raise ValueError(f"Session {session_id} not found")
+            return session
+
         try:
-            # Step 1: Expand Query
-            session = self._run_step(session, "expandQuery", self._step_expand_query)
-            
-            # Step 2: Literature Search
-            session = self._run_step(session, "literatureSearch", self._step_literature_search)
-            
-            # Step 3: Novelty Check
-            session = self._run_step(session, "noveltyCheck", self._step_novelty_check)
-            
-            # Step 4: Gap Analysis
-            session = self._run_step(session, "gapAnalysis", self._step_gap_analysis)
-            
-            # Step 5: Idea Brainstorm (uses LLM)
-            session = self._run_step(session, "ideaBrainstorm", self._step_idea_brainstorm)
-            
-            # Step 6: Rank Candidates
-            session = self._run_step(session, "rankCandidates", self._step_rank_candidates)
-            
-            # Step 7: Finalize
-            session = self._run_step(session, "finalizeSession", self._step_finalize)
-            
-            # Mark completed
-            session.status = IdeaSessionStatus.COMPLETED
-            session.endedAt = _utcnow()
-            if session.trace:
-                session.trace.endedAt = _utcnow()
-            
-            return self.session_storage.update(session)
-            
-        except Exception as e:
-            logger.error(f"Pipeline failed for session {session_id}: {e}")
-            session.status = IdeaSessionStatus.FAILED
-            session.errorMessage = str(e)
-            session.endedAt = _utcnow()
-            if session.trace:
-                session.trace.endedAt = _utcnow()
-            return self.session_storage.update(session)
+            session = self.session_storage.get(session_id)
+            if not session:
+                raise ValueError(f"Session {session_id} not found")
+
+            if session.status != IdeaSessionStatus.RUNNING:
+                raise ValueError(f"Session must be in RUNNING state, got {session.status}")
+
+            try:
+                # Step 1: Expand Query
+                session = self._run_step(session, "expandQuery", self._step_expand_query)
+
+                # Step 2: Literature Search
+                session = self._run_step(session, "literatureSearch", self._step_literature_search)
+
+                # Step 3: Novelty Check
+                session = self._run_step(session, "noveltyCheck", self._step_novelty_check)
+
+                # Step 4: Gap Analysis
+                session = self._run_step(session, "gapAnalysis", self._step_gap_analysis)
+
+                # Step 5: Idea Brainstorm (uses LLM)
+                session = self._run_step(session, "ideaBrainstorm", self._step_idea_brainstorm)
+
+                # Step 6: Rank Candidates
+                session = self._run_step(session, "rankCandidates", self._step_rank_candidates)
+
+                # Step 7: Finalize
+                session = self._run_step(session, "finalizeSession", self._step_finalize)
+
+                # Mark completed
+                session.status = IdeaSessionStatus.COMPLETED
+                session.endedAt = _utcnow()
+                if session.trace:
+                    session.trace.endedAt = _utcnow()
+
+                return self.session_storage.update(session)
+
+            except Exception as e:
+                logger.error(f"Pipeline failed for session {session_id}: {e}")
+                session.status = IdeaSessionStatus.FAILED
+                session.errorMessage = str(e)
+                session.endedAt = _utcnow()
+                if session.trace:
+                    session.trace.endedAt = _utcnow()
+                return self.session_storage.update(session)
+        finally:
+            pipeline_lock.release()
     
     def _run_step(
         self,
