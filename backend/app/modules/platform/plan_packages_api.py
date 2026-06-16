@@ -21,12 +21,12 @@ router = APIRouter(tags=["plan_packages"])
 class CreatePlanPackageRequest(BaseModel):
     candidateId: Optional[str] = None
     planSessionId: Optional[str] = None
-    maxStages: int = Field(default=4, ge=1, le=8)
-    maxStepsPerStage: int = Field(default=5, ge=1, le=10)
+    maxStages: int = Field(default=3, ge=1, le=5)
+    maxStepsPerStage: int = Field(default=3, ge=1, le=5)
     userNotes: Optional[str] = None
     generationMode: str = Field(default="hybrid", description="hybrid | deterministic")
     useLLM: Optional[bool] = Field(default=None, description="Deprecated compatibility flag; overrides generationMode when set")
-    maxRepairRounds: int = Field(default=0, ge=0, le=2)
+    maxRepairRounds: int = Field(default=1, ge=0, le=2)
 
 
 class CreatePlanPackageResponse(BaseModel):

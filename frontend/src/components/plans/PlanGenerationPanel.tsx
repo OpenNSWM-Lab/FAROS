@@ -315,8 +315,8 @@ export function PlanGenerationPanel() {
   const [error, setError] = useState<string | null>(null)
   const [legacyPlanId, setLegacyPlanId] = useState<string | null>(null)
   const [generationMode, setGenerationMode] = useState<GenerationMode>('hybrid')
-  const [maxStages, setMaxStages] = useState(4)
-  const [maxStepsPerStage, setMaxStepsPerStage] = useState(5)
+  const [maxStages, setMaxStages] = useState(3)
+  const [maxStepsPerStage, setMaxStepsPerStage] = useState(3)
   const [userNotes, setUserNotes] = useState('')
 
   const packageIdFromUrl = searchParams.get('packageId')?.trim() || ''
@@ -401,6 +401,7 @@ export function PlanGenerationPanel() {
         generationMode,
         maxStages,
         maxStepsPerStage,
+        maxRepairRounds: 1,
         userNotes: userNotes.trim() || undefined,
       })
       setPlanPackage(response.package)
@@ -594,7 +595,7 @@ export function PlanGenerationPanel() {
                   <input
                     type="range"
                     min={1}
-                    max={8}
+                    max={5}
                     value={maxStages}
                     onChange={(event) => setMaxStages(Number(event.target.value))}
                     className="w-full"
@@ -605,7 +606,7 @@ export function PlanGenerationPanel() {
                   <input
                     type="range"
                     min={1}
-                    max={10}
+                    max={5}
                     value={maxStepsPerStage}
                     onChange={(event) => setMaxStepsPerStage(Number(event.target.value))}
                     className="w-full"

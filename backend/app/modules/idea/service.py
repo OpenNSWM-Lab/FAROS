@@ -5,6 +5,7 @@ Orchestrates the idea generation pipeline with step-based tracing.
 """
 
 import logging
+import os
 import threading
 from datetime import UTC, datetime
 from typing import Optional, List, Dict, Any
@@ -86,6 +87,126 @@ logger = logging.getLogger(__name__)
 
 def _utcnow() -> datetime:
     return datetime.now(UTC)
+
+
+def _extract_json_object(text: str) -> Optional[Dict[str, Any]]:
+    raw = (text or "").strip()
+    if "```json" in raw:
+        raw = raw.split("```json", 1)[1].split("```", 1)[0]
+    elif "```" in raw:
+        parts = raw.split("```")
+        if len(parts) >= 3:
+            raw = parts[1]
+    raw = raw.strip()
+    try:
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else None
+    except json.JSONDecodeError:
+        match = re.search(r"\{[\s\S]*\}", raw)
+        if match:
+            try:
+                data = json.loads(match.group())
+                return data if isinstance(data, dict) else None
+            except json.JSONDecodeError:
+                return None
+    return None
+
+
+def _clean_query_terms(values: Any, seed: str, *, limit: int = 5) -> List[str]:
+    raw_values = values if isinstance(values, list) else []
+    cleaned: List[str] = []
+    for value in [seed, *raw_values]:
+        if not isinstance(value, str):
+            continue
+        query = value.strip().strip(",").strip().strip('"').strip("'").strip()
+        if not query:
+            continue
+        if any(marker in query for marker in ["{", "}", "[", "]", '":']):
+            continue
+        if not re.search(r"[\w\u4e00-\u9fff]", query):
+            continue
+        if query not in cleaned:
+            cleaned.append(query)
+        if len(cleaned) >= limit:
+            break
+    return cleaned or [seed]
+
+
+def _topic_relevance_score(result: SearchResult, topic_terms: List[str], signal_terms: List[str]) -> float:
+    text = f"{result.title} {result.abstract}".lower()
+    if not text.strip():
+        return 0.0
+
+    topic_hits = sum(1 for term in topic_terms if term in text)
+    signal_hits = sum(1 for term in signal_terms if term in text)
+    phrase_bonus = 0.0
+    for phrase in [
+        "citation faithfulness",
+        "citation faithful",
+        "uncertainty estimation",
+        "retrieval augmented generation",
+        "retrieval-augmented generation",
+    ]:
+        if phrase in text:
+            phrase_bonus += 0.2
+
+    source_bonus = 0.1 if result.source in {"arxiv", "semantic_scholar"} else 0.0
+    base = min(0.5, topic_hits * 0.04)
+    signal = min(0.6, signal_hits * 0.12)
+    return min(1.0, base + signal + phrase_bonus + source_bonus + result.relevance_score * 0.2)
+
+
+def _rank_results_for_topic(
+    results: List[SearchResult],
+    *,
+    seed: str,
+    domain: str,
+    search_queries: List[str],
+) -> List[SearchResult]:
+    topic_text = " ".join([seed, domain, *search_queries]).lower()
+    tokens = re.findall(r"[a-zA-Z][a-zA-Z0-9-]{2,}", topic_text)
+    stopwords = {
+        "and", "the", "for", "with", "from", "that", "this", "into",
+        "using", "based", "how", "can", "are", "what", "when", "where",
+        "does", "retrieval", "augmented", "generation",
+    }
+    topic_terms = []
+    for token in tokens:
+        if token not in stopwords and token not in topic_terms:
+            topic_terms.append(token)
+    signal_terms = [
+        term for term in [
+            "citation", "faithfulness", "faithful", "uncertainty", "gating",
+            "confidence", "hallucination", "attribution", "provenance",
+            "trustworthy", "factuality", "grounding",
+        ]
+        if term in topic_text
+    ]
+
+    scored = [
+        (_topic_relevance_score(result, topic_terms, signal_terms), index, result)
+        for index, result in enumerate(results)
+    ]
+    for score, _, result in scored:
+        result.relevance_score = max(result.relevance_score, score)
+
+    scored.sort(key=lambda item: (item[0], item[2].source != "local", -item[1]), reverse=True)
+    return [result for _, _, result in scored]
+
+
+def _filter_results_for_topic(results: List[SearchResult]) -> tuple[List[SearchResult], int]:
+    """Drop low-relevance results before they become RawPaper evidence."""
+    external_threshold = float(os.getenv("FAROS_MIN_EXTERNAL_RELEVANCE", "0.12"))
+    local_threshold = float(os.getenv("FAROS_MIN_LOCAL_RELEVANCE", "0.28"))
+    filtered: List[SearchResult] = []
+    dropped = 0
+    for result in results:
+        threshold = local_threshold if result.source == "local" else external_threshold
+        if result.relevance_score >= threshold:
+            filtered.append(result)
+        else:
+            dropped += 1
+    return filtered, dropped
 
 
 class IdeaGenerationService:
@@ -357,34 +478,50 @@ class IdeaGenerationService:
 
             response = client.chat(messages, model=session.config.model, max_tokens=500)
 
-            # Parse JSON response
-            try:
-                data = json.loads(response.text)
-                expanded_terms = data.get("searchQueries", [seed])
-                key_concepts = data.get("keyConcepts", [])
-                refined_question = data.get("refinedQuestion", seed)
-                related_areas = data.get("relatedAreas", [])
-                raw_families = data.get("queryFamilies", [])
-                path_templates = data.get("pathTemplates", [])
-            except json.JSONDecodeError:
-                expanded_terms = [seed]
-                for line in response.text.split("\n"):
-                    if line.strip() and not line.startswith("{"):
-                        expanded_terms.append(line.strip().strip('"').strip("'").strip("-").strip())
-                key_concepts = []
+            # Parse JSON response. If the model wraps JSON in text/fences, recover
+            # the object; if parsing still fails, use deterministic clean queries.
+            data = _extract_json_object(response.text) or {}
+            domain_terms = [
+                term.strip()
+                for term in domain.split(",")
+                if term.strip() and domain != "general"
+            ]
+            combined_domain = " ".join(domain_terms[:3])
+            raw_queries = (
+                list(data.get("searchQueries", []) or [])
+                + ([combined_domain] if combined_domain else [])
+                + domain_terms
+            )
+            expanded_terms = _clean_query_terms(raw_queries, seed)
+            key_concepts = [
+                str(item).strip()
+                for item in data.get("keyConcepts", [])
+                if isinstance(item, str) and item.strip()
+            ][:10]
+            refined_question = data.get("refinedQuestion", seed)
+            if not isinstance(refined_question, str) or not refined_question.strip():
                 refined_question = seed
-                related_areas = []
-                raw_families = []
-                path_templates = []
+            related_areas = [
+                str(item).strip()
+                for item in data.get("relatedAreas", [])
+                if isinstance(item, str) and item.strip()
+            ]
+            raw_families = data.get("queryFamilies", [])
+            path_templates = [
+                str(item).strip()
+                for item in data.get("pathTemplates", [])
+                if isinstance(item, str) and item.strip()
+            ]
 
             # Build QueryPlan
             query_families = []
             if raw_families:
                 for fam in raw_families:
                     if isinstance(fam, dict):
+                        family_queries = _clean_query_terms(fam.get("queries", []), seed, limit=3)
                         query_families.append(QueryFamily(
                             name=fam.get("name", "core"),
-                            queries=fam.get("queries", []),
+                            queries=family_queries,
                             keyConcepts=fam.get("keyConcepts", []),
                         ))
             else:
@@ -477,7 +614,6 @@ class IdeaGenerationService:
         # Search across sources
         search_service = get_search_service()
         all_results: List[SearchResult] = []
-        sources_used: List[str] = []
 
         for query in search_queries[:3]:
             try:
@@ -524,11 +660,27 @@ class IdeaGenerationService:
             seen_title_hashes.add(title_hash)
 
             unique_results.append(result)
-            if result.source not in sources_used:
-                sources_used.append(result.source)
+
+        unique_results = _rank_results_for_topic(
+            unique_results,
+            seed=seed,
+            domain=session.config.domain or "",
+            search_queries=search_queries,
+        )
+        ranked_count = len(unique_results)
+        unique_results, filtered_out_count = _filter_results_for_topic(unique_results)
+        if ranked_count and not unique_results:
+            logger.warning(
+                "All literature search results were filtered out as low relevance for seed '%s'",
+                seed,
+            )
 
         # Limit results
         unique_results = unique_results[:max_papers]
+        sources_used: List[str] = []
+        for result in unique_results:
+            if result.source not in sources_used:
+                sources_used.append(result.source)
 
         # Create RawPaper objects
         raw_papers: List[RawPaper] = []
@@ -598,6 +750,9 @@ class IdeaGenerationService:
             "rawPaperIds": [p.id for p in raw_papers],
             "graphId": graph.id,
             "sourcesUsed": sources_used,
+            "filteredOutCount": filtered_out_count,
+            "minExternalRelevance": float(os.getenv("FAROS_MIN_EXTERNAL_RELEVANCE", "0.12")),
+            "minLocalRelevance": float(os.getenv("FAROS_MIN_LOCAL_RELEVANCE", "0.28")),
             # Backward-compat fields
             "paperIds": literature_ids,
         }

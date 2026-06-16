@@ -281,8 +281,9 @@ export function IdeaGenerationPanel() {
       const response = await createPlanPackageFromIdeaSession(session.id, {
         candidateId: candidate.id,
         generationMode: 'hybrid',
-        maxStages: 4,
-        maxStepsPerStage: 5,
+        maxStages: 3,
+        maxStepsPerStage: 3,
+        maxRepairRounds: 1,
       })
       setCreatedPackageId(response.packageId)
       loadSessionHistory()

@@ -43,7 +43,7 @@ class PlanPackageConflictError(ValueError):
 
 
 def _extract_json(text: str) -> Optional[Dict[str, Any]]:
-    text = text.strip()
+    text = (text or "").strip().lstrip("\ufeff")
     if "```json" in text:
         text = text.split("```json", 1)[1]
         if "```" in text:
@@ -52,17 +52,78 @@ def _extract_json(text: str) -> Optional[Dict[str, Any]]:
         parts = text.split("```")
         if len(parts) >= 3:
             text = parts[1]
-    text = text.strip()
+    text = text.strip().lstrip("\ufeff")
     try:
-        return json.loads(text)
+        parsed = json.loads(text)
+        return parsed if isinstance(parsed, dict) else None
     except json.JSONDecodeError:
-        match = re.search(r"\{[\s\S]*\}", text)
-        if match:
-            try:
-                return json.loads(match.group())
-            except json.JSONDecodeError:
-                return None
+        pass
+
+    start = text.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    in_string = False
+    escaped = False
+    for index in range(start, len(text)):
+        char = text[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                candidate = text[start:index + 1]
+                try:
+                    parsed = json.loads(candidate)
+                    return parsed if isinstance(parsed, dict) else None
+                except json.JSONDecodeError:
+                    return None
     return None
+
+
+def _topic_terms_from_package(package: PlanPackage) -> List[str]:
+    text = " ".join([
+        str(package.constants.get("seedQuery", "")),
+        str(package.constants.get("domain", "")),
+        package.researchQuestion,
+        package.hypothesis,
+        package.idea.title,
+        package.idea.problem,
+        package.idea.proposedMethod,
+        package.gap.summary,
+        package.principle.summary,
+        package.principle.mechanism,
+    ]).lower().replace("-", " ")
+    if "rag" in text:
+        text = f"{text} retrieval augmented generation"
+    stopwords = {
+        "and", "are", "based", "can", "does", "for", "from", "how", "into",
+        "method", "methods", "model", "models", "paper", "research", "study",
+        "than", "that", "the", "this", "through", "using", "what", "with",
+        "language", "generation", "large", "learning",
+    }
+    terms: List[str] = []
+    for token in re.findall(r"[a-zA-Z][a-zA-Z0-9]{2,}|[\u4e00-\u9fff]{2,}", text):
+        if token in stopwords:
+            continue
+        if token not in terms:
+            terms.append(token)
+    return terms[:24]
+
+
+def _hit_count(text: str, terms: List[str]) -> int:
+    lowered = text.lower().replace("-", " ")
+    return sum(1 for term in terms if term and term.lower() in lowered)
 
 
 def _first_text(raw: Dict[str, Any], keys: List[str], default: str = "") -> str:
@@ -204,12 +265,12 @@ class PlanPackageService:
         *,
         candidate_id: Optional[str] = None,
         plan_session_id: Optional[str] = None,
-        max_stages: int = 4,
-        max_steps_per_stage: int = 5,
+        max_stages: int = 3,
+        max_steps_per_stage: int = 3,
         user_notes: Optional[str] = None,
         use_llm: Optional[bool] = None,
         generation_mode: str = "hybrid",
-        max_repair_rounds: int = 0,
+        max_repair_rounds: int = 1,
     ) -> PlanPackage:
         session = self.idea_session_storage.get(idea_session_id)
         if not session:
@@ -248,6 +309,10 @@ class PlanPackageService:
             max_stages=max_stages,
             max_steps_per_stage=max_steps_per_stage,
         )
+        package.constants.setdefault("seedQuery", session.config.seedQuery)
+        if session.config.domain:
+            package.constants.setdefault("domain", session.config.domain)
+        package.constants.setdefault("paperType", session.config.paperType)
 
         generation_warnings: List[str] = []
         mode = (generation_mode or "hybrid").strip().lower()
@@ -360,41 +425,152 @@ class PlanPackageService:
             max_stages=max_stages,
             max_steps_per_stage=max_steps_per_stage,
         )
-        response = client.chat(
-            messages=[
-                ChatMessage(
-                    role="system",
-                    content=(
-                        "You generate implementation-plan JSON only. Do not invent paper IDs, "
-                        "claim IDs, KG IDs, probe IDs, or graph patch IDs."
-                    ),
+        base_messages = [
+            ChatMessage(
+                role="system",
+                content=(
+                    "You generate implementation-plan JSON only. Do not invent paper IDs, "
+                    "claim IDs, KG IDs, probe IDs, graph patch IDs, datasets, or executed results. "
+                    "The plan must stay semantically faithful to the seed query and selected idea."
                 ),
-                ChatMessage(role="user", content=prompt),
-            ],
-            model=session.config.model,
-            temperature=0.2,
-            max_tokens=8192,
-            response_format={"type": "json_object"},
-        )
-        parsed = _extract_json(response.text)
-        if not parsed:
-            raise ValueError("LLM did not return valid JSON")
+            ),
+            ChatMessage(role="user", content=prompt),
+        ]
 
-        package.generation.llmUsedSections = ["implementationPlan"]
-        package.generation.repairRounds = min(max_repair_rounds, 0)
-        package.generation.fallbackUsed = False
+        last_issues: List[str] = []
+        last_response_text = ""
+        attempts = max(1, max_repair_rounds + 1)
+        for attempt in range(attempts):
+            messages = list(base_messages)
+            if attempt > 0:
+                messages.extend([
+                    ChatMessage(role="assistant", content=last_response_text[:4000]),
+                    ChatMessage(
+                        role="user",
+                        content=self._build_llm_repair_prompt(last_issues),
+                    ),
+                ])
+            response = client.chat(
+                messages=messages,
+                model=session.config.model,
+                temperature=0.2 if attempt == 0 else 0.0,
+                max_tokens=8192,
+                response_format={"type": "json_object"},
+            )
+            last_response_text = response.text or ""
+            parsed = _extract_json(last_response_text)
+            if not parsed:
+                last_issues = ["LLM did not return one complete valid JSON object"]
+                continue
 
+            candidate_package = package.model_copy(deep=True)
+            self._apply_parsed_plan_fields(
+                candidate_package,
+                parsed,
+                max_stages=max_stages,
+                max_steps_per_stage=max_steps_per_stage,
+            )
+            last_issues = self._validate_generated_plan_fields(candidate_package)
+            if last_issues:
+                continue
+
+            self._apply_parsed_plan_fields(
+                package,
+                parsed,
+                max_stages=max_stages,
+                max_steps_per_stage=max_steps_per_stage,
+            )
+            package.generation.llmUsedSections = ["implementationPlan"]
+            package.generation.repairRounds = attempt
+            package.generation.fallbackUsed = False
+            return
+
+        raise ValueError("LLM plan field generation failed validation: " + "; ".join(last_issues))
+
+    def _apply_parsed_plan_fields(
+        self,
+        package: PlanPackage,
+        parsed: Dict[str, Any],
+        *,
+        max_stages: int,
+        max_steps_per_stage: int,
+    ) -> None:
         if isinstance(parsed.get("researchQuestion"), str) and parsed["researchQuestion"].strip():
             package.researchQuestion = parsed["researchQuestion"].strip()
         if isinstance(parsed.get("hypothesis"), str):
             package.hypothesis = parsed["hypothesis"].strip()
         if isinstance(parsed.get("constants"), dict):
-            protected = {"ideaSessionId", "ideaCandidateId", "planStage"}
+            protected = {"ideaSessionId", "ideaCandidateId", "planStage", "seedQuery", "domain", "paperType"}
             for key, value in parsed["constants"].items():
                 if key not in protected:
                     package.constants[key] = value
         if isinstance(parsed.get("stages"), list) and parsed["stages"]:
-            package.stages = self._parse_llm_stages(parsed["stages"], package)
+            package.stages = self._parse_llm_stages(
+                parsed["stages"],
+                package,
+                max_stages=max_stages,
+                max_steps_per_stage=max_steps_per_stage,
+            )
+
+    def _validate_generated_plan_fields(self, package: PlanPackage) -> List[str]:
+        issues: List[str] = []
+        if not package.researchQuestion.strip():
+            issues.append("researchQuestion is empty")
+        if not package.hypothesis.strip():
+            issues.append("hypothesis is empty")
+        if not package.stages:
+            issues.append("stages is empty")
+
+        for stage in package.stages:
+            if not stage.steps:
+                issues.append(f"{stage.id}.steps is empty")
+            for step in stage.steps:
+                if not step.outputs:
+                    issues.append(f"{step.id}.outputs is empty")
+                if not step.expected:
+                    issues.append(f"{step.id}.expected is empty")
+                if "default step inserted" in step.desc.lower():
+                    issues.append(f"{step.id} used default fallback text")
+
+        topic_terms = _topic_terms_from_package(package)
+        if len(topic_terms) >= 4:
+            rq_hits = _hit_count(f"{package.researchQuestion} {package.hypothesis}", topic_terms)
+            if rq_hits < 2:
+                issues.append("researchQuestion/hypothesis drifted away from seed query and selected idea")
+            plan_text = " ".join(
+                chunk
+                for stage in package.stages
+                for chunk in [
+                    stage.title,
+                    stage.goal,
+                    stage.method,
+                    *[
+                        " ".join([
+                            step.title,
+                            step.desc,
+                            step.method,
+                            " ".join(output.name + " " + output.desc for output in step.outputs),
+                            " ".join(expected.metric + " " + expected.target + " " + expected.desc for expected in step.expected),
+                        ])
+                        for step in stage.steps
+                    ],
+                ]
+            )
+            min_hits = max(2, min(4, len(topic_terms) // 4))
+            if _hit_count(plan_text, topic_terms) < min_hits:
+                issues.append("stages/steps drifted away from seed query and selected idea")
+        return issues
+
+    def _build_llm_repair_prompt(self, issues: List[str]) -> str:
+        issue_text = "\n".join(f"- {issue}" for issue in issues[:12]) or "- invalid output"
+        return (
+            "Repair your previous answer.\n"
+            "Problems:\n"
+            f"{issue_text}\n"
+            "Return one complete valid JSON object only, with exactly these top-level keys: "
+            "researchQuestion, hypothesis, constants, stages. "
+            "Keep the same seed topic and selected idea. Do not add markdown or explanation."
+        )
 
     def _build_llm_prompt(
         self,
@@ -411,6 +587,10 @@ class PlanPackageService:
                 "maxStepsPerStage": max_steps_per_stage,
                 "note": "Plan describes intended implementation and validation design only; it must not claim executed results.",
             },
+            "seedQuery": package.constants.get("seedQuery", ""),
+            "domain": package.constants.get("domain", ""),
+            "paperType": package.constants.get("paperType", ""),
+            "topicAnchors": _topic_terms_from_package(package),
             "idea": package.idea.model_dump(),
             "background": package.background.model_dump(),
             "gap": package.gap.model_dump(),
@@ -432,10 +612,13 @@ class PlanPackageService:
         return (
             "Return ONLY valid JSON with keys researchQuestion, hypothesis, constants, stages.\n"
             "Do not return or rewrite background, literatureSurvey, gap, principle, evidenceTrace, sourceFields, or rawIdeaOutputs.\n"
+            "Stay faithful to seedQuery, topicAnchors, selected idea, selected GAP, and principle. Reject generic NLP/LLM plans when the topic is specific.\n"
             "Use only the provided allowedEvidenceIds when adding evidenceRefs.\n"
             "stages[].steps[].outputs[].type must be one of metrics, chart, table, checkpoint, code, report, log.\n"
             "Each stage must contain steps, and each step should include evidenceRefs when possible.\n"
             "These are planned outputs and expected metrics, not executed results.\n"
+            f"Return at most {max_stages} stages and at most {max_steps_per_stage} steps per stage. Prefer fewer, high-signal steps over long experiment checklists.\n"
+            "Do not invent exact benchmark results, exact dataset sizes, or exact training budgets unless they are present in the context.\n"
             "Use this exact shape for every stage and step:\n"
             "{\n"
             '  "researchQuestion": "specific research question",\n'
@@ -521,12 +704,19 @@ class PlanPackageService:
             ]
         return [PlanEvidenceRef(type="candidate", id=package.idea.id, source="idea")]
 
-    def _parse_llm_stages(self, raw_stages: List[Dict[str, Any]], package: PlanPackage) -> List[PlanStage]:
+    def _parse_llm_stages(
+        self,
+        raw_stages: List[Dict[str, Any]],
+        package: PlanPackage,
+        *,
+        max_stages: int,
+        max_steps_per_stage: int,
+    ) -> List[PlanStage]:
         stages: List[PlanStage] = []
-        for stage_index, raw_stage in enumerate(raw_stages[:8], start=1):
+        for stage_index, raw_stage in enumerate(raw_stages[:max_stages], start=1):
             steps: List[PlanStep] = []
             stage_title = _first_text(raw_stage, ["title", "name"], f"Stage {stage_index}")
-            for step_index, raw_step in enumerate((raw_stage.get("steps", []) or [])[:10], start=1):
+            for step_index, raw_step in enumerate((raw_stage.get("steps", []) or [])[:max_steps_per_stage], start=1):
                 if isinstance(raw_step, str):
                     raw_step = {"title": raw_step, "desc": raw_step, "method": raw_step}
                 if not isinstance(raw_step, dict):

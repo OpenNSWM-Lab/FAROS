@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, Iterable, List, Optional
 
 from app.models.idea import (
@@ -71,6 +72,91 @@ def _unique(values: Iterable[Optional[str]]) -> List[str]:
 def _text_join(values: Iterable[str], fallback: str = "") -> str:
     filtered = [v.strip() for v in values if isinstance(v, str) and v.strip()]
     return " ".join(filtered) if filtered else fallback
+
+
+def _safe_text(value: Any) -> str:
+    return value.strip() if isinstance(value, str) and value.strip() else ""
+
+
+def _safe_id(value: Any) -> str:
+    return str(value).strip() if value else ""
+
+
+def _first_text_value(*values: Any) -> str:
+    for value in values:
+        text = _safe_text(value)
+        if text:
+            return text
+    return ""
+
+
+def _sanitize_plan_only_text(text: str) -> str:
+    """Rewrite accidental executed-result wording into plan-stage wording."""
+    if not text:
+        return ""
+    cleaned = text.strip()
+    rewrites = [
+        (
+            r"\bExperiments on ([^.]+?) show that ([^.]+?)\.",
+            r"Planned experiments on \1 should test whether \2.",
+        ),
+        (
+            r"\bExperiments on ([^.]+?) demonstrate that ([^.]+?)\.",
+            r"Planned experiments on \1 should test whether \2.",
+        ),
+        (
+            r"\bResults show that ([^.]+?)\.",
+            r"Planned evaluation should test whether \1.",
+        ),
+        (
+            r"\bWe achieved ([^.]+?)\.",
+            r"Planned evaluation should measure whether the method can achieve \1.",
+        ),
+    ]
+    for pattern, replacement in rewrites:
+        cleaned = re.sub(pattern, replacement, cleaned, flags=re.IGNORECASE)
+    return cleaned
+
+
+def _candidate_hypothesis(candidate: IdeaCandidate) -> str:
+    draft = candidate.draftPlan
+    return _first_text_value(
+        candidate.hypothesisStatement,
+        draft.hypothesis if draft else "",
+        candidate.keyInsight,
+        candidate.problem,
+    )
+
+
+def _candidate_method(candidate: IdeaCandidate, critique: Dict[str, Any]) -> str:
+    draft = candidate.draftPlan
+    method = _first_text_value(
+        candidate.proposedMethod,
+        draft.methodology if draft else "",
+        candidate.keyInsight,
+    )
+    if method:
+        return _sanitize_plan_only_text(method)
+    if isinstance(critique, dict):
+        suggestions = critique.get("suggestions") or critique.get("improvementSuggestions") or []
+        if suggestions:
+            return _sanitize_plan_only_text(str(suggestions[0]).strip())
+    return _sanitize_plan_only_text(candidate.title)
+
+
+def _candidate_expected_outcome(candidate: IdeaCandidate, critique: Dict[str, Any]) -> str:
+    draft = candidate.draftPlan
+    if candidate.expectedOutcome:
+        return _sanitize_plan_only_text(candidate.expectedOutcome)
+    if draft and draft.expectedOutcomes:
+        return _sanitize_plan_only_text("; ".join(str(item) for item in draft.expectedOutcomes if str(item).strip()))
+    if candidate.expectedMetrics:
+        return "Expected to improve or validate: " + ", ".join(candidate.expectedMetrics[:4])
+    if isinstance(critique, dict):
+        strengths = critique.get("strengths") or []
+        if strengths:
+            return _sanitize_plan_only_text(str(strengths[0]).strip())
+    return "Expected outcome should be validated by the planned implementation and evaluation metrics."
 
 
 def _method_dict(method: Any) -> Dict[str, Any]:
@@ -288,8 +374,14 @@ def build_gap(
             )
         )
 
+    summary = items[0].statement
+    if len(summary.split()) < 10 and candidate.problem:
+        summary = f"{summary}. Candidate gap framing: {candidate.problem}"
+    elif candidate.problem and candidate.problem not in summary and len(summary) < 160:
+        summary = f"{summary}. Candidate gap framing: {candidate.problem}"
+
     return PlanGap(
-        summary=items[0].statement,
+        summary=summary,
         items=items,
         selectedGapId=items[0].id,
     )
@@ -306,9 +398,10 @@ def build_principle(
     probe_results: List[LiteratureProbeResult],
     graph_patches: List[GraphPatch],
 ) -> PlanPrinciple:
+    proposed_method = _candidate_method(candidate, critique)
     path_seed_ids = _unique(
         list(graph_evidence.get("supportingPathSeedIds", []))
-        + [candidate.pathSeedId]
+        + [_safe_id(candidate.pathSeedId)]
         + [seed.seedId for seed in path_seeds[:3]]
     ) if isinstance(graph_evidence, dict) else _unique([candidate.pathSeedId])
 
@@ -346,8 +439,8 @@ def build_principle(
         probe_paper_ids.extend(graph_evidence.get("probePaperIds", []))
 
     return PlanPrinciple(
-        summary=candidate.proposedMethod or candidate.keyInsight or candidate.title,
-        mechanism=candidate.proposedMethod or candidate.keyInsight,
+        summary=proposed_method,
+        mechanism=proposed_method,
         noveltyClaim=novelty_claim,
         assumptions=_unique(assumptions),
         risks=_unique(risks),
@@ -356,7 +449,7 @@ def build_principle(
             entityIds=_unique(entity_ids),
             relationIds=_unique(relation_ids),
             pathSeedIds=path_seed_ids,
-            searchNodeIds=_unique([candidate.searchNodeId]),
+            searchNodeIds=_unique([_safe_id(candidate.searchNodeId)]),
         ),
         probeGrounding=PlanProbeGrounding(
             probeResultIds=[result.id for result in probe_results],
@@ -402,8 +495,26 @@ def build_background(
         "",
     )
 
+    summary = map_summary or cluster_summary or literature_survey.summary
+    thin_summary = len(summary.split()) < 10 or summary.lower().startswith("cluster:")
+    if thin_summary:
+        paper_bits = []
+        for paper in literature_survey.papers[:3]:
+            paper_summary = paper.summary.strip()
+            if paper_summary:
+                paper_bits.append(f"{paper.title}: {paper_summary[:220]}")
+            else:
+                paper_bits.append(paper.title)
+        evidence_context = " ".join(paper_bits)
+        summary = (
+            f"The selected idea is grounded in {len(literature_survey.papers)} investigated papers "
+            f"covering graph-based multi-hop RAG, evidence path retrieval, and answer verification. "
+            f"{evidence_context} "
+            f"The plan is motivated by: {candidate.problem}"
+        ).strip()
+
     return PlanBackground(
-        summary=map_summary or cluster_summary or literature_survey.summary,
+        summary=summary,
         motivation=candidate.problem,
         currentLimitations=_unique(limitations),
         domainContext=_unique(domain_context),
@@ -430,10 +541,10 @@ def build_evidence_trace(
     selected_ids = literature_map.selectedPaperIds if literature_map else [sp.rawPaperId for sp in structured_papers]
     return PlanEvidenceTrace(
         ideaCandidateId=candidate.id,
-        searchNodeId=candidate.searchNodeId,
-        pathSeedId=candidate.pathSeedId,
-        reasoningKgId=reasoning_kg.id if reasoning_kg else None,
-        literatureMapId=literature_map.id if literature_map else None,
+        searchNodeId=_safe_id(candidate.searchNodeId),
+        pathSeedId=_safe_id(candidate.pathSeedId),
+        reasoningKgId=reasoning_kg.id if reasoning_kg else "",
+        literatureMapId=literature_map.id if literature_map else "",
         selectedPaperIds=_unique(selected_ids),
         structuredPaperIds=[sp.id for sp in structured_papers],
         probeResultIds=[result.id for result in probe_results],
@@ -450,8 +561,8 @@ def build_default_stages(
     literature_survey: PlanLiteratureSurvey,
     gap: PlanGap,
     principle: PlanPrinciple,
-    max_stages: int = 4,
-    max_steps_per_stage: int = 5,
+    max_stages: int = 3,
+    max_steps_per_stage: int = 3,
 ) -> List[PlanStage]:
     metrics = candidate.expectedMetrics or []
     if not metrics:
@@ -680,24 +791,24 @@ def build_raw_idea_outputs(
             "id": candidate.id,
             "title": candidate.title,
             "problem": candidate.problem,
-            "hypothesisStatement": candidate.hypothesisStatement,
+            "hypothesisStatement": _candidate_hypothesis(candidate),
             "keyInsight": candidate.keyInsight,
-            "proposedMethod": candidate.proposedMethod,
-            "expectedOutcome": candidate.expectedOutcome,
-            "searchNodeId": candidate.searchNodeId,
-            "pathSeedId": candidate.pathSeedId,
-            "reasoningPathId": candidate.reasoningPathId,
+            "proposedMethod": _candidate_method(candidate, critique),
+            "expectedOutcome": _candidate_expected_outcome(candidate, critique),
+            "searchNodeId": _safe_id(candidate.searchNodeId),
+            "pathSeedId": _safe_id(candidate.pathSeedId),
+            "reasoningPathId": _safe_id(candidate.reasoningPathId),
             "expectedMetrics": candidate.expectedMetrics,
         },
         "candidateGraphEvidence": graph_evidence,
         "rankedOutput": {
-            "id": ranked_output.id if ranked_output else None,
-            "topCandidateId": ranked_output.topCandidateId if ranked_output else None,
+            "id": ranked_output.id if ranked_output else "",
+            "topCandidateId": ranked_output.topCandidateId if ranked_output else "",
             "priorWorkComparisons": prior_work,
             "critique": critique,
         },
         "literatureMap": {
-            "id": literature_map.id if literature_map else None,
+            "id": literature_map.id if literature_map else "",
             "selectedPaperIds": literature_map.selectedPaperIds if literature_map else [],
             "gaps": [gap.model_dump() for gap in literature_map.gaps] if literature_map else [],
             "frontiers": [frontier.model_dump() for frontier in literature_map.frontiers] if literature_map else [],
@@ -705,7 +816,7 @@ def build_raw_idea_outputs(
             "selectionReport": literature_map.selectionReport if literature_map else {},
         },
         "reasoningKg": {
-            "id": reasoning_kg.id if reasoning_kg else None,
+            "id": reasoning_kg.id if reasoning_kg else "",
             "entityIds": [entity.entityId for entity in reasoning_kg.entities] if reasoning_kg else [],
             "relationIds": [relation.relationId for relation in reasoning_kg.relations] if reasoning_kg else [],
         },
@@ -741,8 +852,8 @@ def build_plan_package(
     handoff: Optional[BFTSHandoff],
     plan_session_id: Optional[str] = None,
     user_notes: Optional[str] = None,
-    max_stages: int = 4,
-    max_steps_per_stage: int = 5,
+    max_stages: int = 3,
+    max_steps_per_stage: int = 3,
 ) -> PlanPackage:
     graph_evidence = _graph_evidence(candidate, ranked_output)
     prior_work = _candidate_prior_work(candidate, ranked_output)
@@ -796,7 +907,9 @@ def build_plan_package(
     research_question = research_question or (
         f"How can {candidate.title} address: {candidate.problem}?"
     )
-    hypothesis = hypothesis or candidate.hypothesisStatement or candidate.keyInsight
+    hypothesis = hypothesis or _candidate_hypothesis(candidate)
+    proposed_method = _candidate_method(candidate, critique)
+    expected_outcome = _candidate_expected_outcome(candidate, critique)
 
     constants: Dict[str, Any] = {
         "ideaSessionId": idea_session_id,
@@ -817,15 +930,16 @@ def build_plan_package(
 
     source = PlanSource(
         ideaSessionId=idea_session_id,
-        planSessionId=plan_session_id,
+        planSessionId=plan_session_id or "",
         ideaCandidateId=candidate.id,
-        rankedOutputId=ranked_output.id if ranked_output else None,
-        searchTreeId=search_tree.id if search_tree else None,
-        searchNodeId=candidate.searchNodeId,
-        pathSeedId=candidate.pathSeedId,
-        reasoningKgId=reasoning_kg.id if reasoning_kg else None,
-        literatureMapId=literature_map.id if literature_map else None,
-        bftsHandoffId=handoff.id if handoff else None,
+        rankedOutputId=ranked_output.id if ranked_output else "",
+        searchTreeId=search_tree.id if search_tree else "",
+        searchNodeId=_safe_id(candidate.searchNodeId),
+        pathSeedId=_safe_id(candidate.pathSeedId),
+        reasoningKgId=reasoning_kg.id if reasoning_kg else "",
+        literatureMapId=literature_map.id if literature_map else "",
+        bftsHandoffId=handoff.id if handoff else "",
+        selectedResearchPlanId="",
     )
 
     critique_summary = ""
@@ -839,10 +953,10 @@ def build_plan_package(
             id=candidate.id,
             title=candidate.title,
             problem=candidate.problem,
-            hypothesisStatement=candidate.hypothesisStatement,
+            hypothesisStatement=hypothesis,
             keyInsight=candidate.keyInsight,
-            proposedMethod=candidate.proposedMethod,
-            expectedOutcome=candidate.expectedOutcome,
+            proposedMethod=proposed_method,
+            expectedOutcome=expected_outcome,
             scores=candidate.scores.model_dump(),
             critiqueSummary=critique_summary,
             closestPriorWork=prior_work,
