@@ -407,6 +407,18 @@ class CompileCheckSkill(BaseSkill):
                         if any("def " in c or "class " in c for c in ctx):
                             issues.append({"file": path, "line": i, "severity": "warning", "message": "Function/class body is just 'pass' (stub)"})
                             score -= 1
+                    # Detect explicit placeholder markers in comments. This catches
+                    # `TODO: implement ...`, `FIXME: ...`, `XXX`, `HACK: ...`
+                    # comments that signal unfinished work — these are easy to
+                    # miss in a glance-through and slow down downstream codegen.
+                    if (stripped.startswith("#")
+                            and any(marker in stripped for marker in ("TODO:", "FIXME:", "XXX", "HACK:"))):
+                        issues.append({
+                            "file": path,
+                            "line": i,
+                            "severity": "info",
+                            "message": f"Comment marks unfinished work: {stripped[:80]}",
+                        })
         else:
             if "package.json" not in paths:
                 issues.append({"file": "package.json", "severity": "warning", "message": "Missing package.json"})
