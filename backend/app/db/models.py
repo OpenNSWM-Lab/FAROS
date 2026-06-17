@@ -99,7 +99,8 @@ class CodeCandidateCreate(SQLModel):
 
 class CodeJobCreate(SQLModel):
     """Create schema for CodeJob."""
-    session_id: str
+    session_id: Optional[str] = None  # optional: now supports project-based jobs
+    project_id: Optional[str] = None  # NEW: bind to CodeProjectV2
     candidate_id: Optional[str] = None
     mode: str = "quick"  # quick or debug
     command: str
@@ -251,11 +252,12 @@ class CodeCandidateDB(SQLModel, table=True):
 
 
 class CodeJob(SQLModel, table=True):
-    """Execution job."""
+    """Execution job — supports both legacy CodeSession and new CodeProjectV2."""
     __tablename__ = "code_jobs"
-    
+
     id: str = Field(primary_key=True)
-    session_id: str = Field(foreign_key="code_sessions.id", index=True)
+    session_id: Optional[str] = Field(default=None, foreign_key="code_sessions.id", index=True)
+    project_id: Optional[str] = Field(default=None, foreign_key="code_projects_v2.id", index=True)
     candidate_id: Optional[str] = Field(default=None, foreign_key="code_candidates.id", index=True)
     status: JobStatus = Field(default=JobStatus.PENDING)
     mode: str = "quick"  # quick or debug
@@ -263,21 +265,22 @@ class CodeJob(SQLModel, table=True):
     env_vars: Optional[str] = None  # JSON
     cwd_rel: Optional[str] = None
     timeout_sec: int = 300
-    
+
     # Execution details
     workspace_path: Optional[str] = None
     pid: Optional[int] = None
     exit_code: Optional[int] = None
     stdout_path: Optional[str] = None
     stderr_path: Optional[str] = None
-    
+
     created_at: datetime = Field(default_factory=datetime.utcnow)
     started_at: Optional[datetime] = None
     ended_at: Optional[datetime] = None
     duration_sec: Optional[int] = None
-    
+
     # Relationships
     session: Optional[CodeSessionDB] = Relationship(back_populates="jobs")
+    project_v2: Optional["CodeProjectV2"] = Relationship()
     candidate: Optional[CodeCandidateDB] = Relationship(back_populates="jobs")
     eval_report: Optional["EvalReportDB"] = Relationship(back_populates="job")
     trace_logs: List["TraceLogDB"] = Relationship(back_populates="job")
@@ -474,3 +477,51 @@ class CodeProjectExport(SQLModel, table=True):
 
     # Relationships
     project: Optional[CodeProjectV2] = Relationship(back_populates="exports")
+
+
+# ============ Autonomous Code Agent Models ============
+
+class AgentRunStatus(str, enum.Enum):
+    """Status of an autonomous agent run."""
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    MAX_ITERATIONS = "max_iterations"
+    ERROR = "error"
+
+
+class AgentRunCreate(SQLModel):
+    """Create schema for AgentRunDB."""
+    project_id: str
+    goal: Optional[str] = None
+    language: str = "python"
+    command: Optional[str] = None
+    backend: Optional[str] = None
+    max_iterations: int = 3
+    execution_timeout: int = 300
+    provider_name: Optional[str] = None
+    model: Optional[str] = None
+
+
+class AgentRunDB(SQLModel, table=True):
+    """Persistent record of an autonomous agent execution run."""
+    __tablename__ = "code_agent_runs"
+
+    id: str = Field(primary_key=True)
+    project_id: str = Field(foreign_key="code_projects_v2.id", index=True)
+    goal: Optional[str] = Field(default=None, sa_column=Column(Text))
+    language: str = "python"
+    command: Optional[str] = None
+    backend: Optional[str] = None
+    status: str = Field(default="running")
+    iterations: int = 0
+    repairs_applied: int = 0
+    trace_path: Optional[str] = None
+    events_json: Optional[str] = Field(default=None, sa_column=Column(Text))
+    summary: Optional[str] = Field(default=None, sa_column=Column(Text))
+    error: Optional[str] = Field(default=None, sa_column=Column(Text))
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    completed_at: Optional[datetime] = None
+
+    # Relationship
+    project: Optional[CodeProjectV2] = Relationship()

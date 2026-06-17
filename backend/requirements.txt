@@ -9,3 +9,4 @@ litellm==1.82.0
 matplotlib
 fpdf
 httpx<0.28
+docker>=7.0.0

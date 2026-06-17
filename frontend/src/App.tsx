@@ -91,8 +91,9 @@ function App() {
               <Route path="/system/logs" element={<SystemLogs />} />
               <Route path="/system/metrics" element={<SystemMetrics />} />
 
-              {/* Code Generation */}
-              <Route path="/code" element={<CodeProjectWorkspace />} />
+              {/* Code Generation & Projects */}
+              <Route path="/code" element={<Navigate to="/code/projects" replace />} />
+              <Route path="/code/workspace" element={<CodeProjectWorkspace />} />
               <Route path="/code/blueprint" element={<CodeBlueprint />} />
               <Route path="/code/blueprint/step/:stepId" element={<CodeStepDetail />} />
               <Route path="/code/projects" element={<CodeProjects />} />

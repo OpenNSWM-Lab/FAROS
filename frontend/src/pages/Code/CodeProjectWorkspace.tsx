@@ -9,19 +9,18 @@
  */
 
 import { useState, useEffect, useCallback } from 'react'
-import { useSearchParams, useNavigate } from 'react-router-dom'
+import { useSearchParams, useNavigate, useLocation } from 'react-router-dom'
 import { AppPageLayout } from '@/components/layout/AppPageLayout'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { cn } from '@/lib/utils'
 import {
   Code2, Loader2, CheckCircle2, XCircle, Clock, Play,
   FileText, FolderTree, Download,
   AlertTriangle, Sparkles,
-  SkipForward, Wrench, Eye, GitBranch,
+  SkipForward, Wrench, GitBranch, FolderOpen, FlaskConical, Eye,
 } from 'lucide-react'
-import { BlueprintGraph } from '@/components/code/BlueprintGraph'
-import { mockBlueprint } from './blueprintMockData'
 const API_BASE = import.meta.env.VITE_API_BASE_URL || ''
 
 interface PlanContextSession {
@@ -102,6 +101,7 @@ interface TreeEntry {
 export function CodeProjectWorkspace() {
   const [searchParams] = useSearchParams()
   const navigate = useNavigate()
+  const location = useLocation()
   const linkId = searchParams.get('linkId')
 
   // Plan context
@@ -560,7 +560,32 @@ export function CodeProjectWorkspace() {
       iconColor="violet"
       accentColor="violet"
     >
-      {/* Tab bar — always visible at top */}
+      {/* Unified Code sub-navigation — shared across all Code pages */}
+      <div className="flex items-center gap-1 mb-4 border-b pb-2">
+        {[
+          { label: 'Projects', href: '/code/projects', icon: FolderOpen },
+          { label: 'Workspace', href: '/code/workspace', icon: FlaskConical },
+          { label: 'Blueprint', href: '/code/blueprint', icon: GitBranch },
+        ].map((tab) => (
+          <Button
+            key={tab.href}
+            variant={location.pathname === tab.href ? 'default' : 'ghost'}
+            size="sm"
+            onClick={() => navigate(tab.href)}
+            className={cn(
+              'text-sm',
+              location.pathname === tab.href
+                ? 'bg-violet-600 text-white hover:bg-violet-700'
+                : 'text-muted-foreground hover:text-foreground'
+            )}
+          >
+            <tab.icon className="h-4 w-4 mr-1.5" />
+            {tab.label}
+          </Button>
+        ))}
+      </div>
+
+      {/* Workspace internal tabs — Plan Context / Generation */}
       <div className="flex border-b mb-4">
         <button
           className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'plan' ? 'border-teal-500 text-teal-700' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
@@ -575,31 +600,9 @@ export function CodeProjectWorkspace() {
           <Wrench className="h-4 w-4 inline mr-1" />Generation
           {codeGenSession?.status === 'running' && <Loader2 className="h-3 w-3 inline ml-1 animate-spin" />}
         </button>
-        <button
-          className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'blueprint' ? 'border-emerald-500 text-emerald-700' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
-          onClick={() => setActiveTab('blueprint')}
-        >
-          <GitBranch className="h-4 w-4 inline mr-1" />Blueprint
-        </button>
       </div>
 
-      {activeTab === 'blueprint' ? (
-        <div className="relative border rounded-xl overflow-hidden bg-white" style={{ height: 'calc(100vh - 240px)' }}>
-          <div className="absolute top-3 left-3 z-10 bg-white/90 backdrop-blur rounded-lg border px-3 py-2 text-xs flex items-center gap-3">
-            <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-full bg-emerald-500" /> 已完成</span>
-            <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-full bg-blue-500 animate-pulse" /> 进行中</span>
-            <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-full bg-red-500" /> 失败</span>
-            <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-full bg-slate-300" /> 待执行</span>
-            <span className="border-l pl-3 text-muted-foreground">滚轮缩放 · 拖拽平移 · 悬停查看 · 点击详情</span>
-          </div>
-          <BlueprintGraph
-            blueprint={mockBlueprint}
-            height="100%"
-            onNodeClick={(nodeId) => navigate(`/code/blueprint/step/${nodeId}?packageId=${mockBlueprint.id}`)}
-          />
-        </div>
-      ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           {/* LEFT: Project Tree + File Viewer */}
           <div className="lg:col-span-2 space-y-4">
             {projectId && renderFileTree()}
@@ -651,7 +654,6 @@ export function CodeProjectWorkspace() {
             )}
           </div>
         </div>
-      )}
     </AppPageLayout>
   )
 }

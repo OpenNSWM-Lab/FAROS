@@ -18,7 +18,7 @@ const navigation = [
   { name: 'Dashboard', href: '/', icon: LayoutDashboard },
   { name: 'Ideas', href: '/research/ideas', icon: Lightbulb },
   { name: 'Plan', href: '/research/planning', icon: FlaskConical },
-  { name: 'Code', href: '/code', icon: Code2 },
+  { name: 'Code', href: '/code/projects', icon: Code2 },
   { name: 'Runs', href: '/runs', icon: PlayCircle },
   { name: 'Experiments', href: '/experiments', icon: BarChart3 },
   { name: 'Papers', href: '/papers', icon: FileEdit },
