@@ -289,7 +289,7 @@ class RankingService:
         except json.JSONDecodeError:
             # Try to find JSON object in text
             import re
-            match = re.search(r'\{[^{}]*\}', response_text, re.DOTALL)
+            match = re.search(r'\{[\s\S]*\}', response_text)
             if match:
                 try:
                     data = json.loads(match.group())
