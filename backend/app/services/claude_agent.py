@@ -146,7 +146,12 @@ class ClaudeCodeAgent:
         Yields:
             ClaudeStreamEvent objects.
         """
-        claude_bin = shutil.which("claude")
+        # Try shutil first, then hardcoded paths (uvicorn PATH may not include npm)
+        npm_claude = os.path.expandvars(r"%APPDATA%\npm\claude.cmd")
+        if os.path.isfile(npm_claude):
+            claude_bin = npm_claude
+        else:
+            claude_bin = shutil.which("claude")
         if not claude_bin:
             yield ClaudeStreamEvent(
                 event_type="error",
@@ -167,33 +172,41 @@ class ClaudeCodeAgent:
         # Use default system prompt if none provided
         sp = system_prompt or RESEARCH_TEMPLATES["run_experiment"]
 
-        # Build command
+        # Build concise prompt — combine task description into single -p argument
+        concise_prompt = prompt.replace('\n', ' ').replace('\r', '')[:2000]
+
         cmd = [
             claude_bin,
-            "-p", prompt,
+            "-p", concise_prompt,
             "--print",
             "--output-format", "stream-json",
+            "--verbose",
             "--model", self.model,
             "--allowedTools", self.allowed_tools,
             "--add-dir", workspace,
             "--max-budget-usd", str(self.max_budget),
-            "--system-prompt", sp,
-            "--bare",
-            "--allow-dangerously-skip-permissions",  # No permission prompts in automated mode
+            "--permission-mode", "bypassPermissions",
         ]
         if session_id:
             cmd.extend(["--resume", session_id])
 
-        logger.info("Claude stream start: workspace=%s model=%s", workspace, self.model)
+        logger.info("Claude stream start: workspace=%s model=%s prompt=%s...",
+                    workspace, self.model, concise_prompt[:100])
 
         proc = None
         try:
+            # Ensure npm global bin is in PATH for Claude CLI
+            proc_env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+            npm_bin = os.path.dirname(claude_bin)
+            if npm_bin and npm_bin not in proc_env.get("PATH", ""):
+                proc_env["PATH"] = npm_bin + os.pathsep + proc_env.get("PATH", "")
+
             proc = _sp.Popen(
                 cmd,
                 stdout=_sp.PIPE,
                 stderr=_sp.PIPE,
                 cwd=workspace,
-                env={**os.environ, "PYTHONUNBUFFERED": "1"},
+                env=proc_env,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
@@ -242,9 +255,16 @@ class ClaudeCodeAgent:
                 if event:
                     yield event
 
-            # Process done
+            # Process done - capture stderr for diagnostics
             proc.wait(timeout=10)
             exit_code = proc.returncode or -1
+            stderr_output = proc.stderr.read() if proc.stderr else ""
+            if stderr_output:
+                logger.warning("Claude stderr: %s", stderr_output[:500])
+                yield ClaudeStreamEvent(
+                    event_type="error",
+                    content=f"Claude stderr: {stderr_output[:500]}",
+                )
 
             if exit_code == 0:
                 yield ClaudeStreamEvent(

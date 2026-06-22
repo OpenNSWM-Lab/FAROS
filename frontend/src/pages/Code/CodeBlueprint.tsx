@@ -5,7 +5,7 @@
  * renders the DAG via BlueprintGraph with real data.
  */
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { AppPageLayout } from '@/components/layout/AppPageLayout'
 import { Badge } from '@/components/ui/badge'
@@ -13,7 +13,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { cn } from '@/lib/utils'
 import {
-  GitBranch, CheckCircle2, XCircle, Loader2, Circle,
+  GitBranch, CheckCircle2, XCircle, Loader2, Circle, RefreshCw,
   FolderOpen, FlaskConical, AlertTriangle, ExternalLink,
 } from 'lucide-react'
 import { BlueprintGraph } from '@/components/code/BlueprintGraph'
@@ -45,26 +45,26 @@ export function CodeBlueprint() {
     listProjects({ limit: 100 }).then(resp => setProjects(resp.projects)).catch(() => {})
   }, [])
 
-  // Load selected project and blueprint
-  useEffect(() => {
+  // Load/refresh blueprint
+  const loadBlueprint = useCallback(() => {
     if (!projectId) return
     setLoading(true)
     setError(null)
-    getProject(projectId)
-      .then(p => setSelectedProject(p))
-      .catch(() => setSelectedProject(null))
-
     getProjectBlueprint(projectId)
       .then(bp => {
         setBlueprint(bp)
-        // Also load sessions
-        listProjectBlueprints(projectId)
-          .then(s => setSessions(s))
-          .catch(() => setSessions([]))
+        listProjectBlueprints(projectId).then(s => setSessions(s)).catch(() => {})
       })
       .catch(err => setError(err.message))
       .finally(() => setLoading(false))
   }, [projectId])
+
+  // Load selected project and blueprint
+  useEffect(() => {
+    if (!projectId) { setBlueprint(null); return }
+    loadBlueprint()
+    getProject(projectId).then(p => setSelectedProject(p)).catch(() => {})
+  }, [projectId, loadBlueprint])
 
   // Count node statuses
   const counts = blueprint ? {
@@ -154,6 +154,12 @@ export function CodeBlueprint() {
             Source: {blueprint.source === 'plan_package' ? 'Idea Plan' : blueprint.source === 'project_structure' ? 'Project Structure' : blueprint.source}
           </Badge>
         )}
+
+        {/* Refresh */}
+        <Button variant="ghost" size="sm" onClick={loadBlueprint} disabled={loading}>
+          <RefreshCw className={`h-3.5 w-3.5 mr-1 ${loading ? 'animate-spin' : ''}`} />
+          Refresh
+        </Button>
       </div>
 
       {/* Status badges */}

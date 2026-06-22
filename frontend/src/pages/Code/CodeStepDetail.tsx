@@ -15,6 +15,7 @@ import { cn } from '@/lib/utils'
 import {
   ArrowLeft, CheckCircle2, XCircle, Loader2, Circle,
   GitBranch, FileText, BarChart3, Terminal, FolderOpen, FlaskConical, AlertTriangle,
+  FileImage, FileCode, Eye, Download,
 } from 'lucide-react'
 import {
   getProjectBlueprint, BlueprintResponse,
@@ -66,6 +67,9 @@ export function CodeStepDetail() {
   const projectId = searchParams.get('projectId') || ''
 
   const [activeTab, setActiveTab] = useState('overview')
+  const [previewFile, setPreviewFile] = useState<string | null>(null)
+  const [previewContent, setPreviewContent] = useState<string | null>(null)
+  const [previewLoading, setPreviewLoading] = useState(false)
   const [blueprint, setBlueprint] = useState<BlueprintResponse | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -197,6 +201,9 @@ export function CodeStepDetail() {
           <TabsTrigger value="logs" className="flex items-center gap-1.5">
             <Terminal className="h-3.5 w-3.5" /> Logs
           </TabsTrigger>
+          <TabsTrigger value="artifacts" className="flex items-center gap-1.5">
+            <FolderOpen className="h-3.5 w-3.5" /> Artifacts
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="overview" className="space-y-4">
@@ -251,6 +258,89 @@ export function CodeStepDetail() {
           ) : (
             <div className="text-center py-12 text-sm text-muted-foreground">
               No logs yet — execution logs will appear here after the experiment runs.
+            </div>
+          )}
+        </TabsContent>
+
+        <TabsContent value="artifacts">
+          {result && typeof result === 'object' && 'artifacts' in result && Array.isArray((result as Record<string,unknown>).artifacts) && ((result as Record<string,unknown>).artifacts as string[]).length > 0 ? (
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+              <div className="lg:col-span-1">
+                <SectionCard title={`Files (${((result as Record<string,unknown>).artifacts as string[]).length})`} icon={FolderOpen}>
+                  <div className="divide-y max-h-80 overflow-auto">
+                    {((result as Record<string,unknown>).artifacts as string[]).map((fname: string) => {
+                      const isImage = /\.(png|jpg|jpeg|gif|svg|bmp|webp)$/i.test(fname)
+                      const isCode = /\.(py|js|ts|json|yml|yaml|txt|md|csv)$/i.test(fname)
+                      return (
+                        <button
+                          key={fname}
+                          className="w-full text-left px-3 py-2 hover:bg-muted/50 flex items-center gap-2 text-sm"
+                          onClick={() => {
+                            setPreviewFile(fname)
+                            setPreviewContent(null)
+                            const isImage = /\.(png|jpg|jpeg|gif|svg|bmp|webp)$/i.test(fname)
+                            const isBinary = /\.(pkl|pickle|pyc)$/i.test(fname)
+                            if (!isImage && !isBinary) {
+                              setPreviewLoading(true)
+                              fetch(`/api/v1/code/blueprints/artifacts/${node.id}/${fname}`)
+                                .then(r => r.text())
+                                .then(t => setPreviewContent(t))
+                                .catch(() => setPreviewContent('Failed to load'))
+                                .finally(() => setPreviewLoading(false))
+                            }
+                          }}
+                        >
+                          {isImage ? <FileImage className="h-4 w-4 text-purple-500" /> :
+                           isCode ? <FileCode className="h-4 w-4 text-blue-500" /> :
+                           <FileText className="h-4 w-4 text-slate-400" />}
+                          <span className="truncate flex-1 font-mono text-xs">{fname}</span>
+                          <Eye className="h-3 w-3 text-muted-foreground" />
+                        </button>
+                      )
+                    })}
+                  </div>
+                </SectionCard>
+              </div>
+              <div className="lg:col-span-2">
+                {previewFile ? (
+                  <SectionCard title={previewFile} icon={Eye}>
+                    <div className="flex items-center justify-end mb-2">
+                      <a href={`/api/v1/code/blueprints/artifacts/${node.id}/${previewFile}?download=true`}
+                         className="text-xs text-muted-foreground hover:text-blue-600 flex items-center gap-1"
+                         download>
+                        <Download className="h-3 w-3" /> Download
+                      </a>
+                    </div>
+                    {/\.(png|jpg|jpeg|gif|svg|bmp|webp)$/i.test(previewFile) ? (
+                      <img
+                        src={`/api/v1/code/blueprints/artifacts/${node.id}/${previewFile}`}
+                        alt={previewFile}
+                        className="max-w-full rounded border"
+                        onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
+                      />
+                    ) : /\.(pkl|pickle|pyc)$/i.test(previewFile) ? (
+                      <div className="text-center py-8 text-sm text-muted-foreground">
+                        Binary file — cannot preview
+                      </div>
+                    ) : previewLoading ? (
+                      <div className="text-center py-8"><Loader2 className="h-6 w-6 animate-spin mx-auto" /></div>
+                    ) : (
+                      <pre className="bg-slate-900 text-green-400 text-xs font-mono p-3 rounded-md max-h-96 overflow-auto whitespace-pre-wrap">
+                        {previewContent || 'Loading...'}
+                      </pre>
+                    )}
+                  </SectionCard>
+                ) : (
+                  <div className="text-center py-12 text-sm text-muted-foreground border rounded-lg">
+                    <FolderOpen className="h-8 w-8 mx-auto mb-2 text-muted-foreground/50" />
+                    Select a file from the list to preview
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="text-center py-12 text-sm text-muted-foreground">
+              No artifacts generated yet — run the experiment to see output files.
             </div>
           )}
         </TabsContent>

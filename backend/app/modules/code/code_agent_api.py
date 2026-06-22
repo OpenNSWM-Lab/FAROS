@@ -276,6 +276,66 @@ async def claude_stream(request: ClaudeStreamRequest):
     )
 
 
+class CartRunRequest(BaseModel):
+    """Request to start a Cart pipeline run."""
+    projectId: str = Field(..., description="Code project ID")
+    packageId: str = Field("demo_ppkg_math", description="PlanPackage ID (or path to ppkg JSON)")
+    timeout: int = Field(900, ge=60, le=3600)
+
+
+@router.post("/cart/run")
+async def cart_stream(request: CartRunRequest):
+    """Run a full Cart pipeline on a PlanPackage, streaming progress via SSE.
+
+    Loads the PlanPackage, topologically sorts the DAG, and executes
+    each node via Claude Code agent. Returns SSE events for real-time
+    frontend monitoring.
+    """
+    import os as _os
+    from fastapi.responses import StreamingResponse
+
+    repo_dir = _resolve_repo_dir_by_id(request.projectId)
+    if not repo_dir:
+        raise HTTPException(status_code=400, detail=f"No repo found for project {request.projectId}")
+
+    # Load PlanPackage
+    ppkg_path = request.packageId
+    if not _os.path.isabs(ppkg_path):
+        from app.db.engine import _DATA_DIR
+        ppkg_dir = _os.path.join(_DATA_DIR, "plan_packages")
+        candidates = [
+            _os.path.join(ppkg_dir, f"{request.packageId}.json"),
+            _os.path.join(ppkg_dir, "demo_ppkg_math.json"),
+        ]
+        ppkg_path = None
+        for c in candidates:
+            if _os.path.isfile(c):
+                ppkg_path = c
+                break
+        if not ppkg_path:
+            raise HTTPException(status_code=404, detail=f"PlanPackage not found: {request.packageId}")
+
+    with open(ppkg_path, "r", encoding="utf-8") as f:
+        ppkg = json.load(f)
+
+    from app.services.cart_runner import CartRunner
+    runner = CartRunner()
+
+    async def event_stream():
+        async for event in runner.run(ppkg):
+            yield event.to_sse()
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 @router.get("/runs/{run_id}", response_model=AgentRunDetail)
 async def get_agent_run(
     run_id: str,

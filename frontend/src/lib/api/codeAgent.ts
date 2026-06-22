@@ -190,6 +190,70 @@ export interface ClaudeStreamEvent {
   timestamp: string;
 }
 
+// ---- Cart Pipeline Runner ----
+
+export interface CartRunRequest {
+  projectId: string;
+  packageId?: string;
+  timeout?: number;
+}
+
+export interface CartProgressEvent {
+  event_type: string;  // "cart_start" | "node_start" | "node_complete" | "cart_complete"
+  node_id: string;
+  status: string;      // "running" | "succeeded" | "failed" | "skipped" | "partial"
+  message: string;
+  result?: Record<string, unknown>;
+  timestamp: string;
+}
+
+/** Stream Cart pipeline execution via SSE. Returns AbortController for cancellation. */
+export function streamCartRun(
+  request: CartRunRequest,
+  onEvent: (event: CartProgressEvent) => void,
+  onDone: (error?: string) => void,
+): AbortController {
+  const controller = new AbortController();
+  fetch(`${API_BASE}/api/v1/code/agent/cart/run`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+    signal: controller.signal,
+  })
+    .then(async (response) => {
+      if (!response.ok) {
+        const text = await response.text().catch(() => 'Unknown');
+        onDone(`API error ${response.status}: ${text}`);
+        return;
+      }
+      const reader = response.body?.getReader();
+      if (!reader) { onDone('No response body'); return; }
+      const decoder = new TextDecoder();
+      let buffer = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            try {
+              const event: CartProgressEvent = JSON.parse(line.slice(6));
+              onEvent(event);
+              if (event.event_type === 'cart_complete') { onDone(); return; }
+            } catch { /* skip */ }
+          }
+        }
+      }
+      onDone();
+    })
+    .catch((err) => {
+      onDone(err.name === 'AbortError' ? 'Cancelled' : err.message);
+    });
+  return controller;
+}
+
 /** Stream Claude Code execution via SSE. Returns an AbortController for cancellation. */
 export function streamClaudeAgent(
   request: ClaudeStreamRequest,

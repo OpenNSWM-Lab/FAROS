@@ -14,18 +14,17 @@ import {
   Search, ExternalLink, Copy, Loader2, AlertTriangle,
   ChevronRight, FolderClosed, Archive, Play, Square, Terminal,
   CheckCircle2, XCircle, Clock, RefreshCw, ChevronDown, ChevronUp,
-  SkipForward, Circle, Trash2, Wand2, Bot, Brain, GitBranch
+  SkipForward, Circle, Trash2, Brain, GitBranch
 } from 'lucide-react'
 import {
   getProject, getTree, getFileContent, searchProject,
   exportProject, getVSCodeLink, getFileDownloadUrl, getExportDownloadUrl,
-  runProjectPipeline, getPipelineResults, deleteJob, autoFixProject,
+  runProjectPipeline, getPipelineResults, deleteJob,
   CodeProjectV2, TreeEntry, SearchResult, PipelineStepResult,
 } from '@/lib/api/codeProjects'
 import {
-  startAgentRun, getAgentRun,
-  streamClaudeAgent,
-  ExecutionEvent, ClaudeStreamEvent,
+  streamClaudeAgent, streamCartRun,
+  ClaudeStreamEvent, CartProgressEvent,
 } from '@/lib/api/codeAgent'
 
 // Language to simple syntax highlight class
@@ -86,7 +85,6 @@ export function CodeProjectBrowser() {
   const [lastRun, setLastRun] = useState<{ status: string; totalDurationMs: number; steps: PipelineStepResult[] } | null>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  // ---- Agent Run state ----
   // ---- Claude Agent state ----
   const [claudeModalOpen, setClaudeModalOpen] = useState(false)
   const [claudeRunning, setClaudeRunning] = useState(false)
@@ -95,26 +93,18 @@ export function CodeProjectBrowser() {
   const [claudeAbortRef] = useState<{ current: AbortController | null }>({ current: null })
   const claudePanelRef = useRef<HTMLDivElement>(null)
 
-  const [agentRunning, setAgentRunning] = useState(false)
-  const [agentTraceId, setAgentTraceId] = useState<string | null>(null)
-  const [agentStatus, setAgentStatus] = useState<string>('idle')
-  const [agentEvents, setAgentEvents] = useState<ExecutionEvent[]>([])
-  const [agentIterations, setAgentIterations] = useState(0)
-  const [agentRepairs, setAgentRepairs] = useState(0)
-  const [agentError, setAgentError] = useState<string | null>(null)
-  const agentPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  // ---- Cart Runner state ----
+  const [cartRunning, setCartRunning] = useState(false)
+  const [cartEvents, setCartEvents] = useState<CartProgressEvent[]>([])
+  const [cartAbortRef] = useState<{ current: AbortController | null }>({ current: null })
+  const cartPanelRef = useRef<HTMLDivElement>(null)
+  const [expandedCartNodes, setExpandedCartNodes] = useState<Record<number, boolean>>({})
 
-  const stopAgentPolling = useCallback(() => {
-    if (agentPollRef.current) { clearInterval(agentPollRef.current); agentPollRef.current = null }
-  }, [])
-
-  useEffect(() => { return () => { stopPolling(); stopAgentPolling() } }, [])
+  useEffect(() => { return () => { stopPolling() } }, [])
 
   const stopPolling = useCallback(() => {
     if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
   }, [])
-
-  useEffect(() => { return () => stopPolling() }, [])
 
   // Load last pipeline results on mount
   useEffect(() => {
@@ -189,63 +179,7 @@ export function CodeProjectBrowser() {
     }
   }
 
-  // ---- Agent Run handler ----
-  const handleAgentRun = async () => {
-    if (!projectId) return
-    try {
-      stopAgentPolling()
-      setAgentRunning(true)
-      setAgentStatus('planning')
-      setAgentEvents([])
-      setAgentIterations(0)
-      setAgentRepairs(0)
-      setAgentError(null)
-
-      const resp = await startAgentRun({
-        projectId,
-        goal: `Execute and validate the ${project?.title || 'code project'} successfully`,
-        language: project?.language || 'python',
-        maxIterations: 3,
-        executionTimeout: 300,
-      })
-      setAgentTraceId(resp.traceId)
-      setAgentStatus('running')
-
-      // Poll for events
-      agentPollRef.current = setInterval(async () => {
-        try {
-          const run = await getAgentRun(resp.runId)
-          setAgentEvents(run.events || [])
-          setAgentIterations(run.iterations)
-          setAgentRepairs(run.repairsApplied)
-          setAgentStatus(run.status)
-
-          if (run.summary) setPipelineSummary(run.summary)
-
-          if (run.status === 'succeeded' || run.status === 'failed' ||
-              run.status === 'max_iterations' || run.status === 'error') {
-            setAgentRunning(false)
-            setAgentError(run.error || null)
-            stopAgentPolling()
-          }
-        } catch {
-          // keep polling
-        }
-      }, 2000)
-    } catch (err) {
-      setAgentRunning(false)
-      setAgentStatus('error')
-      setAgentError(err instanceof Error ? err.message : 'Agent run failed to start')
-    }
-  }
-
-  const handleAgentStop = () => {
-    stopAgentPolling()
-    setAgentRunning(false)
-    if (agentStatus === 'running' || agentStatus === 'planning') {
-      setAgentStatus('cancelled')
-    }
-  }
+  // ---- (AI Agent handlers removed — use Claude Agent instead) ----
 
   // ---- Claude Agent handlers ----
   const handleClaudeStart = () => {
@@ -293,6 +227,34 @@ export function CodeProjectBrowser() {
       systemPrompt: '',
     })
     setClaudeModalOpen(true)
+  }
+
+  // ---- Cart Runner handler ----
+  const handleCartRun = () => {
+    if (!projectId || cartRunning) return
+    setCartRunning(true)
+    setCartEvents([])
+    const ctrl = streamCartRun(
+      { projectId, packageId: 'demo_ppkg_math', timeout: 900 },
+      (event) => {
+        setCartEvents(prev => [...prev, event])
+        if (cartPanelRef.current) cartPanelRef.current.scrollTop = cartPanelRef.current.scrollHeight
+      },
+      (error) => {
+        setCartRunning(false)
+        if (error && error !== 'Cancelled') {
+          setCartEvents(prev => [...prev, {
+            event_type: 'cart_complete', node_id: '', status: 'failed', message: error, timestamp: new Date().toLocaleTimeString()
+          }])
+        }
+      }
+    )
+    cartAbortRef.current = ctrl
+  }
+
+  const handleCartStop = () => {
+    cartAbortRef.current?.abort()
+    setCartRunning(false)
   }
 
   // ---- step helpers ----
@@ -472,6 +434,23 @@ export function CodeProjectBrowser() {
           {project.sourceIdeaSessionId && <Badge variant="outline" className="text-xs">From Idea #{project.sourceIdeaSessionId.slice(-6)}</Badge>}
         </div>
         <div className="flex items-center gap-2">
+          {/* Run Cart Button */}
+          {!cartRunning ? (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleCartRun}
+              className="border-emerald-400 text-emerald-700 hover:bg-emerald-50"
+              title="Run full experiment pipeline from PlanPackage"
+            >
+              <Play className="h-4 w-4 mr-1" /> {cartEvents.length > 0 ? 'Re-run Cart' : 'Run Cart'}
+            </Button>
+          ) : (
+            <Button variant="outline" size="sm" onClick={handleCartStop} className="border-emerald-400 bg-emerald-50 text-emerald-700">
+              <Loader2 className="h-4 w-4 mr-1 animate-spin" /> Stop Cart
+            </Button>
+          )}
+
           {/* Claude Code Agent Button */}
           {!claudeRunning ? (
             <Button
@@ -494,86 +473,11 @@ export function CodeProjectBrowser() {
             </Button>
           )}
 
-          {/* AI Agent Button */}
-          {!agentRunning ? (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleAgentRun}
-              className="border-violet-300 text-violet-700 hover:bg-violet-50"
-              title="Autonomous agent: auto-detects issues, repairs, and retries"
-            >
-              <Bot className="h-4 w-4 mr-1" /> {agentStatus === 'succeeded' ? 'Re-run Agent' : agentStatus === 'failed' ? 'Retry Agent' : 'AI Agent'}
-            </Button>
-          ) : (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleAgentStop}
-              className="border-violet-300 bg-violet-50 text-violet-700"
-            >
-              <RefreshCw className="h-4 w-4 mr-1 animate-spin" />
-              {agentStatus === 'planning' ? 'Planning...' : `Agent Running (${agentIterations}/3)...`}
-            </Button>
-          )}
-
           {/* Run Pipeline Button */}
           {pipelineStatus === 'idle' ? (
-            <>
-              {lastRun && lastRun.steps.some(s => s.status === 'failed') && (
-                <Button variant="outline" size="sm" onClick={async () => {
-                  setPipelineStatus('running')
-                  setPipelineSummary('Analyzing failures...')
-                  try {
-                    setPipelineRunId(null)
-                    const resp = await autoFixProject(projectId!)
-                    setPipelineRunId(resp.jobId)
-                    setPipelineSummary(resp.summary)
-
-                    // Build fix detail steps + insert before pipeline re-run results
-                    if (resp.fixesApplied.length > 0) {
-                      const fixSteps: PipelineStepResult[] = resp.fixesApplied.map((f, i) => ({
-                        name: `Fix #${i + 1}: ${f.stepName}`,
-                        purpose: f.description,
-                        status: f.applied ? 'succeeded' as const : 'failed' as const,
-                        durationMs: 0,
-                        stdout: [
-                          f.method === 'deterministic' ? '[Rule-based fix]' : '[AI-generated fix]',
-                          `File: ${f.filePath}`,
-                          '',
-                          ...(f.diffLines.length > 0 ? f.diffLines : ['(No diff available)']),
-                        ].join('\n'),
-                        stderr: '',
-                      }))
-                      setPipelineSteps(fixSteps)
-                    }
-
-                    // Then poll for re-run results
-                    if (resp.jobId) {
-                      pollRef.current = setInterval(async () => {
-                        try {
-                          const results = await getPipelineResults(projectId!, resp.jobId)
-                          if (results.status !== 'running') {
-                            setPipelineSteps(results.steps)
-                            setPipelineStatus(results.status === 'succeeded' ? 'succeeded' : results.status === 'failed' ? 'failed' : 'partial')
-                            setLastRun({ status: results.status, totalDurationMs: results.totalDurationMs, steps: results.steps })
-                            stopPolling()
-                          }
-                        } catch {}
-                      }, 1500)
-                    }
-                  } catch (err) {
-                    setPipelineStatus('failed')
-                    setPipelineSummary(err instanceof Error ? err.message : 'Auto-fix failed')
-                  }
-                }} className="border-purple-300 text-purple-700 hover:bg-purple-50">
-                  <Wand2 className="h-4 w-4 mr-1" /> Auto-Fix
-                </Button>
-              )}
-              <Button variant="outline" size="sm" onClick={handleRun} className="border-emerald-300 text-emerald-700 hover:bg-emerald-50">
-                <Play className="h-4 w-4 mr-1" /> {lastRun ? 'Re-run Pipeline' : 'Run Pipeline'}
-              </Button>
-            </>
+            <Button variant="outline" size="sm" onClick={handleRun} className="border-emerald-300 text-emerald-700 hover:bg-emerald-50">
+              <Play className="h-4 w-4 mr-1" /> {lastRun ? 'Re-run Pipeline' : 'Run Pipeline'}
+            </Button>
           ) : pipelineStatus === 'running' ? (
             <Button variant="outline" size="sm" disabled className="border-yellow-300 text-yellow-700">
               <RefreshCw className="h-4 w-4 mr-1 animate-spin" /> Pipeline Running...
@@ -635,6 +539,97 @@ export function CodeProjectBrowser() {
           </Button>
         )}
       </div>
+
+      {/* ---- Cart Pipeline Execution Panel ---- */}
+      {(cartEvents.length > 0 || cartRunning) && (
+        <Card className={`mb-4 border-2 ${
+          cartRunning ? 'border-emerald-300' :
+          cartEvents.some(e => e.status === 'failed') ? 'border-red-300' :
+          'border-emerald-300'
+        }`}>
+          <CardHeader className="py-2 px-4 flex-row items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Play className={`h-4 w-4 ${cartRunning ? 'text-emerald-500' : 'text-emerald-600'}`} />
+              <span className="font-medium text-sm">Cart Pipeline</span>
+              <Badge variant="outline" className={`text-xs ${cartRunning ? 'border-emerald-300 text-emerald-700' : ''}`}>
+                {cartRunning ? <Loader2 className="h-3 w-3 mr-1 inline animate-spin" /> :
+                 <CheckCircle2 className="h-3 w-3 mr-1 inline text-emerald-500" />}
+                {cartRunning ? 'Running...' : 'Complete'}
+              </Badge>
+              {!cartRunning && cartEvents.length > 0 && (
+                <span className="text-xs text-muted-foreground">
+                  {cartEvents.filter(e => (e.status === 'success' || e.status === 'succeeded')).length} succeeded
+                  · {cartEvents.filter(e => e.status === 'failed').length} failed
+                </span>
+              )}
+            </div>
+            <Button variant="ghost" size="sm" onClick={() => { setCartEvents([]); setCartRunning(false) }}>
+              <Square className="h-3 w-3 mr-1" /> Clear
+            </Button>
+          </CardHeader>
+          <CardContent className="p-0">
+            <div ref={cartPanelRef} className="divide-y max-h-80 overflow-auto">
+              {cartEvents.map((event, idx) => {
+                const isStart = event.event_type === 'node_start' || event.event_type === 'cart_start'
+                const isComplete = event.event_type === 'node_complete' || event.event_type === 'cart_complete'
+                const isOk = event.status === 'succeeded'
+                const isFail = event.status === 'failed' || event.status === 'skipped'
+                return (
+                  <div key={idx}>
+                    <button
+                      className={`w-full text-left px-4 py-2 border-l-2 flex items-start gap-3 hover:bg-muted/20 transition-colors ${
+                        isStart ? 'border-l-blue-400 bg-blue-50/30' :
+                        isComplete && isOk ? 'border-l-emerald-400 bg-emerald-50/30' :
+                        isComplete && isFail ? 'border-l-red-400 bg-red-50/30' :
+                        ''
+                      }`}
+                      onClick={() => isComplete && setExpandedCartNodes(prev => ({ ...prev, [idx]: !prev[idx] }))}
+                    >
+                      <div className="mt-0.5 flex-shrink-0">
+                        {isStart ? <Play className="h-3.5 w-3.5 text-blue-500" /> :
+                         isOk ? <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" /> :
+                         isFail ? <XCircle className="h-3.5 w-3.5 text-red-500" /> :
+                         <Circle className="h-3.5 w-3.5 text-slate-400" />}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-0.5">
+                          <span className="text-[10px] text-muted-foreground">{event.timestamp}</span>
+                          {event.node_id && (
+                            <Badge variant="secondary" className="text-[10px] py-0 px-1 font-mono">{event.node_id}</Badge>
+                          )}
+                          <Badge variant={isFail ? 'destructive' : 'outline'} className="text-[10px] py-0 px-1">{event.status}</Badge>
+                          {event.result && typeof event.result === 'object' && 'duration_ms' in event.result && (
+                            <span className="text-[10px] text-muted-foreground">{((event.result as Record<string,number>).duration_ms / 1000).toFixed(1)}s</span>
+                          )}
+                          {isComplete && (
+                            <ChevronDown className={`h-3 w-3 text-muted-foreground ml-auto transition-transform ${expandedCartNodes[idx] ? 'rotate-180' : ''}`} />
+                          )}
+                        </div>
+                        <p className={`text-xs ${expandedCartNodes[idx] ? 'whitespace-pre-wrap' : 'truncate'} ${isFail ? 'text-red-700' : 'text-muted-foreground'}`}>
+                          {event.message}
+                        </p>
+                        {event.result && 'artifacts' in event.result && Array.isArray((event.result as Record<string,unknown>).artifacts) && ((event.result as Record<string,unknown>).artifacts as Array<{name: string}>).length > 0 && (
+                          <div className="flex items-center gap-1 mt-1 flex-wrap">
+                            {((event.result as Record<string,unknown>).artifacts as Array<{name: string}>).map((a, i) => (
+                              <Badge key={i} variant="secondary" className="text-[10px] py-0">{a.name}</Badge>
+                            ))}
+                          </div>
+                        )}
+                        {/* Expanded detail for completed nodes */}
+                        {expandedCartNodes[idx] && isComplete && (
+                          <div className="mt-2 p-2 bg-muted/50 rounded text-xs text-muted-foreground whitespace-pre-wrap max-h-60 overflow-auto">
+                            {event.message || 'No details available'}
+                          </div>
+                        )}
+                      </div>
+                    </button>
+                  </div>
+                )
+              })}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Pipeline Execution Panel */}
       {(pipelineSteps.length > 0 || lastRun) && (
@@ -928,124 +923,6 @@ export function CodeProjectBrowser() {
                 )
               })}
             </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* ---- AI Agent Execution Panel ---- */}
-      {(agentEvents.length > 0 || agentRunning) && (
-        <Card className={`mb-4 border-2 ${
-          agentStatus === 'planning' || agentStatus === 'running' ? 'border-violet-300' :
-          agentStatus === 'succeeded' ? 'border-emerald-300' :
-          agentStatus === 'failed' || agentStatus === 'error' || agentStatus === 'max_iterations' ? 'border-red-300' :
-          'border-muted'
-        }`}>
-          <CardHeader className="py-2 px-4 flex-row items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Brain className="h-4 w-4 text-violet-500" />
-              <span className="font-medium text-sm">AI Agent</span>
-              <Badge variant={
-                agentStatus === 'succeeded' ? 'default' :
-                agentStatus === 'failed' || agentStatus === 'error' ? 'destructive' :
-                agentStatus === 'max_iterations' ? 'outline' :
-                agentStatus === 'cancelled' ? 'secondary' :
-                'outline'
-              } className={`text-xs ${(agentStatus === 'planning' || agentStatus === 'running') ? 'border-violet-300 text-violet-700' : ''}`}>
-                {agentStatus === 'planning' ? <Loader2 className="h-3 w-3 mr-1 inline animate-spin" /> :
-                 agentStatus === 'running' ? <RefreshCw className="h-3 w-3 mr-1 inline animate-spin" /> :
-                 agentStatus === 'succeeded' ? <CheckCircle2 className="h-3 w-3 mr-1 inline" /> :
-                 agentStatus === 'failed' || agentStatus === 'error' ? <XCircle className="h-3 w-3 mr-1 inline" /> :
-                 agentStatus === 'max_iterations' ? <AlertTriangle className="h-3 w-3 mr-1 inline" /> : null}
-                {agentStatus === 'planning' ? 'Planning' :
-                 agentStatus === 'running' ? `Iteration ${agentIterations}/3` :
-                 agentStatus === 'succeeded' ? 'Success' :
-                 agentStatus === 'failed' ? 'Failed' :
-                 agentStatus === 'error' ? 'Error' :
-                 agentStatus === 'max_iterations' ? 'Max Iterations' :
-                 agentStatus === 'cancelled' ? 'Cancelled' : agentStatus}
-              </Badge>
-              {agentRepairs > 0 && (
-                <Badge variant="outline" className="text-xs border-violet-300 text-violet-700">
-                  <Wand2 className="h-3 w-3 mr-1" /> {agentRepairs} repair{agentRepairs > 1 ? 's' : ''}
-                </Badge>
-              )}
-            </div>
-            <Button variant="ghost" size="sm" onClick={() => { setAgentEvents([]); setAgentStatus('idle'); setAgentRunning(false); }}>
-              <Square className="h-3 w-3 mr-1" /> Clear
-            </Button>
-          </CardHeader>
-          <CardContent className="p-0">
-            <div className="divide-y max-h-80 overflow-auto">
-              {agentEvents.map((event, idx) => {
-                const isRunning = event.status === 'started' || event.status === 'running'
-                const isError = event.status === 'failed' || event.status === 'error'
-                const phaseColors: Record<string, string> = {
-                  plan: 'border-l-blue-400 bg-blue-50/50',
-                  setup: 'border-l-slate-400 bg-slate-50/50',
-                  execute: 'border-l-amber-400 bg-amber-50/50',
-                  observe: 'border-l-cyan-400 bg-cyan-50/50',
-                  repair: 'border-l-violet-400 bg-violet-50/50',
-                  complete: event.status === 'succeeded' ? 'border-l-emerald-400 bg-emerald-50/50' : 'border-l-red-400 bg-red-50/50',
-                  error: 'border-l-red-400 bg-red-50/50',
-                }
-                const phaseIcons: Record<string, JSX.Element> = {
-                  plan: <Search className="h-3.5 w-3.5 text-blue-500" />,
-                  setup: <Terminal className="h-3.5 w-3.5 text-slate-500" />,
-                  execute: <Play className="h-3.5 w-3.5 text-amber-500" />,
-                  observe: <CheckCircle2 className="h-3.5 w-3.5 text-cyan-500" />,
-                  repair: <Wand2 className="h-3.5 w-3.5 text-violet-500" />,
-                  complete: event.status === 'succeeded' ? <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" /> : <XCircle className="h-3.5 w-3.5 text-red-500" />,
-                  error: <AlertTriangle className="h-3.5 w-3.5 text-red-500" />,
-                }
-
-                return (
-                  <div key={idx} className={`px-4 py-2.5 border-l-2 flex items-start gap-3 ${phaseColors[event.step] || ''} ${event.iteration > 0 ? 'pl-8' : ''}`}>
-                    <div className="mt-0.5 flex-shrink-0">
-                      {isRunning ? <Loader2 className="h-3.5 w-3.5 animate-spin text-blue-500" /> :
-                       phaseIcons[event.step] || <Circle className="h-3.5 w-3.5 text-slate-400" />}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs font-medium capitalize">{event.step}</span>
-                        {event.iteration > 0 && (
-                          <Badge variant="secondary" className="text-[10px] py-0 px-1">#{event.iteration}</Badge>
-                        )}
-                        {event.duration_ms > 0 && (
-                          <span className="text-[10px] text-muted-foreground">{(event.duration_ms / 1000).toFixed(1)}s</span>
-                        )}
-                        <Badge variant={isError ? 'destructive' : 'outline'} className="text-[10px] py-0 px-1">
-                          {event.status}
-                        </Badge>
-                      </div>
-                      {event.message && (
-                        <p className={`text-xs mt-0.5 truncate ${isError ? 'text-red-700' : 'text-muted-foreground'}`}>
-                          {event.message}
-                        </p>
-                      )}
-                    </div>
-                  </div>
-                )
-              })}
-            </div>
-
-            {/* Error display */}
-            {agentError && (
-              <div className="px-4 py-2 border-t bg-red-50 text-sm text-red-800 flex items-start gap-2">
-                <AlertTriangle className="h-4 w-4 flex-shrink-0 mt-0.5" />
-                <span className="whitespace-pre-wrap">{agentError}</span>
-              </div>
-            )}
-
-            {/* Summary footer */}
-            {(agentStatus === 'succeeded' || agentStatus === 'failed' || agentStatus === 'max_iterations') && (
-              <div className="px-4 py-2 border-t bg-muted/30 text-xs text-muted-foreground flex items-center gap-4 flex-wrap">
-                <Brain className="h-3.5 w-3.5 text-violet-500" />
-                <span>Iterations: {agentIterations}</span>
-                <span>Repairs: {agentRepairs}</span>
-                <span>Status: <strong className={agentStatus === 'succeeded' ? 'text-emerald-600' : 'text-red-600'}>{agentStatus}</strong></span>
-                {agentTraceId && <span className="text-muted-foreground/60">Trace: {agentTraceId}</span>}
-              </div>
-            )}
           </CardContent>
         </Card>
       )}
