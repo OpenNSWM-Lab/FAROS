@@ -12,14 +12,20 @@ export interface PlanEvidenceRef {
 export interface PlanQualityGate {
   schemaValid: boolean
   evidenceValid: boolean
+  topicRelevant: boolean
+  citationFaithful: boolean
+  planSpecific: boolean
+  agentApproved: boolean
+  humanApproved: boolean
   implementationReady: boolean
+  overallScore: number
+  reviewDecision: string
   warnings: string[]
   errors: string[]
 }
 
 export interface PlanSource {
   ideaSessionId: string
-  planSessionId?: string | null
   ideaCandidateId: string
   rankedOutputId?: string | null
   searchTreeId?: string | null
@@ -28,7 +34,6 @@ export interface PlanSource {
   reasoningKgId?: string | null
   literatureMapId?: string | null
   bftsHandoffId?: string | null
-  selectedResearchPlanId?: string | null
 }
 
 export interface PlanIdeaSummary {
@@ -70,6 +75,9 @@ export interface PlanLiteraturePaperSummary {
   venue: string
   url: string
   role: string
+  relevanceScore: number
+  relevanceSignals: string[]
+  relevanceReason: string
   summary: string
   methods: Array<Record<string, unknown>>
   findings: Array<Record<string, unknown>>
@@ -89,8 +97,14 @@ export interface PlanLiteratureSurvey {
 
 export interface PlanGapItem {
   id: string
+  kind: 'selected' | 'supporting_signal' | 'literature_limitation'
   statement: string
   severity: string
+  existingCoverage: string
+  unresolvedIssue: string
+  proposedEntry: string
+  boundary: string
+  validationNeeds: string[]
   whyUnsolved: string
   supportedByPaperIds: string[]
   supportedByClaimIds: string[]
@@ -121,6 +135,16 @@ export interface PlanPrinciple {
     graphPatchIds: string[]
     probePaperIds: string[]
   }
+}
+
+export interface PlanContributionStatement {
+  id: string
+  type: 'method' | 'system' | 'evaluation' | 'analysis' | 'application'
+  statement: string
+  noveltyBasis: string
+  validationStageIds: string[]
+  validationStepIds: string[]
+  evidenceRefs: PlanEvidenceRef[]
 }
 
 export interface PlanOutput {
@@ -180,21 +204,86 @@ export interface PlanGenerationMetadata {
   model?: string | null
   promptVersion: string
   llmUsedSections: string[]
+  reviewerMode: 'deterministic' | 'hybrid' | string
+  llmReviewerUsed: boolean
   repairRounds: number
   fallbackUsed: boolean
   warnings: string[]
+}
+
+export type PlanPackageStatus =
+  | 'draft'
+  | 'agent_reviewing'
+  | 'needs_revision'
+  | 'needs_human_review'
+  | 'approved'
+  | 'rejected'
+
+export interface PlanHumanFeedback {
+  id: string
+  sectionPath: string
+  feedbackType: string
+  comment: string
+  severity: string
+  requestedAction: string
+  createdAt: string
+  resolved: boolean
+  resolvedByRevisionId?: string | null
+}
+
+export interface PlanRevision {
+  id: string
+  parentPackageId: string
+  createdAt: string
+  changedSections: string[]
+  feedbackIds: string[]
+  summary: string
+  generationMode: string
+  repairRounds: number
+}
+
+export interface PlanReviewerIssue {
+  id: string
+  severity: string
+  sectionPath: string
+  message: string
+  evidenceRefs: PlanEvidenceRef[]
+}
+
+export interface PlanReviewerReport {
+  reviewer: string
+  score: number
+  passed: boolean
+  blockingIssues: PlanReviewerIssue[]
+  warnings: PlanReviewerIssue[]
+  repairSuggestions: string[]
+  evidenceRefs: PlanEvidenceRef[]
+  createdAt: string
+}
+
+export interface PlanMetaReview {
+  overallScore: number
+  decision: string
+  confidence: number
+  blockingIssues: PlanReviewerIssue[]
+  warnings: PlanReviewerIssue[]
+  requiredRepairs: string[]
+  reviewerScores: Record<string, number>
+  createdAt: string
 }
 
 export interface PlanPackage {
   schemaVersion: string
   packageId: string
   createdAt: string
+  status: PlanPackageStatus
   source: PlanSource
   idea: PlanIdeaSummary
   background: PlanBackground
   literatureSurvey: PlanLiteratureSurvey
   gap: PlanGap
   principle: PlanPrinciple
+  contributionStatement: PlanContributionStatement[]
   researchQuestion: string
   hypothesis: string
   constants: Record<string, unknown>
@@ -203,17 +292,21 @@ export interface PlanPackage {
   downstreamContract: Record<string, unknown>
   qualityGate: PlanQualityGate
   generation: PlanGenerationMetadata
+  humanFeedback: PlanHumanFeedback[]
+  revisions: PlanRevision[]
+  reviewReports: PlanReviewerReport[]
+  metaReview?: PlanMetaReview | null
   sourceFields: Record<string, string[]>
   rawIdeaOutputs: Record<string, unknown>
 }
 
 export interface CreatePlanPackageRequest {
   candidateId?: string
-  planSessionId?: string
   maxStages?: number
   maxStepsPerStage?: number
   userNotes?: string
   generationMode?: 'hybrid' | 'deterministic'
+  reviewerMode?: 'deterministic' | 'hybrid'
   maxRepairRounds?: number
 }
 
@@ -229,10 +322,21 @@ export interface ValidatePlanPackageResponse {
   qualityGate: PlanQualityGate
 }
 
-export interface ConvertPlanPackageResponse {
-  packageId: string
-  researchPlanId: string
-  researchPlan: Record<string, unknown>
+export interface PlanPackageFeedbackRequest {
+  sectionPath?: string
+  feedbackType?: string
+  comment: string
+  severity?: string
+  requestedAction?: string
+}
+
+export interface RevisePlanPackageRequest {
+  generationMode?: 'hybrid' | 'deterministic'
+  reviewerMode?: 'deterministic' | 'hybrid'
+  maxStages?: number
+  maxStepsPerStage?: number
+  maxRepairRounds?: number
+  targetSections?: string[]
 }
 
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
@@ -279,9 +383,74 @@ export function validatePlanPackage(packageId: string): Promise<ValidatePlanPack
   )
 }
 
-export function convertPlanPackageToResearchPlan(packageId: string): Promise<ConvertPlanPackageResponse> {
-  return requestJson<ConvertPlanPackageResponse>(
-    `/api/v1/plans/packages/${encodeURIComponent(packageId)}/to-research-plan`,
-    { method: 'POST' }
+export function addPlanPackageFeedback(
+  packageId: string,
+  body: PlanPackageFeedbackRequest
+): Promise<PlanPackage> {
+  return requestJson<PlanPackage>(
+    `/api/v1/plans/packages/${encodeURIComponent(packageId)}/feedback`,
+    {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }
+  )
+}
+
+export function reviewPlanPackage(packageId: string): Promise<PlanPackage> {
+  return requestJson<PlanPackage>(
+    `/api/v1/plans/packages/${encodeURIComponent(packageId)}/review`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ reviewerMode: 'hybrid' }),
+    }
+  )
+}
+
+export function reviewPlanPackageWithMode(
+  packageId: string,
+  reviewerMode: 'deterministic' | 'hybrid'
+): Promise<PlanPackage> {
+  return requestJson<PlanPackage>(
+    `/api/v1/plans/packages/${encodeURIComponent(packageId)}/review`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ reviewerMode }),
+    }
+  )
+}
+
+export function revisePlanPackage(
+  packageId: string,
+  body: RevisePlanPackageRequest
+): Promise<PlanPackage> {
+  return requestJson<PlanPackage>(
+    `/api/v1/plans/packages/${encodeURIComponent(packageId)}/revise`,
+    {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }
+  )
+}
+
+export function approvePlanPackage(packageId: string): Promise<PlanPackage> {
+  return requestJson<PlanPackage>(
+    `/api/v1/plans/packages/${encodeURIComponent(packageId)}/approve`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ reviewerMode: 'hybrid' }),
+    }
+  )
+}
+
+export function approvePlanPackageWithMode(
+  packageId: string,
+  reviewerMode: 'deterministic' | 'hybrid'
+): Promise<PlanPackage> {
+  return requestJson<PlanPackage>(
+    `/api/v1/plans/packages/${encodeURIComponent(packageId)}/approve`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ reviewerMode }),
+    }
   )
 }

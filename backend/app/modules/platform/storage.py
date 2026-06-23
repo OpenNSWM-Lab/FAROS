@@ -27,7 +27,6 @@ from app.storage.plan_session_storage import (
     get_session_storage as get_plan_session_storage,
 )
 from app.storage.plan_package_storage import get_plan_package_storage
-from app.storage.research_plan_storage import get_storage as get_plan_storage
 from app.storage.run_storage import get_storage as get_run_storage
 
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -116,7 +115,6 @@ __all__ = [
     "ingest_metrics",
     "get_plan_candidate_storage",
     "get_plan_session_storage",
-    "get_plan_storage",
     "get_run_storage",
     "list_datasets",
     "list_experiments",

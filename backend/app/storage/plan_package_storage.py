@@ -76,14 +76,6 @@ class PlanPackageStorage:
         ]
         return packages[0] if packages else None
 
-    def get_by_plan_session(self, plan_session_id: str) -> Optional[PlanPackage]:
-        packages = [
-            package
-            for package in self.list_all()
-            if package.source.planSessionId == plan_session_id
-        ]
-        return packages[0] if packages else None
-
     def list_by_idea_candidate(self, candidate_id: str) -> List[PlanPackage]:
         return [
             package

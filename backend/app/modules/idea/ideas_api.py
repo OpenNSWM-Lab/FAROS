@@ -19,9 +19,7 @@ from app.modules.idea.contracts import (
     StepResult,
 )
 from app.modules.idea.service import get_idea_service
-from app.services.plan_builder import build_research_plan_from_candidate, candidate_to_plan_dict
 from app.modules.idea.storage import (
-    get_plan_storage,
     get_raw_paper_storage,
     get_literature_graph_storage,
     get_structured_paper_storage,
@@ -36,7 +34,6 @@ from app.modules.idea.storage import (
     get_probe_literature_storage,
 )
 from app.core.settings import get_settings
-from pydantic import ValidationError
 import logging
 
 logger = logging.getLogger(__name__)
@@ -158,8 +155,7 @@ class SelectCandidateResponse(BaseModel):
     """Response after selecting a candidate."""
     ok: bool
     candidateId: str
-    planId: str
-    plan: dict
+    selectedCandidateId: str
 
 
 class SessionListResponse(BaseModel):
@@ -1015,122 +1011,44 @@ async def get_bfts_handoff(session_id: str) -> BFTSHandoffResponse:
     "/sessions/{session_id}/select",
     response_model=SelectCandidateResponse,
     summary="Select Candidate",
-    description="Select a candidate and create a ResearchPlan from it."
+    description="Select the final idea candidate used to create a PlanPackage."
 )
 async def select_candidate(
     session_id: str,
     request: SelectCandidateRequest
 ) -> SelectCandidateResponse:
-    """Select a candidate and create a ResearchPlan."""
+    """Select a candidate without creating a legacy plan object."""
     service = get_idea_service()
-    
-    # Get session
     session = service.get_session(session_id)
     if not session:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Session {session_id} not found"
         )
-    
-    # Check session is completed
+
     if session.status != IdeaSessionStatus.COMPLETED:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Session must be completed before selecting. Current status: {session.status.value}"
         )
-    
-    # Check if already selected (idempotent - return existing)
+
     if session.selectedCandidateId == request.candidateId:
-        # Already selected this candidate, return existing plan info
-        plan_storage = get_plan_storage()
-        # Try to find existing plan by source_candidate_id
-        existing_plans = plan_storage.list_all()
-        for plan in existing_plans:
-            if hasattr(plan, 'source_candidate_id') and plan.source_candidate_id == request.candidateId:
-                return SelectCandidateResponse(
-                    ok=True,
-                    candidateId=request.candidateId,
-                    planId=plan.id,
-                    plan={
-                        "id": plan.id,
-                        "source_session_id": getattr(plan, 'source_session_id', session_id),
-                        "source_candidate_id": request.candidateId,
-                        "source_candidate_index": getattr(plan, 'source_candidate_index', None),
-                        "source_title": getattr(plan, 'source_title', None),
-                    },
-                )
-    
-    # Get candidate and determine its index
-    candidates = service.get_candidates(session_id)
-    candidate = None
-    candidate_index = 0
-    for idx, c in enumerate(candidates, start=1):
-        if c.id == request.candidateId:
-            candidate = c
-            candidate_index = idx
-            break
-    
-    if not candidate:
+        return SelectCandidateResponse(
+            ok=True,
+            candidateId=request.candidateId,
+            selectedCandidateId=request.candidateId,
+        )
+
+    try:
+        service.select_candidate(session_id, request.candidateId)
+    except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Candidate {request.candidateId} not found in session {session_id}"
-        )
-    
-    # Build ResearchPlan from candidate using plan builder
-    try:
-        plan = build_research_plan_from_candidate(
-            candidate=candidate,
-            seed_query=session.config.seedQuery,
-            paper_type=session.config.paperType,
-            session_id=session_id,
-            candidate_index=candidate_index,
-            direction_id=session.config.directionId,
-        )
-    except ValidationError as e:
-        logger.error(f"Failed to build plan from candidate: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Failed to create valid research plan: {str(e)}"
-        )
-    except Exception as e:
-        logger.error(f"Unexpected error building plan: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Internal error creating plan: {str(e)}"
-        )
-    
-    # Save plan to storage
-    plan_storage = get_plan_storage()
-    try:
-        created_plan = plan_storage.create(plan)
-    except Exception as e:
-        logger.error(f"Failed to save plan: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to save research plan: {str(e)}"
-        )
-    
-    # Update session with selection
-    service.select_candidate(session_id, request.candidateId)
-    
-    # Build response
-    plan_dict = candidate_to_plan_dict(
-        candidate=candidate,
-        seed_query=session.config.seedQuery,
-        paper_type=session.config.paperType,
-        session_id=session_id,
-        candidate_index=candidate_index,
-        direction_id=session.config.directionId,
-    )
-    plan_dict["id"] = created_plan.id
-    plan_dict["source_session_id"] = session_id
-    plan_dict["source_candidate_id"] = candidate.id
-    plan_dict["source_candidate_index"] = candidate_index
-    plan_dict["source_title"] = candidate.title
-    
+            detail=str(exc),
+        ) from exc
+
     return SelectCandidateResponse(
         ok=True,
         candidateId=request.candidateId,
-        planId=created_plan.id,
-        plan=plan_dict,
+        selectedCandidateId=request.candidateId,
     )

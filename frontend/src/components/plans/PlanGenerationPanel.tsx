@@ -7,40 +7,54 @@ import {
   CheckCircle2,
   ClipboardList,
   FileJson,
-  FileText,
   GitBranch,
   Layers3,
   Lightbulb,
+  MessageSquareText,
   Network,
   RefreshCw,
   ShieldCheck,
   Sparkles,
+  UserCheck,
 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
-  convertPlanPackageToResearchPlan,
   createPlanPackageFromIdeaSession,
+  addPlanPackageFeedback,
+  approvePlanPackageWithMode,
   getPlanPackage,
   getPlanPackageByIdeaSession,
+  reviewPlanPackageWithMode,
+  revisePlanPackage,
   validatePlanPackage,
   type PlanEvidenceRef,
   type PlanGapItem,
+  type PlanHumanFeedback,
   type PlanLiteraturePaperSummary,
   type PlanPackage,
   type PlanQualityGate,
+  type PlanReviewerReport,
   type PlanStage,
   type PlanStep,
 } from '@/components/plans/planPackageApi'
 
 type GenerationMode = 'hybrid' | 'deterministic'
+type ReviewerMode = 'deterministic' | 'hybrid'
 
 const EMPTY_GATE: PlanQualityGate = {
   schemaValid: false,
   evidenceValid: false,
+  topicRelevant: false,
+  citationFaithful: false,
+  planSpecific: false,
+  agentApproved: false,
+  humanApproved: false,
   implementationReady: false,
+  overallScore: 0,
+  reviewDecision: 'draft',
   warnings: [],
   errors: [],
 }
@@ -70,11 +84,16 @@ function QualityGateSummary({ gate }: { gate: PlanQualityGate }) {
   const rows = [
     { label: 'Schema', ok: gate.schemaValid },
     { label: 'Evidence', ok: gate.evidenceValid },
-    { label: 'Implementation', ok: gate.implementationReady },
+    { label: 'Topic', ok: gate.topicRelevant },
+    { label: 'Citation', ok: gate.citationFaithful },
+    { label: 'Plan', ok: gate.planSpecific },
+    { label: 'Agent', ok: gate.agentApproved },
+    { label: 'Human', ok: gate.humanApproved },
+    { label: 'Ready', ok: gate.implementationReady },
   ]
 
   return (
-    <div className="grid gap-2 sm:grid-cols-3">
+    <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
       {rows.map((row) => (
         <div key={row.label} className={`flex items-center justify-between rounded-md border px-3 py-2 ${statusVariant(row.ok)}`}>
           <span className="text-sm font-medium">{row.label}</span>
@@ -231,6 +250,18 @@ function PaperRow({ paper }: { paper: PlanLiteraturePaperSummary }) {
             <Badge className={paper.source === 'probe' ? 'bg-indigo-700 text-white' : 'bg-blue-700 text-white'}>
               {paper.source}
             </Badge>
+            <Badge
+              variant="outline"
+              className={
+                paper.relevanceScore >= 0.7
+                  ? 'border-emerald-400 bg-emerald-50 text-emerald-900'
+                  : paper.relevanceScore >= 0.45
+                    ? 'border-amber-400 bg-amber-50 text-amber-900'
+                    : 'border-red-300 bg-red-50 text-red-900'
+              }
+            >
+              relevance {(paper.relevanceScore * 100).toFixed(0)}
+            </Badge>
             {paper.year ? <span className="text-xs text-muted-foreground">{paper.year}</span> : null}
           </div>
           <h4 className="mt-2 text-sm font-semibold text-slate-900">{paper.title}</h4>
@@ -239,6 +270,18 @@ function PaperRow({ paper }: { paper: PlanLiteraturePaperSummary }) {
         {paper.role && <Badge variant="secondary">{paper.role}</Badge>}
       </div>
       <p className="mt-3 text-sm text-slate-700">{paper.summary}</p>
+      {paper.relevanceReason && (
+        <p className="mt-2 text-xs text-slate-600">{paper.relevanceReason}</p>
+      )}
+      {paper.relevanceSignals.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {paper.relevanceSignals.slice(0, 8).map((signal) => (
+            <Badge key={signal} variant="outline" className="font-mono text-[11px]">
+              {signal}
+            </Badge>
+          ))}
+        </div>
+      )}
       <div className="mt-3 grid gap-3 lg:grid-cols-3">
         <div>
           <p className="text-xs font-semibold uppercase text-slate-500">Methods</p>
@@ -302,6 +345,68 @@ function EvidenceCoverageCard({
   )
 }
 
+function ReviewerReportCard({ report }: { report: PlanReviewerReport }) {
+  return (
+    <div className={`rounded-md border border-l-4 bg-white px-4 py-3 shadow-sm ${report.passed ? 'border-l-emerald-700' : 'border-l-red-700'}`}>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          {report.passed ? <CheckCircle2 className="h-4 w-4 text-emerald-700" /> : <AlertTriangle className="h-4 w-4 text-red-700" />}
+          <p className="text-sm font-semibold text-slate-900">{report.reviewer}</p>
+        </div>
+        <Badge variant="outline" className="font-mono text-[11px]">
+          {(report.score * 100).toFixed(0)}
+        </Badge>
+      </div>
+      {report.blockingIssues.length > 0 && (
+        <div className="mt-3 space-y-2">
+          {report.blockingIssues.slice(0, 3).map((issue) => (
+            <div key={issue.id} className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-900">
+              <span className="font-mono">{issue.sectionPath || 'package'}</span>: {issue.message}
+            </div>
+          ))}
+        </div>
+      )}
+      {report.warnings.length > 0 && (
+        <div className="mt-3 space-y-2">
+          {report.warnings.slice(0, 2).map((issue) => (
+            <div key={issue.id} className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+              <span className="font-mono">{issue.sectionPath || 'package'}</span>: {issue.message}
+            </div>
+          ))}
+        </div>
+      )}
+      {report.repairSuggestions.length > 0 && (
+        <p className="mt-3 text-xs text-slate-600">{report.repairSuggestions[0]}</p>
+      )}
+    </div>
+  )
+}
+
+function FeedbackList({ feedback }: { feedback: PlanHumanFeedback[] }) {
+  if (!feedback.length) {
+    return <p className="text-sm text-muted-foreground">No human feedback yet.</p>
+  }
+  return (
+    <div className="space-y-2">
+      {feedback.slice(0, 6).map((item) => (
+        <div key={item.id} className={`rounded-md border px-3 py-2 text-sm ${item.resolved ? 'border-emerald-200 bg-emerald-50' : 'border-slate-300 bg-white'}`}>
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge variant="outline" className="font-mono text-[11px]">
+              {item.sectionPath}
+            </Badge>
+            <Badge variant={item.resolved ? 'secondary' : 'default'}>{item.severity}</Badge>
+            <span className="text-xs text-slate-500">{item.feedbackType}</span>
+          </div>
+          <p className="mt-2 text-slate-800">{item.comment}</p>
+          {item.resolvedByRevisionId && (
+            <p className="mt-1 text-xs text-emerald-800">Resolved by {item.resolvedByRevisionId}</p>
+          )}
+        </div>
+      ))}
+    </div>
+  )
+}
+
 export function PlanGenerationPanel() {
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
@@ -311,20 +416,27 @@ export function PlanGenerationPanel() {
   const [isLoading, setIsLoading] = useState(false)
   const [isCreating, setIsCreating] = useState(false)
   const [isValidating, setIsValidating] = useState(false)
-  const [isConverting, setIsConverting] = useState(false)
+  const [isReviewing, setIsReviewing] = useState(false)
+  const [isRevising, setIsRevising] = useState(false)
+  const [isApproving, setIsApproving] = useState(false)
+  const [isSubmittingFeedback, setIsSubmittingFeedback] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [legacyPlanId, setLegacyPlanId] = useState<string | null>(null)
   const [generationMode, setGenerationMode] = useState<GenerationMode>('hybrid')
+  const [reviewerMode, setReviewerMode] = useState<ReviewerMode>('hybrid')
   const [maxStages, setMaxStages] = useState(3)
   const [maxStepsPerStage, setMaxStepsPerStage] = useState(3)
   const [userNotes, setUserNotes] = useState('')
+  const [feedbackSection, setFeedbackSection] = useState('stages')
+  const [feedbackType, setFeedbackType] = useState('correction')
+  const [feedbackSeverity, setFeedbackSeverity] = useState('medium')
+  const [feedbackComment, setFeedbackComment] = useState('')
+  const [revisionTargets, setRevisionTargets] = useState<string[]>(['stages'])
 
   const packageIdFromUrl = searchParams.get('packageId')?.trim() || ''
   const ideaSessionIdFromUrl = searchParams.get('ideaSessionId')?.trim() || ''
   const ideaCandidateIdFromUrl = searchParams.get('ideaCandidateId')?.trim() || ''
   const ideaCandidateTitleFromUrl = searchParams.get('ideaCandidateTitle')?.trim() || ''
   const ideaSeedQueryFromUrl = searchParams.get('ideaSeedQuery')?.trim() || ''
-  const legacyResearchPlanId = searchParams.get('planId')?.trim() || ''
 
   const loadPackage = useCallback(async (packageId: string) => {
     if (!packageId) return
@@ -334,7 +446,6 @@ export function PlanGenerationPanel() {
       const loaded = await getPlanPackage(packageId)
       setPlanPackage(loaded)
       setPackageIdInput(loaded.packageId)
-      setLegacyPlanId(loaded.source.selectedResearchPlanId ?? null)
     } catch (err) {
       setPlanPackage(null)
       setError(err instanceof Error ? err.message : 'Failed to load PlanPackage')
@@ -362,7 +473,6 @@ export function PlanGenerationPanel() {
         if (cancelled) return
         setPlanPackage(loaded)
         setPackageIdInput(loaded.packageId)
-        setLegacyPlanId(loaded.source.selectedResearchPlanId ?? null)
       })
       .catch((err) => {
         if (cancelled) return
@@ -384,7 +494,6 @@ export function PlanGenerationPanel() {
   const updatePackageUrl = (packageId: string) => {
     const next = new URLSearchParams(searchParams)
     next.set('packageId', packageId)
-    next.delete('planId')
     setSearchParams(next, { replace: true })
   }
 
@@ -399,6 +508,7 @@ export function PlanGenerationPanel() {
       const response = await createPlanPackageFromIdeaSession(ideaSessionIdFromUrl, {
         candidateId: ideaCandidateIdFromUrl || undefined,
         generationMode,
+        reviewerMode,
         maxStages,
         maxStepsPerStage,
         maxRepairRounds: 1,
@@ -406,7 +516,6 @@ export function PlanGenerationPanel() {
       })
       setPlanPackage(response.package)
       setPackageIdInput(response.packageId)
-      setLegacyPlanId(response.package.source.selectedResearchPlanId ?? null)
       updatePackageUrl(response.packageId)
       setActiveTab('overview')
     } catch (err) {
@@ -430,24 +539,74 @@ export function PlanGenerationPanel() {
     }
   }
 
-  const convertToLegacyPlan = async () => {
+  const reviewCurrentPackage = async () => {
     if (!planPackage) return
-    setIsConverting(true)
+    setIsReviewing(true)
     setError(null)
     try {
-      const response = await convertPlanPackageToResearchPlan(planPackage.packageId)
-      setLegacyPlanId(response.researchPlanId)
-      setPlanPackage({
-        ...planPackage,
-        source: {
-          ...planPackage.source,
-          selectedResearchPlanId: response.researchPlanId,
-        },
-      })
+      const reviewed = await reviewPlanPackageWithMode(planPackage.packageId, reviewerMode)
+      setPlanPackage(reviewed)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create legacy ResearchPlan')
+      setError(err instanceof Error ? err.message : 'Failed to review PlanPackage')
     } finally {
-      setIsConverting(false)
+      setIsReviewing(false)
+    }
+  }
+
+  const reviseCurrentPackage = async () => {
+    if (!planPackage) return
+    setIsRevising(true)
+    setError(null)
+    try {
+      const revised = await revisePlanPackage(planPackage.packageId, {
+        generationMode,
+        reviewerMode,
+        maxStages,
+        maxStepsPerStage,
+        maxRepairRounds: 2,
+        targetSections: revisionTargets.length ? revisionTargets : ['stages'],
+      })
+      setPlanPackage(revised)
+      setActiveTab('overview')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to revise PlanPackage')
+    } finally {
+      setIsRevising(false)
+    }
+  }
+
+  const approveCurrentPackage = async () => {
+    if (!planPackage) return
+    setIsApproving(true)
+    setError(null)
+    try {
+      const approved = await approvePlanPackageWithMode(planPackage.packageId, reviewerMode)
+      setPlanPackage(approved)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to approve PlanPackage')
+    } finally {
+      setIsApproving(false)
+    }
+  }
+
+  const submitFeedback = async () => {
+    if (!planPackage || !feedbackComment.trim()) return
+    setIsSubmittingFeedback(true)
+    setError(null)
+    try {
+      const updated = await addPlanPackageFeedback(planPackage.packageId, {
+        sectionPath: feedbackSection,
+        feedbackType,
+        severity: feedbackSeverity,
+        requestedAction: feedbackType === 'approve' ? 'comment' : 'revise',
+        comment: feedbackComment.trim(),
+      })
+      setPlanPackage(updated)
+      setFeedbackComment('')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to submit feedback')
+    } finally {
+      setIsSubmittingFeedback(false)
     }
   }
 
@@ -456,6 +615,16 @@ export function PlanGenerationPanel() {
     if (!packageId) return
     updatePackageUrl(packageId)
     void loadPackage(packageId)
+  }
+
+  const toggleRevisionTarget = (target: string) => {
+    setRevisionTargets((current) => {
+      if (current.includes(target)) {
+        const next = current.filter((item) => item !== target)
+        return next.length ? next : ['stages']
+      }
+      return [...current, target]
+    })
   }
 
   const totalSteps = useMemo(
@@ -493,31 +662,6 @@ export function PlanGenerationPanel() {
 
   return (
     <div className="space-y-6">
-      {legacyResearchPlanId && !packageIdFromUrl && (
-        <Card className="border-amber-500 bg-white shadow-sm">
-          <CardHeader className="pb-3">
-            <CardTitle className="flex items-center gap-2 text-base">
-              <AlertTriangle className="h-4 w-4 text-amber-800" />
-              Legacy ResearchPlan Link
-            </CardTitle>
-            <CardDescription>
-              This URL contains an old ResearchPlan ID. The long-term planning workspace now uses PlanPackage as the primary artifact.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="flex flex-wrap items-center gap-2">
-            <Badge variant="outline" className="font-mono">
-              {legacyResearchPlanId}
-            </Badge>
-            {ideaSessionIdFromUrl && (
-              <Button size="sm" onClick={createPackage} disabled={isCreating}>
-                {isCreating ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <Sparkles className="mr-2 h-4 w-4" />}
-                Create PlanPackage
-              </Button>
-            )}
-          </CardContent>
-        </Card>
-      )}
-
       <Card>
         <CardHeader>
           <div className="flex flex-wrap items-start justify-between gap-4">
@@ -535,9 +679,17 @@ export function PlanGenerationPanel() {
                 {isValidating ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <ShieldCheck className="mr-2 h-4 w-4" />}
                 Validate
               </Button>
-              <Button variant="outline" onClick={convertToLegacyPlan} disabled={!planPackage || isConverting}>
-                {isConverting ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <FileText className="mr-2 h-4 w-4" />}
-                Legacy Plan
+              <Button variant="outline" onClick={reviewCurrentPackage} disabled={!planPackage || isReviewing}>
+                {isReviewing ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <ShieldCheck className="mr-2 h-4 w-4" />}
+                Review
+              </Button>
+              <Button variant="outline" onClick={reviseCurrentPackage} disabled={!planPackage || isRevising}>
+                {isRevising ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <Sparkles className="mr-2 h-4 w-4" />}
+                Revise
+              </Button>
+              <Button onClick={approveCurrentPackage} disabled={!planPackage || isApproving} className="bg-emerald-700 text-white hover:bg-emerald-800">
+                {isApproving ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <UserCheck className="mr-2 h-4 w-4" />}
+                Approve
               </Button>
             </div>
           </div>
@@ -554,6 +706,29 @@ export function PlanGenerationPanel() {
               {isLoading ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <FileJson className="mr-2 h-4 w-4" />}
               Load Package
             </Button>
+          </div>
+
+          <div className="rounded-md border border-slate-300 bg-white px-4 py-3 shadow-sm">
+            <p className="text-xs font-semibold uppercase text-slate-500">Revision target sections</p>
+            <div className="mt-2 flex flex-wrap gap-3 text-sm text-slate-800">
+              {[
+                ['researchQuestion', 'Research question'],
+                ['hypothesis', 'Hypothesis'],
+                ['constants', 'Constants'],
+                ['stages', 'Stages'],
+                ['expectedMetrics', 'Expected metrics'],
+              ].map(([value, label]) => (
+                <label key={value} className="flex items-center gap-2 rounded-md border border-slate-300 bg-slate-50 px-3 py-2">
+                  <input
+                    type="checkbox"
+                    checked={revisionTargets.includes(value)}
+                    onChange={() => toggleRevisionTarget(value)}
+                    className="h-4 w-4"
+                  />
+                  {label}
+                </label>
+              ))}
+            </div>
           </div>
 
           {(ideaSessionIdFromUrl || ideaCandidateIdFromUrl) && (
@@ -578,7 +753,7 @@ export function PlanGenerationPanel() {
                   Generate PlanPackage
                 </Button>
               </div>
-              <div className="mt-3 grid gap-3 md:grid-cols-3">
+              <div className="mt-3 grid gap-3 md:grid-cols-4">
                 <label className="space-y-1 text-xs font-medium text-slate-700">
                   Generation
                   <select
@@ -588,6 +763,17 @@ export function PlanGenerationPanel() {
                   >
                     <option value="hybrid">Hybrid LLM</option>
                     <option value="deterministic">Deterministic</option>
+                  </select>
+                </label>
+                <label className="space-y-1 text-xs font-medium text-slate-700">
+                  Reviewer
+                  <select
+                    value={reviewerMode}
+                    onChange={(event) => setReviewerMode(event.target.value as ReviewerMode)}
+                    className="h-9 w-full rounded-md border border-slate-400 bg-white px-2 text-sm text-slate-900"
+                  >
+                    <option value="hybrid">Rules + LLM</option>
+                    <option value="deterministic">Rules</option>
                   </select>
                 </label>
                 <label className="space-y-1 text-xs font-medium text-slate-700">
@@ -658,10 +844,24 @@ export function PlanGenerationPanel() {
                     <Badge variant="outline" className="font-mono">
                       {planPackage.packageId}
                     </Badge>
+                    <Badge className={planPackage.status === 'approved' ? 'bg-emerald-700 text-white' : planPackage.status === 'needs_revision' ? 'bg-red-700 text-white' : 'bg-amber-700 text-white'}>
+                      {planPackage.status}
+                    </Badge>
                     <Badge className={planPackage.generation.fallbackUsed ? 'bg-amber-700 text-white' : 'bg-emerald-700 text-white'}>
                       {planPackage.generation.mode}
                     </Badge>
+                    <Badge className={planPackage.generation.reviewerMode === 'hybrid' ? 'bg-violet-700 text-white' : 'bg-slate-700 text-white'}>
+                      review {planPackage.generation.reviewerMode}
+                    </Badge>
+                    {planPackage.generation.reviewerMode === 'hybrid' && (
+                      <Badge variant="outline" className={planPackage.generation.llmReviewerUsed ? 'border-emerald-400 bg-emerald-50 text-emerald-900' : 'border-amber-400 bg-amber-50 text-amber-900'}>
+                        LLM reviewer {planPackage.generation.llmReviewerUsed ? 'used' : 'skipped'}
+                      </Badge>
+                    )}
                     <Badge variant="secondary">{planPackage.schemaVersion}</Badge>
+                    <Badge variant="outline" className="font-mono">
+                      score {(planPackage.qualityGate.overallScore * 100).toFixed(0)}
+                    </Badge>
                   </div>
                   <CardTitle className="mt-3 text-xl leading-tight">{planPackage.researchQuestion}</CardTitle>
                   {planPackage.hypothesis && (
@@ -671,12 +871,6 @@ export function PlanGenerationPanel() {
                   )}
                 </div>
                 <div className="flex flex-wrap gap-2">
-                  {legacyPlanId && (
-                    <Button variant="outline" onClick={() => navigate(`/research/planning?planId=${encodeURIComponent(legacyPlanId)}`)}>
-                      <FileText className="mr-2 h-4 w-4" />
-                      {shortId(legacyPlanId)}
-                    </Button>
-                  )}
                   <Button variant="outline" onClick={() => navigate(`/code?packageId=${encodeURIComponent(planPackage.packageId)}`)}>
                     <ArrowRight className="mr-2 h-4 w-4" />
                     Code
@@ -702,6 +896,97 @@ export function PlanGenerationPanel() {
                   )}
                 </div>
               )}
+              {planPackage.metaReview && (
+                <div className="rounded-md border border-slate-300 bg-white px-4 py-3 shadow-sm">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-semibold text-slate-900">Reviewer decision</p>
+                      <p className="mt-1 text-xs text-slate-600">
+                        confidence {(planPackage.metaReview.confidence * 100).toFixed(0)} · {planPackage.metaReview.blockingIssues.length} blocking issues
+                      </p>
+                    </div>
+                    <Badge className={planPackage.metaReview.decision === 'approve' ? 'bg-emerald-700 text-white' : 'bg-amber-700 text-white'}>
+                      {planPackage.metaReview.decision}
+                    </Badge>
+                  </div>
+                  {planPackage.metaReview.requiredRepairs.length > 0 && (
+                    <div className="mt-3">
+                      <TextList items={planPackage.metaReview.requiredRepairs.slice(0, 4)} emptyLabel="No required repairs" />
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div className="grid gap-4 xl:grid-cols-[1fr_1.2fr]">
+                <div className="rounded-md border border-slate-300 bg-white px-4 py-3 shadow-sm">
+                  <div className="mb-3 flex items-center gap-2">
+                    <MessageSquareText className="h-4 w-4 text-indigo-700" />
+                    <p className="text-sm font-semibold text-slate-900">Human feedback</p>
+                  </div>
+                  <div className="grid gap-2 md:grid-cols-3">
+                    <label className="space-y-1 text-xs font-medium text-slate-700">
+                      Section
+                      <select
+                        value={feedbackSection}
+                        onChange={(event) => setFeedbackSection(event.target.value)}
+                        className="h-9 w-full rounded-md border border-slate-400 bg-white px-2 text-sm text-slate-900"
+                      >
+                        <option value="researchQuestion">Research question</option>
+                        <option value="gap">Gap</option>
+                        <option value="principle">Principle</option>
+                        <option value="literatureSurvey">Literature</option>
+                        <option value="stages">Plan stages</option>
+                        <option value="qualityGate">Quality gate</option>
+                      </select>
+                    </label>
+                    <label className="space-y-1 text-xs font-medium text-slate-700">
+                      Type
+                      <select
+                        value={feedbackType}
+                        onChange={(event) => setFeedbackType(event.target.value)}
+                        className="h-9 w-full rounded-md border border-slate-400 bg-white px-2 text-sm text-slate-900"
+                      >
+                        <option value="correction">Correction</option>
+                        <option value="regenerate">Regenerate</option>
+                        <option value="comment">Comment</option>
+                        <option value="reject">Reject</option>
+                        <option value="approve">Approve note</option>
+                      </select>
+                    </label>
+                    <label className="space-y-1 text-xs font-medium text-slate-700">
+                      Severity
+                      <select
+                        value={feedbackSeverity}
+                        onChange={(event) => setFeedbackSeverity(event.target.value)}
+                        className="h-9 w-full rounded-md border border-slate-400 bg-white px-2 text-sm text-slate-900"
+                      >
+                        <option value="low">Low</option>
+                        <option value="medium">Medium</option>
+                        <option value="high">High</option>
+                        <option value="blocking">Blocking</option>
+                      </select>
+                    </label>
+                  </div>
+                  <textarea
+                    value={feedbackComment}
+                    onChange={(event) => setFeedbackComment(event.target.value)}
+                    placeholder="Point out what should be corrected before this package is handed off."
+                    className="mt-3 min-h-[84px] w-full rounded-md border border-slate-400 bg-white px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-600"
+                  />
+                  <Button
+                    className="mt-3 bg-indigo-700 text-white hover:bg-indigo-800"
+                    onClick={submitFeedback}
+                    disabled={!feedbackComment.trim() || isSubmittingFeedback}
+                  >
+                    {isSubmittingFeedback ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <MessageSquareText className="mr-2 h-4 w-4" />}
+                    Submit Feedback
+                  </Button>
+                </div>
+                <div className="rounded-md border border-slate-300 bg-white px-4 py-3 shadow-sm">
+                  <p className="mb-3 text-sm font-semibold text-slate-900">Feedback history</p>
+                  <FeedbackList feedback={planPackage.humanFeedback} />
+                </div>
+              </div>
             </CardContent>
           </Card>
 
@@ -712,6 +997,7 @@ export function PlanGenerationPanel() {
               <TabsTrigger value="context">Context</TabsTrigger>
               <TabsTrigger value="literature">Literature</TabsTrigger>
               <TabsTrigger value="evidence">Evidence</TabsTrigger>
+              <TabsTrigger value="review">Review</TabsTrigger>
               <TabsTrigger value="json">JSON</TabsTrigger>
             </TabsList>
 
@@ -1057,6 +1343,53 @@ export function PlanGenerationPanel() {
                       )}
                     </pre>
                   </details>
+                </CardContent>
+              </Card>
+            </TabsContent>
+
+            <TabsContent value="review" className="space-y-4">
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    <ShieldCheck className="h-4 w-4 text-indigo-700" />
+                    Reviewer Committee
+                  </CardTitle>
+                  <CardDescription>
+                    Independent checks for relevance, evidence, feasibility, metrics, and novelty.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  {planPackage.reviewReports.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">No reviewer reports yet. Run Review to generate them.</p>
+                  ) : (
+                    <div className="grid gap-3 lg:grid-cols-2">
+                      {planPackage.reviewReports.map((report) => (
+                        <ReviewerReportCard key={report.reviewer} report={report} />
+                      ))}
+                    </div>
+                  )}
+                  {planPackage.revisions.length > 0 && (
+                    <div className="rounded-md border border-slate-300 bg-white px-4 py-3 shadow-sm">
+                      <p className="text-sm font-semibold text-slate-900">Revision history</p>
+                      <div className="mt-3 space-y-2">
+                        {planPackage.revisions.slice(0, 6).map((revision) => (
+                          <div key={revision.id} className="rounded-md border border-slate-300 bg-slate-50 px-3 py-2 text-sm">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <Badge variant="outline" className="font-mono text-[11px]">
+                                {revision.id}
+                              </Badge>
+                              <Badge variant="secondary">{revision.generationMode}</Badge>
+                              <span className="text-xs text-slate-500">{new Date(revision.createdAt).toLocaleString()}</span>
+                            </div>
+                            <p className="mt-2 text-slate-800">{revision.summary}</p>
+                            {revision.changedSections.length > 0 && (
+                              <p className="mt-1 text-xs text-slate-600">Changed: {revision.changedSections.join(', ')}</p>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </CardContent>
               </Card>
             </TabsContent>

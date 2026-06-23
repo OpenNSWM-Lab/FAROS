@@ -20,6 +20,7 @@ from app.models.idea import (
 )
 from app.models.plan_package import (
     PlanBackground,
+    PlanContributionStatement,
     PlanEvidenceRef,
     PlanEvidenceTrace,
     PlanExpectedMetric,
@@ -76,6 +77,93 @@ def _text_join(values: Iterable[str], fallback: str = "") -> str:
 
 def _safe_text(value: Any) -> str:
     return value.strip() if isinstance(value, str) and value.strip() else ""
+
+
+_RELEVANCE_STOPWORDS = {
+    "about", "against", "also", "among", "and", "based", "between", "can",
+    "could", "does", "for", "from", "how", "into", "large", "language",
+    "learning", "method", "methods", "model", "models", "paper", "plan",
+    "research", "should", "study", "than", "that", "the", "their", "this",
+    "through", "using", "what", "when", "where", "with", "within", "would",
+    "是否", "如何", "研究", "方法", "模型", "系统",
+}
+
+
+def _topic_anchors(candidate: IdeaCandidate, literature_map: Optional[LiteratureMap]) -> List[str]:
+    text_parts = [
+        candidate.title,
+        candidate.problem,
+        candidate.hypothesisStatement,
+        candidate.keyInsight,
+        candidate.proposedMethod,
+        candidate.expectedOutcome,
+    ]
+    if candidate.draftPlan:
+        text_parts.extend([
+            candidate.draftPlan.researchQuestion,
+            candidate.draftPlan.hypothesis,
+            candidate.draftPlan.methodology,
+        ])
+    if literature_map:
+        text_parts.extend(gap.direction for gap in literature_map.gaps[:4])
+        text_parts.extend(gap.evidence for gap in literature_map.gaps[:4])
+    text = " ".join(text_parts).lower().replace("-", " ")
+    if "rag" in text:
+        text = f"{text} retrieval augmented generation"
+    anchors: List[str] = []
+    for token in re.findall(r"[a-zA-Z][a-zA-Z0-9]{2,}|[\u4e00-\u9fff]{2,}", text):
+        if token in _RELEVANCE_STOPWORDS:
+            continue
+        if token not in anchors:
+            anchors.append(token)
+    priority = [
+        "citation", "faithfulness", "faithful", "uncertainty", "gating",
+        "confidence", "retrieval", "augmented", "rag", "hallucination",
+        "attribution", "provenance", "graph", "multi", "hop", "verification",
+    ]
+    original_order = {term: index for index, term in enumerate(anchors)}
+    anchors.sort(key=lambda term: (
+        priority.index(term) if term in priority else len(priority),
+        original_order[term],
+    ))
+    return anchors[:28]
+
+
+def _paper_relevance(
+    *,
+    title: str,
+    summary: str,
+    methods: List[Dict[str, Any]],
+    findings: List[Dict[str, Any]],
+    limitations: List[str],
+    claims: List[Dict[str, Any]],
+    anchors: List[str],
+) -> tuple[float, List[str], str]:
+    if not anchors:
+        return 0.0, [], "No topic anchors were available for relevance scoring."
+    text = " ".join([
+        title,
+        summary,
+        " ".join(str(item) for item in methods),
+        " ".join(str(item) for item in findings),
+        " ".join(limitations),
+        " ".join(str(item) for item in claims),
+    ]).lower().replace("-", " ")
+    signals = [anchor for anchor in anchors if anchor in text]
+    weighted_hits = len(signals)
+    if title:
+        title_text = title.lower().replace("-", " ")
+        weighted_hits += sum(1 for anchor in anchors[:10] if anchor in title_text)
+    score = min(1.0, weighted_hits / max(4, min(10, len(anchors) // 2 or 4)))
+    if score >= 0.75:
+        reason = "Strong overlap with the selected idea topic anchors."
+    elif score >= 0.45:
+        reason = "Moderate overlap with the selected idea topic anchors."
+    elif signals:
+        reason = "Weak overlap; keep as context but avoid treating it as core support without human confirmation."
+    else:
+        reason = "No visible overlap with the selected idea topic anchors."
+    return round(score, 3), signals[:12], reason
 
 
 def _safe_id(value: Any) -> str:
@@ -222,6 +310,7 @@ def _paper_ref(paper_id: str, source: str = "structured") -> PlanEvidenceRef:
 
 def build_literature_survey(
     *,
+    candidate: IdeaCandidate,
     raw_papers: List[RawPaper],
     structured_papers: List[StructuredPaper],
     literature_map: Optional[LiteratureMap],
@@ -230,6 +319,7 @@ def build_literature_survey(
     raw_by_id = {paper.id: paper for paper in raw_papers}
     papers: List[PlanLiteraturePaperSummary] = []
     structured_raw_ids: set[str] = set()
+    anchors = _topic_anchors(candidate, literature_map)
 
     for sp in structured_papers:
         raw = raw_by_id.get(sp.rawPaperId) or raw_by_id.get(sp.id)
@@ -237,6 +327,18 @@ def build_literature_survey(
         structured_raw_ids.add(paper_id)
         role = sp.graph1Roles[0] if sp.graph1Roles else "supporting_evidence"
         summary = sp.summary or sp.abstract or (raw.abstract if raw else "") or f"Structured summary for {sp.title}"
+        methods = [_method_dict(method) for method in sp.methods]
+        findings = [_finding_dict(finding) for finding in sp.findings]
+        claims = [_claim_dict(claim) for claim in sp.claims]
+        relevance_score, relevance_signals, relevance_reason = _paper_relevance(
+            title=sp.title,
+            summary=summary,
+            methods=methods,
+            findings=findings,
+            limitations=sp.limitations,
+            claims=claims,
+            anchors=anchors,
+        )
         papers.append(
             PlanLiteraturePaperSummary(
                 paperId=paper_id,
@@ -248,11 +350,14 @@ def build_literature_survey(
                 venue=sp.venue or (raw.venue if raw else "") or "",
                 url=(raw.url if raw else "") or "",
                 role=role,
+                relevanceScore=relevance_score,
+                relevanceSignals=relevance_signals,
+                relevanceReason=relevance_reason,
                 summary=summary,
-                methods=[_method_dict(method) for method in sp.methods],
-                findings=[_finding_dict(finding) for finding in sp.findings],
+                methods=methods,
+                findings=findings,
                 limitations=sp.limitations,
-                claims=[_claim_dict(claim) for claim in sp.claims],
+                claims=claims,
                 evidenceRefs=[_paper_ref(paper_id, "structured")],
             )
         )
@@ -269,6 +374,15 @@ def build_literature_survey(
             elif paper.id in result.baselinePaperIds:
                 role = "baseline"
             summary = result.summary or paper.abstract or f"Probe-discovered paper for query: {result.query.query}"
+            relevance_score, relevance_signals, relevance_reason = _paper_relevance(
+                title=paper.title,
+                summary=summary,
+                methods=[],
+                findings=[],
+                limitations=[],
+                claims=[],
+                anchors=anchors,
+            )
             papers.append(
                 PlanLiteraturePaperSummary(
                     paperId=paper.id,
@@ -280,6 +394,9 @@ def build_literature_survey(
                     venue=paper.venue or "",
                     url=paper.url or "",
                     role=role,
+                    relevanceScore=relevance_score,
+                    relevanceSignals=relevance_signals,
+                    relevanceReason=relevance_reason,
                     summary=summary,
                     methods=[],
                     findings=[],
@@ -319,41 +436,50 @@ def build_gap(
     literature_map: Optional[LiteratureMap],
     structured_papers: List[StructuredPaper],
     graph_patches: List[GraphPatch],
+    prior_work: List[Dict[str, Any]],
     critique: Dict[str, Any],
     graph_evidence: Dict[str, Any],
 ) -> PlanGap:
-    items: List[PlanGapItem] = []
-    for index, gap in enumerate(literature_map.gaps if literature_map else [], start=1):
-        statement = gap.direction or gap.evidence or f"Literature gap {index}"
-        items.append(
-            PlanGapItem(
-                id=f"gap-{index}",
-                statement=statement,
-                severity="high" if gap.confidence >= 0.7 else "medium",
-                whyUnsolved=gap.evidence,
-                supportedByPaperIds=gap.paperIds,
-                linkedGraphSignalIds=gap.clusterIds + gap.entityHints,
-            )
+    support_ids = (
+        list(graph_evidence.get("supportingPaperIds", []))
+        if isinstance(graph_evidence, dict)
+        else []
+    )
+    if not support_ids:
+        support_ids = [paper.rawPaperId for paper in structured_papers if paper.rawPaperId]
+
+    method_names: List[str] = []
+    for paper in structured_papers:
+        if paper.methods:
+            method_names.append(paper.methods[0].name)
+        elif paper.title:
+            method_names.append(paper.title)
+    existing_coverage = (
+        "Investigated work already covers "
+        + ", ".join(_unique(method_names)[:5])
+        + "."
+        if method_names
+        else "Investigated work covers related retrieval and reasoning approaches."
+    )
+
+    comparison_differences: List[str] = []
+    for comparison in prior_work[:2]:
+        comparison_differences.extend(
+            str(item).strip()
+            for item in comparison.get("differences", [])[:3]
+            if str(item).strip()
         )
 
-    limitation_papers = [sp for sp in structured_papers if sp.limitations]
-    if limitation_papers:
-        statement = limitation_papers[0].limitations[0]
-        items.append(
-            PlanGapItem(
-                id=f"gap-{len(items) + 1}",
-                statement=statement,
-                severity="medium",
-                whyUnsolved="Reported limitation from investigated literature.",
-                supportedByPaperIds=[limitation_papers[0].rawPaperId],
-                supportedByClaimIds=[claim.claimId for claim in limitation_papers[0].claims[:3]],
-            )
-        )
-
-    weakness = ""
+    weaknesses: List[str] = []
     weaknesses = critique.get("weaknesses") if isinstance(critique, dict) else None
-    if isinstance(weaknesses, list) and weaknesses:
-        weakness = str(weaknesses[0])
+    if isinstance(weaknesses, list):
+        weaknesses = [
+            str(item).strip()
+            for item in weaknesses
+            if str(item).strip() and "truncat" not in str(item).lower()
+        ]
+    else:
+        weaknesses = []
 
     contradiction_ids = [
         patch.id
@@ -361,24 +487,139 @@ def build_gap(
         if patch.patchType == "contradiction"
     ]
 
-    if not items:
-        support_ids = graph_evidence.get("supportingPaperIds", []) if isinstance(graph_evidence, dict) else []
+    limitation_claim_ids: List[str] = []
+    for paper in structured_papers:
+        for claim in paper.claims:
+            if claim.claimType in {"limitation", "premise_conclusion", "cause_effect"}:
+                limitation_claim_ids.append(claim.claimId)
+
+    hypothesis = _candidate_hypothesis(candidate).rstrip(".")
+    hypothesis_clause = (
+        hypothesis[:1].lower() + hypothesis[1:]
+        if hypothesis
+        else candidate.problem.rstrip(".")
+    )
+    candidate_text = " ".join([
+        candidate.title,
+        candidate.problem,
+        candidate.keyInsight,
+        candidate.proposedMethod,
+    ]).lower()
+    is_dense_graph_retrieval = (
+        "dense retrieval" in candidate_text
+        and ("graph traversal" in candidate_text or "graph retrieval" in candidate_text)
+    )
+    if is_dense_graph_retrieval:
+        unresolved_issue = (
+            "Existing approaches do not yet jointly establish whether "
+            f"{hypothesis_clause} while preserving inspectable evidence paths, robustness to graph noise, "
+            "and a favorable accuracy-efficiency trade-off."
+        )
+        selected_statement = (
+            "Current multi-hop RAG methods provide graph retrieval, hybrid retrieval, or adaptive graph refinement, "
+            "but lack a validated query-level policy that reliably decides when to use dense retrieval versus graph "
+            "traversal while keeping the resulting evidence path verifiable and computationally efficient."
+        )
+    else:
+        unresolved_issue = (
+            "Existing approaches do not yet jointly establish whether "
+            f"{hypothesis_clause} under shared effectiveness, robustness, efficiency, and evidence-traceability criteria."
+        )
+        selected_statement = (
+            f"Existing approaches related to {candidate.title} cover individual components of the problem, "
+            "but do not yet provide a validated end-to-end mechanism that realizes the candidate's core hypothesis "
+            "under explicit effectiveness, robustness, efficiency, and evidence-traceability constraints."
+        )
+
+    proposed_method = _candidate_method(candidate, critique)
+    method_sentences = [
+        sentence.strip()
+        for sentence in re.split(r"(?<=[.!?])\s+", proposed_method)
+        if sentence.strip()
+    ]
+    proposed_entry = " ".join(method_sentences[:2]) or candidate.keyInsight
+
+    validation_metrics = list(candidate.expectedMetrics)
+    datasets: List[str] = []
+    for experiment in candidate.experimentSpecs or candidate.requiredExperiments:
+        validation_metrics.extend(experiment.metrics)
+        datasets.extend(experiment.datasets)
+    validation_metrics = _unique(validation_metrics)[:8] or [
+        "answer accuracy",
+        "evidence-path completeness",
+        "retrieval cost",
+        "robustness under graph noise",
+    ]
+    datasets = _unique(datasets)
+    boundary = (
+        "The study is bounded to "
+        + (", ".join(datasets) if datasets else "the declared multi-hop QA evaluation setting")
+        + " and compares the proposed mechanism with dense-only, graph-only, and related hybrid retrieval baselines. "
+        "It does not claim cross-domain generalization or completed experimental gains without downstream evidence."
+    )
+
+    why_parts = comparison_differences[:3] + weaknesses[:2]
+    why_unsolved = " ".join(why_parts) or (
+        "Prior work addresses individual retrieval components, but the combined decision policy, "
+        "evidence-path verification, and robustness/efficiency trade-off remain unvalidated."
+    )
+
+    items: List[PlanGapItem] = [
+        PlanGapItem(
+            id="gap-1",
+            kind="selected",
+            statement=selected_statement,
+            severity="high",
+            existingCoverage=existing_coverage,
+            unresolvedIssue=unresolved_issue,
+            proposedEntry=proposed_entry,
+            boundary=boundary,
+            validationNeeds=validation_metrics,
+            whyUnsolved=why_unsolved,
+            supportedByPaperIds=_unique(support_ids),
+            supportedByClaimIds=_unique(limitation_claim_ids)[:10],
+            linkedGraphSignalIds=contradiction_ids,
+        )
+    ]
+
+    for gap in (literature_map.gaps if literature_map else [])[:4]:
+        direction = (gap.direction or gap.evidence or "Related literature direction").strip().rstrip(".")
         items.append(
             PlanGapItem(
-                id="gap-1",
-                statement=candidate.problem or weakness or "The selected idea addresses a gap identified by the idea pipeline.",
+                id=f"gap-{len(items) + 1}",
+                kind="supporting_signal",
+                statement=f"Supporting literature signal: {direction}.",
                 severity="medium",
-                whyUnsolved=weakness or "Requires implementation planning before downstream validation.",
-                supportedByPaperIds=support_ids,
-                linkedGraphSignalIds=contradiction_ids,
+                existingCoverage=gap.evidence,
+                unresolvedIssue="This signal motivates the selected GAP but is not itself the paper's primary unresolved problem.",
+                whyUnsolved=gap.evidence,
+                supportedByPaperIds=gap.paperIds,
+                linkedGraphSignalIds=gap.clusterIds + gap.entityHints,
             )
         )
 
-    summary = items[0].statement
-    if len(summary.split()) < 10 and candidate.problem:
-        summary = f"{summary}. Candidate gap framing: {candidate.problem}"
-    elif candidate.problem and candidate.problem not in summary and len(summary) < 160:
-        summary = f"{summary}. Candidate gap framing: {candidate.problem}"
+    limitation_papers = [paper for paper in structured_papers if paper.limitations]
+    if limitation_papers:
+        paper = limitation_papers[0]
+        items.append(
+            PlanGapItem(
+                id=f"gap-{len(items) + 1}",
+                kind="literature_limitation",
+                statement=paper.limitations[0],
+                severity="medium",
+                existingCoverage=f"Reported by {paper.title}.",
+                unresolvedIssue=paper.limitations[0],
+                whyUnsolved="Explicit limitation reported by investigated literature.",
+                supportedByPaperIds=[paper.rawPaperId],
+                supportedByClaimIds=[claim.claimId for claim in paper.claims[:3]],
+            )
+        )
+
+    summary = (
+        f"{selected_statement} This work addresses the gap through the following entry point: "
+        f"{proposed_entry.rstrip('.')}. "
+        f"Validation is scoped to {', '.join(validation_metrics[:4])}."
+    )
 
     return PlanGap(
         summary=summary,
@@ -704,6 +945,107 @@ def build_default_stages(
     return stages[:max_stages]
 
 
+def build_contribution_statements(
+    *,
+    candidate: IdeaCandidate,
+    gap: PlanGap,
+    principle: PlanPrinciple,
+    stages: List[PlanStage],
+) -> List[PlanContributionStatement]:
+    """Build paper-facing contribution claims with planned validation links."""
+    stage_ids = [stage.id for stage in stages]
+    step_ids = [step.id for stage in stages for step in stage.steps]
+
+    def collect_refs(selected_stages: List[PlanStage]) -> List[PlanEvidenceRef]:
+        refs: List[PlanEvidenceRef] = []
+        seen: set[tuple[str, str]] = set()
+        for stage in selected_stages:
+            for step in stage.steps:
+                for ref in step.evidenceRefs:
+                    key = (ref.type, ref.id)
+                    if ref.type and ref.id and key not in seen:
+                        seen.add(key)
+                        refs.append(ref)
+        for ref in [
+            PlanEvidenceRef(type="candidate", id=candidate.id, source="idea"),
+            PlanEvidenceRef(type="principle", id="principle", source="idea_principle"),
+            PlanEvidenceRef(type="gap", id=gap.selectedGapId, source="idea_gap"),
+        ]:
+            key = (ref.type, ref.id)
+            if key not in seen:
+                seen.add(key)
+                refs.append(ref)
+        return refs
+
+    method_stages = stages[:2] or stages
+    evaluation_stages = stages[1:] if len(stages) > 1 else stages
+    method_steps = [step.id for stage in method_stages for step in stage.steps]
+    evaluation_steps = [step.id for stage in evaluation_stages for step in stage.steps]
+
+    mechanism_sentence = (principle.mechanism or candidate.proposedMethod or candidate.keyInsight).split(".")[0].strip()
+    novelty_basis = principle.noveltyClaim or candidate.keyInsight
+    selected_gap = next(
+        (item.statement for item in gap.items if item.id == gap.selectedGapId),
+        gap.summary,
+    )
+
+    output_names = [
+        output.name
+        for stage in stages[:2]
+        for step in stage.steps
+        for output in step.outputs
+    ][:6]
+    metric_names = _unique(
+        expected.metric
+        for stage in evaluation_stages
+        for step in stage.steps
+        for expected in step.expected
+    )[:8]
+
+    contributions = [
+        PlanContributionStatement(
+            id="contribution-1",
+            type="method",
+            statement=(
+                f"A method contribution centered on {candidate.title}: "
+                f"{mechanism_sentence.rstrip('.')}. "
+                f"It targets the selected gap: {selected_gap.rstrip('.')}."
+            ),
+            noveltyBasis=novelty_basis,
+            validationStageIds=[stage.id for stage in method_stages],
+            validationStepIds=method_steps,
+            evidenceRefs=collect_refs(method_stages),
+        ),
+        PlanContributionStatement(
+            id="contribution-2",
+            type="system",
+            statement=(
+                "A reproducible implementation contribution that decomposes the proposed method into "
+                f"{', '.join(stage.title for stage in method_stages)}"
+                + (f", producing artifacts such as {', '.join(output_names)}." if output_names else ".")
+            ),
+            noveltyBasis="Operationalizes the proposed mechanism as explicit, traceable downstream artifacts.",
+            validationStageIds=[stage.id for stage in method_stages],
+            validationStepIds=method_steps,
+            evidenceRefs=collect_refs(method_stages),
+        ),
+        PlanContributionStatement(
+            id="contribution-3",
+            type="evaluation",
+            statement=(
+                "An evaluation contribution that tests the central hypothesis through "
+                f"{', '.join(stage.title for stage in evaluation_stages)}"
+                + (f", using planned metrics including {', '.join(metric_names)}." if metric_names else ".")
+            ),
+            noveltyBasis="Connects each claimed improvement to planned benchmark, ablation, or robustness evidence.",
+            validationStageIds=[stage.id for stage in evaluation_stages] or stage_ids,
+            validationStepIds=evaluation_steps or step_ids,
+            evidenceRefs=collect_refs(evaluation_stages),
+        ),
+    ]
+    return contributions
+
+
 def build_source_field_map(*, plan_source: str) -> PlanSourceFieldMap:
     """Document how new PlanPackage fields align to existing idea v5 outputs."""
     return PlanSourceFieldMap(
@@ -749,6 +1091,15 @@ def build_source_field_map(*, plan_source: str) -> PlanSourceFieldMap:
             "ReasoningKG.entities",
             "ReasoningKG.relations",
             "RankedIdeaOutput.priorWorkComparisons",
+        ],
+        contributionStatement=[
+            "IdeaCandidate.title",
+            "IdeaCandidate.proposedMethod",
+            "PlanPackage.gap.selectedGapId",
+            "PlanPackage.principle.noveltyClaim",
+            "PlanPackage.stages[].steps[].outputs",
+            "PlanPackage.stages[].steps[].expected",
+            "PlanPackage.stages[].steps[].evidenceRefs",
         ],
         evidenceTrace=[
             "IdeaCandidate.searchNodeId",
@@ -850,7 +1201,6 @@ def build_plan_package(
     probe_results: List[LiteratureProbeResult],
     graph_patches: List[GraphPatch],
     handoff: Optional[BFTSHandoff],
-    plan_session_id: Optional[str] = None,
     user_notes: Optional[str] = None,
     max_stages: int = 3,
     max_steps_per_stage: int = 3,
@@ -860,6 +1210,7 @@ def build_plan_package(
     critique = _candidate_critique(candidate, ranked_output)
 
     literature_survey = build_literature_survey(
+        candidate=candidate,
         raw_papers=raw_papers,
         structured_papers=structured_papers,
         literature_map=literature_map,
@@ -870,6 +1221,7 @@ def build_plan_package(
         literature_map=literature_map,
         structured_papers=structured_papers,
         graph_patches=graph_patches,
+        prior_work=prior_work,
         critique=critique,
         graph_evidence=graph_evidence,
     )
@@ -930,7 +1282,6 @@ def build_plan_package(
 
     source = PlanSource(
         ideaSessionId=idea_session_id,
-        planSessionId=plan_session_id or "",
         ideaCandidateId=candidate.id,
         rankedOutputId=ranked_output.id if ranked_output else "",
         searchTreeId=search_tree.id if search_tree else "",
@@ -939,7 +1290,6 @@ def build_plan_package(
         reasoningKgId=reasoning_kg.id if reasoning_kg else "",
         literatureMapId=literature_map.id if literature_map else "",
         bftsHandoffId=handoff.id if handoff else "",
-        selectedResearchPlanId="",
     )
 
     critique_summary = ""
@@ -965,6 +1315,12 @@ def build_plan_package(
         literatureSurvey=literature_survey,
         gap=gap,
         principle=principle,
+        contributionStatement=build_contribution_statements(
+            candidate=candidate,
+            gap=gap,
+            principle=principle,
+            stages=stages,
+        ),
         researchQuestion=research_question,
         hypothesis=hypothesis,
         constants=constants,

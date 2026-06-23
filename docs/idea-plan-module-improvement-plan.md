@@ -45,13 +45,7 @@ backend/app/models/plan_package.py
 - 实施计划字段：`researchQuestion`、`hypothesis`、`constants`、`stages[].steps[].outputs[]`、`stages[].steps[].expected[]`
 - 科研上下文字段：`idea`、`background`、`literatureSurvey`、`gap`、`principle`、`evidenceTrace`、`qualityGate`
 
-旧对象保留：
-
-- `PlanSession`
-- `CandidatePlan`
-- `ResearchPlan`
-
-这些旧对象用于兼容历史 API 和后续旧链路，不再作为 idea+plan 阶段的主交付。
+`PlanPackage` 是 idea+plan 阶段唯一交付对象。旧 `ResearchPlan` API、模型、storage 和转换 adapter 已删除。
 
 ## 3. 新增模型
 
@@ -73,6 +67,7 @@ backend/app/models/plan_package.py
 | `PlanLiteraturePaperSummary` | 单篇论文总结 |
 | `PlanGap` / `PlanGapItem` | GAP 列表和选中 GAP |
 | `PlanPrinciple` | 方案原理、机制、novelty、assumptions、risks |
+| `PlanContributionStatement` | 贡献声明及其 stage/step/evidence 映射 |
 | `PlanStage` | 阶段计划 |
 | `PlanStep` | 阶段内步骤 |
 | `PlanOutput` | 步骤产出 |
@@ -105,7 +100,6 @@ backend/app/storage/plan_package_storage.py
 - 更新 `PlanPackage`
 - 按 `packageId` 查询
 - 按 `ideaSessionId` 查询
-- 按 `planSessionId` 查询
 - 按 `ideaCandidateId` 查询
 
 存储路径统一为：
@@ -123,7 +117,6 @@ E:\FAROS\backend\data
 涉及：
 
 - `backend/app/storage/idea_storage.py`
-- `backend/app/storage/research_plan_storage.py`
 - `backend/app/storage/plan_package_storage.py`
 - `backend/app/modules/platform/storage.py` 中的 plan link 路径
 
@@ -135,6 +128,7 @@ E:\FAROS\backend\data
 backend/app/services/plan_package_service.py
 backend/app/services/plan_package_builder.py
 backend/app/services/plan_package_validator.py
+backend/app/services/plan_package_reviewers.py
 ```
 
 ### 5.1 `PlanPackageService`
@@ -151,9 +145,10 @@ backend/app/services/plan_package_validator.py
 4. 按 `generationMode` 生成实施计划：
    - `deterministic`：使用规则 fallback stages。
    - `hybrid`：调用 LLM 生成 `researchQuestion/hypothesis/constants/stages`。
-5. 调用 validator 生成 `qualityGate`。
-6. 持久化 package。
-7. 可选将 `PlanPackage` 转成旧 `ResearchPlan`。
+5. 调用 validator 生成基础 `qualityGate`。
+6. 调用 reviewer committee 生成 `reviewReports/metaReview`。
+7. 根据 reviewer 结果设置 `status`：通过 agent 审核则进入 `needs_human_review`，否则进入 `needs_revision`。
+8. 持久化 package。
 
 ### 5.2 `PlanPackageBuilder`
 
@@ -162,6 +157,7 @@ backend/app/services/plan_package_validator.py
 - 从 `IdeaCandidate` 组装 `idea`
 - 从 `StructuredPaper[]`、`LiteratureMap`、critique 组装 `background`
 - 从 Step 3 structured papers 和 Step 5 probe papers 组装 `literatureSurvey`
+- 为每篇 `literatureSurvey.papers[]` 计算 `relevanceScore/relevanceSignals/relevanceReason`
 - 从 `LiteratureMap.gaps`、paper limitations、critique 组装 `gap`
 - 从 candidate `proposedMethod`、reasoning trace、path seeds 组装 `principle`
 - 从 candidate/search node/path seed/KG/literature map/probe/graph patch 组装 `evidenceTrace`
@@ -185,15 +181,46 @@ backend/app/services/plan_package_validator.py
 - 校验 `stages[].steps[]` 中的依赖引用是否存在。
 - 校验 `outputs[].type` 是否为合法枚举。
 - 校验 `literatureSurvey.papers[]` 是否覆盖 structured papers。
+- 校验 literature relevance metadata，并提示低相关论文造成的证据池污染风险。
+- 如果 selected GAP 只由低相关论文支撑，则 `evidenceValid=false`。
 - 校验 probe papers 是否独立标记为 `source=probe`。
 - 校验 `gap`、`principle`、`evidenceTrace` 是否至少能回溯到 candidate、paper 或 graph evidence。
 - 校验 `stages[].steps[].evidenceRefs[]` 只能引用真实 evidence ID。
 - 校验 hybrid 模式下 LLM 只写 `implementationPlan` 字段。
 - 检查实施计划是否绑定已选 GAP 和 idea/principle。
+- 生成 `topicRelevant/citationFaithful/planSpecific/agentApproved/humanApproved/overallScore/reviewDecision` 等语义门控字段。
 
 校验结果写入：
 
 ```text
+PlanPackage.qualityGate
+```
+
+### 5.4 `PlanPackageReviewerCommittee`
+
+职责：
+
+- `RelevanceReviewer`：检查论文和计划是否与 seed query / selected idea 对齐。
+- `EvidenceReviewer`：检查 GAP、background、principle、step evidence refs 是否可信。
+- `FeasibilityReviewer`：检查 stages/steps 是否足够具体，是否能交给 code/experiment 模块。
+- `MetricReviewer`：检查 expected metrics 是否具体可验证。
+- `NoveltyReviewer`：检查 selected GAP、novelty claim、contribution statement 是否清晰。
+- `LLMResearchReviewer`：在 `reviewerMode=hybrid` 时追加运行，用 LLM 判断研究逻辑、GAP/novelty、证据忠实度和计划具体性。
+- `MetaReviewer`：汇总 reviewer 分数、blocking issues、repair suggestions，并给出 `approve/revise/reject` 决策。
+- reviewer blocking issues 会进入 LLM repair prompt，修订不再只依赖 JSON 解析成功。
+
+reviewer 模式：
+
+```text
+hybrid = 规则 reviewer + LLMResearchReviewer，默认审核路径，适合正式交付前质量审核
+deterministic = 只运行规则 reviewer，稳定、低成本，适合离线测试或节省 token
+```
+
+reviewer 输出写入：
+
+```text
+PlanPackage.reviewReports
+PlanPackage.metaReview
 PlanPackage.qualityGate
 ```
 
@@ -211,10 +238,12 @@ backend/app/modules/platform/plan_packages_api.py
 |---|---|---|
 | `POST` | `/api/v1/plans/packages/from-idea-session/{idea_session_id}` | 从 idea session 创建 PlanPackage |
 | `GET` | `/api/v1/plans/packages/{package_id}` | 获取 PlanPackage |
-| `GET` | `/api/v1/plans/sessions/{plan_session_id}/package` | 按 plan session 获取 PlanPackage |
 | `GET` | `/api/v1/ideas/sessions/{idea_session_id}/plan-package` | 按 idea session 获取 PlanPackage |
 | `POST` | `/api/v1/plans/packages/{package_id}/validate` | 重新校验 PlanPackage |
-| `POST` | `/api/v1/plans/packages/{package_id}/to-research-plan` | 转成旧 ResearchPlan |
+| `POST` | `/api/v1/plans/packages/{package_id}/review` | 运行 reviewer committee |
+| `POST` | `/api/v1/plans/packages/{package_id}/feedback` | 写入人类反馈 |
+| `POST` | `/api/v1/plans/packages/{package_id}/revise` | 基于反馈和 reviewer 发现修订 PlanPackage |
+| `POST` | `/api/v1/plans/packages/{package_id}/approve` | 人工批准交付给后续模块 |
 
 创建请求支持：
 
@@ -227,13 +256,6 @@ backend/app/modules/platform/plan_packages_api.py
   "maxRepairRounds": 0,
   "userNotes": ""
 }
-```
-
-兼容字段：
-
-```text
-useLLM=true  -> generationMode=hybrid
-useLLM=false -> generationMode=deterministic
 ```
 
 默认值：
@@ -272,7 +294,7 @@ backend/app/modules/platform/router.py
 ```json
 {
   "packageId": "ppkg_xxx",
-  "schemaVersion": "plan-package/v2",
+  "schemaVersion": "plan-package/v4",
   "qualityGate": {},
   "package": {}
 }
@@ -291,6 +313,10 @@ backend/app/modules/platform/router.py
 - `principle`
 - `evidenceTrace`
 - `qualityGate`
+- `reviewReports`
+- `metaReview`
+- `humanFeedback`
+- `revisions`
 - `generation`
 - `sourceFields`
 - `rawIdeaOutputs`
@@ -303,16 +329,12 @@ stages[].steps[]
 
 不新增根级 `steps`。
 
-## 9. 兼容策略
+## 9. 单轨交付策略
 
-旧 plan 链路继续保留：
-
-- 旧 `PlanSession` API 不删除。
-- 旧 `CandidatePlan` API 不删除。
-- 旧 `ResearchPlan` API 不删除。
-- 新增 adapter：`PlanPackage -> ResearchPlan`。
-
-后续模块应优先消费 `PlanPackage`。如果旧模块暂时只能读取 `ResearchPlan`，可以通过 adapter 生成兼容对象。
+- idea session 选择最终 candidate。
+- plan 模块从 idea session 生成唯一的 `PlanPackage`。
+- code、paper、review、run 等后续模块直接消费 `PlanPackage`。
+- 不再创建、转换或持久化 `ResearchPlan`。
 
 ## 10. 验证方式
 
@@ -325,7 +347,27 @@ stages[].steps[]
 5. 创建 `/plans/packages/from-idea-session/{id}`。
 6. 检查 package 中实施计划字段和科研上下文字段是否同时存在。
 7. 调用 `/plans/packages/{package_id}/validate`。
-8. 检查 `qualityGate.errors` 和 `qualityGate.warnings`。
+8. 调用 `/plans/packages/{package_id}/review`，检查 `reviewReports/metaReview`。
+9. 如存在问题，调用 `/plans/packages/{package_id}/feedback` 写入用户反馈。
+10. 调用 `/plans/packages/{package_id}/revise` 基于反馈修订。
+11. 通过后调用 `/plans/packages/{package_id}/approve`，让 `status=approved`。
+
+`revise` 请求可传：
+
+```json
+{
+  "generationMode": "hybrid",
+  "reviewerMode": "hybrid",
+  "targetSections": ["stages", "expectedMetrics"],
+  "maxRepairRounds": 2
+}
+```
+
+`targetSections` 允许值：
+
+```text
+researchQuestion | hypothesis | constants | stages | expectedMetrics
+```
 
 ## 11. 当前约束
 
@@ -335,3 +377,4 @@ stages[].steps[]
 - `background/gap/principle/literatureSurvey/evidenceTrace` 来自 Idea v5 adapter，不由 Plan LLM 重写。
 - Step 5 probe papers 不并入 selected papers，只在 `literatureSurvey` 和 `evidenceTrace` 中独立标记。
 - `qualityGate.evidenceValid=false` 时仍返回 package，供前端展示和人工修正。
+- `agentApproved=true` 只表示 reviewer committee 通过；进入后续模块前仍建议 `humanApproved=true`。

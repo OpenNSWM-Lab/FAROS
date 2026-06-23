@@ -6,23 +6,23 @@ Scientific Responsibility:
 - Enforce state machine transitions
 - Coordinate between API and storage layers
 - Generate unique identifiers
-- Validate ResearchPlan linkage
+- Validate PlanPackage linkage
 """
 
 import uuid
 from typing import List, Optional
 from datetime import datetime
 
-from app.modules.platform.contracts import Run, RunStatus
-from app.modules.platform.contracts import RunCreate, RunUpdate
-from app.modules.platform.contracts import (
+from app.models.run import Run, RunStatus
+from app.schemas.run import RunCreate, RunUpdate
+from app.schemas.execution_summary import (
     ExecutionSummary,
     StatusStripBlock,
     LifecycleBlock,
     ComputePolicyBlock
 )
-from app.modules.platform.storage import get_run_storage
-from app.modules.platform.storage import get_plan_storage
+from app.storage.run_storage import get_storage as get_run_storage
+from app.storage.plan_package_storage import get_plan_package_storage
 
 
 class RunService:
@@ -32,13 +32,13 @@ class RunService:
     Enforces:
     - Unique ID generation
     - State machine validation
-    - ResearchPlan linkage verification
+    - PlanPackage linkage verification
     - Append-only semantics for terminal runs
     """
     
     def __init__(self):
         self.storage = get_run_storage()
-        self.plan_storage = get_plan_storage()
+        self.plan_storage = get_plan_package_storage()
     
     def create_run(self, run_data: RunCreate) -> Run:
         """
@@ -57,7 +57,7 @@ class RunService:
         if run_data.planId:
             plan = self.plan_storage.get(run_data.planId)
             if plan is None:
-                raise ValueError(f"ResearchPlan '{run_data.planId}' not found")
+                raise ValueError(f"PlanPackage '{run_data.planId}' not found")
         
         # Generate unique ID
         run_id = f"run_{uuid.uuid4().hex[:12]}"

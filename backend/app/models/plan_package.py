@@ -35,7 +35,6 @@ class PlanEvidenceRef(BaseModel):
 
 class PlanSource(BaseModel):
     ideaSessionId: str
-    planSessionId: Optional[str] = None
     ideaCandidateId: str
     rankedOutputId: Optional[str] = None
     searchTreeId: Optional[str] = None
@@ -44,7 +43,6 @@ class PlanSource(BaseModel):
     reasoningKgId: Optional[str] = None
     literatureMapId: Optional[str] = None
     bftsHandoffId: Optional[str] = None
-    selectedResearchPlanId: Optional[str] = None
 
 
 class PlanIdeaSummary(BaseModel):
@@ -86,6 +84,9 @@ class PlanLiteraturePaperSummary(BaseModel):
     venue: str = ""
     url: str = ""
     role: str = "background"
+    relevanceScore: float = Field(default=0.0, ge=0.0, le=1.0)
+    relevanceSignals: List[str] = Field(default_factory=list)
+    relevanceReason: str = ""
     summary: str
     methods: List[Dict[str, Any]] = Field(default_factory=list)
     findings: List[Dict[str, Any]] = Field(default_factory=list)
@@ -105,8 +106,14 @@ class PlanLiteratureSurvey(BaseModel):
 
 class PlanGapItem(BaseModel):
     id: str
+    kind: str = Field(default="supporting_signal", description="selected | supporting_signal | literature_limitation")
     statement: str
     severity: str = Field(default="medium")
+    existingCoverage: str = ""
+    unresolvedIssue: str = ""
+    proposedEntry: str = ""
+    boundary: str = ""
+    validationNeeds: List[str] = Field(default_factory=list)
     whyUnsolved: str = ""
     supportedByPaperIds: List[str] = Field(default_factory=list)
     supportedByClaimIds: List[str] = Field(default_factory=list)
@@ -141,6 +148,16 @@ class PlanPrinciple(BaseModel):
     reasoningPath: List[Dict[str, Any]] = Field(default_factory=list)
     graphGrounding: PlanGraphGrounding = Field(default_factory=PlanGraphGrounding)
     probeGrounding: PlanProbeGrounding = Field(default_factory=PlanProbeGrounding)
+
+
+class PlanContributionStatement(BaseModel):
+    id: str
+    type: str = Field(description="method | system | evaluation | analysis | application")
+    statement: str
+    noveltyBasis: str = ""
+    validationStageIds: List[str] = Field(default_factory=list)
+    validationStepIds: List[str] = Field(default_factory=list)
+    evidenceRefs: List[PlanEvidenceRef] = Field(default_factory=list)
 
 
 class PlanOutput(BaseModel):
@@ -204,19 +221,91 @@ class PlanDownstreamContract(BaseModel):
         "requiredOutputs": ["code", "checkpoint", "log", "metrics"],
     })
     paper: Dict[str, Any] = Field(default_factory=lambda: {
-        "consume": ["background", "literatureSurvey", "gap", "principle", "stages", "evidenceTrace"],
+        "consume": ["background", "literatureSurvey", "gap", "principle", "contributionStatement", "stages", "evidenceTrace"],
         "requiredOutputs": ["table", "chart", "report"],
     })
     review: Dict[str, Any] = Field(default_factory=lambda: {
-        "consume": ["idea", "gap", "principle", "qualityGate", "evidenceTrace"],
+        "consume": ["idea", "gap", "principle", "contributionStatement", "qualityGate", "evidenceTrace"],
         "requiredOutputs": ["report"],
     })
+
+
+class PlanPackageStatus(str, Enum):
+    DRAFT = "draft"
+    AGENT_REVIEWING = "agent_reviewing"
+    NEEDS_REVISION = "needs_revision"
+    NEEDS_HUMAN_REVIEW = "needs_human_review"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+
+
+class PlanHumanFeedback(BaseModel):
+    id: str
+    sectionPath: str
+    feedbackType: str = Field(
+        default="comment",
+        description="comment | correction | reject | regenerate | approve",
+    )
+    comment: str
+    severity: str = Field(default="medium", description="low | medium | high | blocking")
+    requestedAction: str = Field(default="revise")
+    createdAt: datetime = Field(default_factory=_utcnow)
+    resolved: bool = False
+    resolvedByRevisionId: Optional[str] = None
+
+
+class PlanRevision(BaseModel):
+    id: str
+    parentPackageId: str
+    createdAt: datetime = Field(default_factory=_utcnow)
+    changedSections: List[str] = Field(default_factory=list)
+    feedbackIds: List[str] = Field(default_factory=list)
+    summary: str = ""
+    generationMode: str = ""
+    repairRounds: int = 0
+
+
+class PlanReviewerIssue(BaseModel):
+    id: str
+    severity: str = Field(default="warning", description="info | warning | blocking")
+    sectionPath: str = ""
+    message: str
+    evidenceRefs: List[PlanEvidenceRef] = Field(default_factory=list)
+
+
+class PlanReviewerReport(BaseModel):
+    reviewer: str
+    score: float = Field(default=0.0, ge=0.0, le=1.0)
+    passed: bool = False
+    blockingIssues: List[PlanReviewerIssue] = Field(default_factory=list)
+    warnings: List[PlanReviewerIssue] = Field(default_factory=list)
+    repairSuggestions: List[str] = Field(default_factory=list)
+    evidenceRefs: List[PlanEvidenceRef] = Field(default_factory=list)
+    createdAt: datetime = Field(default_factory=_utcnow)
+
+
+class PlanMetaReview(BaseModel):
+    overallScore: float = Field(default=0.0, ge=0.0, le=1.0)
+    decision: str = Field(default="revise", description="approve | revise | reject")
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    blockingIssues: List[PlanReviewerIssue] = Field(default_factory=list)
+    warnings: List[PlanReviewerIssue] = Field(default_factory=list)
+    requiredRepairs: List[str] = Field(default_factory=list)
+    reviewerScores: Dict[str, float] = Field(default_factory=dict)
+    createdAt: datetime = Field(default_factory=_utcnow)
 
 
 class PlanQualityGate(BaseModel):
     schemaValid: bool = False
     evidenceValid: bool = False
+    topicRelevant: bool = False
+    citationFaithful: bool = False
+    planSpecific: bool = False
+    agentApproved: bool = False
+    humanApproved: bool = False
     implementationReady: bool = False
+    overallScore: float = Field(default=0.0, ge=0.0, le=1.0)
+    reviewDecision: str = Field(default="draft")
     warnings: List[str] = Field(default_factory=list)
     errors: List[str] = Field(default_factory=list)
 
@@ -227,6 +316,8 @@ class PlanGenerationMetadata(BaseModel):
     model: Optional[str] = None
     promptVersion: str = ""
     llmUsedSections: List[str] = Field(default_factory=list)
+    reviewerMode: str = Field(default="hybrid", description="deterministic | hybrid")
+    llmReviewerUsed: bool = False
     repairRounds: int = 0
     fallbackUsed: bool = False
     warnings: List[str] = Field(default_factory=list)
@@ -238,6 +329,7 @@ class PlanSourceFieldMap(BaseModel):
     literatureSurvey: List[str] = Field(default_factory=list)
     gap: List[str] = Field(default_factory=list)
     principle: List[str] = Field(default_factory=list)
+    contributionStatement: List[str] = Field(default_factory=list)
     evidenceTrace: List[str] = Field(default_factory=list)
     implementationPlan: List[str] = Field(default_factory=list)
 
@@ -245,15 +337,17 @@ class PlanSourceFieldMap(BaseModel):
 class PlanPackage(BaseModel):
     """Complete idea+plan deliverable consumed by downstream modules."""
 
-    schemaVersion: str = Field(default="plan-package/v2")
+    schemaVersion: str = Field(default="plan-package/v4")
     packageId: str
     createdAt: datetime = Field(default_factory=_utcnow)
+    status: PlanPackageStatus = PlanPackageStatus.DRAFT
     source: PlanSource
     idea: PlanIdeaSummary
     background: PlanBackground
     literatureSurvey: PlanLiteratureSurvey
     gap: PlanGap
     principle: PlanPrinciple
+    contributionStatement: List[PlanContributionStatement] = Field(default_factory=list)
     researchQuestion: str
     hypothesis: str = ""
     constants: Dict[str, Any] = Field(default_factory=dict)
@@ -262,6 +356,10 @@ class PlanPackage(BaseModel):
     downstreamContract: PlanDownstreamContract = Field(default_factory=PlanDownstreamContract)
     qualityGate: PlanQualityGate = Field(default_factory=PlanQualityGate)
     generation: PlanGenerationMetadata = Field(default_factory=PlanGenerationMetadata)
+    humanFeedback: List[PlanHumanFeedback] = Field(default_factory=list)
+    revisions: List[PlanRevision] = Field(default_factory=list)
+    reviewReports: List[PlanReviewerReport] = Field(default_factory=list)
+    metaReview: Optional[PlanMetaReview] = None
     sourceFields: PlanSourceFieldMap = Field(default_factory=PlanSourceFieldMap)
     rawIdeaOutputs: Dict[str, Any] = Field(default_factory=dict)
 

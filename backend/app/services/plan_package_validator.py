@@ -235,9 +235,72 @@ def validate_plan_package(package: PlanPackage) -> PlanQualityGate:
         if ref not in step_ids:
             schema_errors.append(f"{step_id}.inputFrom references unknown step: {ref}")
 
+    if not package.contributionStatement:
+        schema_errors.append("contributionStatement must contain at least one contribution")
+    contribution_ids: set[str] = set()
+    allowed_contribution_types = {"method", "system", "evaluation", "analysis", "application"}
+    for contribution in package.contributionStatement:
+        if contribution.id in contribution_ids:
+            schema_errors.append(f"duplicate contribution id: {contribution.id}")
+        contribution_ids.add(contribution.id)
+        if not _has_text(contribution.id):
+            schema_errors.append("contributionStatement[].id is required")
+        if contribution.type not in allowed_contribution_types:
+            schema_errors.append(
+                f"{contribution.id}.type is invalid: {contribution.type}"
+            )
+        if not _has_text(contribution.statement):
+            schema_errors.append(f"{contribution.id}.statement is required")
+        if _contains_executed_result_language(contribution.statement):
+            evidence_errors.append(f"{contribution.id}.statement appears to claim executed results")
+        if not contribution.validationStageIds:
+            schema_errors.append(f"{contribution.id}.validationStageIds must not be empty")
+        if not contribution.validationStepIds:
+            schema_errors.append(f"{contribution.id}.validationStepIds must not be empty")
+        for stage_id in contribution.validationStageIds:
+            if stage_id not in stage_ids:
+                schema_errors.append(
+                    f"{contribution.id}.validationStageIds references unknown stage: {stage_id}"
+                )
+        for step_id in contribution.validationStepIds:
+            if step_id not in step_ids:
+                schema_errors.append(
+                    f"{contribution.id}.validationStepIds references unknown step: {step_id}"
+                )
+        if not contribution.evidenceRefs:
+            warnings.append(f"{contribution.id} has no evidenceRefs")
+        for ref in contribution.evidenceRefs:
+            if ref.type not in allowed_evidence_ids:
+                evidence_errors.append(
+                    f"{contribution.id}.evidenceRefs has unsupported type: {ref.type}"
+                )
+            elif ref.id not in allowed_evidence_ids[ref.type]:
+                evidence_errors.append(
+                    f"{contribution.id}.evidenceRefs references unknown {ref.type}: {ref.id}"
+                )
+
     gap_ids = {item.id for item in package.gap.items}
     if package.gap.selectedGapId not in gap_ids:
         schema_errors.append("gap.selectedGapId must reference gap.items[].id")
+    selected_gap = next(
+        (item for item in package.gap.items if item.id == package.gap.selectedGapId),
+        None,
+    )
+    if selected_gap:
+        if selected_gap.kind != "selected":
+            schema_errors.append("gap.selectedGapId must reference an item with kind=selected")
+        if not _has_text(selected_gap.existingCoverage):
+            schema_errors.append("selected GAP must explain existingCoverage")
+        if not _has_text(selected_gap.unresolvedIssue):
+            schema_errors.append("selected GAP must explain unresolvedIssue")
+        if not _has_text(selected_gap.proposedEntry):
+            schema_errors.append("selected GAP must explain proposedEntry")
+        if not _has_text(selected_gap.boundary):
+            schema_errors.append("selected GAP must define its boundary")
+        if not selected_gap.validationNeeds:
+            schema_errors.append("selected GAP must define validationNeeds")
+        if not selected_gap.supportedByPaperIds and not selected_gap.supportedByClaimIds:
+            evidence_errors.append("selected GAP must reference paper or claim evidence")
 
     paper_ids = {paper.paperId for paper in package.literatureSurvey.papers}
     structured_ids = {
@@ -299,6 +362,10 @@ def validate_plan_package(package: PlanPackage) -> PlanQualityGate:
         for paper in package.literatureSurvey.papers:
             if not _has_text(paper.summary):
                 evidence_errors.append(f"literatureSurvey.papers[{paper.paperId}].summary is required")
+            if paper.relevanceReason and paper.relevanceScore < 0.25:
+                warnings.append(
+                    f"literatureSurvey.papers[{paper.paperId}] has low topic relevance: {paper.relevanceReason}"
+                )
 
     topic_terms = _topic_terms(package)
     if len(topic_terms) >= 4:
@@ -316,6 +383,27 @@ def validate_plan_package(package: PlanPackage) -> PlanQualityGate:
             warnings.append(
                 "literatureSurvey.papers[] has weak topic alignment; verify the upstream search corpus"
             )
+
+        if selected_gap and selected_gap.supportedByPaperIds:
+            paper_by_id = {paper.paperId: paper for paper in package.literatureSurvey.papers}
+            support_scores = [
+                paper_by_id[paper_id].relevanceScore
+                for paper_id in selected_gap.supportedByPaperIds
+                if paper_id in paper_by_id
+                and (
+                    paper_by_id[paper_id].relevanceReason
+                    or paper_by_id[paper_id].relevanceSignals
+                    or paper_by_id[paper_id].relevanceScore > 0
+                )
+            ]
+            if support_scores and max(support_scores) < 0.35:
+                evidence_errors.append(
+                    "selected GAP is supported only by low-relevance literatureSurvey papers"
+                )
+            elif support_scores and max(support_scores) < 0.55:
+                warnings.append(
+                    "selected GAP literature support is weakly relevant; ask for human confirmation"
+                )
 
         plan_chunks: list[str] = []
         for stage in package.stages:
