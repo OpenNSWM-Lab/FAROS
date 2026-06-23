@@ -364,3 +364,142 @@ class PlanPackage(BaseModel):
     rawIdeaOutputs: Dict[str, Any] = Field(default_factory=dict)
 
     model_config = ConfigDict(frozen=False)
+
+
+class PlanReadablePaper(BaseModel):
+    paperId: str
+    title: str = ""
+    source: str = ""
+    relevanceScore: float = Field(default=0.0, ge=0.0, le=1.0)
+    summary: str = ""
+    methods: List[str] = Field(default_factory=list)
+    findings: List[str] = Field(default_factory=list)
+    limitations: List[str] = Field(default_factory=list)
+    supports: List[str] = Field(default_factory=list)
+
+
+class PlanReadableStep(BaseModel):
+    id: str
+    order: int
+    title: str
+    description: str
+    method: str
+    outputs: List[Dict[str, str]] = Field(default_factory=list)
+    expected: List[Dict[str, str]] = Field(default_factory=list)
+
+
+class PlanReadableStage(BaseModel):
+    id: str
+    order: int
+    title: str
+    goal: str
+    method: str
+    dependsOn: List[str] = Field(default_factory=list)
+    steps: List[PlanReadableStep] = Field(default_factory=list)
+
+
+class PlanPresentationBackground(BaseModel):
+    summary: str = ""
+    whyValuable: str = ""
+    currentLimitations: List[str] = Field(default_factory=list)
+    scope: List[str] = Field(default_factory=list)
+
+
+class PlanPresentationGap(BaseModel):
+    statement: str = ""
+    existingCoverage: str = ""
+    unresolvedIssue: str = ""
+    proposedEntry: str = ""
+    boundary: str = ""
+    validationNeeds: List[str] = Field(default_factory=list)
+
+
+class PlanPresentationMethod(BaseModel):
+    principle: str = ""
+    mechanism: str = ""
+    noveltyClaim: str = ""
+    contributions: List[str] = Field(default_factory=list)
+    assumptions: List[str] = Field(default_factory=list)
+    risks: List[str] = Field(default_factory=list)
+
+
+class PlanPresentationLiterature(BaseModel):
+    summary: str = ""
+    keyPapers: List[PlanReadablePaper] = Field(default_factory=list)
+    weakOrUnconfirmedPapers: List[PlanReadablePaper] = Field(default_factory=list)
+
+
+class PlanPresentationEvidenceSummary(BaseModel):
+    confidence: str = Field(default="medium", description="high | medium | low")
+    summary: str = ""
+    supportingPapers: List[PlanReadablePaper] = Field(default_factory=list)
+    weakPoints: List[str] = Field(default_factory=list)
+
+
+class PlanPresentationReviewSummary(BaseModel):
+    decision: str = ""
+    score: float = Field(default=0.0, ge=0.0, le=1.0)
+    mainConcerns: List[str] = Field(default_factory=list)
+    requiredFixes: List[str] = Field(default_factory=list)
+    reviewerMode: str = ""
+    llmReviewerUsed: bool = False
+
+
+class PlanPresentationDebugRef(BaseModel):
+    fullPackageEndpoint: str = ""
+    packageId: str = ""
+    ideaSessionId: str = ""
+    ideaCandidateId: str = ""
+
+
+class PlanPackagePresentation(BaseModel):
+    """Human-readable PlanPackage view for product UI."""
+
+    schemaVersion: str = Field(default="plan-package-presentation/v1")
+    packageId: str
+    packageStatus: str = ""
+    title: str = ""
+    executiveSummary: str = ""
+    researchQuestion: str = ""
+    hypothesis: str = ""
+    background: PlanPresentationBackground = Field(default_factory=PlanPresentationBackground)
+    gap: PlanPresentationGap = Field(default_factory=PlanPresentationGap)
+    method: PlanPresentationMethod = Field(default_factory=PlanPresentationMethod)
+    literature: PlanPresentationLiterature = Field(default_factory=PlanPresentationLiterature)
+    implementationPlan: List[PlanReadableStage] = Field(default_factory=list)
+    evidenceSummary: PlanPresentationEvidenceSummary = Field(default_factory=PlanPresentationEvidenceSummary)
+    reviewSummary: PlanPresentationReviewSummary = Field(default_factory=PlanPresentationReviewSummary)
+    nextActions: List[str] = Field(default_factory=list)
+    debug: PlanPresentationDebugRef = Field(default_factory=PlanPresentationDebugRef)
+
+
+class PlanHandoffEvidenceTrace(BaseModel):
+    ideaCandidateId: str
+    searchNodeId: Optional[str] = None
+    pathSeedId: Optional[str] = None
+    reasoningKgId: Optional[str] = None
+    literatureMapId: Optional[str] = None
+    selectedPaperIds: List[str] = Field(default_factory=list)
+    structuredPaperIds: List[str] = Field(default_factory=list)
+    probePaperIds: List[str] = Field(default_factory=list)
+
+
+class PlanPackageHandoff(BaseModel):
+    """Compact machine-oriented handoff for downstream modules."""
+
+    schemaVersion: str = Field(default="plan-package-handoff/v1")
+    packageId: str
+    status: str = ""
+    idea: PlanIdeaSummary
+    researchQuestion: str
+    hypothesis: str = ""
+    constants: Dict[str, Any] = Field(default_factory=dict)
+    backgroundSummary: str = ""
+    selectedGap: PlanGapItem
+    principle: PlanPrinciple
+    contributionStatement: List[PlanContributionStatement] = Field(default_factory=list)
+    keyPapers: List[PlanReadablePaper] = Field(default_factory=list)
+    stages: List[PlanStage] = Field(default_factory=list)
+    qualityGate: PlanQualityGate = Field(default_factory=PlanQualityGate)
+    evidenceTrace: PlanHandoffEvidenceTrace
+    downstreamContract: PlanDownstreamContract = Field(default_factory=PlanDownstreamContract)

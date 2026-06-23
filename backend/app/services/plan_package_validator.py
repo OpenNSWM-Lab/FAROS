@@ -451,11 +451,11 @@ def validate_plan_package(package: PlanPackage) -> PlanQualityGate:
         illegal_sections = [
             section
             for section in package.generation.llmUsedSections
-            if section != "implementationPlan"
+            if section not in {"implementationPlan", "feedbackNarrative"}
         ]
         if illegal_sections:
             evidence_errors.append(
-                "LLM generation may only write implementationPlan fields, got: "
+                "LLM generation may only write implementationPlan or feedbackNarrative fields, got: "
                 + ", ".join(illegal_sections)
             )
         if not any(ref_type == "gap" and ref_id == package.gap.selectedGapId for _, ref_type, ref_id in all_step_evidence_refs):

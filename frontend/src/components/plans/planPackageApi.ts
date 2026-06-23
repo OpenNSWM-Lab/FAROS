@@ -300,6 +300,116 @@ export interface PlanPackage {
   rawIdeaOutputs: Record<string, unknown>
 }
 
+export interface PlanReadablePaper {
+  paperId: string
+  title: string
+  source: string
+  relevanceScore: number
+  summary: string
+  methods: string[]
+  findings: string[]
+  limitations: string[]
+  supports: string[]
+}
+
+export interface PlanReadableStep {
+  id: string
+  order: number
+  title: string
+  description: string
+  method: string
+  outputs: Array<Record<string, string>>
+  expected: Array<Record<string, string>>
+}
+
+export interface PlanReadableStage {
+  id: string
+  order: number
+  title: string
+  goal: string
+  method: string
+  dependsOn: string[]
+  steps: PlanReadableStep[]
+}
+
+export interface PlanPackagePresentation {
+  schemaVersion: string
+  packageId: string
+  packageStatus: string
+  title: string
+  executiveSummary: string
+  researchQuestion: string
+  hypothesis: string
+  background: {
+    summary: string
+    whyValuable: string
+    currentLimitations: string[]
+    scope: string[]
+  }
+  gap: {
+    statement: string
+    existingCoverage: string
+    unresolvedIssue: string
+    proposedEntry: string
+    boundary: string
+    validationNeeds: string[]
+  }
+  method: {
+    principle: string
+    mechanism: string
+    noveltyClaim: string
+    contributions: string[]
+    assumptions: string[]
+    risks: string[]
+  }
+  literature: {
+    summary: string
+    keyPapers: PlanReadablePaper[]
+    weakOrUnconfirmedPapers: PlanReadablePaper[]
+  }
+  implementationPlan: PlanReadableStage[]
+  evidenceSummary: {
+    confidence: string
+    summary: string
+    supportingPapers: PlanReadablePaper[]
+    weakPoints: string[]
+  }
+  reviewSummary: {
+    decision: string
+    score: number
+    mainConcerns: string[]
+    requiredFixes: string[]
+    reviewerMode: string
+    llmReviewerUsed: boolean
+  }
+  nextActions: string[]
+  debug: {
+    fullPackageEndpoint: string
+    packageId: string
+    ideaSessionId: string
+    ideaCandidateId: string
+  }
+}
+
+export interface PlanPackageHandoff {
+  schemaVersion: string
+  packageId: string
+  status: string
+  idea: PlanIdeaSummary
+  researchQuestion: string
+  hypothesis: string
+  constants: Record<string, unknown>
+  backgroundSummary: string
+  selectedGap: PlanGapItem
+  principle: PlanPrinciple
+  contributionStatement: PlanContributionStatement[]
+  keyPapers: PlanReadablePaper[]
+  stages: PlanStage[]
+  qualityGate: PlanQualityGate
+  evidenceTrace: Record<string, unknown>
+  downstreamContract: Record<string, unknown>
+}
+
 export interface CreatePlanPackageRequest {
   candidateId?: string
   maxStages?: number
@@ -372,8 +482,20 @@ export function getPlanPackage(packageId: string): Promise<PlanPackage> {
   return requestJson<PlanPackage>(`/api/v1/plans/packages/${encodeURIComponent(packageId)}`)
 }
 
+export function getPlanPackagePresentation(packageId: string): Promise<PlanPackagePresentation> {
+  return requestJson<PlanPackagePresentation>(`/api/v1/plans/packages/${encodeURIComponent(packageId)}/presentation`)
+}
+
+export function getPlanPackageHandoff(packageId: string): Promise<PlanPackageHandoff> {
+  return requestJson<PlanPackageHandoff>(`/api/v1/plans/packages/${encodeURIComponent(packageId)}/handoff`)
+}
+
 export function getPlanPackageByIdeaSession(ideaSessionId: string): Promise<PlanPackage> {
   return requestJson<PlanPackage>(`/api/v1/ideas/sessions/${encodeURIComponent(ideaSessionId)}/plan-package`)
+}
+
+export function getPlanPackagePresentationByIdeaSession(ideaSessionId: string): Promise<PlanPackagePresentation> {
+  return requestJson<PlanPackagePresentation>(`/api/v1/ideas/sessions/${encodeURIComponent(ideaSessionId)}/plan-package/presentation`)
 }
 
 export function validatePlanPackage(packageId: string): Promise<ValidatePlanPackageResponse> {

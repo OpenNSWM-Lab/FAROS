@@ -1,4 +1,4 @@
-"""Deterministic reviewer committee for PlanPackage quality control."""
+"""Hybrid reviewer committee for PlanPackage quality control."""
 
 from __future__ import annotations
 
@@ -121,6 +121,33 @@ def _make_report(
         warnings=warnings,
         repairSuggestions=suggestions,
         evidenceRefs=list(evidence_refs or []),
+    )
+
+
+def _dedupe_text(items: Iterable[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for item in items:
+        text = str(item or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        result.append(text)
+    return result
+
+
+def _merge_rule_and_llm_report(rule_report: PlanReviewerReport, llm_report: PlanReviewerReport) -> PlanReviewerReport:
+    """Merge deterministic rule checks with the same-dimension LLM semantic review."""
+
+    score = _clamp_score(0.45 * rule_report.score + 0.55 * llm_report.score)
+    return PlanReviewerReport(
+        reviewer=rule_report.reviewer,
+        score=score,
+        passed=rule_report.passed and llm_report.passed,
+        blockingIssues=[*rule_report.blockingIssues, *llm_report.blockingIssues],
+        warnings=[*rule_report.warnings, *llm_report.warnings],
+        repairSuggestions=_dedupe_text([*rule_report.repairSuggestions, *llm_report.repairSuggestions]),
+        evidenceRefs=[*rule_report.evidenceRefs, *llm_report.evidenceRefs],
     )
 
 
@@ -398,8 +425,25 @@ def run_plan_package_review(
     package: PlanPackage,
     extra_reports: Optional[List[PlanReviewerReport]] = None,
 ) -> tuple[list[PlanReviewerReport], PlanMetaReview]:
-    reports = [reviewer(package) for reviewer in REVIEWERS]
-    reports.extend(extra_reports or [])
+    rule_reports = [reviewer(package) for reviewer in REVIEWERS]
+    extra_by_reviewer = {
+        report.reviewer: report
+        for report in (extra_reports or [])
+    }
+    merged_names: set[str] = set()
+    reports: list[PlanReviewerReport] = []
+    for report in rule_reports:
+        extra = extra_by_reviewer.get(report.reviewer)
+        if extra:
+            reports.append(_merge_rule_and_llm_report(report, extra))
+            merged_names.add(report.reviewer)
+        else:
+            reports.append(report)
+    reports.extend(
+        report
+        for report in (extra_reports or [])
+        if report.reviewer not in merged_names
+    )
     blocking = [
         issue
         for report in reports

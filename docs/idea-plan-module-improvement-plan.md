@@ -12,6 +12,12 @@ docs/FAROS-Idea-Module-Plan-v5.pdf
 docs/idea-plan-output-template-design.md
 ```
 
+后续模块接入指南见：
+
+```text
+docs/idea-plan-downstream-handoff-guide.md
+```
+
 ## 1. 改动目标
 
 本次改动聚焦两件事：
@@ -147,7 +153,8 @@ backend/app/services/plan_package_reviewers.py
    - `hybrid`：调用 LLM 生成 `researchQuestion/hypothesis/constants/stages`。
 5. 调用 validator 生成基础 `qualityGate`。
 6. 调用 reviewer committee 生成 `reviewReports/metaReview`。
-7. 根据 reviewer 结果设置 `status`：通过 agent 审核则进入 `needs_human_review`，否则进入 `needs_revision`。
+7. 如果 reviewer 发现可由 plan 字段修复的问题，自动进入 repair loop 重新生成 `researchQuestion/hypothesis/constants/stages/expectedMetrics`。
+8. 根据 repair 后 reviewer 结果设置 `status`：通过 agent 审核则进入 `needs_human_review`，否则进入 `needs_revision`。
 8. 持久化 package。
 
 ### 5.2 `PlanPackageBuilder`
@@ -167,8 +174,8 @@ backend/app/services/plan_package_reviewers.py
 
 关键约束：
 
-- `background/gap/principle` 不由 Plan LLM 重新生成，只从 Idea v5 产物 adapter 映射。
-- Plan LLM 只允许生成或优化 `researchQuestion/hypothesis/constants/stages`。
+- `background/gap/principle` 默认从 Idea v5 产物 adapter 映射。
+- Plan LLM 默认只生成或优化 `researchQuestion/hypothesis/constants/stages`；在人类反馈明确指向时，可受控修订 `background/gap/principle` 的文字表达。
 - LLM 不能伪造 paper / claim / KG / probe / graph patch ID。
 - LLM 失败时自动回退到 deterministic stages，并在 `generation.fallbackUsed` 和 `qualityGate.warnings` 中记录。
 
@@ -205,14 +212,16 @@ PlanPackage.qualityGate
 - `FeasibilityReviewer`：检查 stages/steps 是否足够具体，是否能交给 code/experiment 模块。
 - `MetricReviewer`：检查 expected metrics 是否具体可验证。
 - `NoveltyReviewer`：检查 selected GAP、novelty claim、contribution statement 是否清晰。
-- `LLMResearchReviewer`：在 `reviewerMode=hybrid` 时追加运行，用 LLM 判断研究逻辑、GAP/novelty、证据忠实度和计划具体性。
+- `reviewerMode=hybrid` 时，上述 5 个方向各自追加一次同方向 LLM semantic review，并与规则分数/问题合并为同一个 reviewer report。
 - `MetaReviewer`：汇总 reviewer 分数、blocking issues、repair suggestions，并给出 `approve/revise/reject` 决策。
 - reviewer blocking issues 会进入 LLM repair prompt，修订不再只依赖 JSON 解析成功。
+- plan-owned reviewer findings 会自动触发 repair loop；用户不需要手动点 Review/Revise。
+- idea/GAP/证据/novelty 这类上游质量问题前置到 idea Step 6 的 review gate。该 gate 不只是筛掉差候选，还会把 critique、prior-work comparison、evidence warning 转成 feedback optimization，生成更强候选后重新评分和排序。
 
 reviewer 模式：
 
 ```text
-hybrid = 规则 reviewer + LLMResearchReviewer，默认审核路径，适合正式交付前质量审核
+hybrid = 每个方向 reviewer 都执行 rule check + focused LLM semantic review，默认审核路径，适合正式交付前质量审核
 deterministic = 只运行规则 reviewer，稳定、低成本，适合离线测试或节省 token
 ```
 
@@ -237,8 +246,11 @@ backend/app/modules/platform/plan_packages_api.py
 | 方法 | 路径 | 用途 |
 |---|---|---|
 | `POST` | `/api/v1/plans/packages/from-idea-session/{idea_session_id}` | 从 idea session 创建 PlanPackage |
-| `GET` | `/api/v1/plans/packages/{package_id}` | 获取 PlanPackage |
-| `GET` | `/api/v1/ideas/sessions/{idea_session_id}/plan-package` | 按 idea session 获取 PlanPackage |
+| `GET` | `/api/v1/plans/packages/{package_id}` | 获取完整 PlanPackage，仅用于 Debug / Audit |
+| `GET` | `/api/v1/plans/packages/{package_id}/presentation` | 获取用户可读展示视图 |
+| `GET` | `/api/v1/plans/packages/{package_id}/handoff` | 获取后续模块精简 handoff 视图 |
+| `GET` | `/api/v1/ideas/sessions/{idea_session_id}/plan-package` | 按 idea session 获取完整 PlanPackage |
+| `GET` | `/api/v1/ideas/sessions/{idea_session_id}/plan-package/presentation` | 按 idea session 获取用户可读展示视图 |
 | `POST` | `/api/v1/plans/packages/{package_id}/validate` | 重新校验 PlanPackage |
 | `POST` | `/api/v1/plans/packages/{package_id}/review` | 运行 reviewer committee |
 | `POST` | `/api/v1/plans/packages/{package_id}/feedback` | 写入人类反馈 |
@@ -333,7 +345,11 @@ stages[].steps[]
 
 - idea session 选择最终 candidate。
 - plan 模块从 idea session 生成唯一的 `PlanPackage`。
-- code、paper、review、run 等后续模块直接消费 `PlanPackage`。
+- 完整 `PlanPackage` 作为内部事实来源保留。
+- 前端默认展示 `PlanPackagePresentation`，避免把 raw ID、sourceFields、review object 和 raw graph payload 暴露给用户。
+- 前端主流程不暴露 `Validate/Review/Revise` 内部质检按钮；这些质量门在生成、反馈修订和批准前自动执行，API 端点保留给调试、自动化测试和后续服务编排。
+- reviewer 发现 plan-owned 问题时会自动修复并重新审核；idea-owned 问题应由 idea Step 6 review gate 影响 candidate 排名，并在有 critique/suggestion/evidence warning 时触发候选反馈优化。
+- code、paper、review、run 等后续模块默认消费 `PlanPackageHandoff`。
 - 不再创建、转换或持久化 `ResearchPlan`。
 
 ## 10. 验证方式
@@ -345,12 +361,13 @@ stages[].steps[]
 3. 启动 idea pipeline。
 4. 获取 `/ideas/sessions/{id}/candidates`，确认 v5 candidate 字段存在。
 5. 创建 `/plans/packages/from-idea-session/{id}`。
-6. 检查 package 中实施计划字段和科研上下文字段是否同时存在。
-7. 调用 `/plans/packages/{package_id}/validate`。
-8. 调用 `/plans/packages/{package_id}/review`，检查 `reviewReports/metaReview`。
-9. 如存在问题，调用 `/plans/packages/{package_id}/feedback` 写入用户反馈。
-10. 调用 `/plans/packages/{package_id}/revise` 基于反馈修订。
-11. 通过后调用 `/plans/packages/{package_id}/approve`，让 `status=approved`。
+6. 打开 `/plans/packages/{package_id}/presentation`，检查用户可读展示内容。
+7. 打开 `/plans/packages/{package_id}/handoff`，检查下游模块精简交付字段。
+8. 调用 `/plans/packages/{package_id}/validate`。
+9. 调用 `/plans/packages/{package_id}/review`，检查 `reviewReports/metaReview`。
+10. 如存在问题，调用 `/plans/packages/{package_id}/feedback` 写入用户自然语言反馈。
+11. 调用 `/plans/packages/{package_id}/revise` 基于反馈修订；不传 `targetSections` 时由后端根据未解决反馈自动推断修订范围。
+12. 通过后调用 `/plans/packages/{package_id}/approve`，让 `status=approved`。
 
 `revise` 请求可传：
 
@@ -366,15 +383,25 @@ stages[].steps[]
 `targetSections` 允许值：
 
 ```text
-researchQuestion | hypothesis | constants | stages | expectedMetrics
+researchQuestion | hypothesis | constants | stages | expectedMetrics | background | gap | principle
 ```
+
+前端默认不暴露 `targetSections`，用户只需要写自然语言意见并触发修订。服务端会根据反馈内容自动推断：
+
+- 研究问题、场景、边界相关反馈 -> `researchQuestion`
+- 假设、预期提升相关反馈 -> `hypothesis`
+- 数据集、模型、硬件、约束相关反馈 -> `constants`
+- 实施计划、实验步骤、对比/消融相关反馈 -> `stages`
+- 指标、输出、评估相关反馈 -> `expectedMetrics`
+- 背景、GAP、原理相关反馈 -> 对应修订 `background/gap/principle` 的表达
 
 ## 11. 当前约束
 
 - `generationMode=hybrid` 是默认路径，会调用 LLM 生成实施计划字段。
 - `generationMode=deterministic` 关闭 Plan LLM，只使用规则 fallback stages。
-- Plan LLM 只允许写 `researchQuestion/hypothesis/constants/stages`。
-- `background/gap/principle/literatureSurvey/evidenceTrace` 来自 Idea v5 adapter，不由 Plan LLM 重写。
+- Plan LLM 默认只写 `researchQuestion/hypothesis/constants/stages`。
+- 人类反馈明确要求时，Plan LLM 可受控修订 `background/gap/principle` 的文字表达，但不能新增、删除或伪造 paper / claim / KG / probe / graph patch ID。
+- `literatureSurvey/evidenceTrace/sourceFields/rawIdeaOutputs` 来自 Idea v5 adapter，始终不由 Plan LLM 重写。
 - Step 5 probe papers 不并入 selected papers，只在 `literatureSurvey` 和 `evidenceTrace` 中独立标记。
 - `qualityGate.evidenceValid=false` 时仍返回 package，供前端展示和人工修正。
 - `agentApproved=true` 只表示 reviewer committee 通过；进入后续模块前仍建议 `humanApproved=true`。

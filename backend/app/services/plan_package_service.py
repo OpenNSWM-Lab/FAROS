@@ -16,6 +16,8 @@ from app.models.plan_package import (
     PlanHumanFeedback,
     PlanOutput,
     PlanPackage,
+    PlanPackageHandoff,
+    PlanPackagePresentation,
     PlanPackageStatus,
     PlanReviewerIssue,
     PlanReviewerReport,
@@ -26,6 +28,7 @@ from app.models.plan_package import (
 from app.services.plan_package_builder import build_contribution_statements, build_plan_package
 from app.services.plan_package_reviewers import apply_review_to_quality_gate
 from app.services.plan_package_validator import validate_plan_package
+from app.services.plan_package_views import build_plan_package_handoff, build_plan_package_presentation
 from app.storage.idea_storage import (
     get_candidate_storage as get_idea_candidate_storage,
     get_graph_patch_storage,
@@ -51,6 +54,50 @@ class PlanPackageNotFoundError(ValueError):
 
 class PlanPackageConflictError(ValueError):
     pass
+
+
+LLM_REVIEWER_FOCUS: Dict[str, Dict[str, Any]] = {
+    "RelevanceReviewer": {
+        "dimension": "topic and literature relevance",
+        "checklist": [
+            "Judge whether the researchQuestion, selected GAP, principle, and stages preserve the original seed topic.",
+            "Judge whether key papers are truly relevant, not just loosely related through generic NLP/LLM terms.",
+            "Block if the plan drifts to a different research problem.",
+        ],
+    },
+    "EvidenceReviewer": {
+        "dimension": "evidence faithfulness and grounding",
+        "checklist": [
+            "Judge whether selectedGap is actually supported by cited paper limitations, claims, KG signals, or probe evidence.",
+            "Judge whether step evidenceRefs are meaningful for the step, not merely present.",
+            "Block if the package makes unsupported claims or invents evidence.",
+        ],
+    },
+    "FeasibilityReviewer": {
+        "dimension": "implementation and research-plan feasibility",
+        "checklist": [
+            "Judge whether stages and steps are concrete enough for code/experiment modules to execute later.",
+            "Judge whether datasets, baselines, variables, artifacts, and dependencies are clear enough.",
+            "Block if the plan is generic, circular, or impossible to operationalize.",
+        ],
+    },
+    "MetricReviewer": {
+        "dimension": "metric and validation design",
+        "checklist": [
+            "Judge whether expected metrics can validate the hypothesis and selected GAP.",
+            "Judge whether targets are measurable without claiming executed results.",
+            "Block if metrics are generic, mismatched to the method, or cannot test the hypothesis.",
+        ],
+    },
+    "NoveltyReviewer": {
+        "dimension": "novelty, contribution, and prior-work difference",
+        "checklist": [
+            "Judge whether noveltyClaim and contributionStatement state a real difference from prior work.",
+            "Judge whether the contribution is supported by the selected GAP and planned validation.",
+            "Block if novelty is vague, duplicated by closest prior work, or not testable.",
+        ],
+    },
+}
 
 
 def _extract_json(text: str) -> Optional[Dict[str, Any]]:
@@ -137,6 +184,10 @@ def _hit_count(text: str, terms: List[str]) -> int:
     return sum(1 for term in terms if term and term.lower() in lowered)
 
 
+def _contains_any(text: str, terms: List[str]) -> bool:
+    return any(term and term.lower() in text for term in terms)
+
+
 def _first_text(raw: Dict[str, Any], keys: List[str], default: str = "") -> str:
     for key in keys:
         value = raw.get(key)
@@ -185,8 +236,26 @@ class PlanPackageService:
     def get(self, package_id: str) -> Optional[PlanPackage]:
         return self.package_storage.get(package_id)
 
+    def get_presentation(self, package_id: str) -> PlanPackagePresentation:
+        package = self.package_storage.get(package_id)
+        if not package:
+            raise PlanPackageNotFoundError(f"PlanPackage {package_id} not found")
+        return build_plan_package_presentation(package)
+
+    def get_handoff(self, package_id: str) -> PlanPackageHandoff:
+        package = self.package_storage.get(package_id)
+        if not package:
+            raise PlanPackageNotFoundError(f"PlanPackage {package_id} not found")
+        return build_plan_package_handoff(package)
+
     def get_by_idea_session(self, idea_session_id: str) -> Optional[PlanPackage]:
         return self.package_storage.get_by_idea_session(idea_session_id)
+
+    def get_presentation_by_idea_session(self, idea_session_id: str) -> PlanPackagePresentation:
+        package = self.package_storage.get_by_idea_session(idea_session_id)
+        if not package:
+            raise PlanPackageNotFoundError(f"PlanPackage for idea session {idea_session_id} not found")
+        return build_plan_package_presentation(package)
 
     def validate(self, package_id: str, reviewer_mode: str = "hybrid") -> PlanPackage:
         package = self.package_storage.get(package_id)
@@ -282,7 +351,11 @@ class PlanPackageService:
         package.schemaVersion = "plan-package/v4"
 
         previous_generation_repair_rounds = package.generation.repairRounds
-        normalized_targets = self._normalize_revision_targets(target_sections)
+        normalized_targets = (
+            self._normalize_revision_targets(target_sections)
+            if target_sections is not None
+            else self._infer_revision_targets_from_feedback(package)
+        )
         if mode == "hybrid":
             self._apply_llm_plan_fields(
                 package,
@@ -329,8 +402,114 @@ class PlanPackageService:
         )
         package.qualityGate = validate_plan_package(package)
         package.qualityGate = self._apply_review_mode(package, package.qualityGate, reviewer_mode=reviewer_mode)
+        if mode == "hybrid":
+            self._auto_repair_plan_from_review(
+                package,
+                session,
+                max_stages=max_stages or max(1, len(package.stages) or 3),
+                max_steps_per_stage=max_steps_per_stage or max(
+                    1,
+                    max((len(stage.steps) for stage in package.stages), default=3),
+                ),
+                max_repair_rounds=max_repair_rounds,
+                reviewer_mode=reviewer_mode,
+            )
         self._set_status_from_gate(package)
         return self.package_storage.update(package)
+
+    def _auto_repair_plan_from_review(
+        self,
+        package: PlanPackage,
+        session: IdeaSession,
+        *,
+        max_stages: int,
+        max_steps_per_stage: int,
+        max_repair_rounds: int,
+        reviewer_mode: str,
+    ) -> None:
+        """Automatically repair plan-owned fields from reviewer findings."""
+
+        if max_repair_rounds <= 0:
+            return
+        for repair_index in range(max_repair_rounds):
+            targets = self._infer_plan_repair_targets_from_review(package)
+            if not targets:
+                return
+            try:
+                previous_repair_rounds = package.generation.repairRounds
+                self._apply_llm_plan_fields(
+                    package,
+                    session,
+                    max_stages=max_stages,
+                    max_steps_per_stage=max_steps_per_stage,
+                    max_repair_rounds=1,
+                    target_sections=targets,
+                )
+                package.contributionStatement = build_contribution_statements(
+                    candidate=self._candidate_from_package(package),
+                    gap=package.gap,
+                    principle=package.principle,
+                    stages=package.stages,
+                )
+                package.revisions.append(
+                    PlanRevision(
+                        id=f"prev_{uuid.uuid4().hex[:10]}",
+                        parentPackageId=package.packageId,
+                        changedSections=[*targets, "contributionStatement", "qualityGate", "reviewReports"],
+                        feedbackIds=[],
+                        summary="Auto-repaired PlanPackage from reviewer findings.",
+                        generationMode="hybrid",
+                        repairRounds=max(0, package.generation.repairRounds - previous_repair_rounds),
+                    )
+                )
+                package.qualityGate = validate_plan_package(package)
+                package.qualityGate = self._apply_review_mode(
+                    package,
+                    package.qualityGate,
+                    reviewer_mode=reviewer_mode,
+                )
+            except Exception as exc:
+                logger.warning("PlanPackage auto repair failed: %s", exc, exc_info=True)
+                message = f"PlanPackage auto repair failed on round {repair_index + 1}: {exc}"
+                if message not in package.generation.warnings:
+                    package.generation.warnings.append(message)
+                if message not in package.qualityGate.warnings:
+                    package.qualityGate.warnings.append(message)
+                return
+
+    def _infer_plan_repair_targets_from_review(self, package: PlanPackage) -> List[str]:
+        targets: List[str] = []
+
+        def add(*sections: str) -> None:
+            for section in sections:
+                if section not in targets:
+                    targets.append(section)
+
+        issues: List[str] = []
+        if package.metaReview:
+            issues.extend(
+                f"{issue.sectionPath} {issue.message}"
+                for issue in [*package.metaReview.blockingIssues, *package.metaReview.warnings]
+            )
+            issues.extend(package.metaReview.requiredRepairs)
+        issues.extend(package.qualityGate.errors)
+        issues.extend(package.qualityGate.warnings)
+        text = " ".join(issues).lower()
+
+        if _contains_any(text, ["researchquestion", "research question", "研究问题"]):
+            add("researchQuestion")
+        if _contains_any(text, ["hypothesis", "假设"]):
+            add("hypothesis")
+        if _contains_any(text, ["constant", "dataset", "model", "hardware", "baseline", "常量", "数据集", "模型", "基线"]):
+            add("constants")
+        if _contains_any(text, ["stage", "step", "stages", "steps", "implementation", "method", "阶段", "步骤", "计划", "实施"]):
+            add("stages")
+        if _contains_any(text, ["expected", "metric", "target", "output", "evaluation", "指标", "目标", "输出", "评估"]):
+            add("expectedMetrics", "stages")
+
+        # Do not auto-rewrite upstream idea/evidence fields here. Those should be
+        # handled by the idea-stage review gate before PlanPackage creation.
+        return self._normalize_revision_targets(targets) if targets else []
 
     def _normalize_reviewer_mode(self, reviewer_mode: str) -> str:
         mode = (reviewer_mode or "deterministic").strip().lower()
@@ -339,7 +518,18 @@ class PlanPackageService:
         return mode
 
     def _llm_review_used(self, reports: List[PlanReviewerReport]) -> bool:
-        return any(report.reviewer == "LLMResearchReviewer" for report in reports)
+        return any(
+            report.reviewer in LLM_REVIEWER_FOCUS
+            and not self._is_llm_unavailable_report(report)
+            for report in reports
+        )
+
+    def _is_llm_unavailable_report(self, report: PlanReviewerReport) -> bool:
+        return any(
+            issue.sectionPath == "reviewReports"
+            and issue.message.startswith("LLM reviewer unavailable")
+            for issue in report.warnings
+        )
 
     def _apply_review_mode(
         self,
@@ -350,6 +540,7 @@ class PlanPackageService:
     ):
         mode = self._normalize_reviewer_mode(reviewer_mode)
         gate = apply_review_to_quality_gate(package, gate)
+        package.qualityGate = gate
         llm_reports = self._run_llm_reviewers(package, reviewer_mode=mode)
         if llm_reports:
             gate = apply_review_to_quality_gate(package, gate, extra_reports=llm_reports)
@@ -364,72 +555,132 @@ class PlanPackageService:
         session = self.idea_session_storage.get(package.source.ideaSessionId)
         provider_name = session.config.providerName if session else package.generation.providerName
         model = session.config.model if session else package.generation.model
+        rule_reports = [
+            report
+            for report in package.reviewReports
+            if report.reviewer in LLM_REVIEWER_FOCUS
+        ]
+        if not rule_reports:
+            return []
         if not provider_name or not model:
-            return [self._llm_unavailable_report("LLM reviewer skipped: provider/model is not available for this package.")]
+            return [
+                self._llm_unavailable_report(
+                    report.reviewer,
+                    "provider/model is not available for this package",
+                    base_score=report.score,
+                )
+                for report in rule_reports
+            ]
         try:
             client = get_provider_client(provider_name)
-            response = client.chat(
-                messages=[
-                    ChatMessage(
-                        role="system",
-                        content=(
-                            "You are a strict scientific reviewer for an idea+plan handoff package. "
-                            "Return one JSON object only. Do not invent paper IDs, claim IDs, or executed results. "
-                            "Judge research logic, novelty, evidence faithfulness, and plan specificity."
-                        ),
-                    ),
-                    ChatMessage(role="user", content=self._build_llm_review_prompt(package)),
-                ],
-                model=model,
-                temperature=0.0,
-                max_tokens=4096,
-                response_format={"type": "json_object"},
-            )
-            parsed = _extract_json(response.text or "")
-            if not parsed:
-                return [self._llm_unavailable_report("LLM reviewer returned non-JSON output.")]
-            return [self._parse_llm_review_report(parsed)]
         except Exception as exc:
-            logger.warning("LLM reviewer failed: %s", exc, exc_info=True)
-            return [self._llm_unavailable_report(f"LLM reviewer failed: {exc}")]
+            logger.warning("LLM reviewer provider initialization failed: %s", exc, exc_info=True)
+            return [
+                self._llm_unavailable_report(
+                    report.reviewer,
+                    f"provider initialization failed: {exc}",
+                    base_score=report.score,
+                )
+                for report in rule_reports
+            ]
+        llm_reports: List[PlanReviewerReport] = []
+        for rule_report in rule_reports:
+            try:
+                response = client.chat(
+                    messages=[
+                        ChatMessage(
+                            role="system",
+                            content=(
+                                "You are a strict scientific reviewer for one specific dimension of an idea+plan handoff package. "
+                                "Return one JSON object only. Do not invent paper IDs, claim IDs, datasets, benchmarks, KG IDs, "
+                                "probe IDs, graph patch IDs, or executed results."
+                            ),
+                        ),
+                        ChatMessage(
+                            role="user",
+                            content=self._build_llm_review_prompt(package, rule_report=rule_report),
+                        ),
+                    ],
+                    model=model,
+                    temperature=0.0,
+                    max_tokens=3072,
+                    response_format={"type": "json_object"},
+                )
+                parsed = _extract_json(response.text or "")
+                if not parsed:
+                    llm_reports.append(
+                        self._llm_unavailable_report(
+                            rule_report.reviewer,
+                            "LLM returned non-JSON output",
+                            base_score=rule_report.score,
+                        )
+                    )
+                    continue
+                llm_reports.append(
+                    self._parse_llm_review_report(
+                        parsed,
+                        reviewer=rule_report.reviewer,
+                        default_score=rule_report.score,
+                    )
+                )
+            except Exception as exc:
+                logger.warning("%s LLM reviewer failed: %s", rule_report.reviewer, exc, exc_info=True)
+                llm_reports.append(
+                    self._llm_unavailable_report(
+                        rule_report.reviewer,
+                        str(exc),
+                        base_score=rule_report.score,
+                    )
+                )
+        return llm_reports
 
-    def _llm_unavailable_report(self, message: str) -> PlanReviewerReport:
+    def _llm_unavailable_report(self, reviewer: str, message: str, *, base_score: float = 0.5) -> PlanReviewerReport:
         return PlanReviewerReport(
-            reviewer="LLMResearchReviewerUnavailable",
-            score=0.5,
+            reviewer=reviewer,
+            score=base_score,
             passed=True,
             warnings=[
                 PlanReviewerIssue(
                     id=f"pri_{uuid.uuid4().hex[:10]}",
                     severity="warning",
                     sectionPath="reviewReports",
-                    message=message,
+                    message=f"LLM reviewer unavailable for {reviewer}: {message}",
                 )
             ],
             repairSuggestions=[],
         )
 
-    def _parse_llm_review_report(self, parsed: Dict[str, Any]) -> PlanReviewerReport:
-        score = parsed.get("score", parsed.get("overallScore", 0.5))
+    def _parse_llm_review_report(
+        self,
+        parsed: Dict[str, Any],
+        *,
+        reviewer: str,
+        default_score: float = 0.5,
+    ) -> PlanReviewerReport:
+        score = parsed.get("score", parsed.get("overallScore", default_score))
         try:
             score_value = float(score)
         except (TypeError, ValueError):
-            score_value = 0.5
+            score_value = default_score
         if score_value > 1.0:
             score_value = score_value / 100.0
         score_value = max(0.0, min(1.0, round(score_value, 3)))
         decision = str(parsed.get("decision", "")).strip().lower()
-        passed = bool(parsed.get("passed", decision in {"approve", "pass", "passed"}))
-
         blocking = self._parse_llm_issues(parsed.get("blockingIssues", []), default_severity="blocking")
         warnings = self._parse_llm_issues(parsed.get("warnings", []), default_severity="warning")
+        if "passed" in parsed:
+            passed = bool(parsed.get("passed"))
+        elif decision:
+            passed = decision in {"approve", "pass", "passed"}
+        else:
+            passed = score_value >= 0.72 and not blocking
         if not passed and not blocking:
             blocking.append(
                 PlanReviewerIssue(
                     id=f"pri_{uuid.uuid4().hex[:10]}",
                     severity="blocking",
                     sectionPath="package",
-                    message=str(parsed.get("rationale", "LLM reviewer did not pass this package.")),
+                    message=str(parsed.get("rationale", f"{reviewer} LLM review did not pass this package.")),
                 )
             )
         suggestions_raw = parsed.get("repairSuggestions", parsed.get("requiredRepairs", []))
@@ -450,7 +701,7 @@ class PlanPackageService:
                 )
             )
         return PlanReviewerReport(
-            reviewer="LLMResearchReviewer",
+            reviewer=reviewer,
             score=score_value,
             passed=passed and not blocking,
             blockingIssues=blocking,
@@ -485,29 +736,28 @@ class PlanPackageService:
             )
         return issues
 
-    def _build_llm_review_prompt(self, package: PlanPackage) -> str:
-        deterministic_summary = [
-            {
-                "reviewer": report.reviewer,
-                "score": report.score,
-                "passed": report.passed,
-                "blockingIssues": [
-                    {"sectionPath": issue.sectionPath, "message": issue.message}
-                    for issue in report.blockingIssues[:5]
-                ],
-                "warnings": [
-                    {"sectionPath": issue.sectionPath, "message": issue.message}
-                    for issue in report.warnings[:5]
-                ],
-                "repairSuggestions": report.repairSuggestions[:5],
-            }
-            for report in package.reviewReports
-            if not report.reviewer.startswith("LLM")
-        ]
+    def _build_llm_review_prompt(self, package: PlanPackage, *, rule_report: PlanReviewerReport) -> str:
+        focus = LLM_REVIEWER_FOCUS[rule_report.reviewer]
+        rule_summary = {
+            "reviewer": rule_report.reviewer,
+            "ruleScore": rule_report.score,
+            "rulePassed": rule_report.passed,
+            "ruleBlockingIssues": [
+                {"sectionPath": issue.sectionPath, "message": issue.message}
+                for issue in rule_report.blockingIssues[:6]
+            ],
+            "ruleWarnings": [
+                {"sectionPath": issue.sectionPath, "message": issue.message}
+                for issue in rule_report.warnings[:6]
+            ],
+            "ruleRepairSuggestions": rule_report.repairSuggestions[:6],
+        }
         context = {
             "reviewTask": {
+                "reviewer": rule_report.reviewer,
+                "dimension": focus["dimension"],
+                "focusChecklist": focus["checklist"],
                 "returnShape": {
-                    "reviewer": "LLMResearchReviewer",
                     "score": "0..1",
                     "passed": "boolean",
                     "decision": "approve | revise | reject",
@@ -517,10 +767,10 @@ class PlanPackageService:
                     "repairSuggestions": ["specific repair instruction"],
                 },
                 "approvalRules": [
-                    "Pass only if the research question, selected GAP, novelty claim, contribution statement, and stages are mutually coherent.",
-                    "Block if evidence is not faithful to the listed papers or if the plan drifts from the seed topic.",
-                    "Block if expected metrics cannot validate the stated hypothesis.",
-                    "Warn, but do not block, for minor wording or formatting issues already covered by deterministic reviewers.",
+                    "Judge only this review dimension. Do not re-score unrelated dimensions unless they directly affect this dimension.",
+                    "Use the rule reviewer summary as a starting point, but add semantic scientific judgment.",
+                    "Block only when the issue would make downstream handoff unsafe or scientifically misleading.",
+                    "Warn for wording, specificity, or minor evidence risks that do not block handoff.",
                 ],
             },
             "seedQuery": package.constants.get("seedQuery", ""),
@@ -569,17 +819,27 @@ class PlanPackageService:
                 for stage in package.stages
             ],
             "qualityGate": package.qualityGate.model_dump(),
-            "deterministicReviewerSummary": deterministic_summary,
+            "ruleReviewerSummary": rule_summary,
         }
         return (
-            "Review the PlanPackage and return JSON only. "
+            f"Review the PlanPackage only as {rule_report.reviewer}. "
             "Use the exact return shape in reviewTask.returnShape. "
-            "Do not quote long source text. Do not add markdown.\n"
+            "Return JSON only. Do not quote long source text. Do not add markdown. "
+            "Do not invent paper IDs, claim IDs, KG IDs, probe IDs, graph patch IDs, datasets, or executed results.\n"
             f"{json.dumps(context, ensure_ascii=False, default=str)}"
         )
 
     def _normalize_revision_targets(self, target_sections: Optional[List[str]]) -> List[str]:
-        allowed = {"researchQuestion", "hypothesis", "constants", "stages", "expectedMetrics"}
+        allowed = {
+            "researchQuestion",
+            "hypothesis",
+            "constants",
+            "stages",
+            "expectedMetrics",
+            "background",
+            "gap",
+            "principle",
+        }
         if not target_sections:
             return ["researchQuestion", "hypothesis", "constants", "stages"]
         normalized: List[str] = []
@@ -592,6 +852,83 @@ class PlanPackageService:
         if "expectedMetrics" in normalized and "stages" not in normalized:
             normalized.append("stages")
         return normalized
+
+    def _infer_revision_targets_from_feedback(self, package: PlanPackage) -> List[str]:
+        targets: List[str] = []
+
+        def add(*sections: str) -> None:
+            for section in sections:
+                if section not in targets:
+                    targets.append(section)
+
+        unresolved = [feedback for feedback in package.humanFeedback if not feedback.resolved]
+        if not unresolved:
+            return self._normalize_revision_targets(None)
+
+        for feedback in unresolved:
+            text = " ".join([
+                feedback.sectionPath or "",
+                feedback.feedbackType or "",
+                feedback.comment or "",
+            ]).lower()
+
+            if _contains_any(text, [
+                "overall", "whole", "regenerate", "rewrite",
+                "整体", "全部", "全局", "重写", "重新生成", "质量低", "不合理",
+            ]):
+                add("researchQuestion", "hypothesis", "constants", "stages")
+
+            if _contains_any(text, [
+                "research question", "question", "problem", "scope", "scenario", "boundary",
+                "研究问题", "问题", "对象", "场景", "边界",
+            ]):
+                add("researchQuestion")
+
+            if _contains_any(text, [
+                "background", "motivation", "limitation", "context",
+                "背景", "动机", "限制", "现状",
+            ]):
+                add("background")
+
+            if _contains_any(text, [
+                "gap", "unresolved", "entry point", "research gap",
+                "缺口", "gap", "切入点", "未解决", "已有方法",
+            ]):
+                add("gap", "researchQuestion", "hypothesis")
+
+            if _contains_any(text, [
+                "principle", "method", "mechanism", "novelty", "contribution", "claim",
+                "原理", "方法", "机制", "创新", "贡献", "声明",
+            ]):
+                add("principle", "hypothesis", "stages")
+
+            if _contains_any(text, [
+                "hypothesis", "assumption", "expected outcome", "improvement", "target",
+                "假设", "预期", "提升", "目标", "效果",
+            ]):
+                add("hypothesis")
+
+            if _contains_any(text, [
+                "constant", "dataset", "model", "hardware", "setting", "baseline", "constraint", "parameter",
+                "常量", "数据集", "模型", "硬件", "设置", "基线", "约束", "参数",
+            ]):
+                add("constants")
+
+            if _contains_any(text, [
+                "stage", "step", "plan", "implementation", "experiment", "ablation", "comparison",
+                "阶段", "步骤", "计划", "实施", "实验", "消融", "对比", "流程",
+            ]):
+                add("stages")
+
+            if _contains_any(text, [
+                "metric", "expected", "output", "evaluation", "measure", "benchmark", "result",
+                "指标", "输出", "评估", "度量", "结果",
+            ]):
+                add("expectedMetrics", "stages")
+
+        if not targets:
+            add("researchQuestion", "hypothesis", "stages")
+        return self._normalize_revision_targets(targets)
 
     def approve(self, package_id: str, reviewer_mode: Optional[str] = None) -> PlanPackage:
         package = self.package_storage.get(package_id)
@@ -722,6 +1059,15 @@ class PlanPackageService:
         package.qualityGate = self._apply_review_mode(package, package.qualityGate, reviewer_mode=reviewer_mode)
         package.qualityGate.warnings.extend(generation_warnings)
         package.generation.warnings.extend(generation_warnings)
+        if mode == "hybrid":
+            self._auto_repair_plan_from_review(
+                package,
+                session,
+                max_stages=max_stages,
+                max_steps_per_stage=max_steps_per_stage,
+                max_repair_rounds=max_repair_rounds,
+                reviewer_mode=reviewer_mode,
+            )
         self._set_status_from_gate(package)
         return self.package_storage.create(package)
 
@@ -884,7 +1230,10 @@ class PlanPackageService:
                 max_steps_per_stage=max_steps_per_stage,
                 target_sections=target_sections,
             )
-            package.generation.llmUsedSections = ["implementationPlan"]
+            used_sections = ["implementationPlan"]
+            if set(target_sections or []) & {"background", "gap", "principle"}:
+                used_sections.append("feedbackNarrative")
+            package.generation.llmUsedSections = used_sections
             package.generation.repairRounds = attempt
             package.generation.fallbackUsed = False
             return
@@ -917,6 +1266,85 @@ class PlanPackageService:
                 max_stages=max_stages,
                 max_steps_per_stage=max_steps_per_stage,
             )
+        if "background" in writable and isinstance(parsed.get("background"), dict):
+            self._apply_parsed_background(package, parsed["background"])
+        if "gap" in writable and isinstance(parsed.get("gap"), dict):
+            self._apply_parsed_gap(package, parsed["gap"])
+        if "principle" in writable and isinstance(parsed.get("principle"), dict):
+            self._apply_parsed_principle(package, parsed["principle"])
+
+    def _apply_parsed_background(self, package: PlanPackage, raw: Dict[str, Any]) -> None:
+        if isinstance(raw.get("summary"), str) and raw["summary"].strip():
+            package.background.summary = raw["summary"].strip()
+        if isinstance(raw.get("motivation"), str):
+            package.background.motivation = raw["motivation"].strip()
+        if isinstance(raw.get("currentLimitations"), list):
+            package.background.currentLimitations = [
+                str(item).strip()
+                for item in raw["currentLimitations"]
+                if str(item).strip()
+            ][:8]
+        if isinstance(raw.get("domainContext"), list):
+            package.background.domainContext = [
+                str(item).strip()
+                for item in raw["domainContext"]
+                if str(item).strip()
+            ][:8]
+
+    def _apply_parsed_gap(self, package: PlanPackage, raw: Dict[str, Any]) -> None:
+        if isinstance(raw.get("summary"), str) and raw["summary"].strip():
+            package.gap.summary = raw["summary"].strip()
+        if isinstance(raw.get("selectedGapId"), str):
+            existing_ids = {item.id for item in package.gap.items}
+            if raw["selectedGapId"] in existing_ids:
+                package.gap.selectedGapId = raw["selectedGapId"]
+
+        raw_items = raw.get("items")
+        if not isinstance(raw_items, list):
+            return
+        existing_by_id = {item.id: item for item in package.gap.items}
+        for index, raw_item in enumerate(raw_items):
+            if not isinstance(raw_item, dict):
+                continue
+            item_id = str(raw_item.get("id") or "").strip()
+            item = existing_by_id.get(item_id)
+            if not item and index < len(package.gap.items):
+                item = package.gap.items[index]
+            if not item:
+                continue
+            for field_name in [
+                "statement",
+                "severity",
+                "existingCoverage",
+                "unresolvedIssue",
+                "proposedEntry",
+                "boundary",
+                "whyUnsolved",
+            ]:
+                value = raw_item.get(field_name)
+                if isinstance(value, str) and value.strip():
+                    setattr(item, field_name, value.strip())
+            validation_needs = raw_item.get("validationNeeds")
+            if isinstance(validation_needs, list):
+                item.validationNeeds = [
+                    str(value).strip()
+                    for value in validation_needs
+                    if str(value).strip()
+                ][:8]
+
+    def _apply_parsed_principle(self, package: PlanPackage, raw: Dict[str, Any]) -> None:
+        for field_name in ["summary", "mechanism", "noveltyClaim"]:
+            value = raw.get(field_name)
+            if isinstance(value, str) and value.strip():
+                setattr(package.principle, field_name, value.strip())
+        for field_name in ["assumptions", "risks"]:
+            value = raw.get(field_name)
+            if isinstance(value, list):
+                setattr(
+                    package.principle,
+                    field_name,
+                    [str(item).strip() for item in value if str(item).strip()][:8],
+                )
 
     def _validate_generated_plan_fields(self, package: PlanPackage) -> List[str]:
         issues: List[str] = []
@@ -984,9 +1412,9 @@ class PlanPackageService:
             "Problems:\n"
             f"{issue_text}\n"
             f"Revision target sections: {target_text}.\n"
-            "Return one complete valid JSON object only, with exactly these top-level keys: "
-            "researchQuestion, hypothesis, constants, stages. "
-            "Keep the same seed topic and selected idea. Do not add markdown or explanation."
+            "Return one complete valid JSON object only. Include writable keys only from: "
+            "researchQuestion, hypothesis, constants, stages, background, gap, principle. "
+            "Keep the same seed topic and selected idea. Preserve all evidence IDs. Do not add markdown or explanation."
         )
 
     def _build_llm_prompt(
@@ -998,17 +1426,23 @@ class PlanPackageService:
         target_sections: Optional[List[str]] = None,
     ) -> str:
         writable_sections = target_sections or ["researchQuestion", "hypothesis", "constants", "stages"]
+        locked_sections = [
+            section
+            for section in [
+                "background",
+                "gap",
+                "principle",
+                "literatureSurvey",
+                "contributionStatement",
+                "evidenceTrace",
+                "sourceFields",
+                "rawIdeaOutputs",
+            ]
+            if section not in writable_sections
+        ]
         compact = {
             "readonlyContract": {
-                "lockedSections": [
-                    "idea",
-                    "background",
-                    "literatureSurvey",
-                    "gap",
-                    "principle",
-                    "contributionStatement",
-                    "evidenceTrace",
-                ],
+                "lockedSections": ["idea", *locked_sections],
                 "writableSections": writable_sections,
                 "maxStages": max_stages,
                 "maxStepsPerStage": max_steps_per_stage,
@@ -1063,8 +1497,9 @@ class PlanPackageService:
             },
         }
         return (
-            "Return ONLY valid JSON with keys researchQuestion, hypothesis, constants, stages.\n"
-            "Do not return or rewrite background, literatureSurvey, gap, principle, contributionStatement, evidenceTrace, sourceFields, or rawIdeaOutputs.\n"
+            "Return ONLY valid JSON. Include writable top-level keys only from: researchQuestion, hypothesis, constants, stages, background, gap, principle.\n"
+            "Do not return or rewrite literatureSurvey, contributionStatement, evidenceTrace, sourceFields, or rawIdeaOutputs.\n"
+            "If background, gap, or principle are writable, revise wording and research logic only from the provided context. Preserve existing item IDs, evidenceRefs, paper IDs, KG IDs, probe IDs, and graph patch IDs.\n"
             f"Focus revision on these writable sections: {', '.join(writable_sections)}. Preserve already-good writable content unless it conflicts with feedback or reviewer findings.\n"
             "Stay faithful to seedQuery, topicAnchors, selected idea, selected GAP, and principle. Reject generic NLP/LLM plans when the topic is specific.\n"
             "Incorporate unresolved humanFeedback and reviewFindings by revising only writable plan fields.\n"
@@ -1094,7 +1529,10 @@ class PlanPackageService:
             "        }\n"
             "      ]\n"
             "    }\n"
-            "  ]\n"
+            "  ],\n"
+            '  "background": {"summary": "optional revised summary", "motivation": "optional revised motivation", "currentLimitations": [], "domainContext": []},\n'
+            '  "gap": {"summary": "optional revised gap summary", "selectedGapId": "existing-gap-id", "items": [{"id": "existing-gap-id", "statement": "specific gap", "existingCoverage": "covered part", "unresolvedIssue": "unresolved part", "proposedEntry": "entry point", "boundary": "scope", "validationNeeds": []}]},\n'
+            '  "principle": {"summary": "optional revised principle", "mechanism": "optional mechanism", "noveltyClaim": "optional novelty claim", "assumptions": [], "risks": []}\n'
             "}\n"
             f"Context JSON:\n{json.dumps(compact, ensure_ascii=False, default=str)}"
         )

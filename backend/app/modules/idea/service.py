@@ -1615,7 +1615,94 @@ class IdeaGenerationService:
             except Exception as e:
                 logger.warning(f"LLM candidate analysis failed: {e}")
 
-        # --- Phase 5: Backfill evidence/critique into final candidates (PDF v5) ---
+        # --- Phase 5: Idea-stage review gate + optional regeneration ---
+        gate_reports = self._apply_idea_review_gate(
+            ranked=ranked,
+            evidence_list=evidence_list,
+            prior_work_comparisons=prior_work_comparisons,
+            critiques=critiques,
+        )
+        ranked = sorted(ranked, key=lambda c: c.overallScore, reverse=True)
+        regenerated_candidate_ids: List[str] = []
+        top_gate = gate_reports.get(ranked[0].id) if ranked else None
+        if (
+            top_gate
+            and self._should_optimize_candidate_from_gate(ranked[0], top_gate)
+            and structured_papers
+            and session.config.providerName
+            and session.config.model
+        ):
+            try:
+                regenerated = self._regenerate_candidate_from_review(
+                    session=session,
+                    base_candidate=ranked[0],
+                    review_gate=top_gate,
+                    critique=next((item for item in critiques if item.candidateId == ranked[0].id), None),
+                    prior_work=[
+                        item for item in prior_work_comparisons
+                        if item.candidateId == ranked[0].id
+                    ],
+                    literature_context=literature_context,
+                )
+            except Exception as e:
+                logger.warning(f"Idea review regeneration failed: {e}")
+                regenerated = None
+            if regenerated:
+                try:
+                    scored_candidates, _ = ranking_service.rank_candidates(
+                        candidates=[regenerated],
+                        seed_query=seed,
+                        paper_type=paper_type,
+                        domain=domain,
+                        provider_name=session.config.providerName,
+                        model=session.config.model,
+                        session_id=session.id,
+                    )
+                    regenerated = scored_candidates[0] if scored_candidates else regenerated
+                except Exception as e:
+                    logger.warning(f"Ranking regenerated candidate failed: {e}")
+                regenerated_evidence = self._build_candidate_evidence(
+                    candidate=regenerated,
+                    structured_papers=structured_papers,
+                    reasoning_kg=reasoning_kg,
+                    path_seeds=path_seeds,
+                    evidence_links=evidence_links,
+                )
+                evidence_list.append(regenerated_evidence)
+                try:
+                    comparison, critique = self._llm_analyze_candidate(
+                        candidate=regenerated,
+                        seed_query=seed,
+                        paper_type=paper_type,
+                        domain=domain,
+                        literature_context=literature_context,
+                        provider_name=session.config.providerName,
+                        model=session.config.model,
+                    )
+                    prior_work_comparisons.append(comparison)
+                    critiques.append(critique)
+                except Exception as e:
+                    logger.warning(f"LLM analysis for regenerated candidate failed: {e}")
+                    comparison, critique = self._fallback_analysis(regenerated)
+                    prior_work_comparisons.append(comparison)
+                    critiques.append(critique)
+                gate_reports.update(self._apply_idea_review_gate(
+                    ranked=[regenerated],
+                    evidence_list=[regenerated_evidence],
+                    prior_work_comparisons=[comparison],
+                    critiques=[critique],
+                ))
+                ranked.append(regenerated)
+                regenerated_candidate_ids.append(regenerated.id)
+                if regenerated.id not in session.candidateIds:
+                    session.candidateIds.append(regenerated.id)
+                try:
+                    self.candidate_storage.create(regenerated)
+                except Exception as e:
+                    logger.warning(f"Failed to persist regenerated candidate {regenerated.id}: {e}")
+                ranked = sorted(ranked, key=lambda c: c.overallScore, reverse=True)
+
+        # --- Phase 6: Backfill evidence/critique into final candidates (PDF v5) ---
         evidence_by_candidate = {e.candidateId: e for e in evidence_list}
         comparison_by_candidate: Dict[str, list] = {}
         for pc in prior_work_comparisons:
@@ -1644,7 +1731,7 @@ class IdeaGenerationService:
             except Exception as e:
                 logger.warning(f"Failed to persist final candidate {candidate.id}: {e}")
 
-        # --- Phase 6: Assemble and persist RankedIdeaOutput ---
+        # --- Phase 7: Assemble and persist RankedIdeaOutput ---
         scores_list = [c.overallScore for c in ranked]
         variance = 0.0
         if len(scores_list) > 1:
@@ -1663,7 +1750,7 @@ class IdeaGenerationService:
             maxScore=round(max(scores_list), 2) if scores_list else 0.0,
             rankedCount=len(ranked),
             topCandidateId=ranked[0].id if ranked else None,
-            rankingMethod="llm_multi_criteria" if ranking_results else "heuristic",
+            rankingMethod=("llm_multi_criteria+idea_review_gate" if ranking_results else "heuristic+idea_review_gate"),
         )
         try:
             self.ranked_output_storage.create(ranked_output)
@@ -1694,6 +1781,10 @@ class IdeaGenerationService:
             "evidenceCount": len(evidence_list),
             "comparisonCount": len(prior_work_comparisons),
             "critiqueCount": len(critiques),
+            "ideaReviewGate": list(gate_reports.values()),
+            "ideaReviewPassedCount": sum(1 for item in gate_reports.values() if item.get("passed")),
+            "regeneratedCandidateIds": regenerated_candidate_ids,
+            "feedbackOptimizedCandidateIds": regenerated_candidate_ids,
         }
 
         return inputs, outputs, []
@@ -1836,6 +1927,224 @@ class IdeaGenerationService:
                 lines.extend(seed_summaries)
 
         return "\n\n".join(lines) if lines else "(No literature available)"
+
+    def _apply_idea_review_gate(
+        self,
+        *,
+        ranked: List[IdeaCandidate],
+        evidence_list: List[CandidateGraphEvidence],
+        prior_work_comparisons: List[PriorWorkComparison],
+        critiques: List[IdeaCritique],
+    ) -> Dict[str, Dict[str, Any]]:
+        """Apply idea-stage review findings before PlanPackage generation."""
+
+        evidence_by_candidate = {item.candidateId: item for item in evidence_list}
+        critique_by_candidate = {item.candidateId: item for item in critiques}
+        comparisons_by_candidate: Dict[str, List[PriorWorkComparison]] = {}
+        for comparison in prior_work_comparisons:
+            comparisons_by_candidate.setdefault(comparison.candidateId, []).append(comparison)
+
+        reports: Dict[str, Dict[str, Any]] = {}
+        for candidate in ranked:
+            evidence = evidence_by_candidate.get(candidate.id)
+            critique = critique_by_candidate.get(candidate.id)
+            comparisons = comparisons_by_candidate.get(candidate.id, [])
+            blocking: List[str] = []
+            warnings: List[str] = []
+            suggestions: List[str] = []
+            penalty = 0.0
+
+            if evidence:
+                support_count = (
+                    len(evidence.supportingPaperIds)
+                    + len(evidence.supportingEntityIds)
+                    + len(evidence.supportingPathSeedIds)
+                )
+                if support_count == 0:
+                    blocking.append("No paper, KG entity, or path seed supports this idea candidate.")
+                    suggestions.append("Regenerate the idea so its core mechanism is directly grounded in cited papers, KG entities, or reasoning path seeds.")
+                    penalty += 1.2
+                elif not evidence.supportingPaperIds:
+                    warnings.append("Candidate lacks direct supporting paper IDs.")
+                    suggestions.append("Add a clearer connection between the idea and specific supporting papers or paper limitations.")
+                    penalty += 0.4
+            else:
+                blocking.append("Candidate has no graph evidence binding.")
+                suggestions.append("Regenerate the idea around evidence that can be bound to the literature graph.")
+                penalty += 1.2
+
+            if critique:
+                if critique.critiqueConfidence < 0.45:
+                    warnings.append("LLM critique confidence is low.")
+                    penalty += 0.3
+                if len(critique.weaknesses) >= 3:
+                    warnings.append("Candidate has multiple critique weaknesses.")
+                    penalty += 0.5
+                if len(critique.failureModes) >= 3:
+                    warnings.append("Candidate has multiple failure modes.")
+                    penalty += 0.4
+                suggestions.extend(critique.suggestedImprovements[:4])
+            else:
+                warnings.append("Candidate was not reviewed by IdeaCritique.")
+                penalty += 0.4
+
+            if comparisons:
+                has_difference = any(item.differences for item in comparisons)
+                avg_confidence = sum(item.comparisonConfidence for item in comparisons) / max(1, len(comparisons))
+                if not has_difference:
+                    warnings.append("Prior-work comparison does not state concrete differences.")
+                    suggestions.append("Sharpen the novelty claim by stating exactly how the idea differs from closest prior work.")
+                    penalty += 0.5
+                if avg_confidence < 0.45:
+                    warnings.append("Prior-work comparison confidence is low.")
+                    suggestions.append("Ground the idea in more explicit prior-work contrasts and avoid vague novelty claims.")
+                    penalty += 0.3
+            else:
+                warnings.append("Candidate has no prior-work comparison.")
+                suggestions.append("Regenerate with an explicit closest-prior-work comparison and concrete difference.")
+                penalty += 0.4
+
+            if candidate.novelty < 5.5:
+                warnings.append("Novelty score is below the idea-stage handoff threshold.")
+                suggestions.append("Increase research value by making the new mechanism, setting, or evaluation contribution more explicit.")
+            if candidate.referenceSupport < 5.0:
+                warnings.append("Reference support score is below the idea-stage handoff threshold.")
+                suggestions.append("Tie the hypothesis and method to stronger supporting literature evidence.")
+
+            if penalty:
+                candidate.referenceSupport = max(0.0, candidate.referenceSupport - penalty)
+                candidate.feasibility = max(0.0, candidate.feasibility - min(0.8, penalty * 0.35))
+                candidate.risk = max(0.0, candidate.risk - min(0.8, penalty * 0.30))
+                if any("difference" in item.lower() or "novelty" in item.lower() for item in warnings):
+                    candidate.novelty = max(0.0, candidate.novelty - min(0.8, penalty * 0.35))
+
+            passed = not blocking and candidate.overallScore >= 6.0 and candidate.referenceSupport >= 4.5
+            summary = "Idea review gate passed." if passed else "Idea review gate requires regeneration or another candidate."
+            if warnings:
+                summary += " Warnings: " + "; ".join(warnings[:3])
+            if blocking:
+                summary += " Blocking: " + "; ".join(blocking[:3])
+            candidate.overallRationale = (
+                f"{candidate.overallRationale}\n{summary}".strip()
+                if candidate.overallRationale else summary
+            )
+            candidate.scoringMethod = (
+                candidate.scoringMethod
+                if "idea_review_gate" in candidate.scoringMethod
+                else f"{candidate.scoringMethod}+idea_review_gate"
+            )
+            reports[candidate.id] = {
+                "candidateId": candidate.id,
+                "passed": passed,
+                "scoreAfterGate": round(candidate.overallScore, 2),
+                "blockingIssues": blocking,
+                "warnings": warnings,
+                "suggestedImprovements": list(dict.fromkeys(suggestions)),
+                "needsFeedbackOptimization": self._should_optimize_candidate_from_gate(candidate, {
+                    "passed": passed,
+                    "scoreAfterGate": round(candidate.overallScore, 2),
+                    "blockingIssues": blocking,
+                    "warnings": warnings,
+                    "suggestedImprovements": suggestions,
+                }),
+            }
+
+        return reports
+
+    def _should_optimize_candidate_from_gate(
+        self,
+        candidate: IdeaCandidate,
+        review_gate: Dict[str, Any],
+    ) -> bool:
+        """Decide whether idea-stage feedback should create an improved candidate."""
+
+        if "llm_regenerated_from_idea_review" in (candidate.scoringMethod or ""):
+            return False
+        if review_gate.get("blockingIssues"):
+            return True
+        if review_gate.get("suggestedImprovements"):
+            return True
+        warnings = " ".join(str(item) for item in review_gate.get("warnings", [])).lower()
+        idea_warning_terms = [
+            "supporting paper",
+            "prior-work",
+            "novelty",
+            "reference support",
+            "critique",
+            "failure mode",
+            "evidence",
+        ]
+        return any(term in warnings for term in idea_warning_terms)
+
+    def _regenerate_candidate_from_review(
+        self,
+        *,
+        session: IdeaSession,
+        base_candidate: IdeaCandidate,
+        review_gate: Dict[str, Any],
+        critique: Optional[IdeaCritique],
+        prior_work: List[PriorWorkComparison],
+        literature_context: str,
+    ) -> Optional[IdeaCandidate]:
+        """Generate one improved candidate from idea-stage review feedback."""
+
+        client = get_provider_client(session.config.providerName)
+        review_context = {
+            "sourceCandidate": {
+                "title": base_candidate.title,
+                "problem": base_candidate.problem,
+                "hypothesisStatement": base_candidate.hypothesisStatement,
+                "keyInsight": base_candidate.keyInsight,
+                "proposedMethod": base_candidate.proposedMethod,
+                "expectedOutcome": base_candidate.expectedOutcome,
+                "scores": base_candidate.scoreBreakdown,
+            },
+            "reviewGate": review_gate,
+            "critique": critique.model_dump() if critique else {},
+            "priorWork": [item.model_dump() for item in prior_work[:3]],
+            "seedQuery": session.config.seedQuery,
+            "domain": session.config.domain,
+            "paperType": session.config.paperType,
+            "literatureContext": literature_context[:8000],
+        }
+        messages = [
+            ChatMessage(
+                role="system",
+                content=(
+                    "You regenerate one stronger research idea from idea-stage review findings. "
+                    "Return JSON only. Do not claim executed experiments. Do not invent paper IDs. "
+                    "The new idea must preserve useful parts of the source candidate while directly addressing "
+                    "reviewGate warnings, blocking issues, and suggested improvements."
+                ),
+            ),
+            ChatMessage(
+                role="user",
+                content=(
+                    "Return exactly this JSON shape:\n"
+                    '{"ideas":[{"title":"","problem":"","keyInsight":"","approach":"","expectedOutcomes":[],"risks":[],'
+                    '"requiredExperiments":[]}]}'
+                    "\nContext:\n"
+                    f"{json.dumps(review_context, ensure_ascii=False, default=str)}"
+                ),
+            ),
+        ]
+        response = client.chat(
+            messages,
+            model=session.config.model,
+            temperature=0.25,
+            max_tokens=2400,
+            response_format={"type": "json_object"},
+        )
+        candidates = self._parse_ideas_json(session.id, response.text or "", 1)
+        if not candidates:
+            candidates = self._parse_ideas(session.id, response.text or "", 1)
+        if not candidates:
+            return None
+        candidate = candidates[0]
+        candidate.references = list(base_candidate.references)
+        candidate.overallRationale = "Regenerated automatically from idea-stage review feedback."
+        candidate.scoringMethod = "llm_regenerated_from_idea_review"
+        return candidate
 
     def _llm_analyze_candidate(
         self,

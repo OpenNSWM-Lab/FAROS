@@ -27,15 +27,18 @@ import {
   approvePlanPackageWithMode,
   getPlanPackage,
   getPlanPackageByIdeaSession,
-  reviewPlanPackageWithMode,
+  getPlanPackagePresentation,
+  getPlanPackagePresentationByIdeaSession,
   revisePlanPackage,
-  validatePlanPackage,
   type PlanEvidenceRef,
   type PlanGapItem,
   type PlanHumanFeedback,
   type PlanLiteraturePaperSummary,
   type PlanPackage,
+  type PlanPackagePresentation,
   type PlanQualityGate,
+  type PlanReadablePaper,
+  type PlanReadableStage,
   type PlanReviewerReport,
   type PlanStage,
   type PlanStep,
@@ -43,6 +46,8 @@ import {
 
 type GenerationMode = 'hybrid' | 'deterministic'
 type ReviewerMode = 'deterministic' | 'hybrid'
+
+const DEFAULT_REVIEWER_MODE: ReviewerMode = 'hybrid'
 
 const EMPTY_GATE: PlanQualityGate = {
   schemaValid: false,
@@ -300,6 +305,81 @@ function PaperRow({ paper }: { paper: PlanLiteraturePaperSummary }) {
   )
 }
 
+function ReadablePaperRow({ paper }: { paper: PlanReadablePaper }) {
+  return (
+    <div className="rounded-md border border-slate-300 bg-white px-4 py-3 shadow-sm">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge className={paper.source === 'probe' ? 'bg-indigo-700 text-white' : 'bg-blue-700 text-white'}>
+              {paper.source || 'paper'}
+            </Badge>
+            <Badge
+              variant="outline"
+              className={paper.relevanceScore >= 0.7 ? 'border-emerald-400 bg-emerald-50 text-emerald-900' : paper.relevanceScore >= 0.45 ? 'border-amber-400 bg-amber-50 text-amber-900' : 'border-red-300 bg-red-50 text-red-900'}
+            >
+              relevance {(paper.relevanceScore * 100).toFixed(0)}
+            </Badge>
+          </div>
+          <p className="mt-2 text-sm font-semibold text-slate-950">{paper.title}</p>
+        </div>
+      </div>
+      <p className="mt-2 text-sm text-slate-700">{paper.summary}</p>
+      {paper.supports.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {paper.supports.map((support) => (
+            <Badge key={support} variant="outline" className="border-emerald-300 bg-emerald-50 text-emerald-900">
+              {support}
+            </Badge>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ReadableStageBlock({ stage }: { stage: PlanReadableStage }) {
+  return (
+    <div className="rounded-md border border-slate-300 bg-white px-4 py-4 shadow-sm">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3 className="text-base font-semibold text-slate-900">{stage.title}</h3>
+          <p className="mt-2 text-sm text-slate-800">{stage.goal}</p>
+          <p className="mt-2 text-xs text-slate-600">{stage.method}</p>
+        </div>
+        <Badge className="bg-indigo-700 text-white">Stage {stage.order}</Badge>
+      </div>
+      <div className="mt-4 space-y-3">
+        {stage.steps.map((step) => (
+          <div key={step.id} className="rounded-md border border-slate-200 bg-slate-50 px-3 py-3">
+            <p className="text-sm font-semibold text-slate-900">{step.title}</p>
+            <p className="mt-1 text-sm text-slate-700">{step.description}</p>
+            <p className="mt-2 text-xs text-slate-600">{step.method}</p>
+            <div className="mt-3 grid gap-2 md:grid-cols-2">
+              <div>
+                <p className="mb-1 text-xs font-semibold uppercase text-slate-500">Outputs</p>
+                {step.outputs.map((output, index) => (
+                  <p key={`${output.name}-${index}`} className="text-xs text-slate-700">
+                    {output.type}: {output.name}
+                  </p>
+                ))}
+              </div>
+              <div>
+                <p className="mb-1 text-xs font-semibold uppercase text-slate-500">Expected</p>
+                {step.expected.map((expected, index) => (
+                  <p key={`${expected.metric}-${index}`} className="text-xs text-slate-700">
+                    {expected.metric}: {expected.target}
+                  </p>
+                ))}
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 function GapItem({ gap }: { gap: PlanGapItem }) {
   return (
     <div className="rounded-md border border-slate-300 bg-white px-3 py-3 shadow-sm">
@@ -390,16 +470,15 @@ function FeedbackList({ feedback }: { feedback: PlanHumanFeedback[] }) {
     <div className="space-y-2">
       {feedback.slice(0, 6).map((item) => (
         <div key={item.id} className={`rounded-md border px-3 py-2 text-sm ${item.resolved ? 'border-emerald-200 bg-emerald-50' : 'border-slate-300 bg-white'}`}>
-          <div className="flex flex-wrap items-center gap-2">
-            <Badge variant="outline" className="font-mono text-[11px]">
-              {item.sectionPath}
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <Badge variant={item.resolved ? 'secondary' : 'default'}>
+              {item.resolved ? 'Resolved' : 'Pending'}
             </Badge>
-            <Badge variant={item.resolved ? 'secondary' : 'default'}>{item.severity}</Badge>
-            <span className="text-xs text-slate-500">{item.feedbackType}</span>
+            <span className="text-xs text-slate-500">{new Date(item.createdAt).toLocaleString()}</span>
           </div>
           <p className="mt-2 text-slate-800">{item.comment}</p>
           {item.resolvedByRevisionId && (
-            <p className="mt-1 text-xs text-emerald-800">Resolved by {item.resolvedByRevisionId}</p>
+            <p className="mt-1 text-xs text-emerald-800">Revision {item.resolvedByRevisionId}</p>
           )}
         </div>
       ))}
@@ -410,27 +489,21 @@ function FeedbackList({ feedback }: { feedback: PlanHumanFeedback[] }) {
 export function PlanGenerationPanel() {
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
-  const [activeTab, setActiveTab] = useState('overview')
+  const [activeTab, setActiveTab] = useState('summary')
   const [planPackage, setPlanPackage] = useState<PlanPackage | null>(null)
+  const [presentation, setPresentation] = useState<PlanPackagePresentation | null>(null)
   const [packageIdInput, setPackageIdInput] = useState(searchParams.get('packageId')?.trim() || '')
   const [isLoading, setIsLoading] = useState(false)
   const [isCreating, setIsCreating] = useState(false)
-  const [isValidating, setIsValidating] = useState(false)
-  const [isReviewing, setIsReviewing] = useState(false)
   const [isRevising, setIsRevising] = useState(false)
   const [isApproving, setIsApproving] = useState(false)
   const [isSubmittingFeedback, setIsSubmittingFeedback] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [generationMode, setGenerationMode] = useState<GenerationMode>('hybrid')
-  const [reviewerMode, setReviewerMode] = useState<ReviewerMode>('hybrid')
   const [maxStages, setMaxStages] = useState(3)
   const [maxStepsPerStage, setMaxStepsPerStage] = useState(3)
   const [userNotes, setUserNotes] = useState('')
-  const [feedbackSection, setFeedbackSection] = useState('stages')
-  const [feedbackType, setFeedbackType] = useState('correction')
-  const [feedbackSeverity, setFeedbackSeverity] = useState('medium')
   const [feedbackComment, setFeedbackComment] = useState('')
-  const [revisionTargets, setRevisionTargets] = useState<string[]>(['stages'])
 
   const packageIdFromUrl = searchParams.get('packageId')?.trim() || ''
   const ideaSessionIdFromUrl = searchParams.get('ideaSessionId')?.trim() || ''
@@ -443,11 +516,16 @@ export function PlanGenerationPanel() {
     setIsLoading(true)
     setError(null)
     try {
-      const loaded = await getPlanPackage(packageId)
+      const [loaded, loadedPresentation] = await Promise.all([
+        getPlanPackage(packageId),
+        getPlanPackagePresentation(packageId),
+      ])
       setPlanPackage(loaded)
+      setPresentation(loadedPresentation)
       setPackageIdInput(loaded.packageId)
     } catch (err) {
       setPlanPackage(null)
+      setPresentation(null)
       setError(err instanceof Error ? err.message : 'Failed to load PlanPackage')
     } finally {
       setIsLoading(false)
@@ -468,16 +546,21 @@ export function PlanGenerationPanel() {
     let cancelled = false
     setIsLoading(true)
     setError(null)
-    getPlanPackageByIdeaSession(ideaSessionIdFromUrl)
-      .then((loaded) => {
+    Promise.all([
+      getPlanPackageByIdeaSession(ideaSessionIdFromUrl),
+      getPlanPackagePresentationByIdeaSession(ideaSessionIdFromUrl),
+    ])
+      .then(([loaded, loadedPresentation]) => {
         if (cancelled) return
         setPlanPackage(loaded)
+        setPresentation(loadedPresentation)
         setPackageIdInput(loaded.packageId)
       })
       .catch((err) => {
         if (cancelled) return
         if (err instanceof Error && err.message.includes('not found')) {
           setPlanPackage(null)
+          setPresentation(null)
           setError(null)
         } else {
           setError(err instanceof Error ? err.message : 'Failed to load PlanPackage')
@@ -508,70 +591,21 @@ export function PlanGenerationPanel() {
       const response = await createPlanPackageFromIdeaSession(ideaSessionIdFromUrl, {
         candidateId: ideaCandidateIdFromUrl || undefined,
         generationMode,
-        reviewerMode,
+        reviewerMode: DEFAULT_REVIEWER_MODE,
         maxStages,
         maxStepsPerStage,
         maxRepairRounds: 1,
         userNotes: userNotes.trim() || undefined,
       })
       setPlanPackage(response.package)
+      setPresentation(await getPlanPackagePresentation(response.packageId))
       setPackageIdInput(response.packageId)
       updatePackageUrl(response.packageId)
-      setActiveTab('overview')
+      setActiveTab('summary')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create PlanPackage')
     } finally {
       setIsCreating(false)
-    }
-  }
-
-  const validateCurrentPackage = async () => {
-    if (!planPackage) return
-    setIsValidating(true)
-    setError(null)
-    try {
-      const response = await validatePlanPackage(planPackage.packageId)
-      setPlanPackage({ ...planPackage, qualityGate: response.qualityGate })
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to validate PlanPackage')
-    } finally {
-      setIsValidating(false)
-    }
-  }
-
-  const reviewCurrentPackage = async () => {
-    if (!planPackage) return
-    setIsReviewing(true)
-    setError(null)
-    try {
-      const reviewed = await reviewPlanPackageWithMode(planPackage.packageId, reviewerMode)
-      setPlanPackage(reviewed)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to review PlanPackage')
-    } finally {
-      setIsReviewing(false)
-    }
-  }
-
-  const reviseCurrentPackage = async () => {
-    if (!planPackage) return
-    setIsRevising(true)
-    setError(null)
-    try {
-      const revised = await revisePlanPackage(planPackage.packageId, {
-        generationMode,
-        reviewerMode,
-        maxStages,
-        maxStepsPerStage,
-        maxRepairRounds: 2,
-        targetSections: revisionTargets.length ? revisionTargets : ['stages'],
-      })
-      setPlanPackage(revised)
-      setActiveTab('overview')
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to revise PlanPackage')
-    } finally {
-      setIsRevising(false)
     }
   }
 
@@ -580,8 +614,9 @@ export function PlanGenerationPanel() {
     setIsApproving(true)
     setError(null)
     try {
-      const approved = await approvePlanPackageWithMode(planPackage.packageId, reviewerMode)
+      const approved = await approvePlanPackageWithMode(planPackage.packageId, DEFAULT_REVIEWER_MODE)
       setPlanPackage(approved)
+      setPresentation(await getPlanPackagePresentation(approved.packageId))
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to approve PlanPackage')
     } finally {
@@ -589,24 +624,35 @@ export function PlanGenerationPanel() {
     }
   }
 
-  const submitFeedback = async () => {
+  const submitFeedbackAndRevise = async () => {
     if (!planPackage || !feedbackComment.trim()) return
     setIsSubmittingFeedback(true)
+    setIsRevising(true)
     setError(null)
     try {
       const updated = await addPlanPackageFeedback(planPackage.packageId, {
-        sectionPath: feedbackSection,
-        feedbackType,
-        severity: feedbackSeverity,
-        requestedAction: feedbackType === 'approve' ? 'comment' : 'revise',
+        sectionPath: 'package',
+        feedbackType: 'correction',
+        severity: 'medium',
+        requestedAction: 'revise',
         comment: feedbackComment.trim(),
       })
-      setPlanPackage(updated)
+      const revised = await revisePlanPackage(updated.packageId, {
+        generationMode,
+        reviewerMode: DEFAULT_REVIEWER_MODE,
+        maxStages,
+        maxStepsPerStage,
+        maxRepairRounds: 2,
+      })
+      setPlanPackage(revised)
+      setPresentation(await getPlanPackagePresentation(revised.packageId))
       setFeedbackComment('')
+      setActiveTab('summary')
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to submit feedback')
+      setError(err instanceof Error ? err.message : 'Failed to revise from feedback')
     } finally {
       setIsSubmittingFeedback(false)
+      setIsRevising(false)
     }
   }
 
@@ -615,16 +661,6 @@ export function PlanGenerationPanel() {
     if (!packageId) return
     updatePackageUrl(packageId)
     void loadPackage(packageId)
-  }
-
-  const toggleRevisionTarget = (target: string) => {
-    setRevisionTargets((current) => {
-      if (current.includes(target)) {
-        const next = current.filter((item) => item !== target)
-        return next.length ? next : ['stages']
-      }
-      return [...current, target]
-    })
   }
 
   const totalSteps = useMemo(
@@ -671,25 +707,13 @@ export function PlanGenerationPanel() {
                 PlanPackage Workspace
               </CardTitle>
               <CardDescription className="mt-1">
-                Primary handoff for the idea + plan stage.
+                Primary handoff for the idea + plan stage. Quality checks run automatically during generation, feedback revision, and approval.
               </CardDescription>
             </div>
             <div className="flex flex-wrap gap-2">
-              <Button variant="outline" onClick={validateCurrentPackage} disabled={!planPackage || isValidating}>
-                {isValidating ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <ShieldCheck className="mr-2 h-4 w-4" />}
-                Validate
-              </Button>
-              <Button variant="outline" onClick={reviewCurrentPackage} disabled={!planPackage || isReviewing}>
-                {isReviewing ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <ShieldCheck className="mr-2 h-4 w-4" />}
-                Review
-              </Button>
-              <Button variant="outline" onClick={reviseCurrentPackage} disabled={!planPackage || isRevising}>
-                {isRevising ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <Sparkles className="mr-2 h-4 w-4" />}
-                Revise
-              </Button>
               <Button onClick={approveCurrentPackage} disabled={!planPackage || isApproving} className="bg-emerald-700 text-white hover:bg-emerald-800">
                 {isApproving ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <UserCheck className="mr-2 h-4 w-4" />}
-                Approve
+                Approve Handoff
               </Button>
             </div>
           </div>
@@ -706,29 +730,6 @@ export function PlanGenerationPanel() {
               {isLoading ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <FileJson className="mr-2 h-4 w-4" />}
               Load Package
             </Button>
-          </div>
-
-          <div className="rounded-md border border-slate-300 bg-white px-4 py-3 shadow-sm">
-            <p className="text-xs font-semibold uppercase text-slate-500">Revision target sections</p>
-            <div className="mt-2 flex flex-wrap gap-3 text-sm text-slate-800">
-              {[
-                ['researchQuestion', 'Research question'],
-                ['hypothesis', 'Hypothesis'],
-                ['constants', 'Constants'],
-                ['stages', 'Stages'],
-                ['expectedMetrics', 'Expected metrics'],
-              ].map(([value, label]) => (
-                <label key={value} className="flex items-center gap-2 rounded-md border border-slate-300 bg-slate-50 px-3 py-2">
-                  <input
-                    type="checkbox"
-                    checked={revisionTargets.includes(value)}
-                    onChange={() => toggleRevisionTarget(value)}
-                    className="h-4 w-4"
-                  />
-                  {label}
-                </label>
-              ))}
-            </div>
           </div>
 
           {(ideaSessionIdFromUrl || ideaCandidateIdFromUrl) && (
@@ -753,7 +754,7 @@ export function PlanGenerationPanel() {
                   Generate PlanPackage
                 </Button>
               </div>
-              <div className="mt-3 grid gap-3 md:grid-cols-4">
+              <div className="mt-3 grid gap-3 md:grid-cols-3">
                 <label className="space-y-1 text-xs font-medium text-slate-700">
                   Generation
                   <select
@@ -763,17 +764,6 @@ export function PlanGenerationPanel() {
                   >
                     <option value="hybrid">Hybrid LLM</option>
                     <option value="deterministic">Deterministic</option>
-                  </select>
-                </label>
-                <label className="space-y-1 text-xs font-medium text-slate-700">
-                  Reviewer
-                  <select
-                    value={reviewerMode}
-                    onChange={(event) => setReviewerMode(event.target.value as ReviewerMode)}
-                    className="h-9 w-full rounded-md border border-slate-400 bg-white px-2 text-sm text-slate-900"
-                  >
-                    <option value="hybrid">Rules + LLM</option>
-                    <option value="deterministic">Rules</option>
                   </select>
                 </label>
                 <label className="space-y-1 text-xs font-medium text-slate-700">
@@ -850,12 +840,9 @@ export function PlanGenerationPanel() {
                     <Badge className={planPackage.generation.fallbackUsed ? 'bg-amber-700 text-white' : 'bg-emerald-700 text-white'}>
                       {planPackage.generation.mode}
                     </Badge>
-                    <Badge className={planPackage.generation.reviewerMode === 'hybrid' ? 'bg-violet-700 text-white' : 'bg-slate-700 text-white'}>
-                      review {planPackage.generation.reviewerMode}
-                    </Badge>
-                    {planPackage.generation.reviewerMode === 'hybrid' && (
-                      <Badge variant="outline" className={planPackage.generation.llmReviewerUsed ? 'border-emerald-400 bg-emerald-50 text-emerald-900' : 'border-amber-400 bg-amber-50 text-amber-900'}>
-                        LLM reviewer {planPackage.generation.llmReviewerUsed ? 'used' : 'skipped'}
+                    {planPackage.reviewReports.length > 0 && (
+                      <Badge variant="outline" className="border-emerald-400 bg-emerald-50 text-emerald-900">
+                        Quality checked
                       </Badge>
                     )}
                     <Badge variant="secondary">{planPackage.schemaVersion}</Badge>
@@ -863,10 +850,15 @@ export function PlanGenerationPanel() {
                       score {(planPackage.qualityGate.overallScore * 100).toFixed(0)}
                     </Badge>
                   </div>
-                  <CardTitle className="mt-3 text-xl leading-tight">{planPackage.researchQuestion}</CardTitle>
-                  {planPackage.hypothesis && (
+                  <CardTitle className="mt-3 text-xl leading-tight">{presentation?.title || planPackage.researchQuestion}</CardTitle>
+                  {(presentation?.researchQuestion || planPackage.researchQuestion) && (
+                    <CardDescription className="mt-2 text-sm text-slate-800">
+                      {presentation?.researchQuestion || planPackage.researchQuestion}
+                    </CardDescription>
+                  )}
+                  {(presentation?.hypothesis || planPackage.hypothesis) && (
                     <CardDescription className="mt-2 text-sm text-slate-700">
-                      {planPackage.hypothesis}
+                      {presentation?.hypothesis || planPackage.hypothesis}
                     </CardDescription>
                   )}
                 </div>
@@ -923,63 +915,19 @@ export function PlanGenerationPanel() {
                     <MessageSquareText className="h-4 w-4 text-indigo-700" />
                     <p className="text-sm font-semibold text-slate-900">Human feedback</p>
                   </div>
-                  <div className="grid gap-2 md:grid-cols-3">
-                    <label className="space-y-1 text-xs font-medium text-slate-700">
-                      Section
-                      <select
-                        value={feedbackSection}
-                        onChange={(event) => setFeedbackSection(event.target.value)}
-                        className="h-9 w-full rounded-md border border-slate-400 bg-white px-2 text-sm text-slate-900"
-                      >
-                        <option value="researchQuestion">Research question</option>
-                        <option value="gap">Gap</option>
-                        <option value="principle">Principle</option>
-                        <option value="literatureSurvey">Literature</option>
-                        <option value="stages">Plan stages</option>
-                        <option value="qualityGate">Quality gate</option>
-                      </select>
-                    </label>
-                    <label className="space-y-1 text-xs font-medium text-slate-700">
-                      Type
-                      <select
-                        value={feedbackType}
-                        onChange={(event) => setFeedbackType(event.target.value)}
-                        className="h-9 w-full rounded-md border border-slate-400 bg-white px-2 text-sm text-slate-900"
-                      >
-                        <option value="correction">Correction</option>
-                        <option value="regenerate">Regenerate</option>
-                        <option value="comment">Comment</option>
-                        <option value="reject">Reject</option>
-                        <option value="approve">Approve note</option>
-                      </select>
-                    </label>
-                    <label className="space-y-1 text-xs font-medium text-slate-700">
-                      Severity
-                      <select
-                        value={feedbackSeverity}
-                        onChange={(event) => setFeedbackSeverity(event.target.value)}
-                        className="h-9 w-full rounded-md border border-slate-400 bg-white px-2 text-sm text-slate-900"
-                      >
-                        <option value="low">Low</option>
-                        <option value="medium">Medium</option>
-                        <option value="high">High</option>
-                        <option value="blocking">Blocking</option>
-                      </select>
-                    </label>
-                  </div>
                   <textarea
                     value={feedbackComment}
                     onChange={(event) => setFeedbackComment(event.target.value)}
-                    placeholder="Point out what should be corrected before this package is handed off."
-                    className="mt-3 min-h-[84px] w-full rounded-md border border-slate-400 bg-white px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-600"
+                    placeholder="Tell FAROS what to change before handoff."
+                    className="min-h-[118px] w-full rounded-md border border-slate-400 bg-white px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-600"
                   />
                   <Button
                     className="mt-3 bg-indigo-700 text-white hover:bg-indigo-800"
-                    onClick={submitFeedback}
-                    disabled={!feedbackComment.trim() || isSubmittingFeedback}
+                    onClick={submitFeedbackAndRevise}
+                    disabled={!feedbackComment.trim() || isSubmittingFeedback || isRevising}
                   >
-                    {isSubmittingFeedback ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <MessageSquareText className="mr-2 h-4 w-4" />}
-                    Submit Feedback
+                    {isSubmittingFeedback || isRevising ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <Sparkles className="mr-2 h-4 w-4" />}
+                    Revise from Feedback
                   </Button>
                 </div>
                 <div className="rounded-md border border-slate-300 bg-white px-4 py-3 shadow-sm">
@@ -990,8 +938,9 @@ export function PlanGenerationPanel() {
             </CardContent>
           </Card>
 
-          <Tabs value={activeTab} onValueChange={setActiveTab}>
+            <Tabs value={activeTab} onValueChange={setActiveTab}>
             <TabsList className="h-auto flex-wrap justify-start">
+              <TabsTrigger value="summary">Summary</TabsTrigger>
               <TabsTrigger value="overview">Overview</TabsTrigger>
               <TabsTrigger value="implementation">Implementation</TabsTrigger>
               <TabsTrigger value="context">Context</TabsTrigger>
@@ -1000,6 +949,135 @@ export function PlanGenerationPanel() {
               <TabsTrigger value="review">Review</TabsTrigger>
               <TabsTrigger value="json">JSON</TabsTrigger>
             </TabsList>
+
+            <TabsContent value="summary" className="space-y-4">
+              {presentation ? (
+                <>
+                  <Card>
+                    <CardHeader className="pb-3">
+                      <CardTitle className="text-lg">{presentation.title}</CardTitle>
+                      <CardDescription>{presentation.executiveSummary}</CardDescription>
+                    </CardHeader>
+                    <CardContent className="grid gap-3 md:grid-cols-3">
+                      <div className="rounded-md border border-slate-300 bg-slate-50 px-3 py-2">
+                        <p className="text-xs font-semibold uppercase text-slate-500">Evidence</p>
+                        <p className="mt-1 text-sm font-semibold text-slate-900">{presentation.evidenceSummary.confidence}</p>
+                      </div>
+                      <div className="rounded-md border border-slate-300 bg-slate-50 px-3 py-2">
+                        <p className="text-xs font-semibold uppercase text-slate-500">Review</p>
+                        <p className="mt-1 text-sm font-semibold text-slate-900">{presentation.reviewSummary.decision}</p>
+                      </div>
+                      <div className="rounded-md border border-slate-300 bg-slate-50 px-3 py-2">
+                        <p className="text-xs font-semibold uppercase text-slate-500">Score</p>
+                        <p className="mt-1 text-sm font-semibold text-slate-900">{(presentation.reviewSummary.score * 100).toFixed(0)}</p>
+                      </div>
+                    </CardContent>
+                  </Card>
+
+                  <div className="grid gap-4 xl:grid-cols-2">
+                    <Card>
+                      <CardHeader className="pb-3">
+                        <CardTitle className="text-base">Background</CardTitle>
+                      </CardHeader>
+                      <CardContent className="space-y-3 text-sm text-slate-800">
+                        <p>{presentation.background.summary}</p>
+                        {presentation.background.whyValuable && <p>{presentation.background.whyValuable}</p>}
+                        <TextList items={presentation.background.currentLimitations} emptyLabel="No current limitations listed" />
+                      </CardContent>
+                    </Card>
+
+                    <Card>
+                      <CardHeader className="pb-3">
+                        <CardTitle className="text-base">GAP And Entry Point</CardTitle>
+                      </CardHeader>
+                      <CardContent className="space-y-3 text-sm text-slate-800">
+                        <p className="font-medium">{presentation.gap.statement}</p>
+                        {presentation.gap.unresolvedIssue && <p>{presentation.gap.unresolvedIssue}</p>}
+                        {presentation.gap.proposedEntry && (
+                          <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-emerald-950">
+                            {presentation.gap.proposedEntry}
+                          </div>
+                        )}
+                        <TextList items={presentation.gap.validationNeeds} emptyLabel="No validation needs listed" />
+                      </CardContent>
+                    </Card>
+                  </div>
+
+                  <Card>
+                    <CardHeader className="pb-3">
+                      <CardTitle className="text-base">Method And Contributions</CardTitle>
+                    </CardHeader>
+                    <CardContent className="grid gap-4 lg:grid-cols-2">
+                      <div className="space-y-3 text-sm text-slate-800">
+                        <p>{presentation.method.principle}</p>
+                        {presentation.method.mechanism && <p>{presentation.method.mechanism}</p>}
+                        {presentation.method.noveltyClaim && (
+                          <div className="rounded-md border border-indigo-200 bg-indigo-50 px-3 py-2 text-indigo-950">
+                            {presentation.method.noveltyClaim}
+                          </div>
+                        )}
+                      </div>
+                      <div>
+                        <p className="mb-2 text-xs font-semibold uppercase text-slate-500">Contributions</p>
+                        <TextList items={presentation.method.contributions} emptyLabel="No contribution statements" />
+                      </div>
+                    </CardContent>
+                  </Card>
+
+                  <Card>
+                    <CardHeader className="pb-3">
+                      <CardTitle className="text-base">Implementation Plan</CardTitle>
+                      <CardDescription>Readable plan for handoff, without raw trace IDs.</CardDescription>
+                    </CardHeader>
+                    <CardContent className="space-y-3">
+                      {presentation.implementationPlan.map((stage) => (
+                        <ReadableStageBlock key={stage.id} stage={stage} />
+                      ))}
+                    </CardContent>
+                  </Card>
+
+                  <div className="grid gap-4 xl:grid-cols-[1.2fr_1fr]">
+                    <Card>
+                      <CardHeader className="pb-3">
+                        <CardTitle className="text-base">Key Literature</CardTitle>
+                        <CardDescription>{presentation.literature.summary}</CardDescription>
+                      </CardHeader>
+                      <CardContent className="space-y-3">
+                        {presentation.literature.keyPapers.map((paper) => (
+                          <ReadablePaperRow key={paper.paperId} paper={paper} />
+                        ))}
+                      </CardContent>
+                    </Card>
+
+                    <Card>
+                      <CardHeader className="pb-3">
+                        <CardTitle className="text-base">Review And Next Actions</CardTitle>
+                      </CardHeader>
+                      <CardContent className="space-y-4">
+                        <div>
+                          <p className="mb-2 text-xs font-semibold uppercase text-slate-500">Main concerns</p>
+                          <TextList items={presentation.reviewSummary.mainConcerns} emptyLabel="No major concerns" />
+                        </div>
+                        <div>
+                          <p className="mb-2 text-xs font-semibold uppercase text-slate-500">Required fixes</p>
+                          <TextList items={presentation.reviewSummary.requiredFixes} emptyLabel="No required fixes" />
+                        </div>
+                        <div>
+                          <p className="mb-2 text-xs font-semibold uppercase text-slate-500">Next actions</p>
+                          <TextList items={presentation.nextActions} emptyLabel="No next actions" />
+                        </div>
+                      </CardContent>
+                    </Card>
+                  </div>
+                </>
+              ) : (
+                <Card>
+                  <CardContent className="py-8 text-sm text-muted-foreground">
+                    Presentation view is not available for this package.
+                  </CardContent>
+                </Card>
+              )}
+            </TabsContent>
 
             <TabsContent value="overview" className="space-y-4">
               <div className="grid gap-4 lg:grid-cols-3">
@@ -1355,12 +1433,12 @@ export function PlanGenerationPanel() {
                     Reviewer Committee
                   </CardTitle>
                   <CardDescription>
-                    Independent checks for relevance, evidence, feasibility, metrics, and novelty.
+                    Each dimension combines deterministic checks with a focused LLM reviewer when hybrid review is available.
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
                   {planPackage.reviewReports.length === 0 ? (
-                    <p className="text-sm text-muted-foreground">No reviewer reports yet. Run Review to generate them.</p>
+                    <p className="text-sm text-muted-foreground">No reviewer reports yet. They are generated automatically when a package is created or revised.</p>
                   ) : (
                     <div className="grid gap-3 lg:grid-cols-2">
                       {planPackage.reviewReports.map((report) => (

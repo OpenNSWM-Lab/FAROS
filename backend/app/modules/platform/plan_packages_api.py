@@ -6,7 +6,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 
-from app.models.plan_package import PlanPackage, PlanQualityGate
+from app.models.plan_package import PlanPackage, PlanPackageHandoff, PlanPackagePresentation, PlanQualityGate
 from app.services.plan_package_service import (
     PlanPackageConflictError,
     PlanPackageNotFoundError,
@@ -56,7 +56,10 @@ class RevisePlanPackageRequest(BaseModel):
     maxRepairRounds: int = Field(default=1, ge=0, le=3)
     targetSections: Optional[list[str]] = Field(
         default=None,
-        description="Writable sections to revise: researchQuestion, hypothesis, constants, stages, expectedMetrics",
+        description=(
+            "Optional writable sections to revise. If omitted, sections are inferred from unresolved feedback. "
+            "Allowed: researchQuestion, hypothesis, constants, stages, expectedMetrics, background, gap, principle."
+        ),
     )
 
 
@@ -110,7 +113,7 @@ async def create_plan_package_from_idea_session(
 @router.get(
     "/plans/packages/{package_id}",
     response_model=PlanPackage,
-    summary="Get PlanPackage",
+    summary="Get full PlanPackage for debug/audit",
 )
 async def get_plan_package(package_id: str) -> PlanPackage:
     service = get_plan_package_service()
@@ -124,9 +127,37 @@ async def get_plan_package(package_id: str) -> PlanPackage:
 
 
 @router.get(
+    "/plans/packages/{package_id}/presentation",
+    response_model=PlanPackagePresentation,
+    summary="Get human-readable PlanPackage presentation",
+)
+async def get_plan_package_presentation(package_id: str) -> PlanPackagePresentation:
+    service = get_plan_package_service()
+    try:
+        return service.get_presentation(package_id)
+    except PlanPackageNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+
+
+@router.get(
+    "/plans/packages/{package_id}/handoff",
+    response_model=PlanPackageHandoff,
+    summary="Get compact PlanPackage handoff for downstream modules",
+)
+async def get_plan_package_handoff(package_id: str) -> PlanPackageHandoff:
+    service = get_plan_package_service()
+    try:
+        return service.get_handoff(package_id)
+    except PlanPackageNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+
+
+@router.get(
     "/ideas/sessions/{idea_session_id}/plan-package",
     response_model=PlanPackage,
-    summary="Get PlanPackage by Idea Session",
+    summary="Get full PlanPackage by Idea Session",
 )
 async def get_plan_package_by_idea_session(idea_session_id: str) -> PlanPackage:
     service = get_plan_package_service()
@@ -137,6 +168,19 @@ async def get_plan_package_by_idea_session(idea_session_id: str) -> PlanPackage:
             detail=f"PlanPackage for idea session {idea_session_id} not found",
         )
     return package
+
+
+@router.get(
+    "/ideas/sessions/{idea_session_id}/plan-package/presentation",
+    response_model=PlanPackagePresentation,
+    summary="Get human-readable PlanPackage presentation by Idea Session",
+)
+async def get_plan_package_presentation_by_idea_session(idea_session_id: str) -> PlanPackagePresentation:
+    service = get_plan_package_service()
+    try:
+        return service.get_presentation_by_idea_session(idea_session_id)
+    except PlanPackageNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
 
 
 @router.post(
