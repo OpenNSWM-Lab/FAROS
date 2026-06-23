@@ -15,6 +15,7 @@ from app.models.plan_package import (
     PlanReviewerIssue,
     PlanReviewerReport,
 )
+from app.services.plan_package_plan_quality import missing_plan_roles
 
 
 def _issue(
@@ -35,6 +36,47 @@ def _issue(
 
 def _clamp_score(value: float) -> float:
     return max(0.0, min(1.0, round(value, 3)))
+
+
+def _split_gate_message(message: str) -> tuple[str, str]:
+    """Preserve validator section paths when folding gate errors into review."""
+
+    raw = str(message or "").strip()
+    if ":" not in raw:
+        return "", raw
+    prefix, body = raw.split(":", 1)
+    prefix = prefix.strip()
+    body = body.strip() or raw
+    if prefix and len(prefix) <= 96 and re.match(r"^[A-Za-z0-9_.\[\]\-]+$", prefix):
+        return prefix, body
+    return "", raw
+
+
+def _append_unique_issue(target: list[PlanReviewerIssue], issue: PlanReviewerIssue) -> None:
+    key = (issue.sectionPath, issue.message)
+    if not any((existing.sectionPath, existing.message) == key for existing in target):
+        target.append(issue)
+
+
+def _gate_blocking_issues(gate: PlanQualityGate) -> list[PlanReviewerIssue]:
+    issues: list[PlanReviewerIssue] = []
+    for message in gate.errors:
+        section_path, body = _split_gate_message(message)
+        _append_unique_issue(
+            issues,
+            _issue(body, section_path=section_path, severity="blocking"),
+        )
+    if not gate.schemaValid:
+        _append_unique_issue(
+            issues,
+            _issue("PlanPackage schema validation failed.", section_path="qualityGate.schemaValid", severity="blocking"),
+        )
+    if not gate.evidenceValid:
+        _append_unique_issue(
+            issues,
+            _issue("PlanPackage evidence validation failed.", section_path="qualityGate.evidenceValid", severity="blocking"),
+        )
+    return issues
 
 
 _STOPWORDS = {
@@ -305,6 +347,15 @@ def feasibility_reviewer(package: PlanPackage) -> PlanReviewerReport:
             "Many steps have generic expected metrics.",
             section_path="stages[].steps[].expected",
         ))
+    missing_roles = missing_plan_roles(package)
+    if missing_roles:
+        blocking.append(_issue(
+            "Plan does not cover required downstream planning roles: "
+            + "; ".join(role["label"] for role in missing_roles),
+            section_path="stages",
+            severity="blocking",
+        ))
+        suggestions.extend(role["repairHint"] for role in missing_roles)
     if not package.constants:
         warnings.append(_issue("No constants are declared for downstream execution.", section_path="constants"))
 
@@ -482,8 +533,12 @@ def apply_review_to_quality_gate(
     extra_reports: Optional[List[PlanReviewerReport]] = None,
 ) -> PlanQualityGate:
     reports, meta = run_plan_package_review(package, extra_reports=extra_reports)
-    package.reviewReports = reports
-    package.metaReview = meta
+    validator_blocking = _gate_blocking_issues(gate)
+    for issue in validator_blocking:
+        _append_unique_issue(meta.blockingIssues, issue)
+    if validator_blocking and meta.decision == "approve":
+        meta.decision = "revise" if meta.overallScore >= 0.35 else "reject"
+        meta.confidence = _clamp_score(min(meta.confidence, 0.65))
 
     report_map = {report.reviewer: report for report in reports}
     topic_relevant = report_map.get("RelevanceReviewer").passed if "RelevanceReviewer" in report_map else False
@@ -495,7 +550,23 @@ def apply_review_to_quality_gate(
     gate.topicRelevant = bool(topic_relevant)
     gate.citationFaithful = bool(gate.evidenceValid and evidence_passed)
     gate.planSpecific = bool(feasibility_passed and metrics_passed)
-    gate.agentApproved = bool(meta.decision == "approve" and novelty_passed)
+    quality_blocked = bool(
+        meta.blockingIssues
+        or gate.errors
+        or not gate.schemaValid
+        or not gate.evidenceValid
+        or not gate.topicRelevant
+        or not gate.citationFaithful
+        or not gate.planSpecific
+        or not novelty_passed
+    )
+    if quality_blocked and meta.decision == "approve":
+        meta.decision = "revise"
+        meta.confidence = _clamp_score(min(meta.confidence, 0.65))
+    package.reviewReports = reports
+    package.metaReview = meta
+
+    gate.agentApproved = bool(meta.decision == "approve" and not quality_blocked)
     gate.overallScore = meta.overallScore
     gate.reviewDecision = meta.decision
     gate.implementationReady = bool(

@@ -56,6 +56,7 @@ class CreateSessionRequest(BaseModel):
     constraints: Optional[List[str]] = None
     mustCiteList: Optional[List[str]] = None
     searchBudget: Optional[int] = Field(default=None, ge=10, le=500)
+    maxReviewIterations: int = Field(default=2, ge=1, le=5)
 
 
 class SessionResponse(BaseModel):
@@ -389,6 +390,7 @@ async def create_session(request: CreateSessionRequest) -> SessionResponse:
         constraints=request.constraints,
         mustCiteList=request.mustCiteList,
         searchBudget=request.searchBudget,
+        maxReviewIterations=request.maxReviewIterations,
     )
     
     session = service.create_session(config)

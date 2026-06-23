@@ -188,6 +188,10 @@ def build_plan_package_presentation(package: PlanPackage) -> PlanPackagePresenta
 
     evidence_weak_points = list(package.qualityGate.errors[:4])
     evidence_weak_points.extend(package.qualityGate.warnings[:4])
+    evidence_weak_points.extend(
+        f"{issue.module}: {issue.message}"
+        for issue in package.downstreamReadiness.blockingIssues[:4]
+    )
     if selected and selected.whyUnsolved:
         evidence_weak_points.append(selected.whyUnsolved)
 
@@ -271,6 +275,7 @@ def build_plan_package_handoff(package: PlanPackage) -> PlanPackageHandoff:
         keyPapers=_key_papers(package, limit=10),
         stages=package.stages,
         qualityGate=package.qualityGate,
+        downstreamReadiness=package.downstreamReadiness,
         evidenceTrace=PlanHandoffEvidenceTrace(
             ideaCandidateId=package.evidenceTrace.ideaCandidateId,
             searchNodeId=package.evidenceTrace.searchNodeId,

@@ -80,6 +80,12 @@ class IdeaSessionConfig(BaseModel):
         le=500,
         description="Optional search budget for BFTS; defaults to maxPapers if unset"
     )
+    maxReviewIterations: int = Field(
+        default=2,
+        ge=1,
+        le=5,
+        description="Maximum internal idea reviewer repair iterations before final handoff"
+    )
 
 
 class StepResult(BaseModel):

@@ -11,7 +11,6 @@ import {
   Clock,
   BookOpen,
   Sparkles,
-  ArrowRight,
   RefreshCw,
   Zap,
   History,
@@ -21,7 +20,6 @@ import {
   Settings
 } from 'lucide-react'
 import { PAPER_TYPES, getPaperTypeById } from '@/lib/models/providers'
-import { createPlanPackageFromIdeaSession } from '@/components/plans/planPackageApi'
 
 interface IdeaSession {
   id: string
@@ -33,6 +31,7 @@ interface IdeaSession {
     model: string
     paperType?: string
     maxCandidates: number
+    maxReviewIterations?: number
   }
   candidateIds: string[]
   selectedCandidateId?: string
@@ -115,6 +114,7 @@ export function IdeaGenerationPanel() {
   const [activeModel, setActiveModel] = useState('moonshot-v1-8k')
   const [paperType, setPaperType] = useState('algorithm')
   const [maxCandidates, setMaxCandidates] = useState(5)
+  const [maxIdeaReviewIterations, setMaxIdeaReviewIterations] = useState(2)
   const [session, setSession] = useState<IdeaSession | null>(null)
   const [trace, setTrace] = useState<TraceData | null>(null)
   const [candidates, setCandidates] = useState<Candidate[]>([])
@@ -123,8 +123,6 @@ export function IdeaGenerationPanel() {
   const [isPolling, setIsPolling] = useState(false)
   const [providerTestResult, setProviderTestResult] = useState<{ ok: boolean, latencyMs?: number, error?: string } | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [createdPackageId, setCreatedPackageId] = useState<string | null>(null)
-  const [creatingPackageForCandidateId, setCreatingPackageForCandidateId] = useState<string | null>(null)
   const [isTestingProvider, setIsTestingProvider] = useState(false)
   const [sessionHistory, setSessionHistory] = useState<SessionListItem[]>([])
   const [showHistory, setShowHistory] = useState(false)
@@ -180,6 +178,7 @@ export function IdeaGenerationPanel() {
       setSeedQuery(sessionData.config.seedQuery)
       setPaperType(sessionData.config.paperType || 'algorithm')
       setMaxCandidates(sessionData.config.maxCandidates)
+      setMaxIdeaReviewIterations(sessionData.config.maxReviewIterations || 2)
       const traceResponse = await fetch(`${API_BASE}/api/v1/ideas/sessions/${sessionId}/trace`)
       if (traceResponse.ok) { setTrace(await traceResponse.json()) }
       const litResponse = await fetch(`${API_BASE}/api/v1/ideas/sessions/${sessionId}/literature`)
@@ -188,7 +187,6 @@ export function IdeaGenerationPanel() {
       if (candResponse.ok) { const d = await candResponse.json(); setCandidates(d.candidates || []) }
       setShowHistory(false)
       setError(null)
-      setCreatedPackageId(null)
       localStorage.setItem('idea_active_session_id', sessionId)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load session')
@@ -220,13 +218,13 @@ export function IdeaGenerationPanel() {
 
   const generateIdeas = async () => {
     if (!seedQuery.trim()) { setError('Please enter a research topic'); return }
-    setIsLoading(true); setError(null); setSession(null); setTrace(null); setCandidates([]); setLiterature([]); setCreatedPackageId(null)
+    setIsLoading(true); setError(null); setSession(null); setTrace(null); setCandidates([]); setLiterature([])
     try {
       await loadActiveLlmFromSettings()
       const createResponse = await fetch(`${API_BASE}/api/v1/ideas/sessions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ seedQuery, paperType, maxCandidates })
+        body: JSON.stringify({ seedQuery, paperType, maxCandidates, maxReviewIterations: maxIdeaReviewIterations })
       })
       if (!createResponse.ok) { const d = await createResponse.json().catch(() => ({})); throw new Error(d.detail || `Failed: ${createResponse.status}`) }
       const sessionData = await createResponse.json()
@@ -273,34 +271,16 @@ export function IdeaGenerationPanel() {
     return () => clearInterval(interval)
   }, [isPolling, pollSession])
 
-  const createPlanPackage = async (candidate: Candidate) => {
+  const openPlanningForCandidate = (candidate: Candidate) => {
     if (!session?.id) return
-    setCreatingPackageForCandidateId(candidate.id)
-    setError(null)
-    try {
-      const response = await createPlanPackageFromIdeaSession(session.id, {
-        candidateId: candidate.id,
-        generationMode: 'hybrid',
-        maxStages: 3,
-        maxStepsPerStage: 3,
-        maxRepairRounds: 1,
-      })
-      setCreatedPackageId(response.packageId)
-      loadSessionHistory()
-      const params = new URLSearchParams({
-        packageId: response.packageId,
-        ideaSessionId: session.id,
-        ideaCandidateId: candidate.id,
-        ideaCandidateTitle: candidate.title,
-      })
-      const q = session.config.seedQuery || seedQuery
-      if (q) params.set('ideaSeedQuery', q)
-      navigate(`/research/planning?${params.toString()}`)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create PlanPackage')
-    } finally {
-      setCreatingPackageForCandidateId(null)
-    }
+    const params = new URLSearchParams({
+      ideaSessionId: session.id,
+      ideaCandidateId: candidate.id,
+      ideaCandidateTitle: candidate.title,
+    })
+    const q = session.config.seedQuery || seedQuery
+    if (q) params.set('ideaSeedQuery', q)
+    navigate(`/research/planning?${params.toString()}`)
   }
 
   const getStatusColor = (status: string) => {
@@ -410,6 +390,10 @@ export function IdeaGenerationPanel() {
           <div className="space-y-2">
             <label className="text-sm font-medium">Max Candidates: {maxCandidates}</label>
             <input type="range" min={1} max={10} value={maxCandidates} onChange={(e) => setMaxCandidates(parseInt(e.target.value))} className="w-full" disabled={isPolling} />
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Idea Review Iterations: {maxIdeaReviewIterations}</label>
+            <input type="range" min={1} max={5} value={maxIdeaReviewIterations} onChange={(e) => setMaxIdeaReviewIterations(parseInt(e.target.value))} className="w-full" disabled={isPolling} />
           </div>
           <div className="flex gap-3 pt-2">
             <Button variant="outline" onClick={testProvider} disabled={isPolling || isTestingProvider}>
@@ -572,63 +556,18 @@ export function IdeaGenerationPanel() {
                     </div>
                   )}
                   <div className="flex flex-wrap gap-2">
-                    <Button
-                      size="sm"
-                      onClick={() => createPlanPackage(candidate)}
-                      disabled={!!createdPackageId || creatingPackageForCandidateId === candidate.id}
-                    >
-                      {creatingPackageForCandidateId === candidate.id ? (
-                        <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
-                      ) : (
-                        <ArrowRight className="h-4 w-4 mr-2" />
-                      )}
-                      {creatingPackageForCandidateId === candidate.id ? 'Creating Package' : 'Generate PlanPackage'}
-                    </Button>
                     {session?.status === 'completed' && (
                       <Button
-                        variant="outline"
                         size="sm"
-                        onClick={() => {
-                          if (!session?.id) return
-                          const params = new URLSearchParams({
-                            ideaSessionId: session.id,
-                            ideaCandidateId: candidate.id,
-                            ideaCandidateTitle: candidate.title,
-                          })
-                          const q = session.config.seedQuery || seedQuery
-                          if (q) params.set('ideaSeedQuery', q)
-                          window.location.href = `/research/planning?${params.toString()}`
-                        }}
+                        onClick={() => openPlanningForCandidate(candidate)}
                       >
                         <FileText className="h-4 w-4 mr-2" />
-                        Open Planning
+                        Use In Planning
                       </Button>
                     )}
                   </div>
                 </div>
               ))}
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {createdPackageId && (
-        <Card className="border-emerald-500 bg-white shadow-sm">
-          <CardContent className="pt-6">
-            <div className="flex items-center gap-3">
-              <CheckCircle2 className="h-6 w-6 text-emerald-700" />
-              <div>
-                <p className="font-semibold text-emerald-900">PlanPackage Created</p>
-                <p className="text-sm text-slate-800">Package ID: {createdPackageId}</p>
-              </div>
-              <div className="ml-auto flex gap-2">
-                <Button variant="outline" onClick={() => navigate(`/research/planning?packageId=${createdPackageId}`)}>
-                  <FileText className="h-4 w-4 mr-2" /> Open Package
-                </Button>
-                <Button onClick={() => window.location.href = '/runs'}>
-                  <Play className="h-4 w-4 mr-2" /> View Runs
-                </Button>
-              </div>
             </div>
           </CardContent>
         </Card>

@@ -502,6 +502,7 @@ export function PlanGenerationPanel() {
   const [generationMode, setGenerationMode] = useState<GenerationMode>('hybrid')
   const [maxStages, setMaxStages] = useState(3)
   const [maxStepsPerStage, setMaxStepsPerStage] = useState(3)
+  const [maxReviewIterations, setMaxReviewIterations] = useState(2)
   const [userNotes, setUserNotes] = useState('')
   const [feedbackComment, setFeedbackComment] = useState('')
 
@@ -594,7 +595,7 @@ export function PlanGenerationPanel() {
         reviewerMode: DEFAULT_REVIEWER_MODE,
         maxStages,
         maxStepsPerStage,
-        maxRepairRounds: 1,
+        maxRepairRounds: maxReviewIterations,
         userNotes: userNotes.trim() || undefined,
       })
       setPlanPackage(response.package)
@@ -642,7 +643,7 @@ export function PlanGenerationPanel() {
         reviewerMode: DEFAULT_REVIEWER_MODE,
         maxStages,
         maxStepsPerStage,
-        maxRepairRounds: 2,
+        maxRepairRounds: maxReviewIterations,
       })
       setPlanPackage(revised)
       setPresentation(await getPlanPackagePresentation(revised.packageId))
@@ -754,7 +755,7 @@ export function PlanGenerationPanel() {
                   Generate PlanPackage
                 </Button>
               </div>
-              <div className="mt-3 grid gap-3 md:grid-cols-3">
+              <div className="mt-3 grid gap-3 md:grid-cols-4">
                 <label className="space-y-1 text-xs font-medium text-slate-700">
                   Generation
                   <select
@@ -785,6 +786,17 @@ export function PlanGenerationPanel() {
                     max={5}
                     value={maxStepsPerStage}
                     onChange={(event) => setMaxStepsPerStage(Number(event.target.value))}
+                    className="w-full"
+                  />
+                </label>
+                <label className="space-y-1 text-xs font-medium text-slate-700">
+                  Review iterations: {maxReviewIterations}
+                  <input
+                    type="range"
+                    min={0}
+                    max={2}
+                    value={maxReviewIterations}
+                    onChange={(event) => setMaxReviewIterations(Number(event.target.value))}
                     className="w-full"
                   />
                 </label>

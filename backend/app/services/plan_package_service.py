@@ -26,6 +26,15 @@ from app.models.plan_package import (
     PlanStep,
 )
 from app.services.plan_package_builder import build_contribution_statements, build_plan_package
+from app.services.plan_package_llm_schema import llm_plan_output_schema_hint, validate_llm_plan_output
+from app.services.plan_package_plan_quality import (
+    build_plan_blueprint,
+    build_single_plan_design_brief,
+    missing_plan_roles,
+    sanitize_constants,
+)
+from app.services.plan_package_readiness import evaluate_downstream_readiness
+from app.services.plan_package_revisor import build_plan_revision_patch
 from app.services.plan_package_reviewers import apply_review_to_quality_gate
 from app.services.plan_package_validator import validate_plan_package
 from app.services.plan_package_views import build_plan_package_handoff, build_plan_package_presentation
@@ -188,6 +197,24 @@ def _contains_any(text: str, terms: List[str]) -> bool:
     return any(term and term.lower() in text for term in terms)
 
 
+def _clean_string_list(raw: Any) -> List[str]:
+    if not isinstance(raw, list):
+        return []
+    cleaned: List[str] = []
+    for item in raw:
+        text = str(item or "").strip()
+        if text and text.lower() not in {"none", "null", "undefined"} and text not in cleaned:
+            cleaned.append(text)
+    return cleaned
+
+
+def _safe_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _first_text(raw: Dict[str, Any], keys: List[str], default: str = "") -> str:
     for key in keys:
         value = raw.get(key)
@@ -273,6 +300,9 @@ class PlanPackageService:
         package_id: str,
         *,
         section_path: str,
+        display_label: str = "",
+        source_view: str = "presentation",
+        target_sections: Optional[List[str]] = None,
         feedback_type: str,
         comment: str,
         severity: str = "medium",
@@ -286,12 +316,22 @@ class PlanPackageService:
         feedback = PlanHumanFeedback(
             id=f"pfb_{uuid.uuid4().hex[:10]}",
             sectionPath=section_path.strip() or "package",
+            displayLabel=display_label.strip() if display_label else "",
+            sourceView=source_view.strip() if source_view else "presentation",
+            targetSections=self._normalize_revision_targets(target_sections) if target_sections else [],
             feedbackType=feedback_type.strip() or "comment",
             comment=comment.strip(),
             severity=severity.strip() or "medium",
             requestedAction=requested_action.strip() or "revise",
         )
         package.humanFeedback.append(feedback)
+        if not feedback.targetSections:
+            patch = build_plan_revision_patch(
+                package,
+                include_feedback=True,
+                allow_narrative=True,
+            )
+            feedback.targetSections = self._normalize_revision_targets(patch.changedSections) if patch.changedSections else []
         package.status = (
             PlanPackageStatus.NEEDS_REVISION
             if feedback.requestedAction in {"revise", "regenerate", "repair"}
@@ -326,7 +366,7 @@ class PlanPackageService:
         generation_mode: str = "hybrid",
         max_stages: Optional[int] = None,
         max_steps_per_stage: Optional[int] = None,
-        max_repair_rounds: int = 1,
+        max_repair_rounds: int = 2,
         target_sections: Optional[List[str]] = None,
         reviewer_mode: str = "hybrid",
     ) -> PlanPackage:
@@ -351,9 +391,15 @@ class PlanPackageService:
         package.schemaVersion = "plan-package/v4"
 
         previous_generation_repair_rounds = package.generation.repairRounds
-        normalized_targets = (
-            self._normalize_revision_targets(target_sections)
-            if target_sections is not None
+        revision_patch = build_plan_revision_patch(
+            package,
+            target_sections=target_sections,
+            include_feedback=True,
+            allow_narrative=True,
+        )
+        normalized_targets = self._normalize_revision_targets(
+            revision_patch.changedSections
+            if revision_patch.changedSections
             else self._infer_revision_targets_from_feedback(package)
         )
         if mode == "hybrid":
@@ -398,6 +444,7 @@ class PlanPackageService:
                 summary="Revised PlanPackage from human feedback and reviewer findings.",
                 generationMode=mode,
                 repairRounds=max(0, package.generation.repairRounds - previous_generation_repair_rounds),
+                patchSummary=revision_patch.model_dump(),
             )
         )
         package.qualityGate = validate_plan_package(package)
@@ -432,7 +479,23 @@ class PlanPackageService:
         if max_repair_rounds <= 0:
             return
         for repair_index in range(max_repair_rounds):
-            targets = self._infer_plan_repair_targets_from_review(package)
+            if package.qualityGate.agentApproved and package.qualityGate.implementationReady:
+                return
+            revision_patch = build_plan_revision_patch(
+                package,
+                include_feedback=False,
+                allow_narrative=False,
+            )
+            targets = self._normalize_revision_targets(revision_patch.changedSections) if revision_patch.changedSections else []
+            if not targets and not revision_patch.upstreamBlocked:
+                targets = self._infer_plan_repair_targets_from_review(package)
+            if revision_patch.upstreamBlocked:
+                message = "PlanPackage auto repair blocked by upstream issue: " + "; ".join(revision_patch.unresolvedIssues[:3])
+                if message not in package.generation.warnings:
+                    package.generation.warnings.append(message)
+                if message not in package.qualityGate.warnings:
+                    package.qualityGate.warnings.append(message)
+                return
             if not targets:
                 return
             try:
@@ -460,6 +523,7 @@ class PlanPackageService:
                         summary="Auto-repaired PlanPackage from reviewer findings.",
                         generationMode="hybrid",
                         repairRounds=max(0, package.generation.repairRounds - previous_repair_rounds),
+                        patchSummary=revision_patch.model_dump(),
                     )
                 )
                 package.qualityGate = validate_plan_package(package)
@@ -498,6 +562,11 @@ class PlanPackageService:
 
         if _contains_any(text, ["researchquestion", "research question", "研究问题"]):
             add("researchQuestion")
+        if _contains_any(text, [
+            "topic", "seed", "drift", "relevance", "relevant", "faithful", "faithfulness",
+            "citation", "selected idea", "主题", "跑偏", "漂移", "相关性", "忠于", "引用",
+        ]):
+            add("researchQuestion", "hypothesis", "stages")
         if _contains_any(text, ["hypothesis", "假设"]):
             add("hypothesis")
         if _contains_any(text, ["constant", "dataset", "model", "hardware", "baseline", "常量", "数据集", "模型", "基线"]):
@@ -506,6 +575,11 @@ class PlanPackageService:
             add("stages")
         if _contains_any(text, ["expected", "metric", "target", "output", "evaluation", "指标", "目标", "输出", "评估"]):
             add("expectedMetrics", "stages")
+        if _contains_any(text, [
+            "evidenceref", "evidence ref", "selectedgap", "selected gap", "supportedbypaperids",
+            "supporting paper", "probe", "graph patch", "证据", "支撑论文", "选中gap", "选中 gap",
+        ]):
+            add("stages")
 
         # Do not auto-rewrite upstream idea/evidence fields here. Those should be
         # handled by the idea-stage review gate before PlanPackage creation.
@@ -544,8 +618,41 @@ class PlanPackageService:
         llm_reports = self._run_llm_reviewers(package, reviewer_mode=mode)
         if llm_reports:
             gate = apply_review_to_quality_gate(package, gate, extra_reports=llm_reports)
+        gate = self._apply_downstream_readiness(package, gate)
         package.generation.reviewerMode = mode
         package.generation.llmReviewerUsed = self._llm_review_used(llm_reports)
+        return gate
+
+    def _apply_downstream_readiness(self, package: PlanPackage, gate: Any):
+        readiness = evaluate_downstream_readiness(package)
+        package.downstreamReadiness = readiness
+        gate.downstreamReady = readiness.overallReady
+        readiness_errors = [
+            f"downstream.{issue.module}: {issue.message}"
+            for issue in readiness.blockingIssues
+        ]
+        readiness_warnings = [
+            f"downstream.{issue.module}: {issue.message}"
+            for issue in readiness.warnings
+        ]
+        existing_errors = set(gate.errors)
+        existing_warnings = set(gate.warnings)
+        gate.errors.extend(message for message in readiness_errors if message not in existing_errors)
+        gate.warnings.extend(message for message in readiness_warnings if message not in existing_warnings)
+        if not readiness.overallReady:
+            gate.implementationReady = False
+            gate.agentApproved = False
+            if gate.reviewDecision == "approve":
+                gate.reviewDecision = "revise"
+        else:
+            gate.implementationReady = bool(
+                gate.schemaValid
+                and gate.evidenceValid
+                and gate.topicRelevant
+                and gate.citationFaithful
+                and gate.planSpecific
+                and gate.agentApproved
+            )
         return gate
 
     def _run_llm_reviewers(self, package: PlanPackage, *, reviewer_mode: str) -> List[PlanReviewerReport]:
@@ -949,12 +1056,20 @@ class PlanPackageService:
             raise PlanPackageConflictError(f"Blocking human feedback must be resolved before approval: {ids}")
         if not package.qualityGate.agentApproved or package.qualityGate.reviewDecision != "approve":
             raise PlanPackageConflictError("PlanPackage has not passed agent review")
-        if not package.qualityGate.schemaValid or not package.qualityGate.evidenceValid:
+        if (
+            not package.qualityGate.schemaValid
+            or not package.qualityGate.evidenceValid
+            or not package.qualityGate.topicRelevant
+            or not package.qualityGate.citationFaithful
+            or not package.qualityGate.planSpecific
+            or not package.qualityGate.downstreamReady
+            or package.qualityGate.errors
+        ):
             raise PlanPackageConflictError("PlanPackage schema/evidence gate has not passed")
         package.status = PlanPackageStatus.APPROVED
         package.qualityGate.humanApproved = True
         package.qualityGate.reviewDecision = "approved"
-        package.qualityGate.implementationReady = True
+        package.qualityGate.implementationReady = package.qualityGate.downstreamReady
         return self.package_storage.update(package)
 
     def create_from_idea_session(
@@ -966,7 +1081,7 @@ class PlanPackageService:
         max_steps_per_stage: int = 3,
         user_notes: Optional[str] = None,
         generation_mode: str = "hybrid",
-        max_repair_rounds: int = 1,
+        max_repair_rounds: int = 2,
         reviewer_mode: str = "hybrid",
     ) -> PlanPackage:
         session = self.idea_session_storage.get(idea_session_id)
@@ -1004,6 +1119,7 @@ class PlanPackageService:
             user_notes=user_notes,
             max_stages=max_stages,
             max_steps_per_stage=max_steps_per_stage,
+            paper_type=session.config.paperType,
         )
         package.constants.setdefault("seedQuery", session.config.seedQuery)
         if session.config.domain:
@@ -1021,12 +1137,18 @@ class PlanPackageService:
         package.generation.repairRounds = 0
         package.generation.fallbackUsed = mode == "deterministic"
         package.generation.promptVersion = (
-            "plan-package-implementation-planner-v1"
+            "plan-package-single-implementation-planner-v2"
             if mode == "hybrid"
             else "plan-package-adapter-v1"
         )
+        self._record_plan_blueprint(
+            package,
+            max_stages=max_stages,
+            max_steps_per_stage=max_steps_per_stage,
+        )
         package.sourceFields.implementationPlan = [
             "LLM implementation planner" if mode == "hybrid" else "deterministic fallback stage builder",
+            "single-plan quality skeleton",
             "PlanPackage.idea",
             "PlanPackage.background",
             "PlanPackage.gap",
@@ -1080,6 +1202,29 @@ class PlanPackageService:
             if package.qualityGate.agentApproved and package.qualityGate.implementationReady
             else PlanPackageStatus.NEEDS_REVISION
         )
+
+    def _record_plan_blueprint(
+        self,
+        package: PlanPackage,
+        *,
+        max_stages: int,
+        max_steps_per_stage: int,
+    ) -> None:
+        blueprint = build_plan_blueprint(
+            package,
+            max_stages=max_stages,
+            max_steps_per_stage=max_steps_per_stage,
+        )
+        package.generation.blueprintVersion = blueprint.version
+        package.generation.templateId = blueprint.templateId
+        package.generation.blueprintSummary = {
+            "paperType": blueprint.paperType,
+            "requiredRoleIds": [role.get("id", "") for role in blueprint.requiredRoles],
+            "stageShape": blueprint.recommendedStageShape,
+            "metricRequirements": blueprint.metricRequirements,
+            "artifactRequirements": blueprint.artifactRequirements,
+            "downstreamReadinessChecks": blueprint.downstreamReadinessChecks,
+        }
 
     def _candidate_from_package(self, package: PlanPackage) -> IdeaCandidate:
         raw_candidate = {}
@@ -1166,7 +1311,12 @@ class PlanPackageService:
         client = get_provider_client(session.config.providerName)
         package.generation.providerName = session.config.providerName
         package.generation.model = session.config.model
-        package.generation.promptVersion = "plan-package-implementation-planner-v1"
+        package.generation.promptVersion = "plan-package-single-implementation-planner-v2"
+        self._record_plan_blueprint(
+            package,
+            max_stages=max_stages,
+            max_steps_per_stage=max_steps_per_stage,
+        )
         prompt = self._build_llm_prompt(
             package,
             max_stages=max_stages,
@@ -1187,6 +1337,7 @@ class PlanPackageService:
 
         last_issues: List[str] = []
         last_response_text = ""
+        schema_repair_rounds = 0
         attempts = max(1, max_repair_rounds + 1)
         for attempt in range(attempts):
             messages = list(base_messages)
@@ -1206,9 +1357,18 @@ class PlanPackageService:
                 response_format={"type": "json_object"},
             )
             last_response_text = response.text or ""
-            parsed = _extract_json(last_response_text)
-            if not parsed:
+            raw_parsed = _extract_json(last_response_text)
+            if not raw_parsed:
                 last_issues = ["LLM did not return one complete valid JSON object"]
+                schema_repair_rounds += 1
+                continue
+            parsed, schema_issues = validate_llm_plan_output(
+                raw_parsed,
+                target_sections=target_sections,
+            )
+            if schema_issues or parsed is None:
+                last_issues = schema_issues or ["LLM output failed schema validation"]
+                schema_repair_rounds += 1
                 continue
 
             candidate_package = package.model_copy(deep=True)
@@ -1219,7 +1379,10 @@ class PlanPackageService:
                 max_steps_per_stage=max_steps_per_stage,
                 target_sections=target_sections,
             )
-            last_issues = self._validate_generated_plan_fields(candidate_package)
+            last_issues = self._validate_generated_plan_fields(
+                candidate_package,
+                target_sections=target_sections,
+            )
             if last_issues:
                 continue
 
@@ -1235,9 +1398,11 @@ class PlanPackageService:
                 used_sections.append("feedbackNarrative")
             package.generation.llmUsedSections = used_sections
             package.generation.repairRounds = attempt
+            package.generation.schemaRepairRounds += schema_repair_rounds
             package.generation.fallbackUsed = False
             return
 
+        package.generation.schemaRepairRounds += schema_repair_rounds
         raise ValueError("LLM plan field generation failed validation: " + "; ".join(last_issues))
 
     def _apply_parsed_plan_fields(
@@ -1256,7 +1421,7 @@ class PlanPackageService:
             package.hypothesis = parsed["hypothesis"].strip()
         if "constants" in writable and isinstance(parsed.get("constants"), dict):
             protected = {"ideaSessionId", "ideaCandidateId", "planStage", "seedQuery", "domain", "paperType"}
-            for key, value in parsed["constants"].items():
+            for key, value in sanitize_constants(parsed["constants"]).items():
                 if key not in protected:
                     package.constants[key] = value
         if "stages" in writable and isinstance(parsed.get("stages"), list) and parsed["stages"]:
@@ -1346,7 +1511,12 @@ class PlanPackageService:
                     [str(item).strip() for item in value if str(item).strip()][:8],
                 )
 
-    def _validate_generated_plan_fields(self, package: PlanPackage) -> List[str]:
+    def _validate_generated_plan_fields(
+        self,
+        package: PlanPackage,
+        *,
+        target_sections: Optional[List[str]] = None,
+    ) -> List[str]:
         issues: List[str] = []
         if not package.researchQuestion.strip():
             issues.append("researchQuestion is empty")
@@ -1393,6 +1563,12 @@ class PlanPackageService:
             min_hits = max(2, min(4, len(topic_terms) // 4))
             if _hit_count(plan_text, topic_terms) < min_hits:
                 issues.append("stages/steps drifted away from seed query and selected idea")
+        stages_writable = target_sections is None or "stages" in target_sections or "expectedMetrics" in target_sections
+        if stages_writable:
+            for role in missing_plan_roles(package):
+                issues.append(
+                    f"stages missing required single-plan role: {role['label']} - {role['repairHint']}"
+                )
         gate = validate_plan_package(package)
         gate = apply_review_to_quality_gate(package, gate)
         if gate.errors:
@@ -1412,6 +1588,8 @@ class PlanPackageService:
             "Problems:\n"
             f"{issue_text}\n"
             f"Revision target sections: {target_text}.\n"
+            f"Schema rules: {llm_plan_output_schema_hint(target_sections)}\n"
+            "Repair the same single PlanPackage. Do not generate multiple plan candidates, alternatives, options, or rankings.\n"
             "Return one complete valid JSON object only. Include writable keys only from: "
             "researchQuestion, hypothesis, constants, stages, background, gap, principle. "
             "Keep the same seed topic and selected idea. Preserve all evidence IDs. Do not add markdown or explanation."
@@ -1440,6 +1618,16 @@ class PlanPackageService:
             ]
             if section not in writable_sections
         ]
+        blueprint = build_plan_blueprint(
+            package,
+            max_stages=max_stages,
+            max_steps_per_stage=max_steps_per_stage,
+        )
+        ablation_instruction = (
+            "At least one step must define baselines/control comparisons, and at least one step must define ablation, sensitivity, robustness, or failure analysis."
+            if blueprint.ablationRequirements
+            else "For this paperType, do not force experiment ablation; use taxonomy/comparison/GAP-synthesis checks from the blueprint instead."
+        )
         compact = {
             "readonlyContract": {
                 "lockedSections": ["idea", *locked_sections],
@@ -1448,6 +1636,8 @@ class PlanPackageService:
                 "maxStepsPerStage": max_steps_per_stage,
                 "note": "Plan describes intended implementation and validation design only; it must not claim executed results.",
             },
+            "planBlueprint": blueprint.model_dump(),
+            "singlePlanDesignBrief": build_single_plan_design_brief(package, max_stages=max_stages, max_steps_per_stage=max_steps_per_stage),
             "seedQuery": package.constants.get("seedQuery", ""),
             "domain": package.constants.get("domain", ""),
             "paperType": package.constants.get("paperType", ""),
@@ -1498,7 +1688,11 @@ class PlanPackageService:
         }
         return (
             "Return ONLY valid JSON. Include writable top-level keys only from: researchQuestion, hypothesis, constants, stages, background, gap, principle.\n"
+            f"{llm_plan_output_schema_hint(writable_sections)}\n"
             "Do not return or rewrite literatureSurvey, contributionStatement, evidenceTrace, sourceFields, or rawIdeaOutputs.\n"
+            "Generate exactly one coherent implementation plan for this PlanPackage. Do not generate multiple plan candidates, alternative options, or plan rankings.\n"
+            "Use planBlueprint.requiredRoles as a hard checklist. If maxStages is small, combine multiple roles inside the same stage or step, but do not omit them.\n"
+            "Follow planBlueprint.recommendedStageShape and paperType-specific template requirements.\n"
             "If background, gap, or principle are writable, revise wording and research logic only from the provided context. Preserve existing item IDs, evidenceRefs, paper IDs, KG IDs, probe IDs, and graph patch IDs.\n"
             f"Focus revision on these writable sections: {', '.join(writable_sections)}. Preserve already-good writable content unless it conflicts with feedback or reviewer findings.\n"
             "Stay faithful to seedQuery, topicAnchors, selected idea, selected GAP, and principle. Reject generic NLP/LLM plans when the topic is specific.\n"
@@ -1506,9 +1700,11 @@ class PlanPackageService:
             "Use only the provided allowedEvidenceIds when adding evidenceRefs.\n"
             "stages[].steps[].outputs[].type must be one of metrics, chart, table, checkpoint, code, report, log.\n"
             "Each stage must contain steps, and each step should include evidenceRefs when possible.\n"
+            f"{ablation_instruction}\n"
             "These are planned outputs and expected metrics, not executed results.\n"
             f"Return at most {max_stages} stages and at most {max_steps_per_stage} steps per stage. Prefer fewer, high-signal steps over long experiment checklists.\n"
             "Do not invent exact benchmark results, exact dataset sizes, or exact training budgets unless they are present in the context.\n"
+            "Avoid null values. Use empty arrays/objects or concise 'to be specified downstream' strings when a value is unknown.\n"
             "Use this exact shape for every stage and step:\n"
             "{\n"
             '  "researchQuestion": "specific research question",\n'
@@ -1608,12 +1804,19 @@ class PlanPackageService:
         stages: List[PlanStage] = []
         for stage_index, raw_stage in enumerate(raw_stages[:max_stages], start=1):
             steps: List[PlanStep] = []
+            if not isinstance(raw_stage, dict):
+                raw_stage = {}
             stage_title = _first_text(raw_stage, ["title", "name"], f"Stage {stage_index}")
             for step_index, raw_step in enumerate((raw_stage.get("steps", []) or [])[:max_steps_per_stage], start=1):
                 if isinstance(raw_step, str):
                     raw_step = {"title": raw_step, "desc": raw_step, "method": raw_step}
                 if not isinstance(raw_step, dict):
                     raw_step = {}
+                raw_outputs = [
+                    item if isinstance(item, dict) else {"name": str(item), "type": "report"}
+                    for item in (raw_step.get("outputs", []) or raw_step.get("artifacts", []) or [])
+                    if str(item or "").strip().lower() not in {"", "none", "null", "undefined"}
+                ]
                 outputs = [
                     PlanOutput(
                         type=_normalize_output_type(raw_output.get("type", "report")),
@@ -1625,10 +1828,12 @@ class PlanPackageService:
                         desc=_first_text(raw_output, ["desc", "description", "details"], ""),
                         requiredFor=list(raw_output.get("requiredFor", []) or raw_output.get("consumedBy", []) or []),
                     )
-                    for raw_output in [
-                        item if isinstance(item, dict) else {"name": str(item), "type": "report"}
-                        for item in (raw_step.get("outputs", []) or raw_step.get("artifacts", []) or [])
-                    ]
+                    for raw_output in raw_outputs
+                ]
+                raw_expected_items = [
+                    item if isinstance(item, dict) else {"metric": str(item), "target": "specified before implementation"}
+                    for item in (raw_step.get("expected", []) or raw_step.get("metrics", []) or [])
+                    if str(item or "").strip().lower() not in {"", "none", "null", "undefined"}
                 ]
                 expected = [
                     PlanExpectedMetric(
@@ -1636,10 +1841,7 @@ class PlanPackageService:
                         target=_first_text(raw_expected, ["target", "successCriteria", "criterion", "expected"], "specified before implementation"),
                         desc=_first_text(raw_expected, ["desc", "description", "rationale"], ""),
                     )
-                    for raw_expected in [
-                        item if isinstance(item, dict) else {"metric": str(item), "target": "specified before implementation"}
-                        for item in (raw_step.get("expected", []) or raw_step.get("metrics", []) or [])
-                    ]
+                    for raw_expected in raw_expected_items
                 ]
                 step_title = _first_text(
                     raw_step,
@@ -1658,12 +1860,12 @@ class PlanPackageService:
                 )
                 steps.append(
                     PlanStep(
-                        id=str(raw_step.get("id", f"step-{stage_index}-{step_index}")),
-                        order=int(raw_step.get("order", step_index)),
+                        id=str(raw_step.get("id") or f"step-{stage_index}-{step_index}").strip(),
+                        order=_safe_int(raw_step.get("order", step_index), step_index),
                         title=step_title,
                         desc=step_desc,
                         method=step_method,
-                        inputFrom=list(raw_step.get("inputFrom", []) or []),
+                        inputFrom=_clean_string_list(raw_step.get("inputFrom", []) or []),
                         outputs=outputs or [
                             PlanOutput(type="report", name=f"stage_{stage_index}_step_{step_index}.md")
                         ],
@@ -1675,12 +1877,12 @@ class PlanPackageService:
                 )
             stages.append(
                 PlanStage(
-                    id=str(raw_stage.get("id", f"stage-{stage_index}")),
-                    order=int(raw_stage.get("order", stage_index)),
+                    id=str(raw_stage.get("id") or f"stage-{stage_index}").strip(),
+                    order=_safe_int(raw_stage.get("order", stage_index), stage_index),
                     title=stage_title,
                     goal=_first_text(raw_stage, ["goal", "objective", "purpose"], f"Complete {stage_title}."),
                     method=_first_text(raw_stage, ["method", "approach", "procedure"], f"Plan and execute {stage_title} in downstream modules."),
-                    dependsOn=list(raw_stage.get("dependsOn", []) or []),
+                    dependsOn=_clean_string_list(raw_stage.get("dependsOn", []) or []),
                     steps=steps or [
                         PlanStep(
                             id=f"step-{stage_index}-1",

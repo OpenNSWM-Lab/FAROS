@@ -242,6 +242,9 @@ class PlanPackageStatus(str, Enum):
 class PlanHumanFeedback(BaseModel):
     id: str
     sectionPath: str
+    displayLabel: str = ""
+    sourceView: str = Field(default="presentation", description="presentation | fullPackage | handoff | api")
+    targetSections: List[str] = Field(default_factory=list)
     feedbackType: str = Field(
         default="comment",
         description="comment | correction | reject | regenerate | approve",
@@ -263,6 +266,7 @@ class PlanRevision(BaseModel):
     summary: str = ""
     generationMode: str = ""
     repairRounds: int = 0
+    patchSummary: Dict[str, Any] = Field(default_factory=dict)
 
 
 class PlanReviewerIssue(BaseModel):
@@ -301,6 +305,7 @@ class PlanQualityGate(BaseModel):
     topicRelevant: bool = False
     citationFaithful: bool = False
     planSpecific: bool = False
+    downstreamReady: bool = False
     agentApproved: bool = False
     humanApproved: bool = False
     implementationReady: bool = False
@@ -315,10 +320,14 @@ class PlanGenerationMetadata(BaseModel):
     providerName: Optional[str] = None
     model: Optional[str] = None
     promptVersion: str = ""
+    blueprintVersion: str = ""
+    templateId: str = ""
+    blueprintSummary: Dict[str, Any] = Field(default_factory=dict)
     llmUsedSections: List[str] = Field(default_factory=list)
     reviewerMode: str = Field(default="hybrid", description="deterministic | hybrid")
     llmReviewerUsed: bool = False
     repairRounds: int = 0
+    schemaRepairRounds: int = 0
     fallbackUsed: bool = False
     warnings: List[str] = Field(default_factory=list)
 
@@ -332,6 +341,23 @@ class PlanSourceFieldMap(BaseModel):
     contributionStatement: List[str] = Field(default_factory=list)
     evidenceTrace: List[str] = Field(default_factory=list)
     implementationPlan: List[str] = Field(default_factory=list)
+
+
+class PlanReadinessIssue(BaseModel):
+    module: str = Field(description="code | experiment | paper | review | package")
+    sectionPath: str = ""
+    message: str
+    severity: str = Field(default="warning", description="warning | blocking")
+
+
+class PlanDownstreamReadiness(BaseModel):
+    codeReady: bool = False
+    experimentReady: bool = False
+    paperReady: bool = False
+    reviewReady: bool = False
+    overallReady: bool = False
+    blockingIssues: List[PlanReadinessIssue] = Field(default_factory=list)
+    warnings: List[PlanReadinessIssue] = Field(default_factory=list)
 
 
 class PlanPackage(BaseModel):
@@ -354,6 +380,7 @@ class PlanPackage(BaseModel):
     stages: List[PlanStage]
     evidenceTrace: PlanEvidenceTrace
     downstreamContract: PlanDownstreamContract = Field(default_factory=PlanDownstreamContract)
+    downstreamReadiness: PlanDownstreamReadiness = Field(default_factory=PlanDownstreamReadiness)
     qualityGate: PlanQualityGate = Field(default_factory=PlanQualityGate)
     generation: PlanGenerationMetadata = Field(default_factory=PlanGenerationMetadata)
     humanFeedback: List[PlanHumanFeedback] = Field(default_factory=list)
@@ -501,5 +528,6 @@ class PlanPackageHandoff(BaseModel):
     keyPapers: List[PlanReadablePaper] = Field(default_factory=list)
     stages: List[PlanStage] = Field(default_factory=list)
     qualityGate: PlanQualityGate = Field(default_factory=PlanQualityGate)
+    downstreamReadiness: PlanDownstreamReadiness = Field(default_factory=PlanDownstreamReadiness)
     evidenceTrace: PlanHandoffEvidenceTrace
     downstreamContract: PlanDownstreamContract = Field(default_factory=PlanDownstreamContract)

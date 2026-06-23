@@ -450,8 +450,8 @@ class LiteratureGraphStorage:
                     graphs.append(LiteratureGraph(**data))
             except Exception:
                 continue
-        # Return the one with highest version
-        graphs.sort(key=lambda g: g.version, reverse=True)
+        # Return the latest graph, preferring upgraded versions.
+        graphs.sort(key=lambda g: (g.version, g.createdAt), reverse=True)
         return graphs[0] if graphs else None
 
 
@@ -550,7 +550,8 @@ class LiteratureMapStorage:
         return LiteratureMap(**data)
 
     def get_by_session(self, session_id: str) -> Optional[LiteratureMap]:
-        """Get the literature map for a session."""
+        """Get the latest literature map for a session."""
+        maps: List[LiteratureMap] = []
         for path in self.base_path.glob("lm_*.json"):
             try:
                 with open(path, 'r', encoding='utf-8') as f:
@@ -558,10 +559,11 @@ class LiteratureMapStorage:
                 if data.get('sessionId') == session_id:
                     if data.get('createdAt') and isinstance(data['createdAt'], str):
                         data['createdAt'] = datetime.fromisoformat(data['createdAt'])
-                    return LiteratureMap(**data)
+                    maps.append(LiteratureMap(**data))
             except Exception:
                 continue
-        return None
+        maps.sort(key=lambda m: m.createdAt, reverse=True)
+        return maps[0] if maps else None
 
 
 # =============================================================================
@@ -727,6 +729,7 @@ class ReasoningKGStorage:
         return ReasoningKG(**data)
 
     def get_by_session(self, session_id: str) -> Optional[ReasoningKG]:
+        kgs: List[ReasoningKG] = []
         for path in self.base_path.glob("rkg_*.json"):
             try:
                 with open(path, 'r', encoding='utf-8') as f:
@@ -734,10 +737,11 @@ class ReasoningKGStorage:
                 if data.get('sessionId') == session_id:
                     if data.get('createdAt') and isinstance(data['createdAt'], str):
                         data['createdAt'] = datetime.fromisoformat(data['createdAt'])
-                    return ReasoningKG(**data)
+                    kgs.append(ReasoningKG(**data))
             except Exception:
                 continue
-        return None
+        kgs.sort(key=lambda kg: kg.createdAt, reverse=True)
+        return kgs[0] if kgs else None
 
 
 # =============================================================================

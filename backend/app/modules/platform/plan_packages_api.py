@@ -25,7 +25,7 @@ class CreatePlanPackageRequest(BaseModel):
     userNotes: Optional[str] = None
     generationMode: str = Field(default="hybrid", description="hybrid | deterministic")
     reviewerMode: str = Field(default="hybrid", description="deterministic | hybrid")
-    maxRepairRounds: int = Field(default=1, ge=0, le=2)
+    maxRepairRounds: int = Field(default=2, ge=0, le=2)
 
 
 class CreatePlanPackageResponse(BaseModel):
@@ -42,6 +42,9 @@ class ValidatePlanPackageResponse(BaseModel):
 
 class PlanPackageFeedbackRequest(BaseModel):
     sectionPath: str = Field(default="package")
+    displayLabel: str = Field(default="")
+    sourceView: str = Field(default="presentation", description="presentation | fullPackage | handoff | api")
+    targetSections: Optional[list[str]] = Field(default=None)
     feedbackType: str = Field(default="comment", description="comment | correction | reject | regenerate | approve")
     comment: str
     severity: str = Field(default="medium", description="low | medium | high | blocking")
@@ -53,7 +56,7 @@ class RevisePlanPackageRequest(BaseModel):
     reviewerMode: str = Field(default="hybrid", description="deterministic | hybrid")
     maxStages: Optional[int] = Field(default=None, ge=1, le=5)
     maxStepsPerStage: Optional[int] = Field(default=None, ge=1, le=5)
-    maxRepairRounds: int = Field(default=1, ge=0, le=3)
+    maxRepairRounds: int = Field(default=2, ge=0, le=3)
     targetSections: Optional[list[str]] = Field(
         default=None,
         description=(
@@ -214,6 +217,9 @@ async def add_plan_package_feedback(
         return service.add_feedback(
             package_id,
             section_path=request.sectionPath,
+            display_label=request.displayLabel,
+            source_view=request.sourceView,
+            target_sections=request.targetSections,
             feedback_type=request.feedbackType,
             comment=request.comment,
             severity=request.severity,

@@ -3,6 +3,7 @@
 import re
 
 from app.models.plan_package import PlanOutputType, PlanPackage, PlanQualityGate
+from app.services.plan_package_plan_quality import missing_plan_roles
 
 
 def _has_text(value: str | None) -> bool:
@@ -164,6 +165,13 @@ def validate_plan_package(package: PlanPackage) -> PlanQualityGate:
     total_steps = sum(len(stage.steps) for stage in package.stages)
     if total_steps > 12:
         warnings.append("PlanPackage has more than 12 steps; downstream handoff may be too broad")
+
+    missing_roles = missing_plan_roles(package)
+    if missing_roles:
+        schema_errors.append(
+            "stages missing required single-plan roles: "
+            + "; ".join(f"{role['label']} ({role['repairHint']})" for role in missing_roles)
+        )
 
     for stage in package.stages:
         if stage.id in stage_ids:

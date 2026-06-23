@@ -26,6 +26,8 @@ PlanPackageHandoff
 
 不要让后续模块默认读取完整 `PlanPackage`。完整包包含 reviewer 报告、rawIdeaOutputs、sourceFields、humanFeedback、revision history 等审计/调试信息，字段多且会让下游耦合过重。
 
+正式执行前，后续模块还应读取 `downstreamReadiness`。它是 idea+plan 阶段对 code、experiment、paper、review 四类消费者的轻量可消费性检查，用于避免“字段合法但下游不可用”的 package 继续流转。
+
 三层视图分工如下：
 
 | 对象 | 面向对象 | 主要用途 |
@@ -34,9 +36,25 @@ PlanPackageHandoff
 | `PlanPackagePresentation` | 前端和用户 | 人可读展示，隐藏大量内部 ID |
 | `PlanPackageHandoff` | 后续模块 | 精简机器接口，默认接入对象 |
 
+下游模块不需要实现“选择哪个 plan 候选”的逻辑。idea 阶段可以有多个候选 idea，但进入 plan 页面后应由用户或系统选定一个 idea，再生成唯一 `PlanPackageHandoff`。
+
 ## 2. 交付状态
 
-`PlanPackageHandoff.idea` 应来自 idea Step 6 的 ranked output。该阶段会先应用 idea review gate：`PriorWorkComparison`、`IdeaCritique` 和 graph evidence 会影响候选排序；如果 top candidate 存在 critique、suggested improvements 或 evidence warning，系统会尝试生成反馈优化候选再参与排序。因此后续模块不应把 Plan reviewer 当成 idea 初审入口。
+`PlanPackageHandoff.idea` 应来自 idea Step 6 的 ranked output。该阶段会先应用 idea review gate：`PriorWorkComparison`、`IdeaCritique`、graph evidence 和 paper quality gate 会影响候选排序；如果 top candidate 存在 critique、suggested improvements 或 evidence warning，系统会先判断根因：
+
+- 如果是 idea 表达、创新性或方法具体性问题，系统会基于 reviewer 反馈重新生成候选 idea。
+- 如果是论文池、证据支撑或 closest prior work 问题，系统会先触发 targeted literature repair，重新检索/重筛/重建 `StructuredPaper[]`、`LiteratureMap`、`ReasoningKG` 和 path seeds，再重新生成候选 idea。
+
+因此后续模块不应把 Plan reviewer 当成 idea 初审入口。Plan reviewer 只负责阻断不合格 PlanPackage 交付；idea 质量问题应在 idea 阶段内部闭环处理。
+
+Reviewer 默认是内部迭代器，不是面向用户或下游模块的操作入口：
+
+- idea 阶段通过 `maxReviewIterations` 控制最大内部迭代轮数。
+- plan 阶段通过 `maxRepairRounds` 控制最大内部修复轮数。
+- plan 阶段只生成并修订一个 `PlanPackage`，不会向下游暴露多个 plan 候选或 plan 排名。
+- 中间轮 reviewer 发现的问题会用于自动重检索、重筛选、重生 idea 或重写 plan 字段。
+- 外部默认只看最后一轮 reviewer / quality gate 输出。
+- 中间轮只保留简短审计摘要，不作为后续模块消费契约。
 
 下游模块在正式执行前应检查：
 
@@ -119,6 +137,7 @@ GET /api/v1/plans/packages/{package_id}/presentation
   "keyPapers": [],
   "stages": [],
   "qualityGate": {},
+  "downstreamReadiness": {},
   "evidenceTrace": {},
   "downstreamContract": {}
 }
@@ -142,6 +161,7 @@ GET /api/v1/plans/packages/{package_id}/presentation
 | `keyPapers` | array | 关键论文摘要 | paper related work、review citation checks |
 | `stages` | array | 分阶段实施计划 | code/experiment/validation 的主输入 |
 | `qualityGate` | object | schema/evidence/计划质量门结果 | 下游是否继续执行的 gate |
+| `downstreamReadiness` | object | code/experiment/paper/review 可消费性检查 | 判断各后续模块是否会被当前 package 卡住 |
 | `evidenceTrace` | object | idea v5 证据链关键 ID | 调用上游证据详情、审计追踪 |
 | `downstreamContract` | object | 后续模块消费约定 | 告诉各模块应读哪些字段、应产出什么 |
 
@@ -456,6 +476,28 @@ metrics | chart | table | checkpoint | code | report | log
 ```
 
 ## 7. 各模块使用建议
+
+### 7.0 Readiness Gate
+
+`downstreamReadiness` 是交付可用性审核，不替代 schema validator 和 reviewer committee。建议正式执行前要求：
+
+```json
+{
+  "qualityGate": {
+    "implementationReady": true,
+    "downstreamReady": true
+  },
+  "downstreamReadiness": {
+    "codeReady": true,
+    "experimentReady": true,
+    "paperReady": true,
+    "reviewReady": true,
+    "overallReady": true
+  }
+}
+```
+
+如果某个模块为 false，应优先把 `downstreamReadiness.blockingIssues[]` 作为反馈交给 plan revisor，而不是让下游模块自行猜缺什么字段。
 
 ### 7.1 code 模块
 

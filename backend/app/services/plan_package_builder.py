@@ -41,6 +41,7 @@ from app.models.plan_package import (
     PlanStage,
     PlanStep,
 )
+from app.services.plan_package_templates import get_plan_template
 from app.storage.plan_package_storage import generate_plan_package_id
 
 
@@ -802,9 +803,11 @@ def build_default_stages(
     literature_survey: PlanLiteratureSurvey,
     gap: PlanGap,
     principle: PlanPrinciple,
+    paper_type: str = "generic",
     max_stages: int = 3,
     max_steps_per_stage: int = 3,
 ) -> List[PlanStage]:
+    template = get_plan_template(paper_type)
     metrics = candidate.expectedMetrics or []
     if not metrics:
         for paper in literature_survey.papers:
@@ -812,13 +815,194 @@ def build_default_stages(
                 text = str(method_metric.get("text", "") or method_metric.get("claimType", ""))
                 if "metric" in text.lower():
                     metrics.append(text[:80])
-        metrics = metrics or ["primary_metric"]
+        metrics = metrics or template.recommendedMetrics or ["primary_metric"]
 
     evidence_refs = [
         PlanEvidenceRef(type="paper", id=paper.paperId, source=paper.source)
         for paper in literature_survey.papers[:3]
     ]
     primary_output_prefix = candidate.title.lower().replace(" ", "_")[:40] or "plan"
+
+    if template.paperType == "survey":
+        stages = [
+            PlanStage(
+                id="stage-1",
+                order=1,
+                title="Literature Taxonomy",
+                goal="Build a taxonomy over investigated papers and define comparison dimensions.",
+                method="Cluster literatureSurvey.papers[] by method family, claim type, assumptions, and limitations.",
+                dependsOn=[],
+                steps=[
+                    PlanStep(
+                        id="step-1-1",
+                        order=1,
+                        title="Construct literature taxonomy",
+                        desc="Group investigated papers into method or application categories and record the rationale for each category.",
+                        method="Use literatureSurvey.papers[], LiteratureMap clusters, and paper claims to create taxonomy categories.",
+                        inputFrom=[],
+                        outputs=[PlanOutput(type="table", name="taxonomy_table.csv", desc="Paper taxonomy with category rationale", requiredFor=["paper", "review"])],
+                        expected=[PlanExpectedMetric(metric="paper_coverage", target=f">= {len(literature_survey.papers)}", desc="All investigated papers are assigned to taxonomy categories.")],
+                        evidenceRefs=evidence_refs,
+                    ),
+                    PlanStep(
+                        id="step-1-2",
+                        order=2,
+                        title="Define comparison dimensions",
+                        desc="Define comparison axes such as method, evidence type, assumptions, limitations, and application scope.",
+                        method="Extract recurring dimensions from claims, limitations, and gap signals.",
+                        inputFrom=["step-1-1"],
+                        outputs=[PlanOutput(type="table", name="comparison_matrix.csv", desc="Survey comparison dimensions and paper coverage", requiredFor=["paper"])],
+                        expected=[PlanExpectedMetric(metric="comparison_dimension_count", target=">= 3", desc="At least three useful comparison dimensions are defined.")],
+                        evidenceRefs=[PlanEvidenceRef(type="gap", id=gap.selectedGapId, source="idea_gap")],
+                    ),
+                ][:max_steps_per_stage],
+            ),
+            PlanStage(
+                id="stage-2",
+                order=2,
+                title="GAP and Trend Synthesis",
+                goal="Synthesize unresolved problems and trends from the taxonomy.",
+                method="Compare categories, limitations, and evidence signals to identify selected and supporting gaps.",
+                dependsOn=["stage-1"],
+                steps=[
+                    PlanStep(
+                        id="step-2-1",
+                        order=1,
+                        title="Synthesize selected GAP",
+                        desc="Explain what existing literature covers, what remains unresolved, and how the selected idea frames the contribution.",
+                        method="Use gap.items[], paper limitations, and principle.noveltyClaim to write the synthesis.",
+                        inputFrom=["step-1-2"],
+                        outputs=[PlanOutput(type="report", name="gap_synthesis.md", desc="Selected GAP and future-direction synthesis", requiredFor=["paper", "review"])],
+                        expected=[PlanExpectedMetric(metric="supported_gap_count", target=">= 1", desc="At least one selected or supporting GAP is backed by paper or graph evidence.")],
+                        evidenceRefs=[PlanEvidenceRef(type="gap", id=gap.selectedGapId, source="idea_gap")],
+                    ),
+                    PlanStep(
+                        id="step-2-2",
+                        order=2,
+                        title="Plan survey figures",
+                        desc="Define taxonomy and trend figures that downstream paper generation should create.",
+                        method="Map taxonomy categories and comparison dimensions into paper-ready visual artifacts.",
+                        inputFrom=["step-2-1"],
+                        outputs=[PlanOutput(type="chart", name="taxonomy_and_gap_figure.png", desc="Planned survey taxonomy or trend figure", requiredFor=["paper"])],
+                        expected=[PlanExpectedMetric(metric="survey_artifact_count", target=">= 2", desc="Taxonomy and comparison artifacts are planned.")],
+                    ),
+                ][:max_steps_per_stage],
+            ),
+            PlanStage(
+                id="stage-3",
+                order=3,
+                title="Survey Handoff Readiness",
+                goal="Prepare the survey package for downstream paper and review modules.",
+                method="Check that taxonomy, comparison matrix, GAP synthesis, and evidence trace are complete.",
+                dependsOn=["stage-2"],
+                steps=[
+                    PlanStep(
+                        id="step-3-1",
+                        order=1,
+                        title="Validate survey evidence trace",
+                        desc="Verify that taxonomy, comparison dimensions, and GAP synthesis can be traced to investigated papers.",
+                        method="Run PlanPackage validator and inspect qualityGate before downstream handoff.",
+                        inputFrom=["step-2-2"],
+                        outputs=[PlanOutput(type="checkpoint", name="survey_quality_gate.json", desc="Survey handoff validation status", requiredFor=["review"])],
+                        expected=[PlanExpectedMetric(metric="schema_valid", target="true", desc="Package satisfies survey handoff requirements.")],
+                    )
+                ][:max_steps_per_stage],
+            ),
+        ]
+        return stages[:max_stages]
+
+    if template.paperType == "benchmark":
+        stages = [
+            PlanStage(
+                id="stage-1",
+                order=1,
+                title="Task and Dataset Protocol",
+                goal="Define the benchmark task, data source, annotation protocol, and split policy.",
+                method="Use the selected GAP and literature limitations to scope benchmark examples and labels.",
+                dependsOn=[],
+                steps=[
+                    PlanStep(
+                        id="step-1-1",
+                        order=1,
+                        title="Define benchmark task",
+                        desc="Specify the task boundary, input/output format, intended evaluation setting, and exclusion rules.",
+                        method="Ground task definition in gap.items[] and investigated paper limitations.",
+                        inputFrom=[],
+                        outputs=[PlanOutput(type="report", name="benchmark_task_spec.md", desc="Benchmark task definition and scope", requiredFor=["paper", "validation"])],
+                        expected=[PlanExpectedMetric(metric="task_boundary_defined", target="true", desc="Benchmark scope is explicit before downstream data construction.")],
+                        evidenceRefs=[PlanEvidenceRef(type="gap", id=gap.selectedGapId, source="idea_gap")],
+                    ),
+                    PlanStep(
+                        id="step-1-2",
+                        order=2,
+                        title="Plan data and annotation protocol",
+                        desc="Define data source, sampling, annotation labels, quality checks, and split policy.",
+                        method="Translate benchmark requirements into dataset_card and benchmark_schema artifacts.",
+                        inputFrom=["step-1-1"],
+                        outputs=[
+                            PlanOutput(type="report", name="dataset_card.md", desc="Planned dataset card", requiredFor=["paper", "review"]),
+                            PlanOutput(type="code", name="benchmark_schema.json", desc="Benchmark schema for downstream implementation", requiredFor=["code", "validation"]),
+                        ],
+                        expected=[
+                            PlanExpectedMetric(metric="annotation_protocol_defined", target="true", desc="Annotation and split policy are specified."),
+                            PlanExpectedMetric(metric="quality_check_count", target=">= 2", desc="Leakage, bias, or agreement checks are planned."),
+                        ],
+                        evidenceRefs=evidence_refs,
+                    ),
+                ][:max_steps_per_stage],
+            ),
+            PlanStage(
+                id="stage-2",
+                order=2,
+                title="Baseline Coverage and Evaluation Protocol",
+                goal="Define baseline model families, scoring metrics, and benchmark evaluation protocol.",
+                method="Create a baseline matrix and metric definitions without executing benchmark runs.",
+                dependsOn=["stage-1"],
+                steps=[
+                    PlanStep(
+                        id="step-2-1",
+                        order=1,
+                        title="Define baseline coverage",
+                        desc="List baseline families, simple controls, and minimum coverage criteria for benchmark comparison.",
+                        method="Use closest prior work and literature roles to define fair baselines.",
+                        inputFrom=["step-1-2"],
+                        outputs=[PlanOutput(type="table", name="baseline_matrix.csv", desc="Baseline families and coverage rationale", requiredFor=["validation", "paper"])],
+                        expected=[PlanExpectedMetric(metric="baseline_family_count", target=">= 2", desc="Benchmark includes more than one baseline family or control.")],
+                    ),
+                    PlanStep(
+                        id="step-2-2",
+                        order=2,
+                        title="Specify scoring protocol",
+                        desc="Define metrics, scoring script expectations, and result table schema.",
+                        method="Map benchmark task outputs to measurable scoring rules and planned artifacts.",
+                        inputFrom=["step-2-1"],
+                        outputs=[PlanOutput(type="metrics", name="evaluation_protocol.json", desc="Metric definitions and scoring protocol", requiredFor=["validation", "paper"])],
+                        expected=[PlanExpectedMetric(metric="metric_count", target=">= 2", desc="Benchmark has at least two complementary metrics or checks.")],
+                    ),
+                ][:max_steps_per_stage],
+            ),
+            PlanStage(
+                id="stage-3",
+                order=3,
+                title="Quality and Handoff Checks",
+                goal="Plan benchmark quality, bias, leakage, and downstream handoff artifacts.",
+                method="Check dataset quality and define final paper/review outputs.",
+                dependsOn=["stage-2"],
+                steps=[
+                    PlanStep(
+                        id="step-3-1",
+                        order=1,
+                        title="Plan quality and slice checks",
+                        desc="Define leakage, annotation agreement, bias, and slice-analysis checks for downstream validation.",
+                        method="Create quality gate artifacts tied to benchmark schema and evaluation protocol.",
+                        inputFrom=["step-2-2"],
+                        outputs=[PlanOutput(type="table", name="quality_slice_checks.csv", desc="Quality, leakage, bias, and slice checks", requiredFor=["validation", "review"])],
+                        expected=[PlanExpectedMetric(metric="quality_check_count", target=">= 2", desc="At least two quality or bias checks are planned.")],
+                    )
+                ][:max_steps_per_stage],
+            ),
+        ]
+        return stages[:max_stages]
 
     stages = [
         PlanStage(
@@ -843,13 +1027,30 @@ def build_default_stages(
                 PlanStep(
                     id="step-1-2",
                     order=2,
-                    title="Select implementation gap",
-                    desc="Confirm the selected GAP and record which papers or graph signals support it.",
-                    method="Use gap.items[] and evidenceTrace to bind the gap to evidence IDs.",
+                    title="Select implementation gap and baseline scope",
+                    desc="Confirm the selected GAP, record supporting papers or graph signals, and define the baseline/control methods for downstream comparison.",
+                    method="Use gap.items[], evidenceTrace, closestPriorWork, and literatureSurvey roles to bind the gap to evidence IDs and fair baselines.",
                     inputFrom=["step-1-1"],
-                    outputs=[PlanOutput(type="checkpoint", name="selected_gap.json", desc="Selected gap and supporting evidence", requiredFor=["review"])],
-                    expected=[PlanExpectedMetric(metric="selected_gap_count", target="1", desc="Exactly one primary gap is selected.")],
+                    outputs=[
+                        PlanOutput(type="checkpoint", name="selected_gap.json", desc="Selected gap and supporting evidence", requiredFor=["review"]),
+                        PlanOutput(type="table", name="baseline_scope.csv", desc="Baseline/control methods for comparison", requiredFor=["validation", "paper"]),
+                    ],
+                    expected=[
+                        PlanExpectedMetric(metric="selected_gap_count", target="1", desc="Exactly one primary gap is selected."),
+                        PlanExpectedMetric(metric="baseline_count", target=">= 1", desc="At least one baseline or control comparison is declared."),
+                    ],
                     evidenceRefs=[PlanEvidenceRef(type="gap", id=gap.selectedGapId, source="literature_map")],
+                ),
+                PlanStep(
+                    id="step-1-3",
+                    order=3,
+                    title="Define baseline comparison scope",
+                    desc="List the baseline or control methods that downstream validation should compare against the proposed idea.",
+                    method="Use closestPriorWork, literatureSurvey roles, and selected GAP evidence to define fair comparison groups.",
+                    inputFrom=["step-1-2"],
+                    outputs=[PlanOutput(type="table", name="baseline_comparison_scope.csv", desc="Baseline/control methods and comparison rationale", requiredFor=["validation", "paper", "review"])],
+                    expected=[PlanExpectedMetric(metric="baseline_count", target=">= 1", desc="At least one baseline or control comparison is declared.")],
+                    evidenceRefs=evidence_refs or [PlanEvidenceRef(type="gap", id=gap.selectedGapId, source="idea_gap")],
                 ),
             ][:max_steps_per_stage],
         ),
@@ -909,10 +1110,27 @@ def build_default_stages(
                 PlanStep(
                     id="step-3-2",
                     order=2,
+                    title="Plan ablation and robustness checks",
+                    desc="Define component ablations, sensitivity checks, or failure cases that test whether the proposed mechanism is responsible for the expected improvement.",
+                    method="Remove or vary core method components and compare against the baseline scope under the same metrics.",
+                    inputFrom=["step-3-1"],
+                    outputs=[
+                        PlanOutput(type="table", name="ablation_plan.csv", desc="Planned ablation and sensitivity settings", requiredFor=["validation", "review"]),
+                        PlanOutput(type="report", name="failure_analysis_plan.md", desc="Planned robustness or failure-analysis checklist", requiredFor=["paper", "review"]),
+                    ],
+                    expected=[
+                        PlanExpectedMetric(metric="ablation_coverage", target=">= 1 core component", desc="At least one core mechanism is ablated or stress-tested."),
+                        PlanExpectedMetric(metric="robustness_check_count", target=">= 1", desc="At least one robustness, sensitivity, or failure case is planned."),
+                    ],
+                    evidenceRefs=[PlanEvidenceRef(type="candidate", id=candidate.id, source="idea")],
+                ),
+                PlanStep(
+                    id="step-3-3",
+                    order=3,
                     title="Plan result tables and charts",
                     desc="Define table and chart artifacts expected from downstream validation.",
                     method="Map expected metrics to paper-ready tables and charts.",
-                    inputFrom=["step-3-1"],
+                    inputFrom=["step-3-2"],
                     outputs=[
                         PlanOutput(type="table", name="planned_results_table.csv", desc="Planned paper table schema", requiredFor=["paper"]),
                         PlanOutput(type="chart", name="planned_results_chart.png", desc="Planned chart artifact", requiredFor=["paper"]),
@@ -1202,6 +1420,7 @@ def build_plan_package(
     graph_patches: List[GraphPatch],
     handoff: Optional[BFTSHandoff],
     user_notes: Optional[str] = None,
+    paper_type: str = "generic",
     max_stages: int = 3,
     max_steps_per_stage: int = 3,
 ) -> PlanPackage:
@@ -1276,6 +1495,7 @@ def build_plan_package(
         literature_survey=literature_survey,
         gap=gap,
         principle=principle,
+        paper_type=paper_type,
         max_stages=max_stages,
         max_steps_per_stage=max_steps_per_stage,
     )
