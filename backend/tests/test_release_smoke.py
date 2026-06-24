@@ -11,7 +11,16 @@ pytest.importorskip("sqlmodel")
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.modules.paper.storage import (
+    create_paper,
+    get_selected_figures,
+    remove_selected_figure,
+    select_figure_for_paper,
+    update_selected_figures,
+)
 from app.modules.paper.skills.constants import TEMPLATE_ROOT
+from app.modules.paper.skills.section_writers import classify_section, get_section_writer, split_figures_for_section
+from app.modules.paper.skills.section_writers.base import render_prompt
 from app.modules.paper.skills.utils import (
     build_bibtex,
     dedupe_figure_entries,
@@ -23,6 +32,7 @@ from app.modules.paper.skills.utils import (
     normalize_section_citations,
     normalize_section_figure_references,
 )
+from app.storage.experiment_storage import create_experiment, save_figure_artifact
 from app.version import APP_NAME, APP_VERSION, API_VERSION, CAPABILITIES, RELEASE_PHASE, SERVICE_NAME
 
 client = TestClient(app)
@@ -64,6 +74,104 @@ def test_core_domain_routes_are_mounted():
     ]
     for prefix in expected_prefixes:
         assert any(path == prefix or path.startswith(prefix + "/") for path in paths), prefix
+
+
+def test_paper_selected_figure_and_rewrite_routes_are_mounted():
+    paths = {route.path for route in app.routes}
+
+    assert "/api/v1/papers/{paper_id}/selected-figures" in paths
+    assert "/api/v1/papers/{paper_id}/figures/{figure_id}/select" in paths
+    assert "/api/v1/papers/{paper_id}/sections/{section_id}/rewrite" in paths
+
+
+def test_paper_selected_figures_storage_round_trip():
+    experiment = create_experiment({"name": "Selected figure smoke"})
+    figure = save_figure_artifact(
+        experiment["id"],
+        "line",
+        {"title": "Accuracy curve"},
+        b"png-bytes",
+        b"%PDF-1.4\n",
+        "Accuracy improves over training steps.",
+        "plot accuracy",
+        "test-model",
+    )
+    paper = create_paper({"title": "Selected figure paper"})
+
+    selected = select_figure_for_paper(
+        paper["id"],
+        figure["id"],
+        {
+            "targetSection": "results",
+            "notes": "Discuss the late-stage improvement.",
+        },
+    )
+
+    assert selected["figureId"] == figure["id"]
+    assert selected["targetSection"] == "results"
+    assert selected["path"].startswith("figures/")
+
+    stored = get_selected_figures(paper["id"])
+    assert len(stored) == 1
+    assert stored[0]["label"] == f"fig:{figure['id']}"
+
+    update_selected_figures(paper["id"], [{
+        **stored[0],
+        "caption": "Updated accuracy curve caption.",
+        "include": False,
+    }])
+    updated = get_selected_figures(paper["id"])
+    assert updated[0]["caption"] == "Updated accuracy curve caption."
+    assert updated[0]["include"] is False
+
+    remove_selected_figure(paper["id"], figure["id"])
+    assert get_selected_figures(paper["id"]) == []
+
+
+def test_paper_section_write_dispatches_to_specialized_writers():
+    cases = [
+        ({"id": "intro", "title": "Introduction"}, "introduction"),
+        ({"id": "related_work", "title": "Related Work"}, "related_work"),
+        ({"id": "prelim", "title": "Background and Preliminaries"}, "background"),
+        ({"id": "method", "title": "Method"}, "method"),
+        ({"id": "experiments", "title": "Experiments"}, "experiments"),
+        ({"id": "analysis", "title": "Analysis and Limitations"}, "analysis"),
+        ({"id": "conclusion", "title": "Conclusion"}, "conclusion"),
+    ]
+
+    for section, expected in cases:
+        assert classify_section(section) == expected
+        assert get_section_writer(section).kind == expected
+
+    assert render_prompt(r"\section{{{section_title}}}", {"section_title": "Introduction"}) == (
+        r"\section{Introduction}"
+    )
+
+
+def test_paper_section_writer_filters_targeted_figures_by_section():
+    figures = [
+        {"figureId": "fig_results", "targetSection": "experiments", "include": True},
+        {"figureId": "fig_global", "include": True},
+        {"figureId": "fig_analysis", "targetSection": "analysis", "include": True},
+    ]
+
+    figure_ctx = split_figures_for_section(
+        "[]",
+        figures,
+        {"id": "experiments", "title": "Experiments"},
+        "Experiments",
+    )
+
+    assert [fig["figureId"] for fig in figure_ctx["section_figures"]] == ["fig_results"]
+    assert [fig["figureId"] for fig in figure_ctx["figures_for_prompt"]] == ["fig_results"]
+
+    figure_ctx = split_figures_for_section(
+        "[]",
+        figures,
+        {"id": "method", "title": "Method"},
+        "Method",
+    )
+    assert [fig["figureId"] for fig in figure_ctx["figures_for_prompt"]] == ["fig_global"]
 
 
 def test_paper_latex_rewrites_missing_figure_references(tmp_path):

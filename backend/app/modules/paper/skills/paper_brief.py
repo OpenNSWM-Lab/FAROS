@@ -48,6 +48,29 @@ Return ONLY valid JSON, no markdown fences.
 """
 
 
+def _figures_from_summary(figures_summary: str) -> list[Dict[str, Any]]:
+    if not figures_summary or figures_summary == "N/A":
+        return []
+    try:
+        parsed = json.loads(figures_summary)
+    except Exception:
+        return []
+    if not isinstance(parsed, list):
+        return []
+
+    figures: list[Dict[str, Any]] = []
+    for item in parsed:
+        if not isinstance(item, dict):
+            continue
+        figures.append({
+            "label": item.get("label") or "",
+            "path": item.get("path") or "",
+            "caption": item.get("caption") or item.get("title") or "",
+            "target_section": item.get("targetSection") or item.get("target_section") or "Experiments",
+        })
+    return [fig for fig in figures if fig["label"] or fig["path"] or fig["caption"]]
+
+
 def _fallback_brief(ctx: PaperSkillContext, context: Dict[str, str], brief_user_edits: str) -> Dict[str, Any]:
     title = ctx.paper.get("title", "Untitled Paper")
     figures = context.get("figures_summary", "N/A")
@@ -58,8 +81,8 @@ def _fallback_brief(ctx: PaperSkillContext, context: Dict[str, str], brief_user_
     if context.get("runs_summary", "N/A") != "N/A":
         must_use_evidence.append("Use linked run evidence for implementation or execution claims.")
 
-    must_use_figures = []
-    if figures != "N/A":
+    must_use_figures = _figures_from_summary(figures)
+    if figures != "N/A" and not must_use_figures:
         must_use_figures.append({
             "label": "linked paper figures",
             "path": "figures/",

@@ -30,6 +30,10 @@ from app.modules.paper.storage import (
     update_paper as _update_paper, list_paper_files as _list_paper_files,
     read_paper_file as _read_paper_file, write_paper_file as _write_paper_file,
     create_paper_zip, get_paper_latex_dir, add_log as _add_log,
+    get_selected_figures as _get_selected_figures,
+    remove_selected_figure as _remove_selected_figure,
+    select_figure_for_paper as _select_figure_for_paper,
+    update_selected_figures as _update_selected_figures,
 )
 
 logger = logging.getLogger(__name__)
@@ -87,6 +91,39 @@ class UpdatePaperContextRequest(BaseModel):
     experimentIds: List[str] = Field(default_factory=list)
     runIds: List[str] = Field(default_factory=list)
     notes: Optional[str] = None
+
+
+class SelectedFigureRequest(BaseModel):
+    figureId: str
+    title: Optional[str] = None
+    caption: Optional[str] = None
+    targetSection: Optional[str] = None
+    label: Optional[str] = None
+    path: Optional[str] = None
+    include: bool = True
+    notes: Optional[str] = None
+
+
+class SelectFigureRequest(BaseModel):
+    title: Optional[str] = None
+    caption: Optional[str] = None
+    targetSection: Optional[str] = None
+    label: Optional[str] = None
+    path: Optional[str] = None
+    include: bool = True
+    notes: Optional[str] = None
+
+
+class UpdateSelectedFiguresRequest(BaseModel):
+    figures: List[SelectedFigureRequest] = Field(default_factory=list)
+
+
+class RewriteSectionRequest(BaseModel):
+    instruction: Optional[str] = None
+    mode: str = "improve"
+    preserveCitations: bool = True
+    preserveFigures: bool = True
+    targetLength: Optional[int] = None
 
 
 @router.get("/types")
@@ -303,6 +340,34 @@ async def save_paper_file(paper_id: str, req: SaveFileRequest):
     return {"paperId": paper_id, "path": req.path, "saved": True, "size": len(req.content)}
 
 
+@router.post("/{paper_id}/sections/{section_id}/rewrite", status_code=status.HTTP_200_OK)
+async def rewrite_paper_section_endpoint(paper_id: str, section_id: str, req: RewriteSectionRequest):
+    """Rewrite one generated section without regenerating the whole paper."""
+    record = _get_paper(paper_id)
+    if not record:
+        raise HTTPException(status_code=404, detail=f"Paper '{paper_id}' not found")
+    if record.get("status") == "generating":
+        raise HTTPException(status_code=409, detail="Paper generation already in progress")
+    try:
+        from app.modules.paper.service import rewrite_paper_section
+        return rewrite_paper_section(
+            paper_id,
+            section_id,
+            instruction=req.instruction or "",
+            mode=req.mode,
+            preserve_citations=req.preserveCitations,
+            preserve_figures=req.preserveFigures,
+            target_length=req.targetLength,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error(f"Paper section rewrite failed: {exc}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc)[:500]) from exc
+
+
 
 
 @router.get("/{paper_id}/pdf")
@@ -348,6 +413,8 @@ class AddFigureRequest(BaseModel):
 @router.post("/{paper_id}/figures", status_code=status.HTTP_201_CREATED)
 async def add_figure_to_paper_endpoint(paper_id: str, req: AddFigureRequest):
     """Add a figure from experiments to a paper's LaTeX figures folder."""
+    if not _get_paper(paper_id):
+        raise HTTPException(status_code=404, detail=f"Paper '{paper_id}' not found")
     from app.modules.paper.storage import copy_figure_to_paper
     result = copy_figure_to_paper(paper_id, req.figureId)
     if not result:
@@ -355,12 +422,69 @@ async def add_figure_to_paper_endpoint(paper_id: str, req: AddFigureRequest):
     return result
 
 
+@router.get("/{paper_id}/selected-figures")
+async def list_selected_figures_endpoint(paper_id: str):
+    """List user-selected paper figures used by brief, outline, and section prompts."""
+    if not _get_paper(paper_id):
+        raise HTTPException(status_code=404, detail=f"Paper '{paper_id}' not found")
+    figures = _get_selected_figures(paper_id)
+    return {"paperId": paper_id, "figures": figures, "total": len(figures)}
+
+
+@router.patch("/{paper_id}/selected-figures")
+async def update_selected_figures_endpoint(paper_id: str, req: UpdateSelectedFiguresRequest):
+    """Replace selected figure metadata for a paper."""
+    if not _get_paper(paper_id):
+        raise HTTPException(status_code=404, detail=f"Paper '{paper_id}' not found")
+    updated = _update_selected_figures(
+        paper_id,
+        [figure.model_dump(exclude_none=True) for figure in req.figures],
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail=f"Paper '{paper_id}' not found")
+    figures = _get_selected_figures(paper_id)
+    return {"paperId": paper_id, "figures": figures, "total": len(figures)}
+
+
+@router.post("/{paper_id}/figures/{figure_id}/select", status_code=status.HTTP_200_OK)
+async def select_figure_endpoint(paper_id: str, figure_id: str, req: Optional[SelectFigureRequest] = None):
+    """Select a copied figure for use in paper generation prompts."""
+    if not _get_paper(paper_id):
+        raise HTTPException(status_code=404, detail=f"Paper '{paper_id}' not found")
+    metadata = req.model_dump(exclude_none=True) if req else {}
+    selected = _select_figure_for_paper(paper_id, figure_id, metadata)
+    if not selected:
+        raise HTTPException(status_code=404, detail=f"Figure '{figure_id}' not found")
+    figures = _get_selected_figures(paper_id)
+    return {"paperId": paper_id, "figure": selected, "figures": figures, "total": len(figures)}
+
+
+@router.delete("/{paper_id}/figures/{figure_id}/select", status_code=status.HTTP_200_OK)
+async def remove_selected_figure_endpoint(paper_id: str, figure_id: str):
+    """Remove a figure from the selected paper figure set."""
+    if not _get_paper(paper_id):
+        raise HTTPException(status_code=404, detail=f"Paper '{paper_id}' not found")
+    updated = _remove_selected_figure(paper_id, figure_id)
+    if not updated:
+        raise HTTPException(status_code=404, detail=f"Paper '{paper_id}' not found")
+    figures = _get_selected_figures(paper_id)
+    return {"paperId": paper_id, "figures": figures, "total": len(figures)}
+
+
 @router.get("/{paper_id}/figures")
 async def list_paper_figures_endpoint(paper_id: str):
     """List all figures associated with a paper."""
+    if not _get_paper(paper_id):
+        raise HTTPException(status_code=404, detail=f"Paper '{paper_id}' not found")
     from app.modules.paper.storage import get_paper_figures
     figures = get_paper_figures(paper_id)
-    return {"paperId": paper_id, "figures": figures, "total": len(figures)}
+    selected_figures = _get_selected_figures(paper_id)
+    return {
+        "paperId": paper_id,
+        "figures": figures,
+        "selectedFigures": selected_figures,
+        "total": len(figures),
+    }
 
 
 @router.get("/figures/{figure_id}/latex-ref")

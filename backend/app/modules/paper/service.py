@@ -16,6 +16,7 @@ from app.modules.paper.skills.collect_context import run as collect_context_skil
 from app.modules.paper.skills.constants import VENUE_CONFIGS
 from app.modules.paper.skills.outline import build_outline
 from app.modules.paper.skills.paper_brief import build_brief
+from app.modules.paper.skills.section_rewrite import rewrite_section
 from app.modules.paper.skills.utils import ensure_artifacts_dir
 
 logger = logging.getLogger(__name__)
@@ -157,3 +158,66 @@ def generate_paper(paper_id: str) -> Dict[str, Any]:
         raise
 
     return get_paper(paper_id)
+
+
+def rewrite_paper_section(
+    paper_id: str,
+    section_id: str,
+    instruction: str = "",
+    mode: str = "improve",
+    preserve_citations: bool = True,
+    preserve_figures: bool = True,
+    target_length: int | None = None,
+) -> Dict[str, Any]:
+    paper = get_paper(paper_id)
+    if not paper:
+        raise ValueError(f"Paper not found: {paper_id}")
+    if ".." in section_id or "/" in section_id or "\\" in section_id:
+        raise ValueError("Invalid section_id")
+
+    step_log: list[Dict[str, Any]] = []
+    ctx = _build_skill_context(paper_id, paper, step_log)
+
+    add_log(paper_id, "Running skill: collect_context")
+    context_result = collect_context_skill(ctx)
+    _apply_result_data(ctx, context_result)
+    add_log(paper_id, f"collect_context: {context_result.summary}")
+
+    add_log(paper_id, f"Running skill: section_rewrite:{section_id}")
+    rewrite_result = rewrite_section(
+        ctx,
+        section_id,
+        instruction=instruction,
+        mode=mode,
+        preserve_citations=preserve_citations,
+        preserve_figures=preserve_figures,
+        target_length=target_length,
+    )
+    _apply_result_data(ctx, rewrite_result)
+    add_log(paper_id, f"section_rewrite: {rewrite_result.summary}")
+    if rewrite_result.warnings:
+        add_log(paper_id, f"section_rewrite warnings: {'; '.join(rewrite_result.warnings[:3])}")
+    if rewrite_result.artifacts:
+        add_log(paper_id, f"Artifacts: {', '.join(rewrite_result.artifacts)}")
+
+    update_paper(paper_id, {
+        "pdfAvailable": False,
+        "lastSectionRewrite": {
+            "sectionId": rewrite_result.data.get("sectionId", section_id),
+            "path": rewrite_result.data.get("path"),
+            "mode": mode,
+            "timestamp": time.time(),
+            "warnings": rewrite_result.warnings,
+        },
+    })
+
+    return {
+        "paperId": paper_id,
+        "sectionId": rewrite_result.data.get("sectionId", section_id),
+        "path": rewrite_result.data.get("path"),
+        "content": rewrite_result.data.get("content", ""),
+        "beforeWordCount": rewrite_result.data.get("beforeWordCount"),
+        "afterWordCount": rewrite_result.data.get("afterWordCount"),
+        "warnings": rewrite_result.warnings,
+        "artifacts": rewrite_result.artifacts,
+    }

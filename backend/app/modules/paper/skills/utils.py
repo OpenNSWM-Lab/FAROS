@@ -57,37 +57,53 @@ def _clean_label_part(value: str) -> str:
 
 def figure_record_to_entry(fig: Dict[str, Any], source: str = "selected") -> Optional[Dict[str, Any]]:
     """Normalize an experiment figure record into the paper figure entry shape."""
-    file_name = (
-        fig.get("fileNamePdf")
-        or fig.get("fileNamePng")
-        or fig.get("fileName")
-    )
-    if not file_name:
+    path = str(fig.get("path") or "").strip()
+    base_name = str(fig.get("filename") or "").strip()
+    ext = str(fig.get("ext") or "").lstrip(".").strip()
+
+    file_name = None
+    if not base_name:
+        file_name = (
+            fig.get("fileNamePdf")
+            or fig.get("fileNamePng")
+            or fig.get("fileName")
+        )
+    if not file_name and not base_name:
         for path_key in ("pdfPath", "pngPath", "pathPdf", "pathPng"):
             path_value = fig.get(path_key)
             if path_value:
                 file_name = os.path.basename(path_value)
                 break
-    if not file_name:
+    if not file_name and path and not base_name:
+        file_name = os.path.basename(path)
+    if not file_name and not base_name:
         return None
 
-    base_name, ext = os.path.splitext(os.path.basename(file_name))
-    ext = ext.lstrip(".") or "png"
+    if file_name:
+        base_name, file_ext = os.path.splitext(os.path.basename(file_name))
+        ext = ext or file_ext.lstrip(".")
+    ext = ext or "png"
     figure_id = fig.get("figureId") or fig.get("id") or base_name
     title = fig.get("title") or fig.get("figureType") or base_name.replace("_", " ")
     caption = fig.get("caption") or title
     label = fig.get("latexLabel") or fig.get("label") or f"fig:{_clean_label_part(str(figure_id))}"
+    include = fig.get("include", True)
+    if isinstance(include, str):
+        include = include.lower() not in {"0", "false", "no", "off"}
 
     return {
         "figureId": figure_id,
         "filename": base_name,
         "ext": ext,
-        "path": f"figures/{base_name}.{ext}",
+        "path": path or f"figures/{base_name}.{ext}",
         "caption": caption,
         "label": label,
         "title": title,
         "figureType": fig.get("figureType"),
         "experimentId": fig.get("experimentId"),
+        "targetSection": fig.get("targetSection") or fig.get("target_section") or "",
+        "notes": fig.get("notes") or "",
+        "include": bool(include),
         "source": source,
     }
 
@@ -136,6 +152,41 @@ def load_linked_figure_records(paper: Dict[str, Any], max_figures: int = 8) -> L
     return records
 
 
+def load_selected_figure_entries(
+    paper: Dict[str, Any],
+    ensure_copied: bool = False,
+    max_figures: int = 8,
+) -> List[Dict[str, Any]]:
+    entries: List[Dict[str, Any]] = []
+    paper_id = paper.get("id")
+    for item in paper.get("selectedFigures", []) or []:
+        if len(entries) >= max_figures:
+            break
+        if not isinstance(item, dict):
+            continue
+
+        source_record = item
+        if paper_id:
+            try:
+                from app.modules.paper.storage import normalize_paper_figure
+
+                normalized = normalize_paper_figure(
+                    paper_id,
+                    item,
+                    ensure_copied=ensure_copied,
+                )
+                if normalized:
+                    source_record = normalized
+            except Exception:
+                source_record = item
+
+        entry = figure_record_to_entry(source_record, source="selected")
+        if entry and entry.get("include", True):
+            entries.append(entry)
+
+    return dedupe_figure_entries(entries)
+
+
 def get_linked_figure_entries(
     paper: Dict[str, Any],
     ensure_copied: bool = False,
@@ -143,6 +194,14 @@ def get_linked_figure_entries(
 ) -> List[Dict[str, Any]]:
     entries: List[Dict[str, Any]] = []
     paper_id = paper.get("id")
+
+    selected_entries = load_selected_figure_entries(
+        paper,
+        ensure_copied=ensure_copied,
+        max_figures=max_figures,
+    )
+    if selected_entries:
+        return selected_entries
 
     for fig in load_linked_figure_records(paper, max_figures=max_figures):
         source_record = fig
@@ -152,7 +211,7 @@ def get_linked_figure_entries(
 
                 figure_id = fig.get("id") or fig.get("figureId")
                 if figure_id:
-                    copied = copy_figure_to_paper(paper_id, figure_id)
+                    copied = copy_figure_to_paper(paper_id, figure_id, select=False)
                     if copied:
                         source_record = {**fig, **copied}
             except Exception:
@@ -255,6 +314,10 @@ def collect_context(paper: Dict[str, Any]) -> Dict[str, str]:
                 "caption": f.get("caption"),
                 "path": f.get("path"),
                 "label": f.get("label"),
+                "targetSection": f.get("targetSection"),
+                "target_section": f.get("targetSection"),
+                "notes": f.get("notes"),
+                "include": f.get("include", True),
                 "figureType": f.get("figureType"),
                 "experimentId": f.get("experimentId"),
                 "source": f.get("source"),

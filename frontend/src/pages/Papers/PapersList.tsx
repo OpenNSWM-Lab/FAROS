@@ -3,7 +3,7 @@ import { AppPageLayout } from '@/components/layout/AppPageLayout'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
-import { BookOpen, Plus, Download, Code2, Loader2, RefreshCw, Save, Eye, Copy, CheckCircle, ImagePlus, FileText, ListTree, Trash2 } from 'lucide-react'
+import { BookOpen, Plus, Download, Code2, Loader2, RefreshCw, Save, Eye, Copy, CheckCircle, ImagePlus, FileText, ListTree, Trash2, Wand2 } from 'lucide-react'
 import { LLM_PROVIDERS, getModelsByProvider } from '@/lib/models/providers'
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || ''
@@ -59,6 +59,21 @@ interface PaperOutline {
   [key: string]: unknown
 }
 
+interface SelectedFigure {
+  figureId: string
+  title?: string
+  caption: string
+  targetSection?: string
+  label?: string
+  path?: string
+  filename?: string
+  ext?: string
+  include?: boolean
+  notes?: string
+  figureType?: string
+  experimentId?: string
+}
+
 interface PaperRecord {
   id: string
   title: string
@@ -69,6 +84,7 @@ interface PaperRecord {
   projectId?: string
   experimentIds: string[]
   figureIds: string[]
+  selectedFigures?: SelectedFigure[]
   runIds: string[]
   providerName: string
   model: string
@@ -237,11 +253,20 @@ export function PapersList() {
   const [selectedExperiment, setSelectedExperiment] = useState<string>('')
   const [experimentFigures, setExperimentFigures] = useState<Figure[]>([])
   const [paperFigures, setPaperFigures] = useState<Figure[]>([])
+  const [selectedFigures, setSelectedFigures] = useState<SelectedFigure[]>([])
   const [loadingFigures, setLoadingFigures] = useState(false)
   const [addingFigure, setAddingFigure] = useState(false)
+  const [savingSelectedFigures, setSavingSelectedFigures] = useState(false)
   const [copiedLatex, setCopiedLatex] = useState<string>('')
   const [activeTab, setActiveTab] = useState<'files' | 'figures'>('files')
   const [renderingPdf, setRenderingPdf] = useState(false)
+  const [rewriteOpen, setRewriteOpen] = useState(false)
+  const [rewriteInstruction, setRewriteInstruction] = useState('')
+  const [rewriteMode, setRewriteMode] = useState('improve')
+  const [rewritePreserveCitations, setRewritePreserveCitations] = useState(true)
+  const [rewritePreserveFigures, setRewritePreserveFigures] = useState(true)
+  const [rewriteTargetLength, setRewriteTargetLength] = useState('')
+  const [rewritingSection, setRewritingSection] = useState(false)
 
   // Create form
   const [showCreate, setShowCreate] = useState(false)
@@ -372,8 +397,23 @@ export function PapersList() {
       if (resp.ok) {
         const data = await resp.json()
         setPaperFigures(data.figures || [])
+        setSelectedFigures(data.selectedFigures || [])
       }
     } catch (err) { console.error(err) }
+  }
+
+  const fetchSelectedFigures = async (paperId: string) => {
+    try {
+      const resp = await fetch(`${API_BASE}/api/v1/papers/${paperId}/selected-figures`)
+      if (resp.ok) {
+        const data = await resp.json()
+        const figures = data.figures || []
+        setSelectedFigures(figures)
+        setSelectedPaper(current => current?.id === paperId ? { ...current, selectedFigures: figures } : current)
+        return figures as SelectedFigure[]
+      }
+    } catch (err) { console.error(err) }
+    return []
   }
 
   // Add figure to paper
@@ -388,10 +428,52 @@ export function PapersList() {
       })
       if (resp.ok) {
         await fetchPaperFigures(selectedPaper.id)
-        await selectPaper(selectedPaper)
+        await fetchSelectedFigures(selectedPaper.id)
+        await fetchPapers()
       }
     } catch (err) { console.error(err) }
     finally { setAddingFigure(false) }
+  }
+
+  const updateSelectedFigure = (figureId: string, updates: Partial<SelectedFigure>) => {
+    setSelectedFigures(current => current.map(fig => (
+      fig.figureId === figureId ? { ...fig, ...updates } : fig
+    )))
+  }
+
+  const saveSelectedFigures = async () => {
+    if (!selectedPaper) return
+    setSavingSelectedFigures(true)
+    try {
+      const resp = await fetch(`${API_BASE}/api/v1/papers/${selectedPaper.id}/selected-figures`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ figures: selectedFigures }),
+      })
+      if (resp.ok) {
+        const data = await resp.json()
+        const figures = data.figures || []
+        setSelectedFigures(figures)
+        setSelectedPaper({ ...selectedPaper, selectedFigures: figures })
+        await fetchPapers()
+      }
+    } catch (err) { console.error(err) }
+    finally { setSavingSelectedFigures(false) }
+  }
+
+  const removeSelectedFigure = async (figureId: string) => {
+    if (!selectedPaper) return
+    try {
+      const resp = await fetch(`${API_BASE}/api/v1/papers/${selectedPaper.id}/figures/${figureId}/select`, {
+        method: 'DELETE',
+      })
+      if (resp.ok) {
+        const data = await resp.json()
+        setSelectedFigures(data.figures || [])
+        await fetchPaperFigures(selectedPaper.id)
+        await fetchPapers()
+      }
+    } catch (err) { console.error(err) }
   }
 
   // Copy LaTeX reference
@@ -485,6 +567,7 @@ export function PapersList() {
     setFileContent('')
     setEditedContent('')
     setDirty(false)
+    setRewriteOpen(false)
     setPdfAvailable(false)
     try {
       const resp = await fetch(`${API_BASE}/api/v1/papers/${p.id}/tree`)
@@ -512,6 +595,7 @@ export function PapersList() {
       }
     } catch (err) { console.error(err) }
     await fetchPaperFigures(p.id)
+    await fetchSelectedFigures(p.id)
   }
 
   const loadFile = async (path: string) => {
@@ -530,7 +614,7 @@ export function PapersList() {
   }
 
   const saveFile = async () => {
-    if (!selectedPaper || !selectedFile) return
+    if (!selectedPaper || !selectedFile) return false
     setSaving(true)
     try {
       const resp = await fetch(`${API_BASE}/api/v1/papers/${selectedPaper.id}/files`, {
@@ -541,9 +625,57 @@ export function PapersList() {
       if (resp.ok) {
         setFileContent(editedContent)
         setDirty(false)
+        return true
       }
     } catch (err) { console.error(err) }
     finally { setSaving(false) }
+    return false
+  }
+
+  const rewriteCurrentSection = async () => {
+    if (!selectedPaper || !selectedFile.startsWith('sections/') || !selectedFile.endsWith('.tex')) return
+    const sectionId = selectedFile.slice('sections/'.length, -'.tex'.length)
+    if (dirty) {
+      const saved = await saveFile()
+      if (!saved) return
+    }
+    setRewritingSection(true)
+    try {
+      const parsedTargetLength = Number(rewriteTargetLength)
+      const resp = await fetch(`${API_BASE}/api/v1/papers/${selectedPaper.id}/sections/${encodeURIComponent(sectionId)}/rewrite`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          instruction: rewriteInstruction,
+          mode: rewriteMode,
+          preserveCitations: rewritePreserveCitations,
+          preserveFigures: rewritePreserveFigures,
+          targetLength: Number.isFinite(parsedTargetLength) && parsedTargetLength > 0 ? parsedTargetLength : undefined,
+        }),
+      })
+      if (resp.ok) {
+        const data = await resp.json()
+        setFileContent(data.content || '')
+        setEditedContent(data.content || '')
+        setDirty(false)
+        setPdfAvailable(false)
+        setRewriteOpen(false)
+        const treeResp = await fetch(`${API_BASE}/api/v1/papers/${selectedPaper.id}/tree`)
+        if (treeResp.ok) {
+          const treeData = await treeResp.json()
+          setPaperFiles(treeData.entries || [])
+        }
+        const paperResp = await fetch(`${API_BASE}/api/v1/papers/${selectedPaper.id}`)
+        if (paperResp.ok) {
+          setSelectedPaper(await paperResp.json())
+        }
+        await fetchPapers()
+      } else {
+        const error = await resp.json().catch(() => ({ detail: 'Section rewrite failed' }))
+        alert(error.detail || 'Section rewrite failed')
+      }
+    } catch (err) { console.error(err) }
+    finally { setRewritingSection(false) }
   }
 
   const savePaperContext = async () => {
@@ -817,6 +949,11 @@ export function PapersList() {
 
   const allFiles = paperFiles.filter(f => !f.isDir)
   const isEditable = selectedFile.endsWith('.tex') || selectedFile.endsWith('.bib') || selectedFile.endsWith('.md')
+  const selectedSectionId = selectedFile.startsWith('sections/') && selectedFile.endsWith('.tex')
+    ? selectedFile.slice('sections/'.length, -'.tex'.length)
+    : ''
+  const selectedFigureIds = new Set(selectedFigures.map(fig => fig.figureId))
+  const outlineSections = outline?.sections || []
 
   return (
     <AppPageLayout
@@ -1005,7 +1142,7 @@ export function PapersList() {
             {/* Main 3-panel area */}
             <div className="grid grid-cols-12 gap-3 flex-1 min-h-0">
               {/* Left: File tree + Figures management */}
-              <div className="col-span-2 border rounded-lg overflow-hidden bg-white flex flex-col" style={{ maxHeight: '60vh' }}>
+              <div className="col-span-3 border rounded-lg overflow-hidden bg-white flex flex-col" style={{ maxHeight: '60vh' }}>
                 <div className="flex border-b">
                   <button
                     className={`flex-1 px-2 py-1.5 text-xs font-medium border-r ${activeTab === 'files' ? 'bg-indigo-50 text-indigo-700' : 'text-muted-foreground hover:bg-slate-50'}`}
@@ -1068,43 +1205,108 @@ export function PapersList() {
                               <p className="text-xs text-muted-foreground">No figures in this experiment</p>
                             ) : experimentFigures.length > 0 ? (
                               <div className="space-y-1 max-h-40 overflow-y-auto">
-                                {experimentFigures.map(fig => (
-                                  <button
-                                    key={fig.id}
-                                    className="w-full text-left px-2 py-1 text-xs rounded bg-slate-50 hover:bg-slate-100 flex items-center gap-1"
-                                    onClick={() => addFigureToPaper(fig.id)}
-                                    disabled={addingFigure}
-                                  >
-                                    <ImagePlus className="h-3 w-3" />
-                                    <span className="truncate">{fig.title || fig.caption}</span>
-                                  </button>
-                                ))}
+                                {experimentFigures.map(fig => {
+                                  const alreadySelected = selectedFigureIds.has(fig.id)
+                                  return (
+                                    <button
+                                      key={fig.id}
+                                      className={`w-full text-left px-2 py-1 text-xs rounded flex items-center gap-1 ${alreadySelected ? 'bg-green-50 text-green-700' : 'bg-slate-50 hover:bg-slate-100'}`}
+                                      onClick={() => addFigureToPaper(fig.id)}
+                                      disabled={addingFigure || alreadySelected}
+                                    >
+                                      {alreadySelected ? <CheckCircle className="h-3 w-3" /> : <ImagePlus className="h-3 w-3" />}
+                                      <span className="truncate">{fig.title || fig.caption}</span>
+                                    </button>
+                                  )
+                                })}
                               </div>
                             ) : null}
                           </>
                         )}
                       </div>
                       <div>
-                        <div className="text-xs font-medium text-muted-foreground mb-1">Paper Figures ({paperFigures.length})</div>
-                        {paperFigures.length === 0 ? (
-                          <p className="text-xs text-muted-foreground">No figures added yet</p>
+                        <div className="flex items-center justify-between mb-1">
+                          <div className="text-xs font-medium text-muted-foreground">Selected Figures ({selectedFigures.length}/{paperFigures.length})</div>
+                          <Button size="sm" variant="outline" onClick={saveSelectedFigures} disabled={savingSelectedFigures || selectedFigures.length === 0} className="h-6 text-[10px] px-2">
+                            {savingSelectedFigures ? <Loader2 className="h-3 w-3 animate-spin" /> : <Save className="h-3 w-3 mr-1" />}
+                            Save
+                          </Button>
+                        </div>
+                        {selectedFigures.length === 0 ? (
+                          <p className="text-xs text-muted-foreground">No figures selected yet</p>
                         ) : (
                           <div className="space-y-2">
-                            {paperFigures.map(fig => (
-                              <div key={fig.id} className="border rounded p-1.5 bg-white">
-                                <div className="text-xs font-medium truncate mb-1">{fig.title || fig.caption}</div>
+                            {selectedFigures.map(fig => (
+                              <div key={fig.figureId} className="border rounded p-2 bg-white space-y-2">
+                                <div className="flex items-start gap-2">
+                                  <input
+                                    type="checkbox"
+                                    className="mt-0.5"
+                                    checked={fig.include !== false}
+                                    onChange={e => updateSelectedFigure(fig.figureId, { include: e.target.checked })}
+                                    title="Include in prompts"
+                                  />
+                                  <div className="min-w-0 flex-1">
+                                    <div className="text-xs font-medium truncate">{fig.title || fig.caption || fig.figureId}</div>
+                                    <div className="text-[10px] text-muted-foreground truncate">{fig.figureId}</div>
+                                  </div>
+                                  <button
+                                    className="h-6 w-6 rounded border bg-white text-slate-500 hover:text-red-600 hover:border-red-200 inline-flex items-center justify-center"
+                                    onClick={() => removeSelectedFigure(fig.figureId)}
+                                    title="Remove from selected figures"
+                                  >
+                                    <Trash2 className="h-3 w-3" />
+                                  </button>
+                                </div>
                                 <img
-                                  src={`${API_BASE}/api/v1/experiments/figures/${fig.id}/png`}
+                                  src={`${API_BASE}/api/v1/experiments/figures/${fig.figureId}/png`}
                                   alt={fig.caption}
                                   className="w-full rounded mb-1 border"
                                   style={{ maxHeight: '80px', objectFit: 'contain' }}
                                   onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
                                 />
+                                <div className="grid grid-cols-2 gap-1">
+                                  <select
+                                    className="border rounded px-2 py-1 text-[11px] bg-white"
+                                    value={fig.targetSection || ''}
+                                    onChange={e => updateSelectedFigure(fig.figureId, { targetSection: e.target.value })}
+                                  >
+                                    <option value="">Any section</option>
+                                    {outlineSections.map(section => (
+                                      <option key={section.id} value={section.id}>{section.title}</option>
+                                    ))}
+                                  </select>
+                                  <input
+                                    className="border rounded px-2 py-1 text-[11px]"
+                                    value={fig.label || ''}
+                                    onChange={e => updateSelectedFigure(fig.figureId, { label: e.target.value })}
+                                    placeholder="fig:label"
+                                  />
+                                </div>
+                                <input
+                                  className="w-full border rounded px-2 py-1 text-[11px]"
+                                  value={fig.path || ''}
+                                  onChange={e => updateSelectedFigure(fig.figureId, { path: e.target.value })}
+                                  placeholder="figures/name.pdf"
+                                />
+                                <textarea
+                                  className="w-full border rounded px-2 py-1.5 text-[11px] resize-none"
+                                  rows={2}
+                                  value={fig.caption || ''}
+                                  onChange={e => updateSelectedFigure(fig.figureId, { caption: e.target.value })}
+                                  placeholder="Caption used in LaTeX"
+                                />
+                                <input
+                                  className="w-full border rounded px-2 py-1 text-[11px]"
+                                  value={fig.notes || ''}
+                                  onChange={e => updateSelectedFigure(fig.figureId, { notes: e.target.value })}
+                                  placeholder="Notes for the writer"
+                                />
                                 <button
                                   className="w-full text-xs px-1 py-0.5 rounded bg-slate-50 hover:bg-slate-100 flex items-center justify-center gap-1"
-                                  onClick={() => copyLatexRef(fig.id)}
+                                  onClick={() => copyLatexRef(fig.figureId)}
                                 >
-                                  {copiedLatex === fig.id ? (
+                                  {copiedLatex === fig.figureId ? (
                                     <><CheckCircle className="h-3 w-3" /> Copied!</>
                                   ) : (
                                     <><Copy className="h-3 w-3" /> Copy LaTeX</>
@@ -1126,6 +1328,11 @@ export function PapersList() {
                   <span className="text-xs font-mono text-muted-foreground truncate">{selectedFile || 'No file selected'}</span>
                   <div className="flex items-center gap-1">
                     {dirty && <span className="text-[10px] text-amber-600 font-medium">unsaved</span>}
+                    {selectedSectionId && (
+                      <Button size="sm" variant={rewriteOpen ? 'secondary' : 'ghost'} onClick={() => setRewriteOpen(current => !current)} className="h-6 text-[10px] px-2">
+                        <Wand2 className="h-3 w-3 mr-1" /> Rewrite
+                      </Button>
+                    )}
                     {isEditable && dirty && (
                       <Button size="sm" variant="ghost" onClick={saveFile} disabled={saving} className="h-6 text-[10px] px-2">
                         {saving ? <Loader2 className="h-3 w-3 animate-spin" /> : <Save className="h-3 w-3 mr-1" />} Save
@@ -1133,6 +1340,52 @@ export function PapersList() {
                     )}
                   </div>
                 </div>
+                {rewriteOpen && selectedSectionId && (
+                  <div className="border-b bg-white p-2 space-y-2">
+                    <div className="grid grid-cols-3 gap-2">
+                      <select
+                        className="border rounded px-2 py-1 text-xs bg-white"
+                        value={rewriteMode}
+                        onChange={e => setRewriteMode(e.target.value)}
+                      >
+                        <option value="improve">Improve</option>
+                        <option value="expand">Expand</option>
+                        <option value="condense">Condense</option>
+                        <option value="align">Align brief</option>
+                      </select>
+                      <input
+                        className="border rounded px-2 py-1 text-xs"
+                        value={rewriteTargetLength}
+                        onChange={e => setRewriteTargetLength(e.target.value)}
+                        placeholder="Target words"
+                        type="number"
+                        min={150}
+                      />
+                      <Button size="sm" onClick={rewriteCurrentSection} disabled={rewritingSection} className="h-7 text-xs">
+                        {rewritingSection ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <Wand2 className="h-3 w-3 mr-1" />}
+                        Run
+                      </Button>
+                    </div>
+                    <textarea
+                      className="w-full border rounded px-2 py-1.5 text-xs resize-none"
+                      rows={3}
+                      value={rewriteInstruction}
+                      onChange={e => setRewriteInstruction(e.target.value)}
+                      placeholder="What should change in this section?"
+                    />
+                    <div className="flex flex-wrap items-center gap-3 text-[11px] text-muted-foreground">
+                      <label className="flex items-center gap-1">
+                        <input type="checkbox" checked={rewritePreserveCitations} onChange={e => setRewritePreserveCitations(e.target.checked)} />
+                        Preserve citations
+                      </label>
+                      <label className="flex items-center gap-1">
+                        <input type="checkbox" checked={rewritePreserveFigures} onChange={e => setRewritePreserveFigures(e.target.checked)} />
+                        Preserve figures
+                      </label>
+                      <span className="font-mono">{selectedSectionId}.tex</span>
+                    </div>
+                  </div>
+                )}
                 <div className="flex-1 overflow-auto">
                   {!selectedFile ? (
                     <div className="flex items-center justify-center h-full text-sm text-muted-foreground">Select a file</div>
@@ -1151,7 +1404,7 @@ export function PapersList() {
               </div>
 
               {/* Right: PDF preview + Metadata + Logs */}
-              <div className="col-span-5 space-y-3" style={{ maxHeight: '60vh', overflowY: 'auto' }}>
+              <div className="col-span-4 space-y-3" style={{ maxHeight: '60vh', overflowY: 'auto' }}>
                 {/* PDF Preview */}
                 <div className="border rounded-lg bg-white overflow-hidden">
                   <div className="px-3 py-1.5 border-b bg-slate-50 flex items-center justify-between">

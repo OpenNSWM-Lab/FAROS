@@ -4,6 +4,7 @@ Paper Storage — JSON-file persistence for papers and generation sessions.
 
 import json
 import os
+import re
 import uuid
 import shutil
 import zipfile
@@ -29,6 +30,7 @@ def _gen_id() -> str:
 def _normalize_record(record: Dict[str, Any]) -> Dict[str, Any]:
     record.setdefault("experimentIds", [])
     record.setdefault("figureIds", [])
+    record.setdefault("selectedFigures", [])
     record.setdefault("runIds", [])
     record.setdefault("logs", [])
     record.setdefault("pdfAvailable", False)
@@ -53,6 +55,7 @@ def create_paper(data: Dict[str, Any]) -> Dict[str, Any]:
         "projectId": data.get("projectId"),
         "experimentIds": data.get("experimentIds", []),
         "figureIds": data.get("figureIds", []),
+        "selectedFigures": data.get("selectedFigures", []),
         "runIds": data.get("runIds", []),
         "providerName": data.get("providerName", "moonshot"),
         "model": data.get("model", "moonshot-v1-8k"),
@@ -104,6 +107,184 @@ def update_paper(paper_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, A
     record["updatedAt"] = _utcnow_iso()
     _save_record(paper_id, record)
     return record
+
+
+def _clean_latex_label_part(value: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9]+", "_", value or "").strip("_").lower()
+    return cleaned or "figure"
+
+
+def _figure_file_name(fig: Dict[str, Any]) -> str:
+    file_name = (
+        fig.get("fileNamePdf")
+        or fig.get("fileNamePng")
+        or fig.get("fileName")
+    )
+    if not file_name:
+        for key in ("pdfPath", "pngPath", "pathPdf", "pathPng", "path"):
+            value = fig.get(key)
+            if value:
+                file_name = os.path.basename(str(value))
+                break
+    return os.path.basename(str(file_name or ""))
+
+
+def _caption_from_figure(title: str, caption: str, notes: str = "") -> str:
+    cleaned = re.sub(r"\s+", " ", (caption or "").strip())
+    if len(cleaned) >= 24:
+        return cleaned
+    title_text = re.sub(r"\s+", " ", (title or "").strip())
+    notes_text = re.sub(r"\s+", " ", (notes or "").strip())
+    if cleaned and title_text and cleaned.lower() != title_text.lower():
+        return f"{cleaned}. {title_text}."
+    if title_text:
+        suffix = f" {notes_text}" if notes_text else " Interpret the figure together with the linked evidence and paper text."
+        return f"{title_text}.{suffix}"
+    if cleaned:
+        return cleaned
+    return "Linked paper figure. Interpret the figure together with the linked evidence and paper text."
+
+
+def _coerce_bool(value: Any, default: bool = True) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() not in {"0", "false", "no", "off"}
+    return bool(value)
+
+
+def normalize_paper_figure(
+    paper_id: str,
+    figure: Dict[str, Any],
+    ensure_copied: bool = False,
+) -> Optional[Dict[str, Any]]:
+    """Normalize user-selected figure metadata stored on the paper record."""
+    figure_id = figure.get("figureId") or figure.get("id")
+    source: Dict[str, Any] = {}
+    if figure_id:
+        try:
+            from app.storage.experiment_storage import get_figure
+            source = get_figure(str(figure_id)) or {}
+        except Exception:
+            source = {}
+
+    copied: Dict[str, Any] = {}
+    if ensure_copied and figure_id:
+        copied = copy_figure_to_paper(paper_id, str(figure_id), select=False) or {}
+        if not source and not copied and not figure.get("path"):
+            return None
+
+    merged = {**source, **copied, **figure}
+    figure_id = merged.get("figureId") or merged.get("id") or figure_id
+    if not figure_id:
+        return None
+
+    file_name = _figure_file_name(merged)
+    base_name, ext = os.path.splitext(file_name)
+    ext = ext.lstrip(".")
+    if not base_name:
+        base_name = _clean_latex_label_part(str(figure_id))
+    if not ext:
+        ext = "pdf"
+
+    title = str(merged.get("title") or merged.get("figureType") or base_name.replace("_", " ")).strip()
+    notes = str(merged.get("notes") or "").strip()
+    caption = _caption_from_figure(title, str(merged.get("caption") or ""), notes)
+    label = str(merged.get("label") or merged.get("latexLabel") or f"fig:{_clean_latex_label_part(str(figure_id))}").strip()
+    target_section = str(merged.get("targetSection") or merged.get("target_section") or "").strip()
+
+    return {
+        "figureId": str(figure_id),
+        "title": title,
+        "caption": caption,
+        "targetSection": target_section,
+        "label": label,
+        "path": str(merged.get("path") or f"figures/{base_name}.{ext}"),
+        "filename": base_name,
+        "ext": ext,
+        "include": _coerce_bool(merged.get("include", True)),
+        "notes": notes,
+        "figureType": merged.get("figureType"),
+        "experimentId": merged.get("experimentId"),
+        "source": merged.get("source") or "selected",
+    }
+
+
+def get_selected_figures(paper_id: str) -> List[Dict[str, Any]]:
+    paper = get_paper(paper_id)
+    if not paper:
+        return []
+    figures: List[Dict[str, Any]] = []
+    for item in paper.get("selectedFigures", []) or []:
+        if not isinstance(item, dict):
+            continue
+        normalized = normalize_paper_figure(paper_id, item, ensure_copied=False)
+        if normalized:
+            figures.append(normalized)
+    return figures
+
+
+def update_selected_figures(paper_id: str, figures: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    normalized: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in figures:
+        if not isinstance(item, dict):
+            continue
+        figure = normalize_paper_figure(paper_id, item, ensure_copied=True)
+        if not figure:
+            continue
+        key = figure["figureId"]
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(figure)
+
+    paper = get_paper(paper_id)
+    if not paper:
+        return None
+    figure_ids = list(dict.fromkeys([*paper.get("figureIds", []), *(fig["figureId"] for fig in normalized)]))
+    return update_paper(paper_id, {"selectedFigures": normalized, "figureIds": figure_ids})
+
+
+def select_figure_for_paper(
+    paper_id: str,
+    figure_id: str,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    metadata = metadata or {}
+    paper = get_paper(paper_id)
+    if not paper:
+        return None
+    current = [
+        item for item in (paper.get("selectedFigures", []) or [])
+        if isinstance(item, dict) and str(item.get("figureId") or item.get("id")) != str(figure_id)
+    ]
+    selected = normalize_paper_figure(
+        paper_id,
+        {"figureId": figure_id, **metadata, "include": metadata.get("include", True)},
+        ensure_copied=True,
+    )
+    if not selected:
+        return None
+    current.append(selected)
+    updated = update_selected_figures(paper_id, current)
+    if not updated:
+        return None
+    return selected
+
+
+def remove_selected_figure(paper_id: str, figure_id: str) -> Optional[Dict[str, Any]]:
+    paper = get_paper(paper_id)
+    if not paper:
+        return None
+    selected = [
+        item for item in (paper.get("selectedFigures", []) or [])
+        if isinstance(item, dict) and str(item.get("figureId") or item.get("id")) != str(figure_id)
+    ]
+    figure_ids = [fid for fid in paper.get("figureIds", []) if str(fid) != str(figure_id)]
+    return update_paper(paper_id, {"selectedFigures": selected, "figureIds": figure_ids})
 
 
 def add_log(paper_id: str, message: str):
@@ -204,7 +385,10 @@ def get_paper_figures_dir(paper_id: str) -> str:
 
 
 def copy_figure_to_paper(
-    paper_id: str, figure_id: str) -> Optional[Dict[str, Any]]:
+    paper_id: str,
+    figure_id: str,
+    select: bool = True,
+) -> Optional[Dict[str, Any]]:
     """Copy a figure from experiments to a paper's latex directory."""
     # Get figure data from experiment storage
     from app.storage.experiment_storage import get_figure
@@ -246,7 +430,7 @@ def copy_figure_to_paper(
   \\label{{{fig_label}}}
 \\end{{figure}}"""
     
-    return {
+    result = {
         "figureId": figure_id,
         "title": fig.get("title", ""),
         "caption": caption,
@@ -257,6 +441,11 @@ def copy_figure_to_paper(
         "fileNamePng": fig.get("fileNamePng"),
         "fileNamePdf": fig.get("fileNamePdf"),
     }
+    if select:
+        selected = select_figure_for_paper(paper_id, figure_id, result)
+        if selected:
+            result["selectedFigure"] = selected
+    return result
 
 
 def get_paper_figures(paper_id: str) -> List[Dict[str, Any]]:
