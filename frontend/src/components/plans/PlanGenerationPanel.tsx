@@ -486,7 +486,17 @@ function FeedbackList({ feedback }: { feedback: PlanHumanFeedback[] }) {
   )
 }
 
-export function PlanGenerationPanel() {
+export function PlanGenerationPanel({
+  ideaSessionId: ideaSessionIdProp,
+  ideaCandidateId: ideaCandidateIdProp,
+  ideaCandidateTitle: ideaCandidateTitleProp,
+  ideaSeedQuery: ideaSeedQueryProp,
+}: {
+  ideaSessionId?: string
+  ideaCandidateId?: string
+  ideaCandidateTitle?: string
+  ideaSeedQuery?: string
+}) {
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const [activeTab, setActiveTab] = useState('summary')
@@ -507,10 +517,10 @@ export function PlanGenerationPanel() {
   const [feedbackComment, setFeedbackComment] = useState('')
 
   const packageIdFromUrl = searchParams.get('packageId')?.trim() || ''
-  const ideaSessionIdFromUrl = searchParams.get('ideaSessionId')?.trim() || ''
-  const ideaCandidateIdFromUrl = searchParams.get('ideaCandidateId')?.trim() || ''
-  const ideaCandidateTitleFromUrl = searchParams.get('ideaCandidateTitle')?.trim() || ''
-  const ideaSeedQueryFromUrl = searchParams.get('ideaSeedQuery')?.trim() || ''
+  const ideaSessionIdFromUrl = ideaSessionIdProp || searchParams.get('ideaSessionId')?.trim() || ''
+  const ideaCandidateIdFromUrl = ideaCandidateIdProp || searchParams.get('ideaCandidateId')?.trim() || ''
+  const ideaCandidateTitleFromUrl = ideaCandidateTitleProp || searchParams.get('ideaCandidateTitle')?.trim() || ''
+  const ideaSeedQueryFromUrl = ideaSeedQueryProp || searchParams.get('ideaSeedQuery')?.trim() || ''
 
   const loadPackage = useCallback(async (packageId: string) => {
     if (!packageId) return

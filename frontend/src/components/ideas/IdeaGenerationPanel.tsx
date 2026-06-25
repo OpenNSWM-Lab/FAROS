@@ -107,7 +107,18 @@ interface LiteratureItem {
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || ''
 
-export function IdeaGenerationPanel() {
+interface CandidateSelection {
+  ideaSessionId: string
+  ideaCandidateId: string
+  ideaCandidateTitle: string
+  ideaSeedQuery: string
+}
+
+export function IdeaGenerationPanel({
+  onCandidateSelected,
+}: {
+  onCandidateSelected?: (data: CandidateSelection) => void
+}) {
   const navigate = useNavigate()
   const [seedQuery, setSeedQuery] = useState('')
   const [activeProvider, setActiveProvider] = useState('moonshot')
@@ -273,14 +284,24 @@ export function IdeaGenerationPanel() {
 
   const openPlanningForCandidate = (candidate: Candidate) => {
     if (!session?.id) return
-    const params = new URLSearchParams({
+    const q = session.config.seedQuery || seedQuery
+    const data: CandidateSelection = {
       ideaSessionId: session.id,
       ideaCandidateId: candidate.id,
       ideaCandidateTitle: candidate.title,
-    })
-    const q = session.config.seedQuery || seedQuery
-    if (q) params.set('ideaSeedQuery', q)
-    navigate(`/research/planning?${params.toString()}`)
+      ideaSeedQuery: q,
+    }
+    if (onCandidateSelected) {
+      onCandidateSelected(data)
+    } else {
+      const params = new URLSearchParams({
+        ideaSessionId: data.ideaSessionId,
+        ideaCandidateId: data.ideaCandidateId,
+        ideaCandidateTitle: data.ideaCandidateTitle,
+      })
+      if (data.ideaSeedQuery) params.set('ideaSeedQuery', data.ideaSeedQuery)
+      navigate(`/research/planning?${params.toString()}`)
+    }
   }
 
   const getStatusColor = (status: string) => {
