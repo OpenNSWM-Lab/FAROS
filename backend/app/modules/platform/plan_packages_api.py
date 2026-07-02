@@ -6,7 +6,8 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 
-from app.models.plan_package import PlanPackage, PlanPackageHandoff, PlanPackagePresentation, PlanQualityGate
+from app.models.plan_package import PlanPackage, PlanQualityGate
+from app.services.blueprint_converter import convert_plan_package_to_blueprint
 from app.services.plan_package_service import (
     PlanPackageConflictError,
     PlanPackageNotFoundError,
@@ -20,12 +21,13 @@ router = APIRouter(tags=["plan_packages"])
 
 class CreatePlanPackageRequest(BaseModel):
     candidateId: Optional[str] = None
-    maxStages: int = Field(default=3, ge=1, le=5)
-    maxStepsPerStage: int = Field(default=3, ge=1, le=5)
+    planSessionId: Optional[str] = None
+    maxStages: int = Field(default=4, ge=1, le=8)
+    maxStepsPerStage: int = Field(default=5, ge=1, le=10)
     userNotes: Optional[str] = None
     generationMode: str = Field(default="hybrid", description="hybrid | deterministic")
-    reviewerMode: str = Field(default="hybrid", description="deterministic | hybrid")
-    maxRepairRounds: int = Field(default=2, ge=0, le=2)
+    useLLM: Optional[bool] = Field(default=None, description="Deprecated compatibility flag; overrides generationMode when set")
+    maxRepairRounds: int = Field(default=0, ge=0, le=2)
 
 
 class CreatePlanPackageResponse(BaseModel):
@@ -40,38 +42,10 @@ class ValidatePlanPackageResponse(BaseModel):
     qualityGate: PlanQualityGate
 
 
-class PlanPackageFeedbackRequest(BaseModel):
-    sectionPath: str = Field(default="package")
-    displayLabel: str = Field(default="")
-    sourceView: str = Field(default="presentation", description="presentation | fullPackage | handoff | api")
-    targetSections: Optional[list[str]] = Field(default=None)
-    feedbackType: str = Field(default="comment", description="comment | correction | reject | regenerate | approve")
-    comment: str
-    severity: str = Field(default="medium", description="low | medium | high | blocking")
-    requestedAction: str = Field(default="revise")
-
-
-class RevisePlanPackageRequest(BaseModel):
-    generationMode: str = Field(default="hybrid", description="hybrid | deterministic")
-    reviewerMode: str = Field(default="hybrid", description="deterministic | hybrid")
-    maxStages: Optional[int] = Field(default=None, ge=1, le=5)
-    maxStepsPerStage: Optional[int] = Field(default=None, ge=1, le=5)
-    maxRepairRounds: int = Field(default=2, ge=0, le=3)
-    targetSections: Optional[list[str]] = Field(
-        default=None,
-        description=(
-            "Optional writable sections to revise. If omitted, sections are inferred from unresolved feedback. "
-            "Allowed: researchQuestion, hypothesis, constants, stages, expectedMetrics, background, gap, principle."
-        ),
-    )
-
-
-class ReviewPlanPackageRequest(BaseModel):
-    reviewerMode: str = Field(default="hybrid", description="deterministic | hybrid")
-
-
-class ApprovePlanPackageRequest(BaseModel):
-    reviewerMode: Optional[str] = Field(default=None, description="deterministic | hybrid")
+class PlanPackageResearchPlanResponse(BaseModel):
+    packageId: str
+    researchPlanId: str
+    researchPlan: dict
 
 
 @router.post(
@@ -89,11 +63,12 @@ async def create_plan_package_from_idea_session(
         package = service.create_from_idea_session(
             idea_session_id,
             candidate_id=request.candidateId,
+            plan_session_id=request.planSessionId,
             max_stages=request.maxStages,
             max_steps_per_stage=request.maxStepsPerStage,
             user_notes=request.userNotes,
+            use_llm=request.useLLM,
             generation_mode=request.generationMode,
-            reviewer_mode=request.reviewerMode,
             max_repair_rounds=request.maxRepairRounds,
         )
         return CreatePlanPackageResponse(
@@ -116,7 +91,7 @@ async def create_plan_package_from_idea_session(
 @router.get(
     "/plans/packages/{package_id}",
     response_model=PlanPackage,
-    summary="Get full PlanPackage for debug/audit",
+    summary="Get PlanPackage",
 )
 async def get_plan_package(package_id: str) -> PlanPackage:
     service = get_plan_package_service()
@@ -130,37 +105,25 @@ async def get_plan_package(package_id: str) -> PlanPackage:
 
 
 @router.get(
-    "/plans/packages/{package_id}/presentation",
-    response_model=PlanPackagePresentation,
-    summary="Get human-readable PlanPackage presentation",
+    "/plans/sessions/{plan_session_id}/package",
+    response_model=PlanPackage,
+    summary="Get PlanPackage by Plan Session",
 )
-async def get_plan_package_presentation(package_id: str) -> PlanPackagePresentation:
+async def get_plan_package_by_plan_session(plan_session_id: str) -> PlanPackage:
     service = get_plan_package_service()
-    try:
-        return service.get_presentation(package_id)
-    except PlanPackageNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
-
-
-@router.get(
-    "/plans/packages/{package_id}/handoff",
-    response_model=PlanPackageHandoff,
-    summary="Get compact PlanPackage handoff for downstream modules",
-)
-async def get_plan_package_handoff(package_id: str) -> PlanPackageHandoff:
-    service = get_plan_package_service()
-    try:
-        return service.get_handoff(package_id)
-    except PlanPackageNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+    package = service.get_by_plan_session(plan_session_id)
+    if not package:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"PlanPackage for plan session {plan_session_id} not found",
+        )
+    return package
 
 
 @router.get(
     "/ideas/sessions/{idea_session_id}/plan-package",
     response_model=PlanPackage,
-    summary="Get full PlanPackage by Idea Session",
+    summary="Get PlanPackage by Idea Session",
 )
 async def get_plan_package_by_idea_session(idea_session_id: str) -> PlanPackage:
     service = get_plan_package_service()
@@ -171,19 +134,6 @@ async def get_plan_package_by_idea_session(idea_session_id: str) -> PlanPackage:
             detail=f"PlanPackage for idea session {idea_session_id} not found",
         )
     return package
-
-
-@router.get(
-    "/ideas/sessions/{idea_session_id}/plan-package/presentation",
-    response_model=PlanPackagePresentation,
-    summary="Get human-readable PlanPackage presentation by Idea Session",
-)
-async def get_plan_package_presentation_by_idea_session(idea_session_id: str) -> PlanPackagePresentation:
-    service = get_plan_package_service()
-    try:
-        return service.get_presentation_by_idea_session(idea_session_id)
-    except PlanPackageNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
 
 
 @router.post(
@@ -203,95 +153,36 @@ async def validate_plan_package(package_id: str) -> ValidatePlanPackageResponse:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
 
 
-@router.post(
-    "/plans/packages/{package_id}/feedback",
-    response_model=PlanPackage,
-    summary="Add human feedback to PlanPackage",
+@router.get(
+    "/plans/packages/{package_id}/blueprint",
+    summary="Get PlanPackage as experiment blueprint DAG",
 )
-async def add_plan_package_feedback(
-    package_id: str,
-    request: PlanPackageFeedbackRequest,
-) -> PlanPackage:
+async def get_plan_package_blueprint(package_id: str):
+    service = get_plan_package_service()
+    package = service.get(package_id)
+    if not package:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"PlanPackage {package_id} not found",
+        )
+    return convert_plan_package_to_blueprint(package)
+
+
+@router.post(
+    "/plans/packages/{package_id}/to-research-plan",
+    response_model=PlanPackageResearchPlanResponse,
+    summary="Convert PlanPackage to legacy ResearchPlan",
+)
+async def convert_plan_package_to_research_plan(package_id: str) -> PlanPackageResearchPlanResponse:
     service = get_plan_package_service()
     try:
-        return service.add_feedback(
-            package_id,
-            section_path=request.sectionPath,
-            display_label=request.displayLabel,
-            source_view=request.sourceView,
-            target_sections=request.targetSections,
-            feedback_type=request.feedbackType,
-            comment=request.comment,
-            severity=request.severity,
-            requested_action=request.requestedAction,
+        plan = service.to_research_plan(package_id)
+        return PlanPackageResearchPlanResponse(
+            packageId=package_id,
+            researchPlanId=plan.id,
+            researchPlan=plan.model_dump(mode="json"),
         )
     except PlanPackageNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
-
-
-@router.post(
-    "/plans/packages/{package_id}/review",
-    response_model=PlanPackage,
-    summary="Run PlanPackage reviewer committee",
-)
-async def review_plan_package(
-    package_id: str,
-    request: Optional[ReviewPlanPackageRequest] = None,
-) -> PlanPackage:
-    service = get_plan_package_service()
-    try:
-        reviewer_mode = request.reviewerMode if request else "hybrid"
-        return service.run_review(package_id, reviewer_mode=reviewer_mode)
-    except PlanPackageNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
-
-
-@router.post(
-    "/plans/packages/{package_id}/revise",
-    response_model=PlanPackage,
-    summary="Revise PlanPackage from human feedback and reviewer findings",
-)
-async def revise_plan_package(
-    package_id: str,
-    request: RevisePlanPackageRequest,
-) -> PlanPackage:
-    service = get_plan_package_service()
-    try:
-        return service.revise(
-            package_id,
-            generation_mode=request.generationMode,
-            max_stages=request.maxStages,
-            max_steps_per_stage=request.maxStepsPerStage,
-            max_repair_rounds=request.maxRepairRounds,
-            target_sections=request.targetSections,
-            reviewer_mode=request.reviewerMode,
-        )
-    except PlanPackageNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
-    except PlanPackageConflictError as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
-    except Exception as exc:
-        logger.error("PlanPackage revision failed: %s", exc, exc_info=True)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc))
-
-
-@router.post(
-    "/plans/packages/{package_id}/approve",
-    response_model=PlanPackage,
-    summary="Approve PlanPackage for downstream handoff",
-)
-async def approve_plan_package(
-    package_id: str,
-    request: Optional[ApprovePlanPackageRequest] = None,
-) -> PlanPackage:
-    service = get_plan_package_service()
-    try:
-        return service.approve(package_id, reviewer_mode=request.reviewerMode if request else None)
-    except PlanPackageNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
-    except PlanPackageConflictError as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))

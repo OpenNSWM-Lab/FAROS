@@ -25,11 +25,13 @@ class ProviderConfig(BaseModel):
     
     def get_base_url(self) -> Optional[str]:
         """Get base URL from environment."""
-        return os.getenv(self.base_url_env)
-    
+        v = os.getenv(self.base_url_env)
+        return v.strip() if v else None
+
     def get_api_key(self) -> Optional[str]:
         """Get API key from environment."""
-        return os.getenv(self.api_key_env)
+        v = os.getenv(self.api_key_env)
+        return v.strip() if v else None
     
     def is_configured(self) -> bool:
         """Check if provider has required configuration."""
@@ -86,7 +88,47 @@ class Settings(BaseModel):
         default_factory=lambda: float(os.getenv("RETRY_BACKOFF", "1.0")),
         description="Retry backoff multiplier"
     )
-    
+
+    # ---- Sandbox / Code Agent settings ----
+    SANDBOX_DEFAULT_BACKEND: str = Field(
+        default_factory=lambda: os.getenv("SANDBOX_DEFAULT_BACKEND", "subprocess"),
+        description="Default sandbox backend: 'docker' or 'subprocess'"
+    )
+    SANDBOX_MAX_CONCURRENT: int = Field(
+        default_factory=lambda: int(os.getenv("SANDBOX_MAX_CONCURRENT", "4")),
+        description="Maximum concurrent sandbox instances"
+    )
+    SANDBOX_TTL_SEC: int = Field(
+        default_factory=lambda: int(os.getenv("SANDBOX_TTL_SEC", "3600")),
+        description="Time-to-live for sandbox instances before automatic reclamation"
+    )
+    SANDBOX_DOCKER_IMAGE: str = Field(
+        default_factory=lambda: os.getenv("SANDBOX_DOCKER_IMAGE", "python:3.12-slim"),
+        description="Default Docker image for the Docker sandbox backend"
+    )
+    SANDBOX_MEM_LIMIT: str = Field(
+        default_factory=lambda: os.getenv("SANDBOX_MEM_LIMIT", "512m"),
+        description="Memory limit for Docker sandbox containers"
+    )
+    SANDBOX_CPU_QUOTA: int = Field(
+        default_factory=lambda: int(os.getenv("SANDBOX_CPU_QUOTA", "50000")),
+        description="CPU quota for sandbox containers (100000 = 1 core)"
+    )
+
+    # ---- Agent loop settings ----
+    AGENT_MAX_ITERATIONS: int = Field(
+        default_factory=lambda: int(os.getenv("AGENT_MAX_ITERATIONS", "3")),
+        description="Maximum repair/retry iterations for autonomous agent loop"
+    )
+    AGENT_EXECUTION_TIMEOUT: int = Field(
+        default_factory=lambda: int(os.getenv("AGENT_EXECUTION_TIMEOUT", "300")),
+        description="Default execution timeout per agent iteration (seconds)"
+    )
+    AGENT_SANDBOX_TIMEOUT: int = Field(
+        default_factory=lambda: int(os.getenv("AGENT_SANDBOX_TIMEOUT", "600")),
+        description="Absolute maximum sandbox execution timeout (seconds)"
+    )
+
     # Provider configurations (static, keys from env)
     PROVIDERS: Dict[str, ProviderConfig] = Field(default_factory=lambda: {
         "moonshot": ProviderConfig(
@@ -150,7 +192,7 @@ class Settings(BaseModel):
             api_key_env="QWEN_API_KEY",
             default_model="qwen-max",
             api_format="openai",
-            timeout=60,
+            timeout=300,
             extra_headers={}
         ),
         "bigmodel": ProviderConfig(
@@ -330,7 +372,7 @@ class Settings(BaseModel):
             "claude": "https://api.anthropic.com/v1",
             "deepseek": "https://api.deepseek.com/v1",
             "zhipu": "https://open.bigmodel.cn/api/paas/v4",
-            "qwen": "https://dashscope.aliyuncs.com/api/v1",
+            "qwen": "https://dashscope.aliyuncs.com/compatible-mode/v1",
             "bigmodel": "https://open.bigmodel.cn/api/paas/v4",
             "minimax": "https://api.minimaxi.com/anthropic",
         }

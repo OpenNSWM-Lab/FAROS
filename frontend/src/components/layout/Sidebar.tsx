@@ -8,6 +8,7 @@ import {
   CheckCircle,
   Settings,
   Activity,
+  Lightbulb,
   Code2,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -15,8 +16,9 @@ import { AppLogo } from '@/components/branding/AppLogo'
 
 const navigation = [
   { name: 'Dashboard', href: '/', icon: LayoutDashboard },
-  { name: 'Pipeline', href: '/research/pipeline', icon: FlaskConical },
-  { name: 'Code', href: '/code', icon: Code2 },
+  { name: 'Ideas', href: '/research/ideas', icon: Lightbulb },
+  { name: 'Plan', href: '/research/planning', icon: FlaskConical },
+  { name: 'Code', href: '/code/projects', icon: Code2 },
   { name: 'Runs', href: '/runs', icon: PlayCircle },
   { name: 'Experiments', href: '/experiments', icon: BarChart3 },
   { name: 'Papers', href: '/papers', icon: FileEdit },
