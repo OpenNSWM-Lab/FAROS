@@ -23,6 +23,7 @@ import os
 import shutil
 import time
 import uuid
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import AsyncIterator, Optional
@@ -46,6 +47,8 @@ class CartNodeResult:
     duration_ms: int = 0
     error: Optional[str] = None
     session_id: str = ""
+    # Paper-module compatible metadata fields
+    paper_metadata: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -106,13 +109,19 @@ class CartRunner:
             os.makedirs(os.path.join(cart_dir, sub), exist_ok=True)
 
         # Save manifest
+        idea = ppkg.get("idea", {})
         manifest = {
             "cart_id": cart_id,
             "package_id": package_id,
             "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            # Paper-compatible fields
+            "experiment_plan": idea.get("proposedMethod", ""),
+            "hypothesis": idea.get("hypothesisStatement", ""),
+            "research_question": idea.get("title", ""),
             "datasets": [c.get("value") for c in ppkg.get("constants", []) if c.get("type") == "dataset"],
-            "methods": [ppkg.get("idea", {}).get("proposedMethod", "")[:80]],
+            "methods": [idea.get("proposedMethod", "")[:80]],
             "metrics": [],
+            "constants": {c.get("name"): c.get("value") for c in ppkg.get("constants", [])},
         }
         _write_json(os.path.join(cart_dir, "data", "manifest.json"), manifest)
 
@@ -174,6 +183,9 @@ class CartRunner:
             result.duration_ms = int((time.time() - start_ts) * 1000)
             completed[node_id] = result
 
+            # Build paper-compatible metadata
+            result.paper_metadata = self._build_paper_metadata(node_info, ppkg, result)
+
             # Save result.json
             node_data_dir = os.path.join(cart_dir, "data", node_id)
             os.makedirs(node_data_dir, exist_ok=True)
@@ -193,12 +205,24 @@ class CartRunner:
                     "description": node_info.get("desc", ""),
                     "method": node_info.get("method", ""),
                 },
+                # Paper-module fields
+                "experiment_plan": result.paper_metadata.get("experiment_plan", ""),
+                "dataset": result.paper_metadata.get("dataset", {}),
+                "baseline": result.paper_metadata.get("baseline", ""),
+                "metrics_declaration": result.paper_metadata.get("metrics_declaration", ""),
+                "figures_and_tables": result.paper_metadata.get("figures_and_tables", []),
+                "result_analysis": result.paper_metadata.get("result_analysis", ""),
             })
 
             # Collect all generated artifacts from workspace
             run_dir = os.path.join(cart_dir, "runs", node_id)
             if os.path.isdir(run_dir):
                 self._collect_artifacts(run_dir, node_data_dir, result)
+
+            # AI-enhanced metadata enrichment (async, fire-and-forget)
+            asyncio.create_task(
+                self._enrich_metadata_via_ai(node_data_dir, node_info, ppkg, result)
+            )
 
             # Save blueprint state
             bp_state_path = os.path.join(cart_dir, "blueprint_state.json")
@@ -229,6 +253,9 @@ class CartRunner:
             yield evt
 
         # Cart complete
+        # Save aggregated results summary
+        self._save_cart_results_summary(cart_dir, completed, ppkg, nodes, skipped)
+
         total = len(nodes)
         succeeded = sum(1 for n in completed.values() if n.success)
         failed = total - succeeded - len(skipped)
@@ -240,6 +267,85 @@ class CartRunner:
         )
 
     # ---- internals ----
+
+    @staticmethod
+    def _save_cart_results_summary(
+        cart_dir: str,
+        completed: dict[str, CartNodeResult],
+        ppkg: dict,
+        nodes: list[dict],
+        skipped: set,
+    ) -> None:
+        """Aggregate all node results into a single cart_results.json for Paper module consumption."""
+        idea = ppkg.get("idea", {})
+        stages = ppkg.get("stages", [])
+
+        # Build per-stage summaries
+        stage_summaries = []
+        for stage in stages:
+            stage_steps = []
+            for step in stage.get("steps", []):
+                sid = step["id"]
+                if sid in completed:
+                    r = completed[sid]
+                    stage_steps.append({
+                        "node_id": sid,
+                        "title": step.get("title", ""),
+                        "success": r.success,
+                        "duration_ms": r.duration_ms,
+                        "metrics": r.outputs.get("metrics", {}),
+                        "artifacts": [a.get("name", "") for a in r.artifacts],
+                        "error": r.error,
+                    })
+                elif sid in skipped:
+                    stage_steps.append({
+                        "node_id": sid,
+                        "title": step.get("title", ""),
+                        "success": False,
+                        "skipped": True,
+                    })
+
+            stage_ok = all(s.get("success", False) for s in stage_steps)
+            stage_summaries.append({
+                "stage_id": stage["id"],
+                "title": stage.get("title", ""),
+                "success": stage_ok,
+                "steps": stage_steps,
+            })
+
+        # Aggregate all metrics
+        all_metrics: dict[str, dict] = {}
+        all_artifacts: list[str] = []
+        total_duration = 0
+        for r in completed.values():
+            all_metrics[r.node_id] = r.outputs.get("metrics", {})
+            all_artifacts.extend(a.get("name", "") for a in r.artifacts)
+            total_duration += r.duration_ms
+
+        total = len(nodes)
+        succeeded = sum(1 for r in completed.values() if r.success)
+        failed = total - succeeded - len(skipped)
+
+        summary = {
+            "cart_id": os.path.basename(cart_dir),
+            "package_id": ppkg.get("packageId", ""),
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "research_question": idea.get("title", ""),
+            "hypothesis": idea.get("hypothesisStatement", ""),
+            "proposed_method": idea.get("proposedMethod", ""),
+            "overall_status": "success" if failed == 0 else "partial" if succeeded > 0 else "failed",
+            "total_nodes": total,
+            "succeeded": succeeded,
+            "failed": failed,
+            "skipped": len(skipped),
+            "total_duration_ms": total_duration,
+            "all_metrics": all_metrics,
+            "all_artifacts": sorted(set(all_artifacts)),
+            "stages": stage_summaries,
+            "constants": {c.get("name"): c.get("value") for c in ppkg.get("constants", [])},
+        }
+
+        _write_json(os.path.join(cart_dir, "cart_results.json"), summary)
 
     @staticmethod
     def _topological_sort(ppkg: dict) -> list[dict]:
@@ -656,6 +762,189 @@ class CartRunner:
             f"with open('result.json', 'w') as f: json.dump(result, f, indent=2)\n"
             f"print('Done')\n"
         )
+
+    @staticmethod
+    def _build_paper_metadata(node: dict, ppkg: dict, result: CartNodeResult) -> dict:
+        """Build paper-compatible metadata from node info, PlanPackage, and execution results."""
+        title = node.get("title", "")
+        desc = node.get("desc", "")
+        method = node.get("method", "")
+        expected = node.get("expected", [])
+        outputs = node.get("outputs", [])
+        stage_title = node.get("stage_title", "")
+
+        # Extract actual metrics from execution
+        actual_metrics = result.outputs.get("metrics", {})
+        files_generated = result.outputs.get("files_generated", 0)
+
+        # Build experiment_plan from node description
+        experiment_plan = (
+            f"Stage: {stage_title}. "
+            f"Step: {title}. "
+            f"Objective: {desc} "
+            f"Method: {method}."
+        )
+
+        # Build dataset info from ppkg constants + node outputs
+        constants = ppkg.get("constants", [])
+        dataset_info = {
+            "source": [c.get("value", "") for c in constants if c.get("type") == "dataset"],
+            "seed": next((c.get("value") for c in constants if c.get("name") == "SEED"), None),
+            "parameters": {c.get("name"): c.get("value") for c in constants},
+            "files_generated": files_generated,
+            "output_files": [o.get("name", "") for o in outputs],
+        }
+
+        # Build baseline declaration
+        baseline = (
+            f"Expected metrics for this step: "
+            + "; ".join(f"{e.get('metric', '?')} = {e.get('target', '?')}"
+                       for e in expected)
+            if expected else "No baseline specified — this is an exploratory step."
+        )
+
+        # Build metrics declaration
+        metrics_declaration = (
+            f"Metrics measured: {', '.join(actual_metrics.keys())}"
+            if actual_metrics else "No quantitative metrics collected."
+        )
+        if expected:
+            metrics_declaration += " | Expected: " + "; ".join(
+                f"{e.get('metric', '?')} = {e.get('target', '?')}"
+                for e in expected
+            )
+
+        # Build figures/tables list from artifacts
+        figures_and_tables = []
+        for a in result.artifacts:
+            name = a.get("name", "")
+            if any(name.endswith(ext) for ext in (".png", ".jpg", ".svg", ".gif")):
+                figures_and_tables.append({
+                    "file": name,
+                    "type": "figure",
+                    "description": f"Generated from step {title}",
+                    "supports_conclusion": "",
+                })
+            elif name.endswith(".csv"):
+                figures_and_tables.append({
+                    "file": name,
+                    "type": "table",
+                    "description": f"Data from step {title}",
+                    "supports_conclusion": "",
+                })
+
+        # Build result analysis
+        result_analysis = ""
+        if result.success:
+            result_analysis = (
+                f"Step completed successfully in {result.duration_ms}ms. "
+                f"Generated {files_generated} output files."
+            )
+            if actual_metrics:
+                result_analysis += " Key metrics: " + "; ".join(
+                    f"{k}={v}" for k, v in list(actual_metrics.items())[:5]
+                )
+        else:
+            result_analysis = (
+                f"Step failed. "
+                + (f"Error: {result.error}" if result.error else "")
+                + (f" Message: {result.message[:200]}" if result.message else "")
+            )
+
+        return {
+            "experiment_plan": experiment_plan,
+            "dataset": dataset_info,
+            "baseline": baseline,
+            "metrics_declaration": metrics_declaration,
+            "figures_and_tables": figures_and_tables,
+            "result_analysis": result_analysis,
+        }
+
+    @staticmethod
+    async def _enrich_metadata_via_ai(
+        node_data_dir: str, node: dict, ppkg: dict, result: CartNodeResult
+    ) -> None:
+        """Use LLM to enrich paper metadata fields with higher-quality descriptions."""
+        try:
+            from app.llm.provider_client import ProviderClient, ChatMessage
+            client = ProviderClient("qwen")
+        except Exception:
+            return
+
+        result_path = os.path.join(node_data_dir, "result.json")
+        if not os.path.exists(result_path):
+            return
+
+        title = node.get("title", "")
+        desc = node.get("desc", "")
+        stage = node.get("stage_title", "")
+        idea = ppkg.get("idea", {}).get("title", "")
+        metrics = result.outputs.get("metrics", {})
+        files = [a.get("name", "") for a in result.artifacts]
+        success = result.success
+
+        prompt = (
+            f"You are a scientific experiment analyst. Review this experiment step "
+            f"and write concise, professional descriptions for a paper.\n\n"
+            f"## Context\n"
+            f"Research project: {idea}\n"
+            f"Stage: {stage}\n"
+            f"Step: {title}\n"
+            f"Description: {desc}\n"
+            f"Success: {success}\n"
+            f"Measured metrics: {json.dumps(metrics) if metrics else 'none'}\n"
+            f"Output files: {', '.join(files) if files else 'none'}\n\n"
+            f"CRITICAL: You MUST base ALL output STRICTLY on the provided data above. "
+            f"Do NOT fabricate, guess, or invent any information not present in the input.\n\n"
+            f"Return a JSON with these fields:\n"
+            f"- experiment_plan: (1 sentence) Based ONLY on the Description above, what does this step do?\n"
+            f"- result_analysis: (1-2 sentences) Using ONLY the actual metrics listed above. If success={success}, state what was achieved with the actual numbers. If failed, state what went wrong. If no metrics, state that no quantitative data was collected.\n"
+            f"- figures_tables_desc: (array of {{file, description, supports_conclusion}}) ONLY for files that actually exist in the output_files list above. Do NOT add files that are not listed.\n"
+            f"- keywords: (array of 3-5 strings) based on the step description\n\n"
+            f"Return ONLY valid JSON, no markdown fences."
+        )
+
+        try:
+            response = client.chat(
+                messages=[ChatMessage(role="user", content=prompt)],
+                model="qwen-max",
+                temperature=0.3,
+                max_tokens=800,
+            )
+
+            text = response.text.strip()
+            if "```" in text:
+                text = text.split("```")[1].split("```")[0]
+            ai_data = json.loads(text)
+
+            # Update result.json with AI-enhanced fields
+            with open(result_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+
+            if ai_data.get("experiment_plan"):
+                data["experiment_plan"] = ai_data["experiment_plan"]
+            if ai_data.get("result_analysis"):
+                # Sanity check: ensure result_analysis mentions actual metrics
+                analysis = ai_data["result_analysis"]
+                if metrics:
+                    for k, v in list(metrics.items())[:3]:
+                        if str(v) not in analysis and k not in analysis:
+                            analysis += f" Measured {k}={v}."
+                data["result_analysis"] = analysis
+            if ai_data.get("figures_tables_desc"):
+                # Filter: only keep files that actually exist
+                actual_files = {a.get("name", "") for a in result.artifacts}
+                filtered = [f for f in ai_data["figures_tables_desc"]
+                           if f.get("file", "") in actual_files]
+                data["figures_and_tables"] = filtered if filtered else data.get("figures_and_tables", [])
+            if ai_data.get("keywords"):
+                data["keywords"] = ai_data["keywords"]
+
+            _write_json(result_path, data)
+            logger.info("AI-enriched metadata for %s", result.node_id)
+
+        except Exception as exc:
+            logger.debug("AI enrichment skipped for %s: %s", result.node_id, exc)
 
     @staticmethod
     def _extract_metrics(node: dict, artifacts: list[dict], run_dir: str) -> dict:
