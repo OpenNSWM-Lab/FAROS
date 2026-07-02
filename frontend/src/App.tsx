@@ -6,9 +6,8 @@ import { PublicLayout } from '@/components/layout/PublicLayout'
 import { Homepage } from '@/pages/Homepage'
 
 // Lazy load route components for code splitting
-const ResearchPlanning = lazy(() => import('@/pages/Research/Planning').then(m => ({ default: m.ResearchPlanning })))
+const ResearchPipeline = lazy(() => import('@/pages/Research/Pipeline').then(m => ({ default: m.ResearchPipeline })))
 const ResearchWorkflows = lazy(() => import('@/pages/Research/Workflows').then(m => ({ default: m.ResearchWorkflows })))
-const ResearchIdeas = lazy(() => import('@/pages/Research/Ideas').then(m => ({ default: m.ResearchIdeas })))
 const RunsList = lazy(() => import('@/pages/Runs/RunsList').then(m => ({ default: m.RunsList })))
 const RunDetail = lazy(() => import('@/pages/Runs/RunDetail').then(m => ({ default: m.RunDetail })))
 const ExperimentsDashboard = lazy(() => import('@/pages/Experiments/ExperimentsDashboard').then(m => ({ default: m.ExperimentsDashboard })))
@@ -59,9 +58,10 @@ function App() {
             <Route element={<AppShell />}>
 
               {/* Research */}
-              <Route path="/research/planning" element={<ResearchPlanning />} />
+              <Route path="/research/pipeline" element={<ResearchPipeline />} />
+              <Route path="/research/planning" element={<Navigate to="/research/pipeline" replace />} />
               <Route path="/research/workflows" element={<ResearchWorkflows />} />
-              <Route path="/research/ideas" element={<ResearchIdeas />} />
+              <Route path="/research/ideas" element={<Navigate to="/research/pipeline" replace />} />
 
               {/* Runs */}
               <Route path="/runs" element={<RunsList />} />

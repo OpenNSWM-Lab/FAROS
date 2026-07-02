@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -10,13 +11,13 @@ import {
   Clock,
   BookOpen,
   Sparkles,
-  ArrowRight,
   RefreshCw,
   Zap,
   History,
   ChevronDown,
   ChevronUp,
-  FileText
+  FileText,
+  Settings
 } from 'lucide-react'
 import { PAPER_TYPES, getPaperTypeById } from '@/lib/models/providers'
 
@@ -30,6 +31,7 @@ interface IdeaSession {
     model: string
     paperType?: string
     maxCandidates: number
+    maxReviewIterations?: number
   }
   candidateIds: string[]
   selectedCandidateId?: string
@@ -105,12 +107,25 @@ interface LiteratureItem {
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || ''
 
-export function IdeaGenerationPanel() {
+interface CandidateSelection {
+  ideaSessionId: string
+  ideaCandidateId: string
+  ideaCandidateTitle: string
+  ideaSeedQuery: string
+}
+
+export function IdeaGenerationPanel({
+  onCandidateSelected,
+}: {
+  onCandidateSelected?: (data: CandidateSelection) => void
+}) {
+  const navigate = useNavigate()
   const [seedQuery, setSeedQuery] = useState('')
   const [activeProvider, setActiveProvider] = useState('moonshot')
   const [activeModel, setActiveModel] = useState('moonshot-v1-8k')
   const [paperType, setPaperType] = useState('algorithm')
   const [maxCandidates, setMaxCandidates] = useState(5)
+  const [maxIdeaReviewIterations, setMaxIdeaReviewIterations] = useState(2)
   const [session, setSession] = useState<IdeaSession | null>(null)
   const [trace, setTrace] = useState<TraceData | null>(null)
   const [candidates, setCandidates] = useState<Candidate[]>([])
@@ -119,7 +134,6 @@ export function IdeaGenerationPanel() {
   const [isPolling, setIsPolling] = useState(false)
   const [providerTestResult, setProviderTestResult] = useState<{ ok: boolean, latencyMs?: number, error?: string } | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [createdPlanId, setCreatedPlanId] = useState<string | null>(null)
   const [isTestingProvider, setIsTestingProvider] = useState(false)
   const [sessionHistory, setSessionHistory] = useState<SessionListItem[]>([])
   const [showHistory, setShowHistory] = useState(false)
@@ -175,6 +189,7 @@ export function IdeaGenerationPanel() {
       setSeedQuery(sessionData.config.seedQuery)
       setPaperType(sessionData.config.paperType || 'algorithm')
       setMaxCandidates(sessionData.config.maxCandidates)
+      setMaxIdeaReviewIterations(sessionData.config.maxReviewIterations || 2)
       const traceResponse = await fetch(`${API_BASE}/api/v1/ideas/sessions/${sessionId}/trace`)
       if (traceResponse.ok) { setTrace(await traceResponse.json()) }
       const litResponse = await fetch(`${API_BASE}/api/v1/ideas/sessions/${sessionId}/literature`)
@@ -183,7 +198,6 @@ export function IdeaGenerationPanel() {
       if (candResponse.ok) { const d = await candResponse.json(); setCandidates(d.candidates || []) }
       setShowHistory(false)
       setError(null)
-      setCreatedPlanId(null)
       localStorage.setItem('idea_active_session_id', sessionId)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load session')
@@ -215,13 +229,13 @@ export function IdeaGenerationPanel() {
 
   const generateIdeas = async () => {
     if (!seedQuery.trim()) { setError('Please enter a research topic'); return }
-    setIsLoading(true); setError(null); setSession(null); setTrace(null); setCandidates([]); setLiterature([]); setCreatedPlanId(null)
+    setIsLoading(true); setError(null); setSession(null); setTrace(null); setCandidates([]); setLiterature([])
     try {
       await loadActiveLlmFromSettings()
       const createResponse = await fetch(`${API_BASE}/api/v1/ideas/sessions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ seedQuery, paperType, maxCandidates })
+        body: JSON.stringify({ seedQuery, paperType, maxCandidates, maxReviewIterations: maxIdeaReviewIterations })
       })
       if (!createResponse.ok) { const d = await createResponse.json().catch(() => ({})); throw new Error(d.detail || `Failed: ${createResponse.status}`) }
       const sessionData = await createResponse.json()
@@ -268,30 +282,35 @@ export function IdeaGenerationPanel() {
     return () => clearInterval(interval)
   }, [isPolling, pollSession])
 
-  const selectCandidate = async (candidateId: string) => {
+  const openPlanningForCandidate = (candidate: Candidate) => {
     if (!session?.id) return
-    setError(null)
-    try {
-      const response = await fetch(`${API_BASE}/api/v1/ideas/sessions/${session.id}/select`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ candidateId })
+    const q = session.config.seedQuery || seedQuery
+    const data: CandidateSelection = {
+      ideaSessionId: session.id,
+      ideaCandidateId: candidate.id,
+      ideaCandidateTitle: candidate.title,
+      ideaSeedQuery: q,
+    }
+    if (onCandidateSelected) {
+      onCandidateSelected(data)
+    } else {
+      const params = new URLSearchParams({
+        ideaSessionId: data.ideaSessionId,
+        ideaCandidateId: data.ideaCandidateId,
+        ideaCandidateTitle: data.ideaCandidateTitle,
       })
-      if (!response.ok) { const d = await response.json().catch(() => ({ detail: response.statusText })); throw new Error(d.detail || `Failed: ${response.status}`) }
-      const data = await response.json()
-      if (data.ok && data.planId) { setCreatedPlanId(data.planId); loadSessionHistory() }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to select candidate')
+      if (data.ideaSeedQuery) params.set('ideaSeedQuery', data.ideaSeedQuery)
+      navigate(`/research/planning?${params.toString()}`)
     }
   }
 
   const getStatusColor = (status: string) => {
     switch (status) {
-      case 'completed': return 'bg-green-100 text-green-800'
-      case 'running': return 'bg-blue-100 text-blue-800'
-      case 'failed': return 'bg-red-100 text-red-800'
-      case 'pending': return 'bg-yellow-100 text-yellow-800'
-      default: return 'bg-gray-100 text-gray-800'
+      case 'completed': return 'bg-emerald-700 text-white'
+      case 'running': return 'bg-blue-700 text-white'
+      case 'failed': return 'bg-red-700 text-white'
+      case 'pending': return 'bg-amber-600 text-white'
+      default: return 'bg-slate-600 text-white'
     }
   }
 
@@ -304,9 +323,9 @@ export function IdeaGenerationPanel() {
   }
 
   const getScoreColor = (score: number) => {
-    if (score >= 8) return 'bg-green-100 text-green-800'
-    if (score >= 6) return 'bg-amber-100 text-amber-800'
-    return 'bg-red-100 text-red-800'
+    if (score >= 8) return 'bg-emerald-700 text-white'
+    if (score >= 6) return 'bg-amber-600 text-white'
+    return 'bg-red-700 text-white'
   }
 
   return (
@@ -333,7 +352,7 @@ export function IdeaGenerationPanel() {
             ) : (
               <div className="space-y-2 max-h-48 overflow-y-auto">
                 {sessionHistory.map((s) => (
-                  <div key={s.id} className={`p-2 rounded border cursor-pointer hover:bg-slate-50 ${session?.id === s.id ? 'border-amber-400 bg-amber-50' : 'border-slate-200'}`} onClick={() => loadSession(s.id)}>
+                  <div key={s.id} className={`p-2 rounded border cursor-pointer hover:bg-slate-50 ${session?.id === s.id ? 'border-amber-600 bg-white shadow-sm ring-1 ring-amber-600' : 'border-slate-300 bg-white'}`} onClick={() => loadSession(s.id)}>
                     <div className="flex items-center justify-between">
                       <span className="text-sm font-medium truncate flex-1">{s.config.seedQuery.slice(0, 50)}{s.config.seedQuery.length > 50 ? '...' : ''}</span>
                       <Badge className={getStatusColor(s.status)} variant="outline">{s.status}</Badge>
@@ -362,11 +381,24 @@ export function IdeaGenerationPanel() {
           </div>
           <div className="grid gap-4 md:grid-cols-2">
             <div className="space-y-2">
-              <label className="text-sm font-medium">LLM (from Settings)</label>
-              <div className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm bg-slate-50">
-                {activeProvider} / {activeModel}
+              <div className="flex items-center justify-between gap-2">
+                <label className="text-sm font-medium">LLM Provider</label>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => navigate('/settings/providers')}
+                  disabled={isPolling}
+                >
+                  <Settings className="h-4 w-4 mr-2" />
+                  Configure LLM
+                </Button>
               </div>
-              <p className="text-xs text-muted-foreground">Uses active provider/model configured in Settings -&gt; LLM Providers</p>
+              <div className="rounded-md border border-slate-400 bg-white px-3 py-2 text-sm">
+                <p className="text-xs font-medium text-slate-500">Active provider / model</p>
+                <p className="mt-1 font-mono text-slate-950">{activeProvider} / {activeModel}</p>
+              </div>
+              <p className="text-xs text-slate-600">API key, Base URL, active provider, and model are configured in Settings.</p>
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium">Paper Type</label>
@@ -380,16 +412,20 @@ export function IdeaGenerationPanel() {
             <label className="text-sm font-medium">Max Candidates: {maxCandidates}</label>
             <input type="range" min={1} max={10} value={maxCandidates} onChange={(e) => setMaxCandidates(parseInt(e.target.value))} className="w-full" disabled={isPolling} />
           </div>
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Idea Review Iterations: {maxIdeaReviewIterations}</label>
+            <input type="range" min={1} max={5} value={maxIdeaReviewIterations} onChange={(e) => setMaxIdeaReviewIterations(parseInt(e.target.value))} className="w-full" disabled={isPolling} />
+          </div>
           <div className="flex gap-3 pt-2">
             <Button variant="outline" onClick={testProvider} disabled={isPolling || isTestingProvider}>
               {isTestingProvider ? <RefreshCw className="h-4 w-4 animate-spin mr-2" /> : <Zap className="h-4 w-4 mr-2" />}Test Provider
             </Button>
-            <Button onClick={generateIdeas} disabled={isLoading || isPolling || !seedQuery.trim()} className="bg-amber-500 hover:bg-amber-600">
+            <Button onClick={generateIdeas} disabled={isLoading || isPolling || !seedQuery.trim()} className="bg-amber-700 text-white hover:bg-amber-800">
               {isLoading ? <RefreshCw className="h-4 w-4 animate-spin mr-2" /> : <Sparkles className="h-4 w-4 mr-2" />}Generate Ideas
             </Button>
           </div>
           {providerTestResult && (
-            <div className={`p-3 rounded-md ${providerTestResult.ok ? 'bg-green-50 border border-green-200' : 'bg-red-50 border border-red-200'}`}>
+            <div className={`p-3 rounded-md bg-white ${providerTestResult.ok ? 'border border-l-4 border-emerald-300 border-l-emerald-700' : 'border border-l-4 border-red-300 border-l-red-700'}`}>
               <div className="flex items-center gap-2">
                 {providerTestResult.ok ? <CheckCircle2 className="h-4 w-4 text-green-600" /> : <XCircle className="h-4 w-4 text-red-600" />}
                 <span className={`text-sm font-medium ${providerTestResult.ok ? 'text-green-700' : 'text-red-700'}`}>
@@ -398,7 +434,7 @@ export function IdeaGenerationPanel() {
               </div>
             </div>
           )}
-          {error && (<div className="p-3 rounded-md bg-red-50 border border-red-200"><p className="text-sm text-red-700">{error}</p></div>)}
+          {error && (<div className="p-3 rounded-md bg-white border border-l-4 border-red-300 border-l-red-700"><p className="text-sm font-medium text-red-800">{error}</p></div>)}
         </CardContent>
       </Card>
 
@@ -417,7 +453,7 @@ export function IdeaGenerationPanel() {
                 <div className="space-y-1">
                   {trace.steps.map((step, i) => (
                     <div key={i}>
-                      <div className="flex items-center gap-3 p-2 rounded bg-slate-50 cursor-pointer hover:bg-slate-100" onClick={() => setExpandedStep(expandedStep === i ? null : i)}>
+                      <div className="flex items-center gap-3 p-2 rounded border border-slate-300 bg-white cursor-pointer hover:bg-slate-50" onClick={() => setExpandedStep(expandedStep === i ? null : i)}>
                         {getStepIcon(step.status)}
                         <span className="text-sm font-medium flex-1">{step.name}</span>
                         <span className="text-xs text-muted-foreground">{step.durationSeconds.toFixed(1)}s</span>
@@ -463,7 +499,7 @@ export function IdeaGenerationPanel() {
           <CardContent>
             <div className="space-y-2 max-h-64 overflow-y-auto">
               {literature.map((item) => (
-                <div key={item.id} className="p-3 rounded-md bg-slate-50 border">
+                <div key={item.id} className="p-3 rounded-md bg-white border border-slate-300 shadow-sm">
                   <div className="flex items-start justify-between">
                     <div className="flex-1">
                       <p className="text-sm font-medium">{item.title}</p>
@@ -484,11 +520,11 @@ export function IdeaGenerationPanel() {
           <CardContent>
             <div className="space-y-4">
               {candidates.map((candidate, index) => (
-                <div key={candidate.id} className="p-4 rounded-lg border bg-gradient-to-r from-amber-50 to-orange-50">
+                <div key={candidate.id} className="p-4 rounded-md border border-l-4 border-slate-300 border-l-amber-700 bg-white shadow-sm">
                   <div className="flex items-start justify-between mb-2">
                     <div className="flex items-center gap-2">
-                      <span className="text-lg font-bold text-amber-600">#{index + 1}</span>
-                      <h4 className="font-semibold">{candidate.title}</h4>
+                      <span className="text-lg font-bold text-amber-800">#{index + 1}</span>
+                      <h4 className="font-semibold text-slate-950">{candidate.title}</h4>
                     </div>
                     <div className="flex items-center gap-2">
                       {candidate.scoringMethod && candidate.scoringMethod !== 'pending' && (
@@ -497,7 +533,7 @@ export function IdeaGenerationPanel() {
                       <Badge className={getScoreColor(candidate.overallScore)}>Score: {candidate.overallScore.toFixed(1)}</Badge>
                     </div>
                   </div>
-                  {candidate.problem && <p className="text-sm text-muted-foreground mb-2">{candidate.problem}</p>}
+                  {candidate.problem && <p className="text-sm text-slate-800 mb-2">{candidate.problem}</p>}
                   <div className="grid grid-cols-4 gap-2 mb-3">
                     {([
                       { key: 'novelty', label: 'Novelty', color: 'bg-purple-500' },
@@ -527,8 +563,8 @@ export function IdeaGenerationPanel() {
                     {expandedCandidate === candidate.id ? <><ChevronUp className="h-3 w-3 mr-1" /> Hide Details</> : <><ChevronDown className="h-3 w-3 mr-1" /> Show Rationale</>}
                   </Button>
                   {expandedCandidate === candidate.id && (
-                    <div className="mb-3 p-3 bg-white/60 rounded text-xs space-y-2 border">
-                      {candidate.overallRationale && <p className="font-medium text-amber-800 mb-1">{candidate.overallRationale}</p>}
+                    <div className="mb-3 p-3 bg-slate-50 rounded text-xs space-y-2 border border-slate-300">
+                      {candidate.overallRationale && <p className="font-medium text-slate-950 mb-1">{candidate.overallRationale}</p>}
                       {candidate.scoreBreakdown && Object.entries(candidate.scoreBreakdown).map(([k, entry]) => (
                         entry.rationale && entry.rationale !== 'Pending ranking' ? (
                           <p key={k}><span className="font-medium capitalize">{k}:</span> {entry.rationale}</p>
@@ -541,54 +577,18 @@ export function IdeaGenerationPanel() {
                     </div>
                   )}
                   <div className="flex flex-wrap gap-2">
-                    <Button size="sm" onClick={() => selectCandidate(candidate.id)} disabled={!!createdPlanId || session?.selectedCandidateId === candidate.id}>
-                      <ArrowRight className="h-4 w-4 mr-2" />{session?.selectedCandidateId === candidate.id ? 'Already Selected' : 'Select & Create Plan'}
-                    </Button>
                     {session?.status === 'completed' && (
                       <Button
-                        variant="outline"
                         size="sm"
-                        onClick={() => {
-                          if (!session?.id) return
-                          const params = new URLSearchParams({
-                            ideaSessionId: session.id,
-                            ideaCandidateId: candidate.id,
-                            ideaCandidateTitle: candidate.title,
-                          })
-                          const q = session.config.seedQuery || seedQuery
-                          if (q) params.set('ideaSeedQuery', q)
-                          window.location.href = `/research/planning?${params.toString()}`
-                        }}
+                        onClick={() => openPlanningForCandidate(candidate)}
                       >
                         <FileText className="h-4 w-4 mr-2" />
-                        AI plan variants
+                        Use In Planning
                       </Button>
                     )}
                   </div>
                 </div>
               ))}
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {createdPlanId && (
-        <Card className="border-green-200 bg-green-50">
-          <CardContent className="pt-6">
-            <div className="flex items-center gap-3">
-              <CheckCircle2 className="h-6 w-6 text-green-600" />
-              <div>
-                <p className="font-semibold text-green-800">Research Plan Created!</p>
-                <p className="text-sm text-green-700">Plan ID: {createdPlanId}</p>
-              </div>
-              <div className="ml-auto flex gap-2">
-                <Button variant="outline" onClick={() => window.location.href = `/research/planning?planId=${createdPlanId}`}>
-                  <FileText className="h-4 w-4 mr-2" /> Open in Planning
-                </Button>
-                <Button onClick={() => window.location.href = '/runs'}>
-                  <Play className="h-4 w-4 mr-2" /> View Runs
-                </Button>
-              </div>
             </div>
           </CardContent>
         </Card>

@@ -80,6 +80,12 @@ class IdeaSessionConfig(BaseModel):
         le=500,
         description="Optional search budget for BFTS; defaults to maxPapers if unset"
     )
+    maxReviewIterations: int = Field(
+        default=2,
+        ge=1,
+        le=5,
+        description="Maximum internal idea reviewer repair iterations before final handoff"
+    )
 
 
 class StepResult(BaseModel):
@@ -201,7 +207,7 @@ class CandidateScores(BaseModel):
 
 
 class DraftPlan(BaseModel):
-    """Draft research plan that can be converted to ResearchPlan."""
+    """Draft implementation-plan material retained inside an idea candidate."""
     researchQuestion: str
     hypothesis: str
     variables: Dict[str, Any] = Field(default_factory=dict)
@@ -264,7 +270,7 @@ class IdeaCandidate(BaseModel):
     experimentSpecs: List[ExperimentSpec] = Field(default_factory=list, description="PDF v5: experiment specifications")
     expectedMetrics: List[str] = Field(default_factory=list)
 
-    # Draft plan for conversion to ResearchPlan
+    # Draft plan material for PlanPackage generation
     draftPlan: Optional[DraftPlan] = None
 
     # References

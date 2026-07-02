@@ -225,6 +225,29 @@ def _nodes_to_candidates(
             evidenceSummary=graph_evidence.evidenceSummary,
         )
 
+        proposed_method = (node.abstract or "").strip()
+        experiment_summaries = []
+        for experiment in node.experiments or []:
+            if isinstance(experiment, dict):
+                name = str(experiment.get("name") or "planned validation").strip()
+                description = str(experiment.get("description") or "").strip()
+                metrics = experiment.get("metrics") or []
+                metric_text = ", ".join(str(metric) for metric in metrics[:4]) if isinstance(metrics, list) else str(metrics)
+                parts = [name]
+                if description:
+                    parts.append(description)
+                if metric_text:
+                    parts.append(f"metrics: {metric_text}")
+                experiment_summaries.append(" - ".join(parts))
+            else:
+                experiment_summaries.append(str(experiment))
+        expected_outcome = (
+            "Planned validation should show whether: "
+            + (node.hypothesis or "the selected idea is implementable and useful")
+        )
+        if experiment_summaries:
+            expected_outcome += " Key planned checks: " + "; ".join(experiment_summaries[:3])
+
         candidate = IdeaCandidate(
             id=candidate_id,
             sessionId=session_id,
@@ -236,9 +259,9 @@ def _nodes_to_candidates(
             title=node.title or "Untitled Idea",
             problem=node.hypothesis or "Problem statement pending.",
             hypothesisStatement=node.hypothesis or "",
-            keyInsight=node.hypothesis or node.abstract[:200] if node.abstract else "Key insight pending.",
-            proposedMethod=node.abstract[:300] if node.abstract else "",
-            expectedOutcome="",
+            keyInsight=node.hypothesis or (proposed_method[:500] if proposed_method else "Key insight pending."),
+            proposedMethod=proposed_method,
+            expectedOutcome=expected_outcome,
             # Scoring
             novelty=node.noveltyScore,
             noveltyRationale=f"From BFTS node {node.nodeId}, "
@@ -279,7 +302,7 @@ def _nodes_to_candidates(
             draftPlan=DraftPlan(
                 researchQuestion=node.hypothesis or "",
                 hypothesis=node.hypothesis or "",
-                methodology=node.abstract[:300] if node.abstract else "To be defined",
+                methodology=proposed_method or "To be defined",
                 expectedOutcomes=[
                     m for m in (node.experiments or [])
                     if isinstance(m, str)

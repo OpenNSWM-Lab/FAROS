@@ -16,7 +16,6 @@ from app.models.plan_session import (
     PlanSession,
     PlanSessionStatus,
     CandidatePlan,
-    SelectedPlan,
 )
 
 
@@ -26,10 +25,6 @@ def generate_plan_session_id() -> str:
 
 def generate_candidate_plan_id() -> str:
     return f"cplan_{uuid.uuid4().hex[:12]}"
-
-
-def generate_selected_plan_id() -> str:
-    return f"splan_{uuid.uuid4().hex[:12]}"
 
 
 def _dt_to_iso(val):
@@ -165,40 +160,9 @@ class CandidatePlanStorage:
         return candidates
 
 
-class SelectedPlanStorage:
-    """Storage for selected plan records."""
-
-    def __init__(self, data_dir: str = "data"):
-        self.base_path = Path(data_dir) / "plan_sessions" / "selections"
-        self.base_path.mkdir(parents=True, exist_ok=True)
-
-    def _path(self, sel_id: str) -> Path:
-        return self.base_path / f"{sel_id}.json"
-
-    def create(self, sel: SelectedPlan) -> SelectedPlan:
-        path = self._path(sel.id)
-        data = sel.model_dump()
-        if data.get('createdAt'):
-            data['createdAt'] = _dt_to_iso(data['createdAt'])
-        with open(path, 'w') as f:
-            json.dump(data, f, indent=2, default=str)
-        return sel
-
-    def get(self, sel_id: str) -> Optional[SelectedPlan]:
-        path = self._path(sel_id)
-        if not path.exists():
-            return None
-        with open(path, 'r') as f:
-            data = json.load(f)
-        if data.get('createdAt'):
-            data['createdAt'] = _iso_to_dt(data['createdAt'])
-        return SelectedPlan(**data)
-
-
 # Singleton instances
 _session_storage: Optional[PlanSessionStorage] = None
 _candidate_storage: Optional[CandidatePlanStorage] = None
-_selected_storage: Optional[SelectedPlanStorage] = None
 
 
 def _get_data_dir() -> str:
@@ -218,10 +182,3 @@ def get_candidate_storage() -> CandidatePlanStorage:
     if _candidate_storage is None:
         _candidate_storage = CandidatePlanStorage(_get_data_dir())
     return _candidate_storage
-
-
-def get_selected_storage() -> SelectedPlanStorage:
-    global _selected_storage
-    if _selected_storage is None:
-        _selected_storage = SelectedPlanStorage(_get_data_dir())
-    return _selected_storage

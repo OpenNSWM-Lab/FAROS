@@ -5,6 +5,8 @@ Orchestrates the idea generation pipeline with step-based tracing.
 """
 
 import logging
+import os
+import threading
 from datetime import UTC, datetime
 from typing import Optional, List, Dict, Any
 
@@ -87,6 +89,279 @@ def _utcnow() -> datetime:
     return datetime.now(UTC)
 
 
+def _extract_json_object(text: str) -> Optional[Dict[str, Any]]:
+    raw = (text or "").strip()
+    if "```json" in raw:
+        raw = raw.split("```json", 1)[1].split("```", 1)[0]
+    elif "```" in raw:
+        parts = raw.split("```")
+        if len(parts) >= 3:
+            raw = parts[1]
+    raw = raw.strip()
+    try:
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else None
+    except json.JSONDecodeError:
+        match = re.search(r"\{[\s\S]*\}", raw)
+        if match:
+            try:
+                data = json.loads(match.group())
+                return data if isinstance(data, dict) else None
+            except json.JSONDecodeError:
+                return None
+    return None
+
+
+def _clean_query_terms(values: Any, seed: str, *, limit: int = 5) -> List[str]:
+    raw_values = values if isinstance(values, list) else []
+    cleaned: List[str] = []
+    for value in [seed, *raw_values]:
+        if not isinstance(value, str):
+            continue
+        query = value.strip().strip(",").strip().strip('"').strip("'").strip()
+        if not query:
+            continue
+        if any(marker in query for marker in ["{", "}", "[", "]", '":']):
+            continue
+        if not re.search(r"[\w\u4e00-\u9fff]", query):
+            continue
+        if query not in cleaned:
+            cleaned.append(query)
+        if len(cleaned) >= limit:
+            break
+    return cleaned or [seed]
+
+
+def _topic_relevance_score(result: SearchResult, topic_terms: List[str], signal_terms: List[str]) -> float:
+    text = f"{result.title} {result.abstract}".lower()
+    if not text.strip():
+        return 0.0
+
+    topic_hits = sum(1 for term in topic_terms if term in text)
+    signal_hits = sum(1 for term in signal_terms if term in text)
+    phrase_bonus = 0.0
+    for phrase in [
+        "citation faithfulness",
+        "citation faithful",
+        "uncertainty estimation",
+        "retrieval augmented generation",
+        "retrieval-augmented generation",
+    ]:
+        if phrase in text:
+            phrase_bonus += 0.2
+
+    source_bonus = 0.1 if result.source in {"arxiv", "semantic_scholar"} else 0.0
+    base = min(0.5, topic_hits * 0.04)
+    signal = min(0.6, signal_hits * 0.12)
+    return min(1.0, base + signal + phrase_bonus + source_bonus + result.relevance_score * 0.2)
+
+
+def _rank_results_for_topic(
+    results: List[SearchResult],
+    *,
+    seed: str,
+    domain: str,
+    search_queries: List[str],
+) -> List[SearchResult]:
+    topic_text = " ".join([seed, domain, *search_queries]).lower()
+    tokens = re.findall(r"[a-zA-Z][a-zA-Z0-9-]{2,}", topic_text)
+    stopwords = {
+        "and", "the", "for", "with", "from", "that", "this", "into",
+        "using", "based", "how", "can", "are", "what", "when", "where",
+        "does", "retrieval", "augmented", "generation",
+    }
+    topic_terms = []
+    for token in tokens:
+        if token not in stopwords and token not in topic_terms:
+            topic_terms.append(token)
+    signal_terms = [
+        term for term in [
+            "citation", "faithfulness", "faithful", "uncertainty", "gating",
+            "confidence", "hallucination", "attribution", "provenance",
+            "trustworthy", "factuality", "grounding",
+        ]
+        if term in topic_text
+    ]
+
+    scored = [
+        (_topic_relevance_score(result, topic_terms, signal_terms), index, result)
+        for index, result in enumerate(results)
+    ]
+    for score, _, result in scored:
+        result.relevance_score = max(result.relevance_score, score)
+
+    scored.sort(key=lambda item: (item[0], item[2].source != "local", -item[1]), reverse=True)
+    return [result for _, _, result in scored]
+
+
+def _filter_results_for_topic(results: List[SearchResult]) -> tuple[List[SearchResult], int]:
+    """Drop low-relevance results before they become RawPaper evidence."""
+    external_threshold = float(os.getenv("FAROS_MIN_EXTERNAL_RELEVANCE", "0.12"))
+    local_threshold = float(os.getenv("FAROS_MIN_LOCAL_RELEVANCE", "0.28"))
+    filtered: List[SearchResult] = []
+    dropped = 0
+    for result in results:
+        threshold = local_threshold if result.source == "local" else external_threshold
+        if result.relevance_score >= threshold:
+            filtered.append(result)
+        else:
+            dropped += 1
+    return filtered, dropped
+
+
+def _topic_terms_from_seed(seed: str, domain: str = "", extra_terms: Optional[List[str]] = None) -> List[str]:
+    topic_text = " ".join([seed or "", domain or "", *(extra_terms or [])]).lower().replace("-", " ")
+    stopwords = {
+        "about", "against", "also", "among", "and", "are", "based", "between",
+        "can", "could", "does", "for", "from", "how", "into", "large", "language",
+        "learning", "method", "methods", "model", "models", "paper", "research",
+        "should", "study", "than", "that", "the", "their", "this", "through",
+        "using", "what", "when", "where", "with", "within", "would",
+        "是否", "如何", "研究", "方法", "模型", "系统",
+    }
+    terms: List[str] = []
+    for token in re.findall(r"[a-zA-Z][a-zA-Z0-9]{2,}|[\u4e00-\u9fff]{2,}", topic_text):
+        if token in stopwords:
+            continue
+        if token not in terms:
+            terms.append(token)
+    return terms[:32]
+
+
+def _paper_text_for_quality(paper: Any) -> str:
+    parts = [
+        getattr(paper, "title", ""),
+        getattr(paper, "abstract", ""),
+        getattr(paper, "summary", ""),
+        " ".join(getattr(paper, "limitations", []) or []),
+        " ".join(getattr(paper, "datasets", []) or []),
+        " ".join(getattr(paper, "metrics", []) or []),
+    ]
+    claims = getattr(paper, "claims", []) or []
+    parts.extend(str(getattr(claim, "text", "")) for claim in claims[:8])
+    methods = getattr(paper, "methods", []) or []
+    parts.extend(str(getattr(method, "name", "")) for method in methods[:6])
+    parts.extend(str(getattr(method, "description", "")) for method in methods[:6])
+    return " ".join(part for part in parts if part).lower().replace("-", " ")
+
+
+def _paper_alignment_score(paper: Any, topic_terms: List[str]) -> float:
+    text = _paper_text_for_quality(paper)
+    if not text or not topic_terms:
+        return 0.0
+    hits = sum(1 for term in topic_terms if term and term.lower() in text)
+    phrase_bonus = 0.0
+    for phrase in [
+        "citation faithfulness",
+        "citation faithful",
+        "retrieval augmented generation",
+        "retrieval-augmented generation",
+        "uncertainty estimation",
+        "evidence traceability",
+        "attribution",
+        "hallucination",
+    ]:
+        if phrase in text:
+            phrase_bonus += 0.12
+    relevance_score = float(getattr(paper, "relevanceScore", 0.0) or 0.0)
+    return min(1.0, hits / max(4, min(10, len(topic_terms))) + phrase_bonus + relevance_score * 0.25)
+
+
+def _paper_sources(paper: Any) -> List[str]:
+    source = getattr(paper, "source", [])
+    if isinstance(source, str):
+        return [source]
+    if isinstance(source, list):
+        return [str(item) for item in source if str(item)]
+    return []
+
+
+def _evaluate_paper_quality_gate(
+    *,
+    seed: str,
+    domain: str,
+    papers: List[Any],
+    stage: str,
+    extra_terms: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Lightweight paper relevance gate used before idea generation."""
+
+    topic_terms = _topic_terms_from_seed(seed, domain, extra_terms)
+    total = len(papers)
+    scored = [
+        {
+            "paperId": getattr(paper, "id", ""),
+            "title": getattr(paper, "title", ""),
+            "score": round(_paper_alignment_score(paper, topic_terms), 3),
+            "sources": _paper_sources(paper),
+        }
+        for paper in papers
+    ]
+    scored.sort(key=lambda item: item["score"], reverse=True)
+    aligned = [item for item in scored if item["score"] >= 0.32]
+    external = [
+        item for item in scored
+        if any(source and source != "local" for source in item["sources"])
+    ]
+    avg_top_score = (
+        sum(item["score"] for item in scored[: min(5, len(scored))]) / max(1, min(5, len(scored)))
+        if scored else 0.0
+    )
+
+    min_papers = int(os.getenv("FAROS_PAPER_GATE_MIN_PAPERS", "4"))
+    min_aligned = int(os.getenv("FAROS_PAPER_GATE_MIN_ALIGNED", "3"))
+    errors: List[str] = []
+    warnings: List[str] = []
+    if total < min_papers:
+        errors.append(f"{stage}: paper pool is too small ({total} < {min_papers})")
+    if len(aligned) < min_aligned:
+        errors.append(f"{stage}: too few papers are semantically aligned with the seed query ({len(aligned)} < {min_aligned})")
+    if scored and avg_top_score < 0.30:
+        errors.append(f"{stage}: top papers have weak topic alignment (avg={avg_top_score:.2f})")
+    if total and not external:
+        warnings.append(f"{stage}: all retrieved papers are from local fallback sources")
+    if total and len(aligned) < max(2, total // 4):
+        warnings.append(f"{stage}: most papers have weak overlap with the seed topic")
+
+    return {
+        "stage": stage,
+        "passed": not errors,
+        "errors": errors,
+        "warnings": warnings,
+        "paperCount": total,
+        "alignedPaperCount": len(aligned),
+        "externalPaperCount": len(external),
+        "avgTopAlignment": round(avg_top_score, 3),
+        "topicTerms": topic_terms[:12],
+        "topPapers": scored[:8],
+    }
+
+
+def _candidate_similarity_key(candidate: IdeaCandidate) -> set[str]:
+    text = " ".join([
+        candidate.title,
+        candidate.problem,
+        candidate.keyInsight,
+        candidate.proposedMethod,
+        candidate.hypothesisStatement,
+    ]).lower().replace("-", " ")
+    stopwords = {
+        "and", "are", "for", "from", "that", "the", "this", "with", "using",
+        "method", "model", "paper", "research", "study", "approach", "system",
+    }
+    return {
+        token
+        for token in re.findall(r"[a-zA-Z][a-zA-Z0-9]{2,}|[\u4e00-\u9fff]{2,}", text)
+        if token not in stopwords
+    }
+
+
+def _candidate_jaccard(a: set[str], b: set[str]) -> float:
+    if not a or not b:
+        return 0.0
+    return len(a & b) / max(1, len(a | b))
+
+
 class IdeaGenerationService:
     """Service for managing idea generation sessions."""
 
@@ -113,6 +388,8 @@ class IdeaGenerationService:
         self.path_seed_storage = get_path_seed_storage()
         # Step 6 storage
         self.ranked_output_storage = get_ranked_output_storage()
+        self._pipeline_lock_guard = threading.Lock()
+        self._pipeline_locks: Dict[str, threading.Lock] = {}
 
     def _get_step_output(self, session: IdeaSession, step_name: str, key: str, default=None):
         """Read a specific output key from a pipeline step's trace."""
@@ -122,6 +399,103 @@ class IdeaGenerationService:
             if step.name == step_name:
                 return step.outputs.get(key, default)
         return default
+
+    def _build_literature_repair_queries(
+        self,
+        session: IdeaSession,
+        quality_gate: Dict[str, Any],
+        *,
+        existing_queries: List[str],
+        limit: int = 4,
+    ) -> List[str]:
+        """Build targeted search queries when the paper quality gate fails."""
+
+        seed = session.config.seedQuery.strip()
+        domain = (session.config.domain or "").strip()
+        topic_terms = [
+            str(term).strip()
+            for term in quality_gate.get("topicTerms", [])
+            if str(term).strip()
+        ]
+        query_plan = self._get_step_output(session, "expandQuery", "queryPlan", {}) or {}
+        expanded_terms = [
+            str(term).strip()
+            for term in query_plan.get("expandedTerms", [])
+            if str(term).strip()
+        ]
+        key_concepts = [
+            str(term).strip()
+            for term in query_plan.get("keyConcepts", [])
+            if str(term).strip()
+        ]
+        anchors = topic_terms[:4] or expanded_terms[:4] or [seed]
+        focus_terms = [
+            "survey",
+            "benchmark",
+            "evaluation",
+            "limitations",
+            "dataset",
+            "method",
+        ]
+        if any(term in seed.lower() for term in ["citation", "faithful", "faithfulness", "attribution"]):
+            focus_terms = [
+                "citation faithfulness",
+                "attribution evaluation",
+                "retrieval augmented generation",
+                "hallucination detection",
+                "evidence provenance",
+            ]
+
+        candidates: List[str] = []
+        candidates.append(seed)
+        if domain:
+            candidates.append(f"{seed} {domain}")
+        for focus in focus_terms:
+            candidates.append(f"{seed} {focus}")
+        if key_concepts:
+            candidates.append(" ".join([seed, *key_concepts[:3]]))
+        if anchors:
+            candidates.append(" ".join(anchors[:5]))
+        candidates.extend(expanded_terms[:3])
+
+        normalized_existing = {query.lower().strip() for query in existing_queries}
+        queries: List[str] = []
+        for query in candidates:
+            query = re.sub(r"\s+", " ", query).strip()
+            if not query or query.lower() in normalized_existing or query in queries:
+                continue
+            queries.append(query)
+            if len(queries) >= limit:
+                break
+        return queries or [seed]
+
+    def _dedupe_candidates(
+        self,
+        candidates: List[IdeaCandidate],
+        *,
+        max_count: Optional[int] = None,
+        threshold: float = 0.72,
+    ) -> tuple[List[IdeaCandidate], List[str]]:
+        """Remove near-duplicate ideas before expensive ranking/review."""
+
+        kept: List[IdeaCandidate] = []
+        kept_keys: List[set[str]] = []
+        removed_ids: List[str] = []
+        for index, candidate in enumerate(candidates):
+            key = _candidate_similarity_key(candidate)
+            is_duplicate = any(
+                _candidate_jaccard(key, existing_key) >= threshold
+                for existing_key in kept_keys
+            )
+            if is_duplicate:
+                removed_ids.append(candidate.id)
+                continue
+            kept.append(candidate)
+            kept_keys.append(key)
+            if max_count is not None and len(kept) >= max_count:
+                removed_ids.extend(item.id for item in candidates[index + 1:])
+                break
+        return kept, removed_ids
     
     def create_session(self, config: IdeaSessionConfig) -> IdeaSession:
         """Create a new idea generation session."""
@@ -212,51 +586,64 @@ class IdeaGenerationService:
         6. rankCandidates - Rank and score candidates
         7. finalizeSession - Finalize the session
         """
-        session = self.session_storage.get(session_id)
-        if not session:
-            raise ValueError(f"Session {session_id} not found")
-        
-        if session.status != IdeaSessionStatus.RUNNING:
-            raise ValueError(f"Session must be in RUNNING state, got {session.status}")
-        
+        with self._pipeline_lock_guard:
+            pipeline_lock = self._pipeline_locks.setdefault(session_id, threading.Lock())
+
+        if not pipeline_lock.acquire(blocking=False):
+            logger.warning("Pipeline already running for session %s; duplicate start ignored", session_id)
+            session = self.session_storage.get(session_id)
+            if not session:
+                raise ValueError(f"Session {session_id} not found")
+            return session
+
         try:
-            # Step 1: Expand Query
-            session = self._run_step(session, "expandQuery", self._step_expand_query)
-            
-            # Step 2: Literature Search
-            session = self._run_step(session, "literatureSearch", self._step_literature_search)
-            
-            # Step 3: Novelty Check
-            session = self._run_step(session, "noveltyCheck", self._step_novelty_check)
-            
-            # Step 4: Gap Analysis
-            session = self._run_step(session, "gapAnalysis", self._step_gap_analysis)
-            
-            # Step 5: Idea Brainstorm (uses LLM)
-            session = self._run_step(session, "ideaBrainstorm", self._step_idea_brainstorm)
-            
-            # Step 6: Rank Candidates
-            session = self._run_step(session, "rankCandidates", self._step_rank_candidates)
-            
-            # Step 7: Finalize
-            session = self._run_step(session, "finalizeSession", self._step_finalize)
-            
-            # Mark completed
-            session.status = IdeaSessionStatus.COMPLETED
-            session.endedAt = _utcnow()
-            if session.trace:
-                session.trace.endedAt = _utcnow()
-            
-            return self.session_storage.update(session)
-            
-        except Exception as e:
-            logger.error(f"Pipeline failed for session {session_id}: {e}")
-            session.status = IdeaSessionStatus.FAILED
-            session.errorMessage = str(e)
-            session.endedAt = _utcnow()
-            if session.trace:
-                session.trace.endedAt = _utcnow()
-            return self.session_storage.update(session)
+            session = self.session_storage.get(session_id)
+            if not session:
+                raise ValueError(f"Session {session_id} not found")
+
+            if session.status != IdeaSessionStatus.RUNNING:
+                raise ValueError(f"Session must be in RUNNING state, got {session.status}")
+
+            try:
+                # Step 1: Expand Query
+                session = self._run_step(session, "expandQuery", self._step_expand_query)
+
+                # Step 2: Literature Search
+                session = self._run_step(session, "literatureSearch", self._step_literature_search)
+
+                # Step 3: Novelty Check
+                session = self._run_step(session, "noveltyCheck", self._step_novelty_check)
+
+                # Step 4: Gap Analysis
+                session = self._run_step(session, "gapAnalysis", self._step_gap_analysis)
+
+                # Step 5: Idea Brainstorm (uses LLM)
+                session = self._run_step(session, "ideaBrainstorm", self._step_idea_brainstorm)
+
+                # Step 6: Rank Candidates
+                session = self._run_step(session, "rankCandidates", self._step_rank_candidates)
+
+                # Step 7: Finalize
+                session = self._run_step(session, "finalizeSession", self._step_finalize)
+
+                # Mark completed
+                session.status = IdeaSessionStatus.COMPLETED
+                session.endedAt = _utcnow()
+                if session.trace:
+                    session.trace.endedAt = _utcnow()
+
+                return self.session_storage.update(session)
+
+            except Exception as e:
+                logger.error(f"Pipeline failed for session {session_id}: {e}")
+                session.status = IdeaSessionStatus.FAILED
+                session.errorMessage = str(e)
+                session.endedAt = _utcnow()
+                if session.trace:
+                    session.trace.endedAt = _utcnow()
+                return self.session_storage.update(session)
+        finally:
+            pipeline_lock.release()
     
     def _run_step(
         self,
@@ -341,34 +728,50 @@ class IdeaGenerationService:
 
             response = client.chat(messages, model=session.config.model, max_tokens=500)
 
-            # Parse JSON response
-            try:
-                data = json.loads(response.text)
-                expanded_terms = data.get("searchQueries", [seed])
-                key_concepts = data.get("keyConcepts", [])
-                refined_question = data.get("refinedQuestion", seed)
-                related_areas = data.get("relatedAreas", [])
-                raw_families = data.get("queryFamilies", [])
-                path_templates = data.get("pathTemplates", [])
-            except json.JSONDecodeError:
-                expanded_terms = [seed]
-                for line in response.text.split("\n"):
-                    if line.strip() and not line.startswith("{"):
-                        expanded_terms.append(line.strip().strip('"').strip("'").strip("-").strip())
-                key_concepts = []
+            # Parse JSON response. If the model wraps JSON in text/fences, recover
+            # the object; if parsing still fails, use deterministic clean queries.
+            data = _extract_json_object(response.text) or {}
+            domain_terms = [
+                term.strip()
+                for term in domain.split(",")
+                if term.strip() and domain != "general"
+            ]
+            combined_domain = " ".join(domain_terms[:3])
+            raw_queries = (
+                list(data.get("searchQueries", []) or [])
+                + ([combined_domain] if combined_domain else [])
+                + domain_terms
+            )
+            expanded_terms = _clean_query_terms(raw_queries, seed)
+            key_concepts = [
+                str(item).strip()
+                for item in data.get("keyConcepts", [])
+                if isinstance(item, str) and item.strip()
+            ][:10]
+            refined_question = data.get("refinedQuestion", seed)
+            if not isinstance(refined_question, str) or not refined_question.strip():
                 refined_question = seed
-                related_areas = []
-                raw_families = []
-                path_templates = []
+            related_areas = [
+                str(item).strip()
+                for item in data.get("relatedAreas", [])
+                if isinstance(item, str) and item.strip()
+            ]
+            raw_families = data.get("queryFamilies", [])
+            path_templates = [
+                str(item).strip()
+                for item in data.get("pathTemplates", [])
+                if isinstance(item, str) and item.strip()
+            ]
 
             # Build QueryPlan
             query_families = []
             if raw_families:
                 for fam in raw_families:
                     if isinstance(fam, dict):
+                        family_queries = _clean_query_terms(fam.get("queries", []), seed, limit=3)
                         query_families.append(QueryFamily(
                             name=fam.get("name", "core"),
-                            queries=fam.get("queries", []),
+                            queries=family_queries,
                             keyConcepts=fam.get("keyConcepts", []),
                         ))
             else:
@@ -461,7 +864,6 @@ class IdeaGenerationService:
         # Search across sources
         search_service = get_search_service()
         all_results: List[SearchResult] = []
-        sources_used: List[str] = []
 
         for query in search_queries[:3]:
             try:
@@ -471,48 +873,97 @@ class IdeaGenerationService:
             except Exception as e:
                 logger.warning(f"Search failed for '{query}': {e}")
 
-        # Dedup chain: doi > arxivId > semanticScholarId > normalized title hash
-        seen_dois: set = set()
-        seen_arxiv_ids: set = set()
-        seen_s2_ids: set = set()
-        seen_title_hashes: set = set()
-        unique_results: List[SearchResult] = []
+        def _dedupe_rank_filter(results: List[SearchResult], queries: List[str]) -> tuple[List[SearchResult], int, int]:
+            # Dedup chain: doi > arxivId > semanticScholarId > normalized title hash
+            seen_dois: set = set()
+            seen_arxiv_ids: set = set()
+            seen_s2_ids: set = set()
+            seen_title_hashes: set = set()
+            unique: List[SearchResult] = []
 
-        for result in all_results:
-            # Check DOI
-            if result.doi and result.doi in seen_dois:
-                continue
-            # Check arXiv ID
-            if result.arxiv_id and result.arxiv_id in seen_arxiv_ids:
-                continue
-            # Check Semantic Scholar ID (extracted from URL if available)
-            s2_id = None
-            if result.source == "semantic_scholar" and result.url:
-                s2_match = re.search(r'SemanticScholarID:(\w+)', result.url)
-                if s2_match:
-                    s2_id = s2_match.group(1)
-            if s2_id and s2_id in seen_s2_ids:
-                continue
-            # Check normalized title hash
-            title_hash = _compute_title_hash(result.title)
-            if title_hash in seen_title_hashes:
-                continue
+            for result in results:
+                if result.doi and result.doi in seen_dois:
+                    continue
+                if result.arxiv_id and result.arxiv_id in seen_arxiv_ids:
+                    continue
+                s2_id = None
+                if result.source == "semantic_scholar" and result.url:
+                    s2_match = re.search(r'SemanticScholarID:(\w+)', result.url)
+                    if s2_match:
+                        s2_id = s2_match.group(1)
+                if s2_id and s2_id in seen_s2_ids:
+                    continue
+                title_hash = _compute_title_hash(result.title)
+                if title_hash in seen_title_hashes:
+                    continue
 
-            # Register all keys
-            if result.doi:
-                seen_dois.add(result.doi)
-            if result.arxiv_id:
-                seen_arxiv_ids.add(result.arxiv_id)
-            if s2_id:
-                seen_s2_ids.add(s2_id)
-            seen_title_hashes.add(title_hash)
+                if result.doi:
+                    seen_dois.add(result.doi)
+                if result.arxiv_id:
+                    seen_arxiv_ids.add(result.arxiv_id)
+                if s2_id:
+                    seen_s2_ids.add(s2_id)
+                seen_title_hashes.add(title_hash)
+                unique.append(result)
 
-            unique_results.append(result)
-            if result.source not in sources_used:
-                sources_used.append(result.source)
+            unique = _rank_results_for_topic(
+                unique,
+                seed=seed,
+                domain=session.config.domain or "",
+                search_queries=queries,
+            )
+            ranked = len(unique)
+            filtered, dropped = _filter_results_for_topic(unique)
+            return filtered, dropped, ranked
+
+        unique_results, filtered_out_count, ranked_count = _dedupe_rank_filter(all_results, search_queries)
+        raw_quality_gate = _evaluate_paper_quality_gate(
+            seed=seed,
+            domain=session.config.domain or "",
+            papers=unique_results,
+            stage="literatureSearch.initial",
+            extra_terms=search_queries,
+        )
+        repair_queries: List[str] = []
+        repair_attempted = False
+        if not raw_quality_gate["passed"]:
+            repair_attempted = True
+            repair_queries = self._build_literature_repair_queries(
+                session,
+                raw_quality_gate,
+                existing_queries=search_queries,
+            )
+            for query in repair_queries:
+                try:
+                    results = search_service.search(query, limit=max(8, max_papers // max(1, len(repair_queries))))
+                    all_results.extend(results)
+                    logger.info(f"Repair search for '{query}' returned {len(results)} results")
+                except Exception as e:
+                    logger.warning(f"Repair search failed for '{query}': {e}")
+            unique_results, filtered_out_count, ranked_count = _dedupe_rank_filter(
+                all_results,
+                [*search_queries, *repair_queries],
+            )
+            raw_quality_gate = _evaluate_paper_quality_gate(
+                seed=seed,
+                domain=session.config.domain or "",
+                papers=unique_results,
+                stage="literatureSearch.repaired",
+                extra_terms=[*search_queries, *repair_queries],
+            )
+
+        if ranked_count and not unique_results:
+            logger.warning(
+                "All literature search results were filtered out as low relevance for seed '%s'",
+                seed,
+            )
 
         # Limit results
         unique_results = unique_results[:max_papers]
+        sources_used: List[str] = []
+        for result in unique_results:
+            if result.source not in sources_used:
+                sources_used.append(result.source)
 
         # Create RawPaper objects
         raw_papers: List[RawPaper] = []
@@ -582,6 +1033,13 @@ class IdeaGenerationService:
             "rawPaperIds": [p.id for p in raw_papers],
             "graphId": graph.id,
             "sourcesUsed": sources_used,
+            "searchQueries": search_queries[:3],
+            "filteredOutCount": filtered_out_count,
+            "minExternalRelevance": float(os.getenv("FAROS_MIN_EXTERNAL_RELEVANCE", "0.12")),
+            "minLocalRelevance": float(os.getenv("FAROS_MIN_LOCAL_RELEVANCE", "0.28")),
+            "paperQualityGate": raw_quality_gate,
+            "repairAttempted": repair_attempted,
+            "repairQueries": repair_queries,
             # Backward-compat fields
             "paperIds": literature_ids,
         }
@@ -622,6 +1080,38 @@ class IdeaGenerationService:
         graph, selected_paper_ids = self.graph_builder.select_papers(
             graph, num_select=num_select, must_cite_list=must_cite_list
         )
+        selected_raw = [paper for paper in raw_papers if paper.id in selected_paper_ids]
+        selected_quality_gate = _evaluate_paper_quality_gate(
+            seed=seed,
+            domain=session.config.domain or "",
+            papers=selected_raw,
+            stage="noveltyCheck.selectedRaw",
+            extra_terms=self._get_step_output(session, "expandQuery", "expandedTerms", []),
+        )
+        if not selected_quality_gate["passed"] and raw_papers:
+            topic_terms = _topic_terms_from_seed(
+                seed,
+                session.config.domain or "",
+                self._get_step_output(session, "expandQuery", "expandedTerms", []),
+            )
+            aligned_raw = sorted(
+                raw_papers,
+                key=lambda paper: _paper_alignment_score(paper, topic_terms),
+                reverse=True,
+            )
+            for paper in aligned_raw[:num_select]:
+                if paper.id not in selected_paper_ids:
+                    selected_paper_ids.append(paper.id)
+                if len(selected_paper_ids) >= num_select:
+                    break
+            selected_raw = [paper for paper in raw_papers if paper.id in selected_paper_ids]
+            selected_quality_gate = _evaluate_paper_quality_gate(
+                seed=seed,
+                domain=session.config.domain or "",
+                papers=selected_raw,
+                stage="noveltyCheck.selectedRaw.repaired",
+                extra_terms=self._get_step_output(session, "expandQuery", "expandedTerms", []),
+            )
 
         # Step 3c: Deep-read selected papers
         structured_papers = self.deep_reader.extract_structured_papers(
@@ -630,7 +1120,18 @@ class IdeaGenerationService:
             raw_papers=raw_papers,
         )
         for sp in structured_papers:
-            self.structured_storage.create(sp)
+            try:
+                if not self.structured_storage.get(sp.id):
+                    self.structured_storage.create(sp)
+            except Exception as e:
+                logger.warning(f"Failed to persist structured paper {sp.id}: {e}")
+        structured_quality_gate = _evaluate_paper_quality_gate(
+            seed=seed,
+            domain=session.config.domain or "",
+            papers=structured_papers,
+            stage="noveltyCheck.structured",
+            extra_terms=self._get_step_output(session, "expandQuery", "expandedTerms", []),
+        )
 
         # Step 3d: Build LiteratureMap
         literature_map = self.deep_reader.build_literature_map(
@@ -726,6 +1227,8 @@ class IdeaGenerationService:
             "graphVersion": graph.version,
             "selectedPaperIds": selected_paper_ids,
             "structuredPaperCount": len(structured_papers),
+            "selectedPaperQualityGate": selected_quality_gate,
+            "structuredPaperQualityGate": structured_quality_gate,
             "literatureMapId": literature_map.id,
             "handoffId": handoff.id,
             "clusterCount": len(graph.clusters),
@@ -1014,6 +1517,10 @@ class IdeaGenerationService:
             if not candidates:
                 logger.warning("BFTS produced no candidates, falling back to legacy")
                 return self._step_idea_brainstorm_legacy(session)
+            candidates, deduped_candidate_ids = self._dedupe_candidates(
+                candidates,
+                max_count=min(20, max(max_candidates, len(candidates))),
+            )
 
             # Store candidates
             candidate_ids = []
@@ -1037,6 +1544,7 @@ class IdeaGenerationService:
                 "candidateIds": candidate_ids,
                 "method": "bfts_tree_search",
                 "bftsConfig": bfts_config.model_dump(),
+                "dedupedCandidateIds": deduped_candidate_ids,
             }
 
             logger.info(f"BFTS: generated {len(candidates)} candidates from tree search")
@@ -1087,6 +1595,7 @@ class IdeaGenerationService:
         seed = session.config.seedQuery
         paper_type = session.config.paperType
         max_candidates = session.config.maxCandidates
+        generation_count = min(20, max(max_candidates, max_candidates * 3))
         literature = self.get_literature(session.id)
 
         # Get gap analysis results
@@ -1116,7 +1625,7 @@ class IdeaGenerationService:
             user_prompt = prompts.IDEA_BRAINSTORM_USER.format(
                 seed_query=seed,
                 paper_type=paper_type,
-                max_candidates=max_candidates,
+                max_candidates=generation_count,
                 gap_analysis=gap_text,
                 opportunities=opp_text,
                 key_papers=key_papers
@@ -1130,15 +1639,19 @@ class IdeaGenerationService:
             response = client.chat(messages, model=session.config.model, max_tokens=3000)
 
             # Parse ideas from response
-            candidates = self._parse_ideas_json(session.id, response.text, max_candidates)
+            candidates = self._parse_ideas_json(session.id, response.text, generation_count)
 
             if not candidates:
                 # Fallback to text parsing
-                candidates = self._parse_ideas(session.id, response.text, max_candidates)
+                candidates = self._parse_ideas(session.id, response.text, generation_count)
 
             if not candidates:
                 # Generate fallback
                 candidates = self._generate_fallback_candidates(session.id, seed, min(3, max_candidates))
+            candidates, deduped_candidate_ids = self._dedupe_candidates(
+                candidates,
+                max_count=min(20, max(max_candidates, len(candidates))),
+            )
 
             # Store candidates
             candidate_ids = []
@@ -1153,12 +1666,15 @@ class IdeaGenerationService:
                 "candidateIds": candidate_ids,
                 "llmLatencyMs": response.latency_ms,
                 "method": "legacy_single_shot",
+                "requestedGenerationCount": generation_count,
+                "dedupedCandidateIds": deduped_candidate_ids,
             }
 
         except Exception as e:
             logger.error(f"LLM brainstorm failed: {e}")
             # Generate fallback candidates
             candidates = self._generate_fallback_candidates(session.id, seed, min(3, max_candidates))
+            candidates, deduped_candidate_ids = self._dedupe_candidates(candidates)
 
             candidate_ids = []
             for candidate in candidates:
@@ -1172,6 +1688,7 @@ class IdeaGenerationService:
                 "candidateIds": candidate_ids,
                 "error": str(e),
                 "method": "legacy_fallback",
+                "dedupedCandidateIds": deduped_candidate_ids,
             }
 
         return inputs, outputs, []
@@ -1423,6 +1940,7 @@ class IdeaGenerationService:
         prior_work_comparisons: List[PriorWorkComparison] = []
         critiques: List[IdeaCritique] = []
         top_k = min(5, len(ranked))  # Deep analysis on top 5 candidates
+        literature_context = ""
 
         if structured_papers and ranked:
             literature_context = self._build_ranking_literature_context(
@@ -1444,7 +1962,187 @@ class IdeaGenerationService:
             except Exception as e:
                 logger.warning(f"LLM candidate analysis failed: {e}")
 
-        # --- Phase 5: Backfill evidence/critique into final candidates (PDF v5) ---
+        # --- Phase 5: Idea-stage review gate + optional regeneration ---
+        gate_reports = self._apply_idea_review_gate(
+            ranked=ranked,
+            evidence_list=evidence_list,
+            prior_work_comparisons=prior_work_comparisons,
+            critiques=critiques,
+        )
+        ranked = sorted(ranked, key=lambda c: c.overallScore, reverse=True)
+        regenerated_candidate_ids: List[str] = []
+        literature_repair_reports: List[Dict[str, Any]] = []
+        paper_quality_gate = _evaluate_paper_quality_gate(
+            seed=seed,
+            domain=domain,
+            papers=structured_papers,
+            stage="ideaReview.structuredPapers",
+            extra_terms=self._get_step_output(session, "expandQuery", "expandedTerms", []),
+        )
+        max_review_iterations = max(1, min(5, getattr(session.config, "maxReviewIterations", 2)))
+        review_iteration_summaries: List[Dict[str, Any]] = []
+        for review_iteration in range(max_review_iterations):
+            ranked = sorted(ranked, key=lambda c: c.overallScore, reverse=True)
+            top_candidate = ranked[0] if ranked else None
+            top_gate = gate_reports.get(top_candidate.id) if top_candidate else None
+            top_passed = bool(
+                top_gate
+                and top_gate.get("passed")
+                and paper_quality_gate.get("passed", False)
+            )
+            summary = {
+                "iteration": review_iteration + 1,
+                "topCandidateId": top_candidate.id if top_candidate else None,
+                "topPassed": top_passed,
+                "paperGatePassed": bool(paper_quality_gate.get("passed", False)),
+                "blockingIssueCount": len(top_gate.get("blockingIssues", [])) if top_gate else 0,
+                "warningCount": len(top_gate.get("warnings", [])) if top_gate else 0,
+                "action": "none",
+            }
+            if top_passed or review_iteration == max_review_iterations - 1 or not top_gate:
+                review_iteration_summaries.append(summary)
+                break
+
+            if (
+                self._idea_gate_requires_literature_repair(top_gate, paper_quality_gate)
+                and session.config.providerName
+                and session.config.model
+            ):
+                repair_report = self._repair_literature_pool_for_idea_quality(
+                    session,
+                    review_gate=top_gate,
+                    paper_quality_gate=paper_quality_gate,
+                )
+                literature_repair_reports.append(repair_report)
+                summary["action"] = "rerun_literature_search"
+                summary["createdRawPaperCount"] = len(
+                    repair_report.get("persistReport", {}).get("createdRawPaperIds", [])
+                )
+                summary["paperGateAfterRepair"] = bool(
+                    repair_report.get("paperQualityGateAfter", {}).get("passed", False)
+                )
+                try:
+                    structured_papers = self.structured_storage.list_by_session(session.id)
+                    reasoning_kg = self.reasoning_kg_storage.get_by_session(session.id)
+                    path_seeds = self.path_seed_storage.list_by_session(session.id)
+                    evidence_links = self.evidence_link_storage.list_by_session(session.id)
+                    literature_context = self._build_ranking_literature_context(
+                        structured_papers, reasoning_kg, path_seeds
+                    ) if structured_papers else literature_context
+                    evidence_list = [
+                        self._build_candidate_evidence(
+                            candidate=candidate,
+                            structured_papers=structured_papers,
+                            reasoning_kg=reasoning_kg,
+                            path_seeds=path_seeds,
+                            evidence_links=evidence_links,
+                        )
+                        for candidate in ranked
+                    ]
+                    paper_quality_gate = _evaluate_paper_quality_gate(
+                        seed=seed,
+                        domain=domain,
+                        papers=structured_papers,
+                        stage=f"ideaReview.iteration{review_iteration + 1}.afterLiteratureRepair",
+                        extra_terms=self._get_step_output(session, "expandQuery", "expandedTerms", []),
+                    )
+                    gate_reports = self._apply_idea_review_gate(
+                        ranked=ranked,
+                        evidence_list=evidence_list,
+                        prior_work_comparisons=prior_work_comparisons,
+                        critiques=critiques,
+                    )
+                except Exception as e:
+                    logger.warning("Reloading repaired idea-stage evidence failed: %s", e, exc_info=True)
+                    summary["error"] = str(e)
+                review_iteration_summaries.append(summary)
+                continue
+
+            if (
+                self._should_optimize_candidate_from_gate(top_candidate, top_gate)
+                and structured_papers
+                and session.config.providerName
+                and session.config.model
+            ):
+                summary["action"] = "regenerate_idea"
+                try:
+                    regenerated = self._regenerate_candidate_from_review(
+                        session=session,
+                        base_candidate=top_candidate,
+                        review_gate=top_gate,
+                        critique=next((item for item in critiques if item.candidateId == top_candidate.id), None),
+                        prior_work=[
+                            item for item in prior_work_comparisons
+                            if item.candidateId == top_candidate.id
+                        ],
+                        literature_context=literature_context,
+                    )
+                except Exception as e:
+                    logger.warning(f"Idea review regeneration failed: {e}")
+                    summary["error"] = str(e)
+                    regenerated = None
+                if regenerated:
+                    try:
+                        scored_candidates, _ = ranking_service.rank_candidates(
+                            candidates=[regenerated],
+                            seed_query=seed,
+                            paper_type=paper_type,
+                            domain=domain,
+                            provider_name=session.config.providerName,
+                            model=session.config.model,
+                            session_id=session.id,
+                        )
+                        regenerated = scored_candidates[0] if scored_candidates else regenerated
+                    except Exception as e:
+                        logger.warning(f"Ranking regenerated candidate failed: {e}")
+                    regenerated_evidence = self._build_candidate_evidence(
+                        candidate=regenerated,
+                        structured_papers=structured_papers,
+                        reasoning_kg=reasoning_kg,
+                        path_seeds=path_seeds,
+                        evidence_links=evidence_links,
+                    )
+                    evidence_list.append(regenerated_evidence)
+                    try:
+                        comparison, critique = self._llm_analyze_candidate(
+                            candidate=regenerated,
+                            seed_query=seed,
+                            paper_type=paper_type,
+                            domain=domain,
+                            literature_context=literature_context,
+                            provider_name=session.config.providerName,
+                            model=session.config.model,
+                        )
+                        prior_work_comparisons.append(comparison)
+                        critiques.append(critique)
+                    except Exception as e:
+                        logger.warning(f"LLM analysis for regenerated candidate failed: {e}")
+                        comparison, critique = self._fallback_analysis(regenerated)
+                        prior_work_comparisons.append(comparison)
+                        critiques.append(critique)
+                    gate_reports.update(self._apply_idea_review_gate(
+                        ranked=[regenerated],
+                        evidence_list=[regenerated_evidence],
+                        prior_work_comparisons=[comparison],
+                        critiques=[critique],
+                    ))
+                    ranked.append(regenerated)
+                    regenerated_candidate_ids.append(regenerated.id)
+                    summary["regeneratedCandidateId"] = regenerated.id
+                    if regenerated.id not in session.candidateIds:
+                        session.candidateIds.append(regenerated.id)
+                    try:
+                        self.candidate_storage.create(regenerated)
+                    except Exception as e:
+                        logger.warning(f"Failed to persist regenerated candidate {regenerated.id}: {e}")
+                    ranked = sorted(ranked, key=lambda c: c.overallScore, reverse=True)
+                review_iteration_summaries.append(summary)
+                continue
+
+            review_iteration_summaries.append(summary)
+            break
+
+        # --- Phase 6: Backfill evidence/critique into final candidates (PDF v5) ---
         evidence_by_candidate = {e.candidateId: e for e in evidence_list}
         comparison_by_candidate: Dict[str, list] = {}
         for pc in prior_work_comparisons:
@@ -1473,7 +2171,7 @@ class IdeaGenerationService:
             except Exception as e:
                 logger.warning(f"Failed to persist final candidate {candidate.id}: {e}")
 
-        # --- Phase 6: Assemble and persist RankedIdeaOutput ---
+        # --- Phase 7: Assemble and persist RankedIdeaOutput ---
         scores_list = [c.overallScore for c in ranked]
         variance = 0.0
         if len(scores_list) > 1:
@@ -1492,8 +2190,24 @@ class IdeaGenerationService:
             maxScore=round(max(scores_list), 2) if scores_list else 0.0,
             rankedCount=len(ranked),
             topCandidateId=ranked[0].id if ranked else None,
-            rankingMethod="llm_multi_criteria" if ranking_results else "heuristic",
+            rankingMethod=("llm_multi_criteria+idea_review_gate" if ranking_results else "heuristic+idea_review_gate"),
         )
+        if literature_repair_reports:
+            ranked_output = RankedIdeaOutput(
+                id=ranked_output.id,
+                sessionId=ranked_output.sessionId,
+                rankedCandidates=ranked_output.rankedCandidates,
+                evidence=ranked_output.evidence,
+                priorWorkComparisons=ranked_output.priorWorkComparisons,
+                critiques=ranked_output.critiques,
+                scoreVariance=ranked_output.scoreVariance,
+                minScore=ranked_output.minScore,
+                maxScore=ranked_output.maxScore,
+                rankedCount=ranked_output.rankedCount,
+                topCandidateId=ranked_output.topCandidateId,
+                rankingMethod=f"{ranked_output.rankingMethod}+literature_repair",
+                createdAt=ranked_output.createdAt,
+            )
         try:
             self.ranked_output_storage.create(ranked_output)
         except Exception as e:
@@ -1523,6 +2237,15 @@ class IdeaGenerationService:
             "evidenceCount": len(evidence_list),
             "comparisonCount": len(prior_work_comparisons),
             "critiqueCount": len(critiques),
+            "ideaReviewGate": list(gate_reports.values()),
+            "ideaReviewPassedCount": sum(1 for item in gate_reports.values() if item.get("passed")),
+            "paperQualityGate": paper_quality_gate,
+            "maxReviewIterations": max_review_iterations,
+            "reviewIterationsUsed": len(review_iteration_summaries),
+            "internalReviewIterations": review_iteration_summaries,
+            "literatureRepairCount": len(literature_repair_reports),
+            "regeneratedCandidateIds": regenerated_candidate_ids,
+            "feedbackOptimizedCandidateIds": regenerated_candidate_ids,
         }
 
         return inputs, outputs, []
@@ -1530,6 +2253,192 @@ class IdeaGenerationService:
     # =========================================================================
     # Step 6 Helpers
     # =========================================================================
+
+    def _idea_gate_requires_literature_repair(
+        self,
+        review_gate: Dict[str, Any],
+        paper_quality_gate: Dict[str, Any],
+    ) -> bool:
+        """Route idea failures back to literature repair when evidence is the root cause."""
+
+        if not paper_quality_gate.get("passed", False):
+            return True
+        text = " ".join(
+            str(item)
+            for item in [
+                *review_gate.get("blockingIssues", []),
+                *review_gate.get("warnings", []),
+                *review_gate.get("suggestedImprovements", []),
+            ]
+        ).lower()
+        evidence_terms = [
+            "no paper",
+            "supporting paper",
+            "reference support",
+            "prior-work",
+            "prior work",
+            "evidence",
+            "literature",
+            "citation",
+            "closest prior",
+            "证据",
+            "论文",
+            "引用",
+            "相关工作",
+        ]
+        return any(term in text for term in evidence_terms)
+
+    def _persist_repair_search_results(
+        self,
+        session: IdeaSession,
+        results: List[SearchResult],
+    ) -> Dict[str, Any]:
+        existing_raw = self.raw_paper_storage.list_by_session(session.id)
+        seen_dois = {paper.doi for paper in existing_raw if paper.doi}
+        seen_arxiv_ids = {paper.arxivId for paper in existing_raw if paper.arxivId}
+        seen_title_hashes = {paper.normalizedTitleHash for paper in existing_raw if paper.normalizedTitleHash}
+        created_raw_ids: List[str] = []
+        created_literature_ids: List[str] = []
+
+        ranked = _rank_results_for_topic(
+            results,
+            seed=session.config.seedQuery,
+            domain=session.config.domain or "",
+            search_queries=[session.config.seedQuery],
+        )
+        filtered, filtered_out_count = _filter_results_for_topic(ranked)
+        for result in filtered:
+            title_hash = _compute_title_hash(result.title)
+            if result.doi and result.doi in seen_dois:
+                continue
+            if result.arxiv_id and result.arxiv_id in seen_arxiv_ids:
+                continue
+            if title_hash in seen_title_hashes:
+                continue
+            seen_title_hashes.add(title_hash)
+            if result.doi:
+                seen_dois.add(result.doi)
+            if result.arxiv_id:
+                seen_arxiv_ids.add(result.arxiv_id)
+
+            s2_id = None
+            if result.source == "semantic_scholar" and result.url:
+                s2_match = re.search(r'SemanticScholarID:(\w+)', result.url)
+                if s2_match:
+                    s2_id = s2_match.group(1)
+            raw_paper = RawPaper(
+                id=generate_raw_paper_id(),
+                sessionId=session.id,
+                title=result.title,
+                authors=result.authors,
+                year=result.year,
+                venue=result.venue,
+                url=result.url,
+                doi=result.doi,
+                arxivId=result.arxiv_id,
+                semanticScholarId=s2_id,
+                citationCount=result.citation_count or 0,
+                abstract=result.abstract or "",
+                source=[result.source] if result.source else [],
+                normalizedTitleHash=title_hash,
+                relevanceScore=min(1.0, max(0.0, result.relevance_score)),
+            )
+            self.raw_paper_storage.create(raw_paper)
+            created_raw_ids.append(raw_paper.id)
+
+            lit_item = LiteratureItem(
+                id=generate_literature_id(),
+                sessionId=session.id,
+                title=result.title,
+                authors=result.authors,
+                venue=result.venue,
+                year=result.year,
+                url=result.url,
+                doi=result.doi,
+                arxivId=result.arxiv_id,
+                snippet=(result.abstract or "")[:500],
+                relevanceScore=min(1.0, max(0.0, result.relevance_score)),
+                source=result.source,
+            )
+            self.literature_storage.create(lit_item)
+            created_literature_ids.append(lit_item.id)
+
+        all_raw = self.raw_paper_storage.list_by_session(session.id)
+        if all_raw:
+            graph = self.graph_builder.build_graph_v0(session_id=session.id, raw_papers=all_raw)
+            self.graph_storage.create(graph)
+        return {
+            "createdRawPaperIds": created_raw_ids,
+            "createdLiteratureIds": created_literature_ids,
+            "filteredOutCount": filtered_out_count,
+            "rawPaperCountAfterRepair": len(all_raw),
+        }
+
+    def _repair_literature_pool_for_idea_quality(
+        self,
+        session: IdeaSession,
+        *,
+        review_gate: Dict[str, Any],
+        paper_quality_gate: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Targeted literature repair used by Step 6 before regenerating an idea."""
+
+        search_service = get_search_service()
+        queries = self._build_literature_repair_queries(
+            session,
+            paper_quality_gate,
+            existing_queries=self._get_step_output(session, "literatureSearch", "searchQueries", [session.config.seedQuery]),
+        )
+        results: List[SearchResult] = []
+        for query in queries:
+            try:
+                batch = search_service.search(query, limit=max(8, min(24, session.config.maxPapers // max(1, len(queries)))))
+                results.extend(batch)
+            except Exception as exc:
+                logger.warning("Idea-stage literature repair search failed for '%s': %s", query, exc)
+
+        persist_report = self._persist_repair_search_results(session, results)
+        novelty_outputs: Dict[str, Any] = {}
+        gap_outputs: Dict[str, Any] = {}
+        try:
+            _, novelty_outputs, _ = self._step_novelty_check(session)
+            _, gap_outputs, _ = self._step_gap_analysis(session)
+        except Exception as exc:
+            logger.warning("Idea-stage literature repair could not rebuild downstream evidence: %s", exc, exc_info=True)
+            return {
+                "attempted": True,
+                "queries": queries,
+                "reviewGate": review_gate,
+                "paperQualityGateBefore": paper_quality_gate,
+                "persistReport": persist_report,
+                "error": str(exc),
+            }
+
+        repaired_structured = self.structured_storage.list_by_session(session.id)
+        repaired_gate = _evaluate_paper_quality_gate(
+            seed=session.config.seedQuery,
+            domain=session.config.domain or "",
+            papers=repaired_structured,
+            stage="ideaReview.literatureRepair.structured",
+            extra_terms=self._get_step_output(session, "expandQuery", "expandedTerms", []),
+        )
+        return {
+            "attempted": True,
+            "queries": queries,
+            "reviewGate": review_gate,
+            "paperQualityGateBefore": paper_quality_gate,
+            "paperQualityGateAfter": repaired_gate,
+            "persistReport": persist_report,
+            "noveltyOutputs": {
+                "selectedPaperIds": novelty_outputs.get("selectedPaperIds", []),
+                "structuredPaperCount": novelty_outputs.get("structuredPaperCount", 0),
+                "literatureMapId": novelty_outputs.get("literatureMapId"),
+            },
+            "gapOutputs": {
+                "reasoningKgId": gap_outputs.get("reasoningKgId"),
+                "pathSeedCount": gap_outputs.get("pathSeedCount", 0),
+            },
+        }
 
     def _build_candidate_evidence(
         self,
@@ -1665,6 +2574,272 @@ class IdeaGenerationService:
                 lines.extend(seed_summaries)
 
         return "\n\n".join(lines) if lines else "(No literature available)"
+
+    def _apply_idea_review_gate(
+        self,
+        *,
+        ranked: List[IdeaCandidate],
+        evidence_list: List[CandidateGraphEvidence],
+        prior_work_comparisons: List[PriorWorkComparison],
+        critiques: List[IdeaCritique],
+    ) -> Dict[str, Dict[str, Any]]:
+        """Apply idea-stage review findings before PlanPackage generation."""
+
+        evidence_by_candidate = {item.candidateId: item for item in evidence_list}
+        critique_by_candidate = {item.candidateId: item for item in critiques}
+        comparisons_by_candidate: Dict[str, List[PriorWorkComparison]] = {}
+        for comparison in prior_work_comparisons:
+            comparisons_by_candidate.setdefault(comparison.candidateId, []).append(comparison)
+
+        reports: Dict[str, Dict[str, Any]] = {}
+        for candidate in ranked:
+            evidence = evidence_by_candidate.get(candidate.id)
+            critique = critique_by_candidate.get(candidate.id)
+            comparisons = comparisons_by_candidate.get(candidate.id, [])
+            blocking: List[str] = []
+            warnings: List[str] = []
+            suggestions: List[str] = []
+            penalty = 0.0
+            support_count = 0
+            has_difference = False
+            avg_comparison_confidence = 0.0
+            critique_weakness_count = 0
+            critique_failure_count = 0
+
+            if evidence:
+                support_count = (
+                    len(evidence.supportingPaperIds)
+                    + len(evidence.supportingEntityIds)
+                    + len(evidence.supportingPathSeedIds)
+                )
+                if support_count == 0:
+                    blocking.append("No paper, KG entity, or path seed supports this idea candidate.")
+                    suggestions.append("Regenerate the idea so its core mechanism is directly grounded in cited papers, KG entities, or reasoning path seeds.")
+                    penalty += 1.2
+                elif not evidence.supportingPaperIds:
+                    warnings.append("Candidate lacks direct supporting paper IDs.")
+                    suggestions.append("Add a clearer connection between the idea and specific supporting papers or paper limitations.")
+                    penalty += 0.4
+            else:
+                blocking.append("Candidate has no graph evidence binding.")
+                suggestions.append("Regenerate the idea around evidence that can be bound to the literature graph.")
+                penalty += 1.2
+
+            if critique:
+                critique_weakness_count = len(critique.weaknesses)
+                critique_failure_count = len(critique.failureModes)
+                if critique.critiqueConfidence < 0.45:
+                    warnings.append("LLM critique confidence is low.")
+                    penalty += 0.3
+                if len(critique.weaknesses) >= 3:
+                    warnings.append("Candidate has multiple critique weaknesses.")
+                    penalty += 0.5
+                if len(critique.failureModes) >= 3:
+                    warnings.append("Candidate has multiple failure modes.")
+                    penalty += 0.4
+                suggestions.extend(critique.suggestedImprovements[:4])
+            else:
+                warnings.append("Candidate was not reviewed by IdeaCritique.")
+                penalty += 0.4
+
+            if comparisons:
+                has_difference = any(item.differences for item in comparisons)
+                avg_comparison_confidence = sum(item.comparisonConfidence for item in comparisons) / max(1, len(comparisons))
+                if not has_difference:
+                    warnings.append("Prior-work comparison does not state concrete differences.")
+                    suggestions.append("Sharpen the novelty claim by stating exactly how the idea differs from closest prior work.")
+                    penalty += 0.5
+                if avg_comparison_confidence < 0.45:
+                    warnings.append("Prior-work comparison confidence is low.")
+                    suggestions.append("Ground the idea in more explicit prior-work contrasts and avoid vague novelty claims.")
+                    penalty += 0.3
+            else:
+                warnings.append("Candidate has no prior-work comparison.")
+                suggestions.append("Regenerate with an explicit closest-prior-work comparison and concrete difference.")
+                penalty += 0.4
+
+            if candidate.novelty < 5.5:
+                warnings.append("Novelty score is below the idea-stage handoff threshold.")
+                suggestions.append("Increase research value by making the new mechanism, setting, or evaluation contribution more explicit.")
+            if candidate.referenceSupport < 5.0:
+                warnings.append("Reference support score is below the idea-stage handoff threshold.")
+                suggestions.append("Tie the hypothesis and method to stronger supporting literature evidence.")
+
+            if penalty and "idea_review_gate" not in (candidate.scoringMethod or ""):
+                candidate.referenceSupport = max(0.0, candidate.referenceSupport - penalty)
+                candidate.feasibility = max(0.0, candidate.feasibility - min(0.8, penalty * 0.35))
+                candidate.risk = max(0.0, candidate.risk - min(0.8, penalty * 0.30))
+                if any("difference" in item.lower() or "novelty" in item.lower() for item in warnings):
+                    candidate.novelty = max(0.0, candidate.novelty - min(0.8, penalty * 0.35))
+
+            passed = not blocking and candidate.overallScore >= 6.0 and candidate.referenceSupport >= 4.5
+            summary = "Idea review gate passed." if passed else "Idea review gate requires regeneration or another candidate."
+            if warnings:
+                summary += " Warnings: " + "; ".join(warnings[:3])
+            if blocking:
+                summary += " Blocking: " + "; ".join(blocking[:3])
+            rationale_lines = [
+                line
+                for line in (candidate.overallRationale or "").splitlines()
+                if not line.startswith("Idea review gate ")
+            ]
+            base_rationale = "\n".join(line for line in rationale_lines if line.strip()).strip()
+            candidate.overallRationale = f"{base_rationale}\n{summary}".strip() if base_rationale else summary
+            candidate.scoringMethod = (
+                candidate.scoringMethod
+                if "idea_review_gate" in candidate.scoringMethod
+                else f"{candidate.scoringMethod}+idea_review_gate"
+            )
+            reports[candidate.id] = {
+                "candidateId": candidate.id,
+                "passed": passed,
+                "scoreAfterGate": round(candidate.overallScore, 2),
+                "blockingIssues": blocking,
+                "warnings": warnings,
+                "suggestedImprovements": list(dict.fromkeys(suggestions)),
+                "reviewerReports": [
+                    {
+                        "reviewer": "IdeaEvidenceReviewer",
+                        "mode": "rule+llm_context",
+                        "score": round(min(10.0, support_count * 2.2 + candidate.referenceSupport * 0.45), 2),
+                        "passed": support_count > 0 and candidate.referenceSupport >= 4.5,
+                        "summary": "Checks whether the idea is grounded in papers, KG entities, or path seeds.",
+                    },
+                    {
+                        "reviewer": "IdeaNoveltyReviewer",
+                        "mode": "rule+prior_work_llm",
+                        "score": round(min(10.0, candidate.novelty * 0.75 + (1.5 if has_difference else 0.0)), 2),
+                        "passed": candidate.novelty >= 5.5 and has_difference,
+                        "summary": "Checks concrete difference from closest prior work.",
+                    },
+                    {
+                        "reviewer": "IdeaFeasibilityReviewer",
+                        "mode": "rule+critique_llm",
+                        "score": round(max(0.0, candidate.feasibility - critique_failure_count * 0.4), 2),
+                        "passed": candidate.feasibility >= 5.5 and critique_failure_count < 3,
+                        "summary": "Checks implementability and likely failure modes.",
+                    },
+                    {
+                        "reviewer": "IdeaSpecificityReviewer",
+                        "mode": "rule+critique_llm",
+                        "score": round((candidate.clarity + candidate.experimentSpecificity) / 2, 2),
+                        "passed": candidate.clarity >= 5.0 and candidate.experimentSpecificity >= 5.0,
+                        "summary": "Checks whether method, variables, and validation requirements are concrete.",
+                    },
+                    {
+                        "reviewer": "IdeaImpactReviewer",
+                        "mode": "rule+critique_llm",
+                        "score": round(max(0.0, candidate.impact - critique_weakness_count * 0.2), 2),
+                        "passed": candidate.impact >= 5.5,
+                        "summary": "Checks expected research value and downstream contribution potential.",
+                    },
+                ],
+                "priorWorkComparisonConfidence": round(avg_comparison_confidence, 3),
+                "needsFeedbackOptimization": self._should_optimize_candidate_from_gate(candidate, {
+                    "passed": passed,
+                    "scoreAfterGate": round(candidate.overallScore, 2),
+                    "blockingIssues": blocking,
+                    "warnings": warnings,
+                    "suggestedImprovements": suggestions,
+                }),
+            }
+
+        return reports
+
+    def _should_optimize_candidate_from_gate(
+        self,
+        candidate: IdeaCandidate,
+        review_gate: Dict[str, Any],
+    ) -> bool:
+        """Decide whether idea-stage feedback should create an improved candidate."""
+
+        if "llm_regenerated_from_idea_review" in (candidate.scoringMethod or ""):
+            return False
+        if review_gate.get("blockingIssues"):
+            return True
+        if review_gate.get("suggestedImprovements"):
+            return True
+        warnings = " ".join(str(item) for item in review_gate.get("warnings", [])).lower()
+        idea_warning_terms = [
+            "supporting paper",
+            "prior-work",
+            "novelty",
+            "reference support",
+            "critique",
+            "failure mode",
+            "evidence",
+        ]
+        return any(term in warnings for term in idea_warning_terms)
+
+    def _regenerate_candidate_from_review(
+        self,
+        *,
+        session: IdeaSession,
+        base_candidate: IdeaCandidate,
+        review_gate: Dict[str, Any],
+        critique: Optional[IdeaCritique],
+        prior_work: List[PriorWorkComparison],
+        literature_context: str,
+    ) -> Optional[IdeaCandidate]:
+        """Generate one improved candidate from idea-stage review feedback."""
+
+        client = get_provider_client(session.config.providerName)
+        review_context = {
+            "sourceCandidate": {
+                "title": base_candidate.title,
+                "problem": base_candidate.problem,
+                "hypothesisStatement": base_candidate.hypothesisStatement,
+                "keyInsight": base_candidate.keyInsight,
+                "proposedMethod": base_candidate.proposedMethod,
+                "expectedOutcome": base_candidate.expectedOutcome,
+                "scores": base_candidate.scoreBreakdown,
+            },
+            "reviewGate": review_gate,
+            "critique": critique.model_dump() if critique else {},
+            "priorWork": [item.model_dump() for item in prior_work[:3]],
+            "seedQuery": session.config.seedQuery,
+            "domain": session.config.domain,
+            "paperType": session.config.paperType,
+            "literatureContext": literature_context[:8000],
+        }
+        messages = [
+            ChatMessage(
+                role="system",
+                content=(
+                    "You regenerate one stronger research idea from idea-stage review findings. "
+                    "Return JSON only. Do not claim executed experiments. Do not invent paper IDs. "
+                    "The new idea must preserve useful parts of the source candidate while directly addressing "
+                    "reviewGate warnings, blocking issues, and suggested improvements."
+                ),
+            ),
+            ChatMessage(
+                role="user",
+                content=(
+                    "Return exactly this JSON shape:\n"
+                    '{"ideas":[{"title":"","problem":"","keyInsight":"","approach":"","expectedOutcomes":[],"risks":[],'
+                    '"requiredExperiments":[]}]}'
+                    "\nContext:\n"
+                    f"{json.dumps(review_context, ensure_ascii=False, default=str)}"
+                ),
+            ),
+        ]
+        response = client.chat(
+            messages,
+            model=session.config.model,
+            temperature=0.25,
+            max_tokens=2400,
+            response_format={"type": "json_object"},
+        )
+        candidates = self._parse_ideas_json(session.id, response.text or "", 1)
+        if not candidates:
+            candidates = self._parse_ideas(session.id, response.text or "", 1)
+        if not candidates:
+            return None
+        candidate = candidates[0]
+        candidate.references = list(base_candidate.references)
+        candidate.overallRationale = "Regenerated automatically from idea-stage review feedback."
+        candidate.scoringMethod = "llm_regenerated_from_idea_review"
+        return candidate
 
     def _llm_analyze_candidate(
         self,

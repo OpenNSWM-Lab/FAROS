@@ -1,852 +1,1517 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { Button } from '@/components/ui/button'
-import { Badge } from '@/components/ui/badge'
 import {
-  CheckCircle2,
-  XCircle,
-  Clock,
-  Sparkles,
-  RefreshCw,
-  Zap,
-  History,
-  ChevronDown,
-  ChevronUp,
-  Code2,
+  AlertTriangle,
   ArrowRight,
-  FileText,
+  BookOpen,
+  CheckCircle2,
+  ClipboardList,
+  FileJson,
+  GitBranch,
+  Layers3,
+  Lightbulb,
+  MessageSquareText,
+  Network,
+  RefreshCw,
+  ShieldCheck,
+  Sparkles,
+  UserCheck,
 } from 'lucide-react'
-import { PAPER_TYPES_V2, getPaperTypeV2ById } from '@/lib/models/providers'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import {
+  createPlanPackageFromIdeaSession,
+  addPlanPackageFeedback,
+  approvePlanPackageWithMode,
+  getPlanPackage,
+  getPlanPackageByIdeaSession,
+  getPlanPackagePresentation,
+  getPlanPackagePresentationByIdeaSession,
+  revisePlanPackage,
+  type PlanEvidenceRef,
+  type PlanGapItem,
+  type PlanHumanFeedback,
+  type PlanLiteraturePaperSummary,
+  type PlanPackage,
+  type PlanPackagePresentation,
+  type PlanQualityGate,
+  type PlanReadablePaper,
+  type PlanReadableStage,
+  type PlanReviewerReport,
+  type PlanStage,
+  type PlanStep,
+} from '@/components/plans/planPackageApi'
 
-interface PlanSession {
-  id: string
-  status: string
-  createdAt?: string
-  config: {
-    providerName: string
-    model: string
-    ideaSessionId?: string
-    ideaCandidateId?: string
-    ideaCandidateTitle?: string
-    ideaSeedQuery?: string
-    paperType: string
-    directionId?: string
-    directionTitle?: string
-    maxCandidates: number
-    userNotes?: string
-  }
-  candidateIds: string[]
-  selectedCandidateId?: string
-  resultingPlanId?: string
-  errorMessage?: string
+type GenerationMode = 'hybrid' | 'deterministic'
+type ReviewerMode = 'deterministic' | 'hybrid'
+
+const DEFAULT_REVIEWER_MODE: ReviewerMode = 'hybrid'
+
+const EMPTY_GATE: PlanQualityGate = {
+  schemaValid: false,
+  evidenceValid: false,
+  topicRelevant: false,
+  citationFaithful: false,
+  planSpecific: false,
+  agentApproved: false,
+  humanApproved: false,
+  implementationReady: false,
+  overallScore: 0,
+  reviewDecision: 'draft',
+  warnings: [],
+  errors: [],
 }
 
-interface TraceStep {
-  name: string
-  status: string
-  durationSeconds: number
-  error?: string
+function statusVariant(ok: boolean) {
+  return ok ? 'border-emerald-500 bg-white text-emerald-800 shadow-sm' : 'border-amber-500 bg-white text-amber-900 shadow-sm'
 }
 
-interface TraceData {
-  steps: TraceStep[]
-  totalSteps: number
-  successfulSteps: number
-  failedSteps: number
-}
-
-interface ScoreBreakdown {
-  novelty: number
-  feasibility: number
-  impact: number
-  clarity: number
-  risk: number
-  overall: number
-  rationale: string
-}
-
-interface CandidatePlan {
-  id: string
-  sessionId: string
-  indexNumber: number
-  title: string
-  planAbstract: string
-  novelty: string
-  feasibility: string
-  risks: string
-  gapAnalysis: string
-  method: string
-  experimentDesign: Record<string, unknown> & {
-    research_question?: string
-    hypothesis?: string
-  }
-  evaluationProtocol: Record<string, unknown>
-  ablations: string[]
-  baselines: string[]
-  resourcesEstimate: string
-  scoreBreakdown: ScoreBreakdown
-  overallScore: number
-  createdAt: string
-}
-
-interface SessionListItem {
-  id: string
-  status: string
-  createdAt: string
-  config: {
-    ideaCandidateTitle?: string
-    ideaSeedQuery?: string
-    paperType?: string
-    directionTitle?: string
+function compactValue(value: unknown): string {
+  if (value == null) return ''
+  if (typeof value === 'string') return value
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+  if (Array.isArray(value)) return value.map(compactValue).filter(Boolean).join(', ')
+  try {
+    return JSON.stringify(value)
+  } catch {
+    return String(value)
   }
 }
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || ''
-
-/** Loaded from GET /api/v1/research/plans/{id} (e.g. after Ideas → Open in Planning) */
-interface LinkedResearchPlan {
-  id: string
-  created_at: string
-  research_question: string
-  hypothesis: string
-  variables: Record<string, unknown>
-  methodology: Record<string, unknown>
-  expected_outcomes: Record<string, unknown>
-  tags: string[]
-  notes: string
-  source_session_id?: string | null
-  source_candidate_id?: string | null
-  source_candidate_index?: number | null
-  source_title?: string | null
+function shortId(id?: string | null) {
+  if (!id) return '-'
+  return id.length > 18 ? `${id.slice(0, 10)}...${id.slice(-6)}` : id
 }
 
-export function PlanGenerationPanel() {
+function QualityGateSummary({ gate }: { gate: PlanQualityGate }) {
+  const rows = [
+    { label: 'Schema', ok: gate.schemaValid },
+    { label: 'Evidence', ok: gate.evidenceValid },
+    { label: 'Topic', ok: gate.topicRelevant },
+    { label: 'Citation', ok: gate.citationFaithful },
+    { label: 'Plan', ok: gate.planSpecific },
+    { label: 'Agent', ok: gate.agentApproved },
+    { label: 'Human', ok: gate.humanApproved },
+    { label: 'Ready', ok: gate.implementationReady },
+  ]
+
+  return (
+    <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+      {rows.map((row) => (
+        <div key={row.label} className={`flex items-center justify-between rounded-md border px-3 py-2 ${statusVariant(row.ok)}`}>
+          <span className="text-sm font-medium">{row.label}</span>
+          {row.ok ? <CheckCircle2 className="h-4 w-4" /> : <AlertTriangle className="h-4 w-4" />}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function EvidenceChips({ refs }: { refs: PlanEvidenceRef[] }) {
+  if (!refs.length) return null
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {refs.map((ref, index) => (
+        <Badge key={`${ref.type}-${ref.id}-${index}`} variant="outline" className="max-w-full font-mono text-[11px]">
+          {ref.type}:{shortId(ref.id)}
+        </Badge>
+      ))}
+    </div>
+  )
+}
+
+function TextList({ items, emptyLabel }: { items: string[]; emptyLabel: string }) {
+  if (!items.length) {
+    return <p className="text-sm text-muted-foreground">{emptyLabel}</p>
+  }
+  return (
+    <ul className="space-y-2 text-sm text-slate-800">
+      {items.map((item, index) => (
+        <li key={`${item}-${index}`} className="rounded-md border border-slate-300 bg-slate-50 px-3 py-2">
+          {item}
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+function StepBlock({ step }: { step: PlanStep }) {
+  return (
+    <div className="rounded-md border border-slate-300 bg-white px-4 py-3 shadow-sm">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge variant="outline" className="font-mono text-[11px]">
+              {step.id}
+            </Badge>
+            <h4 className="text-sm font-semibold text-slate-900">{step.title}</h4>
+          </div>
+          <p className="mt-2 text-sm text-slate-800">{step.desc}</p>
+          <p className="mt-2 text-xs text-slate-600">{step.method}</p>
+        </div>
+        <Badge variant="secondary" className="shrink-0">
+          Step {step.order}
+        </Badge>
+      </div>
+
+      {step.inputFrom.length > 0 && (
+        <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-slate-700">
+          <GitBranch className="h-3.5 w-3.5" />
+          {step.inputFrom.map((id) => (
+            <span key={id} className="rounded bg-slate-200 px-2 py-1 font-mono text-slate-900">
+              {id}
+            </span>
+          ))}
+        </div>
+      )}
+
+      <div className="mt-3 grid gap-3 lg:grid-cols-2">
+        <div>
+          <p className="mb-2 text-xs font-semibold uppercase text-slate-500">Outputs</p>
+          <div className="space-y-2">
+            {step.outputs.map((output, index) => (
+              <div key={`${output.name}-${index}`} className="rounded-md border border-l-4 border-slate-300 border-l-blue-700 bg-white px-3 py-2 text-xs">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge variant="outline" className="border-blue-400 bg-blue-50 text-blue-900">
+                    {output.type}
+                  </Badge>
+                  <span className="font-mono text-slate-800">{output.name}</span>
+                </div>
+                {output.desc && <p className="mt-1 text-slate-600">{output.desc}</p>}
+              </div>
+            ))}
+          </div>
+        </div>
+        <div>
+          <p className="mb-2 text-xs font-semibold uppercase text-slate-500">Expected</p>
+          <div className="space-y-2">
+            {step.expected.map((expected, index) => (
+              <div key={`${expected.metric}-${index}`} className="rounded-md border border-l-4 border-slate-300 border-l-emerald-700 bg-white px-3 py-2 text-xs">
+                <p className="font-medium text-emerald-900">{expected.metric}</p>
+                <p className="mt-1 text-slate-800">{expected.target}</p>
+                {expected.desc && <p className="mt-1 text-slate-600">{expected.desc}</p>}
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-3">
+        <EvidenceChips refs={step.evidenceRefs} />
+      </div>
+    </div>
+  )
+}
+
+function StageBlock({ stage }: { stage: PlanStage }) {
+  return (
+    <div className="rounded-md border border-slate-300 bg-white px-4 py-4 shadow-sm">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge variant="outline" className="font-mono text-[11px]">
+              {stage.id}
+            </Badge>
+            <h3 className="text-base font-semibold text-slate-900">{stage.title}</h3>
+          </div>
+          <p className="mt-2 text-sm text-slate-800">{stage.goal}</p>
+          <p className="mt-2 text-xs text-slate-600">{stage.method}</p>
+        </div>
+        <Badge className="bg-indigo-700 text-white">Stage {stage.order}</Badge>
+      </div>
+      {stage.dependsOn.length > 0 && (
+        <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-slate-700">
+          <GitBranch className="h-3.5 w-3.5" />
+          {stage.dependsOn.map((id) => (
+            <span key={id} className="rounded bg-slate-100 px-2 py-1 font-mono text-slate-900">
+              {id}
+            </span>
+          ))}
+        </div>
+      )}
+      <div className="mt-4 space-y-3">
+        {stage.steps.map((step) => (
+          <StepBlock key={step.id} step={step} />
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function PaperRow({ paper }: { paper: PlanLiteraturePaperSummary }) {
+  const methods = paper.methods.map(compactValue).filter(Boolean).slice(0, 2)
+  const findings = paper.findings.map(compactValue).filter(Boolean).slice(0, 2)
+
+  return (
+    <div className="rounded-md border border-slate-300 bg-white px-4 py-3 shadow-sm">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge variant="outline" className="font-mono text-[11px]">
+              {shortId(paper.paperId)}
+            </Badge>
+            <Badge className={paper.source === 'probe' ? 'bg-indigo-700 text-white' : 'bg-blue-700 text-white'}>
+              {paper.source}
+            </Badge>
+            <Badge
+              variant="outline"
+              className={
+                paper.relevanceScore >= 0.7
+                  ? 'border-emerald-400 bg-emerald-50 text-emerald-900'
+                  : paper.relevanceScore >= 0.45
+                    ? 'border-amber-400 bg-amber-50 text-amber-900'
+                    : 'border-red-300 bg-red-50 text-red-900'
+              }
+            >
+              relevance {(paper.relevanceScore * 100).toFixed(0)}
+            </Badge>
+            {paper.year ? <span className="text-xs text-muted-foreground">{paper.year}</span> : null}
+          </div>
+          <h4 className="mt-2 text-sm font-semibold text-slate-900">{paper.title}</h4>
+          <p className="mt-1 text-xs text-slate-500">{paper.authors.join(', ')}</p>
+        </div>
+        {paper.role && <Badge variant="secondary">{paper.role}</Badge>}
+      </div>
+      <p className="mt-3 text-sm text-slate-700">{paper.summary}</p>
+      {paper.relevanceReason && (
+        <p className="mt-2 text-xs text-slate-600">{paper.relevanceReason}</p>
+      )}
+      {paper.relevanceSignals.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {paper.relevanceSignals.slice(0, 8).map((signal) => (
+            <Badge key={signal} variant="outline" className="font-mono text-[11px]">
+              {signal}
+            </Badge>
+          ))}
+        </div>
+      )}
+      <div className="mt-3 grid gap-3 lg:grid-cols-3">
+        <div>
+          <p className="text-xs font-semibold uppercase text-slate-500">Methods</p>
+          <TextList items={methods} emptyLabel="No method summary" />
+        </div>
+        <div>
+          <p className="text-xs font-semibold uppercase text-slate-500">Findings</p>
+          <TextList items={findings} emptyLabel="No finding summary" />
+        </div>
+        <div>
+          <p className="text-xs font-semibold uppercase text-slate-500">Limitations</p>
+          <TextList items={paper.limitations.slice(0, 3)} emptyLabel="No limitation summary" />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ReadablePaperRow({ paper }: { paper: PlanReadablePaper }) {
+  return (
+    <div className="rounded-md border border-slate-300 bg-white px-4 py-3 shadow-sm">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge className={paper.source === 'probe' ? 'bg-indigo-700 text-white' : 'bg-blue-700 text-white'}>
+              {paper.source || 'paper'}
+            </Badge>
+            <Badge
+              variant="outline"
+              className={paper.relevanceScore >= 0.7 ? 'border-emerald-400 bg-emerald-50 text-emerald-900' : paper.relevanceScore >= 0.45 ? 'border-amber-400 bg-amber-50 text-amber-900' : 'border-red-300 bg-red-50 text-red-900'}
+            >
+              relevance {(paper.relevanceScore * 100).toFixed(0)}
+            </Badge>
+          </div>
+          <p className="mt-2 text-sm font-semibold text-slate-950">{paper.title}</p>
+        </div>
+      </div>
+      <p className="mt-2 text-sm text-slate-700">{paper.summary}</p>
+      {paper.supports.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {paper.supports.map((support) => (
+            <Badge key={support} variant="outline" className="border-emerald-300 bg-emerald-50 text-emerald-900">
+              {support}
+            </Badge>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ReadableStageBlock({ stage }: { stage: PlanReadableStage }) {
+  return (
+    <div className="rounded-md border border-slate-300 bg-white px-4 py-4 shadow-sm">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3 className="text-base font-semibold text-slate-900">{stage.title}</h3>
+          <p className="mt-2 text-sm text-slate-800">{stage.goal}</p>
+          <p className="mt-2 text-xs text-slate-600">{stage.method}</p>
+        </div>
+        <Badge className="bg-indigo-700 text-white">Stage {stage.order}</Badge>
+      </div>
+      <div className="mt-4 space-y-3">
+        {stage.steps.map((step) => (
+          <div key={step.id} className="rounded-md border border-slate-200 bg-slate-50 px-3 py-3">
+            <p className="text-sm font-semibold text-slate-900">{step.title}</p>
+            <p className="mt-1 text-sm text-slate-700">{step.description}</p>
+            <p className="mt-2 text-xs text-slate-600">{step.method}</p>
+            <div className="mt-3 grid gap-2 md:grid-cols-2">
+              <div>
+                <p className="mb-1 text-xs font-semibold uppercase text-slate-500">Outputs</p>
+                {step.outputs.map((output, index) => (
+                  <p key={`${output.name}-${index}`} className="text-xs text-slate-700">
+                    {output.type}: {output.name}
+                  </p>
+                ))}
+              </div>
+              <div>
+                <p className="mb-1 text-xs font-semibold uppercase text-slate-500">Expected</p>
+                {step.expected.map((expected, index) => (
+                  <p key={`${expected.metric}-${index}`} className="text-xs text-slate-700">
+                    {expected.metric}: {expected.target}
+                  </p>
+                ))}
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function GapItem({ gap }: { gap: PlanGapItem }) {
+  return (
+    <div className="rounded-md border border-slate-300 bg-white px-3 py-3 shadow-sm">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <Badge variant="outline" className="font-mono text-[11px]">
+          {gap.id}
+        </Badge>
+        <Badge variant="secondary">{gap.severity}</Badge>
+      </div>
+      <p className="mt-2 text-sm text-slate-800">{gap.statement}</p>
+      {gap.whyUnsolved && <p className="mt-2 text-xs text-slate-500">{gap.whyUnsolved}</p>}
+      <div className="mt-2 flex flex-wrap gap-1.5">
+        {gap.supportedByPaperIds.slice(0, 6).map((id) => (
+          <Badge key={id} variant="outline" className="font-mono text-[11px]">
+            paper:{shortId(id)}
+          </Badge>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function EvidenceCoverageCard({
+  label,
+  value,
+  detail,
+  ok,
+}: {
+  label: string
+  value: string
+  detail: string
+  ok: boolean
+}) {
+  return (
+    <div className={`rounded-md border border-l-4 bg-white px-4 py-3 shadow-sm ${ok ? 'border-l-emerald-700' : 'border-l-amber-700'}`}>
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-sm font-semibold text-slate-900">{label}</p>
+        {ok ? <CheckCircle2 className="h-4 w-4 text-emerald-700" /> : <AlertTriangle className="h-4 w-4 text-amber-700" />}
+      </div>
+      <p className="mt-2 text-2xl font-semibold text-slate-950">{value}</p>
+      <p className="mt-1 text-xs text-slate-600">{detail}</p>
+    </div>
+  )
+}
+
+function ReviewerReportCard({ report }: { report: PlanReviewerReport }) {
+  return (
+    <div className={`rounded-md border border-l-4 bg-white px-4 py-3 shadow-sm ${report.passed ? 'border-l-emerald-700' : 'border-l-red-700'}`}>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          {report.passed ? <CheckCircle2 className="h-4 w-4 text-emerald-700" /> : <AlertTriangle className="h-4 w-4 text-red-700" />}
+          <p className="text-sm font-semibold text-slate-900">{report.reviewer}</p>
+        </div>
+        <Badge variant="outline" className="font-mono text-[11px]">
+          {(report.score * 100).toFixed(0)}
+        </Badge>
+      </div>
+      {report.blockingIssues.length > 0 && (
+        <div className="mt-3 space-y-2">
+          {report.blockingIssues.slice(0, 3).map((issue) => (
+            <div key={issue.id} className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-900">
+              <span className="font-mono">{issue.sectionPath || 'package'}</span>: {issue.message}
+            </div>
+          ))}
+        </div>
+      )}
+      {report.warnings.length > 0 && (
+        <div className="mt-3 space-y-2">
+          {report.warnings.slice(0, 2).map((issue) => (
+            <div key={issue.id} className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+              <span className="font-mono">{issue.sectionPath || 'package'}</span>: {issue.message}
+            </div>
+          ))}
+        </div>
+      )}
+      {report.repairSuggestions.length > 0 && (
+        <p className="mt-3 text-xs text-slate-600">{report.repairSuggestions[0]}</p>
+      )}
+    </div>
+  )
+}
+
+function FeedbackList({ feedback }: { feedback: PlanHumanFeedback[] }) {
+  if (!feedback.length) {
+    return <p className="text-sm text-muted-foreground">No human feedback yet.</p>
+  }
+  return (
+    <div className="space-y-2">
+      {feedback.slice(0, 6).map((item) => (
+        <div key={item.id} className={`rounded-md border px-3 py-2 text-sm ${item.resolved ? 'border-emerald-200 bg-emerald-50' : 'border-slate-300 bg-white'}`}>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <Badge variant={item.resolved ? 'secondary' : 'default'}>
+              {item.resolved ? 'Resolved' : 'Pending'}
+            </Badge>
+            <span className="text-xs text-slate-500">{new Date(item.createdAt).toLocaleString()}</span>
+          </div>
+          <p className="mt-2 text-slate-800">{item.comment}</p>
+          {item.resolvedByRevisionId && (
+            <p className="mt-1 text-xs text-emerald-800">Revision {item.resolvedByRevisionId}</p>
+          )}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+export function PlanGenerationPanel({
+  ideaSessionId: ideaSessionIdProp,
+  ideaCandidateId: ideaCandidateIdProp,
+  ideaCandidateTitle: ideaCandidateTitleProp,
+  ideaSeedQuery: ideaSeedQueryProp,
+}: {
+  ideaSessionId?: string
+  ideaCandidateId?: string
+  ideaCandidateTitle?: string
+  ideaSeedQuery?: string
+}) {
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
-
-  // Config state
-  const [activeProvider, setActiveProvider] = useState('moonshot')
-  const [activeModel, setActiveModel] = useState('moonshot-v1-8k')
-  const [paperType, setPaperType] = useState('algorithmic_method')
-  const [maxCandidates, setMaxCandidates] = useState(3)
-  const [seedQuery, setSeedQuery] = useState('')
-  const [directionTitle, setDirectionTitle] = useState('')
-  const [userNotes, setUserNotes] = useState('')
-
-  // Session state
-  const [session, setSession] = useState<PlanSession | null>(null)
-  const [trace, setTrace] = useState<TraceData | null>(null)
-  const [candidates, setCandidates] = useState<CandidatePlan[]>([])
+  const [activeTab, setActiveTab] = useState('summary')
+  const [planPackage, setPlanPackage] = useState<PlanPackage | null>(null)
+  const [presentation, setPresentation] = useState<PlanPackagePresentation | null>(null)
+  const [packageIdInput, setPackageIdInput] = useState(searchParams.get('packageId')?.trim() || '')
   const [isLoading, setIsLoading] = useState(false)
-  const [isPolling, setIsPolling] = useState(false)
+  const [isCreating, setIsCreating] = useState(false)
+  const [isRevising, setIsRevising] = useState(false)
+  const [isApproving, setIsApproving] = useState(false)
+  const [isSubmittingFeedback, setIsSubmittingFeedback] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [expandedCandidate, setExpandedCandidate] = useState<string | null>(null)
+  const [generationMode, setGenerationMode] = useState<GenerationMode>('hybrid')
+  const [maxStages, setMaxStages] = useState(3)
+  const [maxStepsPerStage, setMaxStepsPerStage] = useState(3)
+  const [maxReviewIterations, setMaxReviewIterations] = useState(2)
+  const [userNotes, setUserNotes] = useState('')
+  const [feedbackComment, setFeedbackComment] = useState('')
 
-  // Provider test
-  const [providerTestResult, setProviderTestResult] = useState<{ ok: boolean; latencyMs?: number; error?: string } | null>(null)
-  const [isTestingProvider, setIsTestingProvider] = useState(false)
+  const packageIdFromUrl = searchParams.get('packageId')?.trim() || ''
+  const ideaSessionIdFromUrl = ideaSessionIdProp || searchParams.get('ideaSessionId')?.trim() || ''
+  const ideaCandidateIdFromUrl = ideaCandidateIdProp || searchParams.get('ideaCandidateId')?.trim() || ''
+  const ideaCandidateTitleFromUrl = ideaCandidateTitleProp || searchParams.get('ideaCandidateTitle')?.trim() || ''
+  const ideaSeedQueryFromUrl = ideaSeedQueryProp || searchParams.get('ideaSeedQuery')?.trim() || ''
 
-  // Session history
-  const [sessionHistory, setSessionHistory] = useState<SessionListItem[]>([])
-  const [showHistory, setShowHistory] = useState(true)
-  const [isLoadingHistory, setIsLoadingHistory] = useState(false)
-  const [historyLoadError, setHistoryLoadError] = useState<string | null>(null)
-
-  // Selection result
-  const [selectedResult, setSelectedResult] = useState<{ researchPlanId: string; candidateId: string } | null>(null)
-
-  // ResearchPlan opened via ?planId= (from Ideas "Open in Planning")
-  const [linkedResearchPlan, setLinkedResearchPlan] = useState<LinkedResearchPlan | null>(null)
-  const [linkedPlanLoading, setLinkedPlanLoading] = useState(false)
-  const [linkedPlanError, setLinkedPlanError] = useState<string | null>(null)
-
-  const planIdFromUrl = searchParams.get('planId')?.trim() || ''
-  const ideaSessionIdFromUrl = searchParams.get('ideaSessionId')?.trim() || ''
-  const ideaCandidateIdFromUrl = searchParams.get('ideaCandidateId')?.trim() || ''
-  const ideaCandidateTitleFromUrl = searchParams.get('ideaCandidateTitle')?.trim() || ''
-  const ideaSeedQueryFromUrl = searchParams.get('ideaSeedQuery')?.trim() || ''
-  const hasIdeaLinkInUrl = !!(ideaSessionIdFromUrl && ideaCandidateIdFromUrl)
-
-  /** Pre-fill topic fields when arriving from Ideas (only if inputs still empty). */
-  useEffect(() => {
-    if (ideaSeedQueryFromUrl) {
-      setSeedQuery((s) => (s.trim() ? s : ideaSeedQueryFromUrl))
+  const loadPackage = useCallback(async (packageId: string) => {
+    if (!packageId) return
+    setIsLoading(true)
+    setError(null)
+    try {
+      const [loaded, loadedPresentation] = await Promise.all([
+        getPlanPackage(packageId),
+        getPlanPackagePresentation(packageId),
+      ])
+      setPlanPackage(loaded)
+      setPresentation(loadedPresentation)
+      setPackageIdInput(loaded.packageId)
+    } catch (err) {
+      setPlanPackage(null)
+      setPresentation(null)
+      setError(err instanceof Error ? err.message : 'Failed to load PlanPackage')
+    } finally {
+      setIsLoading(false)
     }
-    if (ideaCandidateTitleFromUrl) {
-      setDirectionTitle((d) => (d.trim() ? d : ideaCandidateTitleFromUrl))
-    }
-  }, [ideaSeedQueryFromUrl, ideaCandidateTitleFromUrl])
+  }, [])
 
   useEffect(() => {
-    if (!planIdFromUrl) {
-      setLinkedResearchPlan(null)
-      setLinkedPlanError(null)
-      setLinkedPlanLoading(false)
+    if (packageIdFromUrl) {
+      void loadPackage(packageIdFromUrl)
       return
     }
+
+    if (!ideaSessionIdFromUrl) {
+      setPlanPackage(null)
+      return
+    }
+
     let cancelled = false
-    setLinkedPlanLoading(true)
-    setLinkedPlanError(null)
-    setLinkedResearchPlan(null)
-    fetch(`${API_BASE}/api/v1/research/plans/${encodeURIComponent(planIdFromUrl)}`)
-      .then(async (r) => {
-        const d = await r.json().catch(() => ({}))
-        if (!r.ok) throw new Error(typeof d.detail === 'string' ? d.detail : `Failed to load plan (${r.status})`)
-        return d as LinkedResearchPlan
-      })
-      .then((data) => {
-        if (!cancelled) {
-          setLinkedResearchPlan(data)
-          setLinkedPlanLoading(false)
-        }
+    setIsLoading(true)
+    setError(null)
+    Promise.all([
+      getPlanPackageByIdeaSession(ideaSessionIdFromUrl),
+      getPlanPackagePresentationByIdeaSession(ideaSessionIdFromUrl),
+    ])
+      .then(([loaded, loadedPresentation]) => {
+        if (cancelled) return
+        setPlanPackage(loaded)
+        setPresentation(loadedPresentation)
+        setPackageIdInput(loaded.packageId)
       })
       .catch((err) => {
-        if (!cancelled) {
-          setLinkedPlanError(err instanceof Error ? err.message : 'Failed to load research plan')
-          setLinkedResearchPlan(null)
-          setLinkedPlanLoading(false)
+        if (cancelled) return
+        if (err instanceof Error && err.message.includes('not found')) {
+          setPlanPackage(null)
+          setPresentation(null)
+          setError(null)
+        } else {
+          setError(err instanceof Error ? err.message : 'Failed to load PlanPackage')
         }
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoading(false)
       })
     return () => {
       cancelled = true
     }
-  }, [planIdFromUrl])
+  }, [ideaSessionIdFromUrl, loadPackage, packageIdFromUrl])
 
-  const clearPlanIdFromUrl = () => {
+  const updatePackageUrl = (packageId: string) => {
     const next = new URLSearchParams(searchParams)
-    next.delete('planId')
-    setSearchParams(next, { replace: true })
-    setLinkedResearchPlan(null)
-    setLinkedPlanError(null)
-  }
-
-  const clearIdeaLinkFromUrl = () => {
-    const next = new URLSearchParams(searchParams)
-    next.delete('ideaSessionId')
-    next.delete('ideaCandidateId')
-    next.delete('ideaCandidateTitle')
-    next.delete('ideaSeedQuery')
+    next.set('packageId', packageId)
     setSearchParams(next, { replace: true })
   }
 
-  useEffect(() => {
-    loadSessionHistory()
-    loadActiveLlmFromSettings()
-  }, [])
-
-  const loadActiveLlmFromSettings = async () => {
-    try {
-      const r = await fetch(`${API_BASE}/api/v1/providers`)
-      if (!r.ok) return
-      const data = await r.json()
-      const provider = data.activeProvider || 'moonshot'
-      const providerInfo = (data.providers || []).find((p: { providerName: string; model: string }) => p.providerName === provider)
-      setActiveProvider(provider)
-      setActiveModel(providerInfo?.model || 'moonshot-v1-8k')
-    } catch (err) {
-      console.error('Failed to load active LLM from settings:', err)
-    }
-  }
-
-  const loadSessionHistory = async () => {
-    setIsLoadingHistory(true)
-    setHistoryLoadError(null)
-    try {
-      const resp = await fetch(`${API_BASE}/api/v1/plans/sessions`)
-      const data = await resp.json().catch(() => ({}))
-      if (resp.ok) {
-        setSessionHistory(data.sessions || [])
-      } else {
-        const detail = typeof data.detail === 'string' ? data.detail : `HTTP ${resp.status}`
-        setHistoryLoadError(detail)
-      }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Failed to load history'
-      setHistoryLoadError(msg)
-      console.error('Failed to load plan session history:', err)
-    } finally {
-      setIsLoadingHistory(false)
-    }
-  }
-
-  const loadSession = async (sessionId: string) => {
-    try {
-      const sResp = await fetch(`${API_BASE}/api/v1/plans/sessions/${sessionId}`)
-      if (!sResp.ok) throw new Error('Session not found')
-      const sData = await sResp.json()
-      setSession(sData)
-      setSeedQuery(sData.config.ideaSeedQuery || '')
-      setDirectionTitle(sData.config.directionTitle || '')
-      setPaperType(sData.config.paperType || 'algorithmic_method')
-      setMaxCandidates(sData.config.maxCandidates)
-
-      const tResp = await fetch(`${API_BASE}/api/v1/plans/sessions/${sessionId}/trace`)
-      if (tResp.ok) setTrace(await tResp.json())
-
-      const cResp = await fetch(`${API_BASE}/api/v1/plans/sessions/${sessionId}/candidates`)
-      if (cResp.ok) { const d = await cResp.json(); setCandidates(d.candidates || []) }
-
-      setShowHistory(true)
-      setError(null)
-      setSelectedResult(null)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load session')
-    }
-  }
-
-  const testProvider = async () => {
-    setProviderTestResult(null)
-    setIsTestingProvider(true)
-    try {
-      const resp = await fetch(`${API_BASE}/api/v1/providers/test`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: 'Say OK', maxTokens: 10 }),
-      })
-      if (!resp.ok) {
-        const d = await resp.json().catch(() => ({}))
-        setProviderTestResult({ ok: false, error: d.detail || `Error ${resp.status}` })
-        return
-      }
-      setProviderTestResult(await resp.json())
-    } catch (err) {
-      setProviderTestResult({ ok: false, error: 'Backend unreachable' })
-    } finally {
-      setIsTestingProvider(false)
-    }
-  }
-
-  const generatePlans = async () => {
-    if (!seedQuery.trim() && !directionTitle.trim()) {
-      setError('Enter a research topic or direction title')
+  const createPackage = async () => {
+    if (!ideaSessionIdFromUrl) {
+      setError('Open this page from an Idea candidate or paste a PlanPackage ID.')
       return
     }
-    setIsLoading(true); setError(null); setSession(null); setTrace(null); setCandidates([]); setSelectedResult(null)
-    try {
-      await loadActiveLlmFromSettings()
-      const createBody: Record<string, unknown> = {
-        paperType,
-        maxCandidates,
-        ideaSeedQuery: seedQuery,
-        directionTitle: directionTitle || seedQuery,
-        userNotes: userNotes || undefined,
-      }
-      if (ideaSessionIdFromUrl && ideaCandidateIdFromUrl) {
-        createBody.ideaSessionId = ideaSessionIdFromUrl
-        createBody.ideaCandidateId = ideaCandidateIdFromUrl
-        if (ideaCandidateTitleFromUrl) createBody.ideaCandidateTitle = ideaCandidateTitleFromUrl
-      }
-
-      const createResp = await fetch(`${API_BASE}/api/v1/plans/sessions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(createBody),
-      })
-      if (!createResp.ok) {
-        const d = await createResp.json().catch(() => ({}))
-        throw new Error(d.detail || `Failed: ${createResp.status}`)
-      }
-      const sessionData = await createResp.json()
-      setSession(sessionData)
-
-      const startResp = await fetch(`${API_BASE}/api/v1/plans/sessions/${sessionData.id}/generate`, { method: 'POST' })
-      if (!startResp.ok) throw new Error(`Failed to start: ${startResp.status}`)
-      setSession(await startResp.json())
-      setIsPolling(true)
-      setShowHistory(true)
-      void loadSessionHistory()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unknown error')
-    } finally {
-      setIsLoading(false)
-    }
-  }
-
-  const pollSession = useCallback(async () => {
-    if (!session?.id || !isPolling) return
-    try {
-      const sResp = await fetch(`${API_BASE}/api/v1/plans/sessions/${session.id}`)
-      const sData = await sResp.json()
-      setSession(sData)
-
-      const tResp = await fetch(`${API_BASE}/api/v1/plans/sessions/${session.id}/trace`)
-      if (tResp.ok) setTrace(await tResp.json())
-
-      if (sData.status === 'completed' || sData.status === 'failed') {
-        setIsPolling(false)
-        if (sData.status === 'completed') {
-          const cResp = await fetch(`${API_BASE}/api/v1/plans/sessions/${session.id}/candidates`)
-          if (cResp.ok) { const d = await cResp.json(); setCandidates(d.candidates || []) }
-        }
-        setShowHistory(true)
-        void loadSessionHistory()
-      }
-    } catch (err) { console.error('Polling error:', err) }
-  }, [session?.id, isPolling])
-
-  useEffect(() => {
-    if (!isPolling) return
-    const interval = setInterval(pollSession, 2000)
-    return () => clearInterval(interval)
-  }, [isPolling, pollSession])
-
-  const selectCandidate = async (candidateId: string) => {
-    if (!session?.id) return
+    setIsCreating(true)
     setError(null)
     try {
-      const resp = await fetch(`${API_BASE}/api/v1/plans/sessions/${session.id}/select`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ candidateId }),
+      const response = await createPlanPackageFromIdeaSession(ideaSessionIdFromUrl, {
+        candidateId: ideaCandidateIdFromUrl || undefined,
+        generationMode,
+        reviewerMode: DEFAULT_REVIEWER_MODE,
+        maxStages,
+        maxStepsPerStage,
+        maxRepairRounds: maxReviewIterations,
+        userNotes: userNotes.trim() || undefined,
       })
-      if (!resp.ok) {
-        const d = await resp.json().catch(() => ({ detail: resp.statusText }))
-        throw new Error(d.detail || `Failed: ${resp.status}`)
-      }
-      const data = await resp.json()
-      if (data.ok && data.researchPlanId) {
-        setSelectedResult({ researchPlanId: data.researchPlanId, candidateId })
-        loadSessionHistory()
-      }
+      setPlanPackage(response.package)
+      setPresentation(await getPlanPackagePresentation(response.packageId))
+      setPackageIdInput(response.packageId)
+      updatePackageUrl(response.packageId)
+      setActiveTab('summary')
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to select candidate')
+      setError(err instanceof Error ? err.message : 'Failed to create PlanPackage')
+    } finally {
+      setIsCreating(false)
     }
   }
 
-  const getStatusColor = (s: string) => {
-    switch (s) {
-      case 'completed': return 'bg-green-100 text-green-800'
-      case 'running': return 'bg-blue-100 text-blue-800'
-      case 'failed': return 'bg-red-100 text-red-800'
-      case 'pending': return 'bg-yellow-100 text-yellow-800'
-      default: return 'bg-gray-100 text-gray-800'
-    }
-  }
-
-  const getStepIcon = (s: string) => {
-    switch (s) {
-      case 'ok': return <CheckCircle2 className="h-4 w-4 text-green-500" />
-      case 'failed': return <XCircle className="h-4 w-4 text-red-500" />
-      default: return <Clock className="h-4 w-4 text-gray-400" />
-    }
-  }
-
-  const navigateToCode = async (candidateId: string) => {
-    if (!session?.id) return
+  const approveCurrentPackage = async () => {
+    if (!planPackage) return
+    setIsApproving(true)
+    setError(null)
     try {
-      const resp = await fetch(`${API_BASE}/api/v1/code/plan-links`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          planSessionId: session.id,
-          candidateId,
-          candidateIndex: candidates.find(c => c.id === candidateId)?.indexNumber,
-        }),
-      })
-      if (!resp.ok) throw new Error('Failed to create plan link')
-      const data = await resp.json()
-      navigate(`/code?linkId=${data.linkId}`)
+      const approved = await approvePlanPackageWithMode(planPackage.packageId, DEFAULT_REVIEWER_MODE)
+      setPlanPackage(approved)
+      setPresentation(await getPlanPackagePresentation(approved.packageId))
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to navigate to code')
+      setError(err instanceof Error ? err.message : 'Failed to approve PlanPackage')
+    } finally {
+      setIsApproving(false)
     }
   }
 
-  const getScoreColor = (score: number) => {
-    if (score >= 8) return 'bg-green-100 text-green-800'
-    if (score >= 6) return 'bg-amber-100 text-amber-800'
-    return 'bg-red-100 text-red-800'
+  const submitFeedbackAndRevise = async () => {
+    if (!planPackage || !feedbackComment.trim()) return
+    setIsSubmittingFeedback(true)
+    setIsRevising(true)
+    setError(null)
+    try {
+      const updated = await addPlanPackageFeedback(planPackage.packageId, {
+        sectionPath: 'package',
+        feedbackType: 'correction',
+        severity: 'medium',
+        requestedAction: 'revise',
+        comment: feedbackComment.trim(),
+      })
+      const revised = await revisePlanPackage(updated.packageId, {
+        generationMode,
+        reviewerMode: DEFAULT_REVIEWER_MODE,
+        maxStages,
+        maxStepsPerStage,
+        maxRepairRounds: maxReviewIterations,
+      })
+      setPlanPackage(revised)
+      setPresentation(await getPlanPackagePresentation(revised.packageId))
+      setFeedbackComment('')
+      setActiveTab('summary')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to revise from feedback')
+    } finally {
+      setIsSubmittingFeedback(false)
+      setIsRevising(false)
+    }
   }
+
+  const loadByInput = () => {
+    const packageId = packageIdInput.trim()
+    if (!packageId) return
+    updatePackageUrl(packageId)
+    void loadPackage(packageId)
+  }
+
+  const totalSteps = useMemo(
+    () => planPackage?.stages.reduce((sum, stage) => sum + stage.steps.length, 0) ?? 0,
+    [planPackage]
+  )
+
+  const evidencePapers = useMemo(() => {
+    if (!planPackage) return []
+    const ids = new Set([
+      ...planPackage.evidenceTrace.selectedPaperIds,
+      ...planPackage.evidenceTrace.structuredPaperIds,
+      ...planPackage.evidenceTrace.probePaperIds,
+    ])
+    return planPackage.literatureSurvey.papers.filter((paper) => {
+      return ids.has(paper.paperId) || (paper.structuredPaperId ? ids.has(paper.structuredPaperId) : false)
+    })
+  }, [planPackage])
+
+  const evidencePaperIdsWithoutSummary = useMemo(() => {
+    if (!planPackage) return []
+    const summarizedIds = new Set<string>()
+    evidencePapers.forEach((paper) => {
+      summarizedIds.add(paper.paperId)
+      if (paper.structuredPaperId) summarizedIds.add(paper.structuredPaperId)
+    })
+    return [
+      ...planPackage.evidenceTrace.selectedPaperIds,
+      ...planPackage.evidenceTrace.structuredPaperIds,
+      ...planPackage.evidenceTrace.probePaperIds,
+    ].filter((id, index, ids) => id && ids.indexOf(id) === index && !summarizedIds.has(id))
+  }, [evidencePapers, planPackage])
+
+  const gate = planPackage?.qualityGate ?? EMPTY_GATE
 
   return (
     <div className="space-y-6">
-      {/* ResearchPlan from Ideas (?planId=) — same entity as POST /ideas/.../select */}
-      {planIdFromUrl && (
-        <Card className="border-teal-200 bg-gradient-to-r from-teal-50/80 to-emerald-50/50">
-          <CardHeader className="pb-2">
-            <div className="flex items-start justify-between gap-2">
-              <div>
-                <CardTitle className="text-base flex items-center gap-2">
-                  <FileText className="h-4 w-4 text-teal-600" />
-                  Linked Research Plan
-                </CardTitle>
-                <CardDescription className="mt-1">
-                  Opened from Ideas (plan ID in URL). This is stored under <span className="font-mono text-xs">/api/v1/research/plans</span>, not Plan Sessions below.
-                </CardDescription>
-              </div>
-              <Button variant="outline" size="sm" onClick={clearPlanIdFromUrl}>
-                Dismiss
-              </Button>
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {linkedPlanLoading && (
-              <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                <RefreshCw className="h-4 w-4 animate-spin" />
-                Loading plan…
-              </div>
-            )}
-            {linkedPlanError && (
-              <div className="p-3 rounded-md bg-red-50 border border-red-200 text-sm text-red-800 space-y-2">
-                <p className="font-medium">Could not load this plan</p>
-                <p>{linkedPlanError}</p>
-                <p className="text-xs text-red-700">
-                  Confirm the backend is running and the plan file exists under backend data (e.g. after a successful Ideas selection).
-                </p>
-              </div>
-            )}
-            {linkedResearchPlan && !linkedPlanLoading && (
-              <div className="space-y-3 text-sm">
-                <div className="flex flex-wrap items-center gap-2">
-                  <Badge variant="outline" className="font-mono text-xs">
-                    {linkedResearchPlan.id}
-                  </Badge>
-                  {linkedResearchPlan.source_title && (
-                    <Badge variant="secondary" className="text-xs max-w-[280px] truncate" title={linkedResearchPlan.source_title}>
-                      From idea: {linkedResearchPlan.source_title}
-                    </Badge>
-                  )}
-                  <span className="text-xs text-muted-foreground">
-                    {new Date(linkedResearchPlan.created_at).toLocaleString()}
-                  </span>
-                </div>
-                <div>
-                  <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Research question</p>
-                  <p className="mt-1 text-slate-900">{linkedResearchPlan.research_question}</p>
-                </div>
-                <div>
-                  <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Hypothesis</p>
-                  <p className="mt-1 text-slate-900">{linkedResearchPlan.hypothesis}</p>
-                </div>
-                {(linkedResearchPlan.source_session_id || linkedResearchPlan.source_candidate_id) && (
-                  <p className="text-xs text-muted-foreground">
-                    Trace: session{' '}
-                    <span className="font-mono">{linkedResearchPlan.source_session_id ?? '—'}</span>
-                    {' · '}candidate{' '}
-                    <span className="font-mono">{linkedResearchPlan.source_candidate_id ?? '—'}</span>
-                  </p>
-                )}
-                {linkedResearchPlan.notes ? (
-                  <div>
-                    <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Notes</p>
-                    <p className="mt-1 whitespace-pre-wrap text-slate-800">{linkedResearchPlan.notes}</p>
-                  </div>
-                ) : null}
-                <details className="rounded-md border border-slate-200 bg-white/60 px-3 py-2">
-                  <summary className="cursor-pointer text-xs font-medium text-slate-700">Variables, methodology, outcomes (JSON)</summary>
-                  <pre className="mt-2 max-h-64 overflow-auto text-xs text-slate-700 whitespace-pre-wrap break-words">
-                    {JSON.stringify(
-                      {
-                        variables: linkedResearchPlan.variables,
-                        methodology: linkedResearchPlan.methodology,
-                        expected_outcomes: linkedResearchPlan.expected_outcomes,
-                        tags: linkedResearchPlan.tags,
-                      },
-                      null,
-                      2
-                    )}
-                  </pre>
-                </details>
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      )}
-
-      {hasIdeaLinkInUrl && (
-        <Card className="border-amber-200 bg-gradient-to-r from-amber-50/90 to-orange-50/50">
-          <CardHeader className="pb-2">
-            <div className="flex items-start justify-between gap-2">
-              <div>
-                <CardTitle className="text-base flex items-center gap-2">
-                  <Sparkles className="h-4 w-4 text-amber-600" />
-                  Idea context for Plan Generation
-                </CardTitle>
-                <CardDescription className="mt-1">
-                  The next <strong>Plan Generation</strong> run will send this Idea session/candidate to the backend so the LLM prompt includes your selected idea (see{' '}
-                  <span className="font-mono text-xs">PlanSessionConfig.idea*</span>).
-                </CardDescription>
-              </div>
-              <Button variant="outline" size="sm" onClick={clearIdeaLinkFromUrl}>
-                Clear link
-              </Button>
-            </div>
-          </CardHeader>
-          <CardContent className="text-sm space-y-1">
-            {ideaCandidateTitleFromUrl && (
-              <p>
-                <span className="text-muted-foreground">Idea title:</span>{' '}
-                <span className="font-medium text-slate-900">{ideaCandidateTitleFromUrl}</span>
-              </p>
-            )}
-            <p className="text-xs text-muted-foreground font-mono break-all">
-              ideaSessionId={ideaSessionIdFromUrl} · ideaCandidateId={ideaCandidateIdFromUrl}
-            </p>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Session History */}
-      <Card>
-        <CardHeader className="pb-2">
-          <div className="flex items-center justify-between">
-            <CardTitle className="flex items-center gap-2 text-base">
-              <History className="h-4 w-4 text-slate-500" />
-              Plan Session History
-            </CardTitle>
-            <Button variant="ghost" size="sm" onClick={() => setShowHistory(!showHistory)}>
-              {showHistory ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
-              <span className="ml-1">{sessionHistory.length} sessions</span>
-            </Button>
-          </div>
-          <CardDescription className="text-xs text-muted-foreground pt-1">
-            Lists only <strong>Plan Generation</strong> runs from this page (backend stores <span className="font-mono">psess_*</span>).
-            Research plans created solely via <strong>Ideas</strong> → select candidate are tracked under Idea Session History, not here.
-          </CardDescription>
-        </CardHeader>
-        {showHistory && (
-          <CardContent>
-            {isLoadingHistory ? (
-              <div className="flex items-center gap-2 text-sm text-muted-foreground"><RefreshCw className="h-4 w-4 animate-spin" /> Loading...</div>
-            ) : historyLoadError ? (
-              <p className="text-sm text-destructive">{historyLoadError}</p>
-            ) : sessionHistory.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No previous plan sessions — use Generate below at least once, or confirm the backend URL (VITE_API_BASE_URL).</p>
-            ) : (
-              <div className="space-y-2 max-h-48 overflow-y-auto">
-                {sessionHistory.map((s) => (
-                  <div key={s.id} className={`p-2 rounded border cursor-pointer hover:bg-slate-50 ${session?.id === s.id ? 'border-teal-400 bg-teal-50' : 'border-slate-200'}`} onClick={() => loadSession(s.id)}>
-                    <div className="flex items-center justify-between">
-                      <span className="text-sm font-medium truncate flex-1">
-                        {s.config.ideaCandidateTitle || s.config.ideaSeedQuery || s.config.directionTitle || s.id}
-                      </span>
-                      <Badge className={getStatusColor(s.status)} variant="outline">{s.status}</Badge>
-                    </div>
-                    <div className="flex items-center gap-2 mt-1 text-xs text-muted-foreground">
-                      <span>{getPaperTypeV2ById(s.config.paperType || '')?.label || s.config.paperType}</span>
-                      <span>•</span>
-                      <span>{new Date(s.createdAt).toLocaleDateString()}</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-            <Button variant="outline" size="sm" onClick={loadSessionHistory} className="mt-2"><RefreshCw className="h-3 w-3 mr-1" /> Refresh</Button>
-          </CardContent>
-        )}
-      </Card>
-
-      {/* Plan Generation Form */}
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center gap-2"><FileText className="h-5 w-5 text-teal-500" />Plan Generation</CardTitle>
-          <CardDescription>Generate candidate research plans using AI-powered analysis</CardDescription>
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div>
+              <CardTitle className="flex items-center gap-2 text-xl">
+                <ClipboardList className="h-5 w-5 text-indigo-700" />
+                PlanPackage Workspace
+              </CardTitle>
+              <CardDescription className="mt-1">
+                Primary handoff for the idea + plan stage. Quality checks run automatically during generation, feedback revision, and approval.
+              </CardDescription>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button onClick={approveCurrentPackage} disabled={!planPackage || isApproving} className="bg-emerald-700 text-white hover:bg-emerald-800">
+                {isApproving ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <UserCheck className="mr-2 h-4 w-4" />}
+                Approve Handoff
+              </Button>
+            </div>
+          </div>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="space-y-2">
-            <label className="text-sm font-medium">Research Topic / Seed Query</label>
-            <textarea value={seedQuery} onChange={(e) => setSeedQuery(e.target.value)} placeholder="e.g., improving LLM reasoning with chain-of-thought prompting" className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm min-h-[80px] focus:ring-2 focus:ring-teal-500" disabled={isPolling} />
-          </div>
-          <div className="space-y-2">
-            <label className="text-sm font-medium">Direction Title (optional)</label>
-            <input value={directionTitle} onChange={(e) => setDirectionTitle(e.target.value)} placeholder="e.g., Chain-of-Thought Reasoning" className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:ring-2 focus:ring-teal-500" disabled={isPolling} />
-          </div>
-          <div className="grid gap-4 md:grid-cols-2">
-            <div className="space-y-2">
-              <label className="text-sm font-medium">LLM (from Settings)</label>
-              <div className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm bg-slate-50">
-                {activeProvider} / {activeModel}
-              </div>
-              <p className="text-xs text-muted-foreground">Uses active provider/model configured in Settings -&gt; LLM Providers</p>
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium">Paper Type</label>
-              <select value={paperType} onChange={(e) => setPaperType(e.target.value)} className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm" disabled={isPolling}>
-                {PAPER_TYPES_V2.map(pt => (<option key={pt.id} value={pt.id}>{pt.label}</option>))}
-              </select>
-              <p className="text-xs text-muted-foreground">{getPaperTypeV2ById(paperType)?.description}</p>
-            </div>
-          </div>
-          <div className="grid gap-4 md:grid-cols-2">
-            <div className="space-y-2">
-              <label className="text-sm font-medium">Max Candidates: {maxCandidates}</label>
-              <input type="range" min={1} max={5} value={maxCandidates} onChange={(e) => setMaxCandidates(parseInt(e.target.value))} className="w-full" disabled={isPolling} />
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium">Additional Notes (optional)</label>
-              <input value={userNotes} onChange={(e) => setUserNotes(e.target.value)} placeholder="Any constraints or focus areas..." className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm" disabled={isPolling} />
-            </div>
-          </div>
-          <div className="flex gap-3 pt-2">
-            <Button variant="outline" onClick={testProvider} disabled={isPolling || isTestingProvider}>
-              {isTestingProvider ? <RefreshCw className="h-4 w-4 animate-spin mr-2" /> : <Zap className="h-4 w-4 mr-2" />}Test Provider
-            </Button>
-            <Button onClick={generatePlans} disabled={isLoading || isPolling || (!seedQuery.trim() && !directionTitle.trim())} className="bg-teal-500 hover:bg-teal-600">
-              {isLoading ? <RefreshCw className="h-4 w-4 animate-spin mr-2" /> : <Sparkles className="h-4 w-4 mr-2" />}Plan Generation
+          <div className="grid gap-3 lg:grid-cols-[1fr_auto]">
+            <input
+              value={packageIdInput}
+              onChange={(event) => setPackageIdInput(event.target.value)}
+              placeholder="ppkg_..."
+              className="h-10 w-full rounded-md border border-slate-400 px-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-600"
+            />
+            <Button variant="outline" onClick={loadByInput} disabled={!packageIdInput.trim() || isLoading}>
+              {isLoading ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <FileJson className="mr-2 h-4 w-4" />}
+              Load Package
             </Button>
           </div>
-          {providerTestResult && (
-            <div className={`p-3 rounded-md ${providerTestResult.ok ? 'bg-green-50 border border-green-200' : 'bg-red-50 border border-red-200'}`}>
-              <div className="flex items-center gap-2">
-                {providerTestResult.ok ? <CheckCircle2 className="h-4 w-4 text-green-600" /> : <XCircle className="h-4 w-4 text-red-600" />}
-                <span className={`text-sm font-medium ${providerTestResult.ok ? 'text-green-700' : 'text-red-700'}`}>
-                  {providerTestResult.ok ? `Provider OK (${providerTestResult.latencyMs}ms)` : `Error: ${providerTestResult.error}`}
-                </span>
+
+          {(ideaSessionIdFromUrl || ideaCandidateIdFromUrl) && (
+            <div className="rounded-md border border-l-4 border-slate-300 border-l-indigo-700 bg-white px-4 py-3 shadow-sm">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge variant="outline" className="border-slate-400 bg-slate-50 font-mono text-[11px] text-slate-800">
+                      idea:{shortId(ideaSessionIdFromUrl)}
+                    </Badge>
+                    {ideaCandidateIdFromUrl && (
+                      <Badge variant="outline" className="border-slate-400 bg-slate-50 font-mono text-[11px] text-slate-800">
+                        candidate:{shortId(ideaCandidateIdFromUrl)}
+                      </Badge>
+                    )}
+                  </div>
+                  {ideaCandidateTitleFromUrl && <p className="mt-2 text-sm font-medium text-slate-900">{ideaCandidateTitleFromUrl}</p>}
+                  {ideaSeedQueryFromUrl && <p className="mt-1 text-xs text-slate-600">{ideaSeedQueryFromUrl}</p>}
+                </div>
+                <Button onClick={createPackage} disabled={isCreating || !ideaSessionIdFromUrl} className="bg-indigo-700 text-white hover:bg-indigo-800">
+                  {isCreating ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <Sparkles className="mr-2 h-4 w-4" />}
+                  Generate PlanPackage
+                </Button>
               </div>
+              <div className="mt-3 grid gap-3 md:grid-cols-4">
+                <label className="space-y-1 text-xs font-medium text-slate-700">
+                  Generation
+                  <select
+                    value={generationMode}
+                    onChange={(event) => setGenerationMode(event.target.value as GenerationMode)}
+                    className="h-9 w-full rounded-md border border-slate-400 bg-white px-2 text-sm text-slate-900"
+                  >
+                    <option value="hybrid">Hybrid LLM</option>
+                    <option value="deterministic">Deterministic</option>
+                  </select>
+                </label>
+                <label className="space-y-1 text-xs font-medium text-slate-700">
+                  Max stages: {maxStages}
+                  <input
+                    type="range"
+                    min={1}
+                    max={5}
+                    value={maxStages}
+                    onChange={(event) => setMaxStages(Number(event.target.value))}
+                    className="w-full"
+                  />
+                </label>
+                <label className="space-y-1 text-xs font-medium text-slate-700">
+                  Max steps/stage: {maxStepsPerStage}
+                  <input
+                    type="range"
+                    min={1}
+                    max={5}
+                    value={maxStepsPerStage}
+                    onChange={(event) => setMaxStepsPerStage(Number(event.target.value))}
+                    className="w-full"
+                  />
+                </label>
+                <label className="space-y-1 text-xs font-medium text-slate-700">
+                  Review iterations: {maxReviewIterations}
+                  <input
+                    type="range"
+                    min={0}
+                    max={2}
+                    value={maxReviewIterations}
+                    onChange={(event) => setMaxReviewIterations(Number(event.target.value))}
+                    className="w-full"
+                  />
+                </label>
+              </div>
+              <textarea
+                value={userNotes}
+                onChange={(event) => setUserNotes(event.target.value)}
+                placeholder="Optional planning constraints for this package"
+                className="mt-3 min-h-[72px] w-full rounded-md border border-slate-400 bg-white px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-600"
+              />
             </div>
           )}
-          {error && (<div className="p-3 rounded-md bg-red-50 border border-red-200"><p className="text-sm text-red-700">{error}</p></div>)}
+
+          {error && (
+            <div className="rounded-md border border-l-4 border-red-300 border-l-red-700 bg-white px-4 py-3 text-sm text-red-800 shadow-sm">
+              {error}
+            </div>
+          )}
         </CardContent>
       </Card>
 
-      {/* Session Progress */}
-      {session && (
-        <Card>
-          <CardHeader>
-            <div className="flex items-center justify-between">
-              <CardTitle className="text-lg">Session: {session.id}</CardTitle>
-              <Badge className={getStatusColor(session.status)}>{session.status}</Badge>
+      {!planPackage && !isLoading && (
+        <Card className="border-slate-200">
+          <CardContent className="flex flex-col items-center gap-3 py-10 text-center">
+            <FileJson className="h-10 w-10 text-slate-400" />
+            <div>
+              <p className="font-medium text-slate-900">No PlanPackage loaded</p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Start from a completed Idea candidate or paste a package ID above.
+              </p>
             </div>
-          </CardHeader>
-          <CardContent>
-            {trace && trace.steps && trace.steps.length > 0 && (
-              <div className="space-y-2">
-                <h4 className="text-sm font-medium mb-3">Pipeline Steps</h4>
-                <div className="space-y-1">
-                  {trace.steps.map((step, i) => (
-                    <div key={i} className="flex items-center gap-3 p-2 rounded bg-slate-50">
-                      {getStepIcon(step.status)}
-                      <span className="text-sm font-medium flex-1">{step.name}</span>
-                      <span className="text-xs text-muted-foreground">{step.durationSeconds.toFixed(1)}s</span>
-                      {step.error && <span className="text-xs text-red-500">{step.error}</span>}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-            {isPolling && (<div className="flex items-center gap-2 mt-4 text-sm text-muted-foreground"><RefreshCw className="h-4 w-4 animate-spin" /> Generating plans...</div>)}
-            {session.errorMessage && (<div className="mt-3 p-3 rounded bg-red-50 border border-red-200 text-sm text-red-700">{session.errorMessage}</div>)}
+            <Button variant="outline" onClick={() => navigate('/research/ideas')}>
+              <Lightbulb className="mr-2 h-4 w-4" />
+              Open Ideas
+            </Button>
           </CardContent>
         </Card>
       )}
 
-      {/* Candidate Plans */}
-      {candidates.length > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-lg"><Sparkles className="h-5 w-5 text-teal-500" />Candidate Plans ({candidates.length})</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-4">
-              {candidates.map((c) => (
-                <div key={c.id} className="p-4 rounded-lg border bg-gradient-to-r from-teal-50 to-emerald-50">
-                  <div className="flex items-start justify-between mb-2">
-                    <div className="flex items-center gap-2">
-                      <span className="text-lg font-bold text-teal-600">#{c.indexNumber}</span>
-                      <h4 className="font-semibold">{c.title}</h4>
-                    </div>
-                    <Badge className={getScoreColor(c.overallScore)}>Score: {c.overallScore.toFixed(1)}</Badge>
+      {planPackage && (
+        <div className="space-y-6">
+          <Card>
+            <CardHeader>
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge variant="outline" className="font-mono">
+                      {planPackage.packageId}
+                    </Badge>
+                    <Badge className={planPackage.status === 'approved' ? 'bg-emerald-700 text-white' : planPackage.status === 'needs_revision' ? 'bg-red-700 text-white' : 'bg-amber-700 text-white'}>
+                      {planPackage.status}
+                    </Badge>
+                    <Badge className={planPackage.generation.fallbackUsed ? 'bg-amber-700 text-white' : 'bg-emerald-700 text-white'}>
+                      {planPackage.generation.mode}
+                    </Badge>
+                    {planPackage.reviewReports.length > 0 && (
+                      <Badge variant="outline" className="border-emerald-400 bg-emerald-50 text-emerald-900">
+                        Quality checked
+                      </Badge>
+                    )}
+                    <Badge variant="secondary">{planPackage.schemaVersion}</Badge>
+                    <Badge variant="outline" className="font-mono">
+                      score {(planPackage.qualityGate.overallScore * 100).toFixed(0)}
+                    </Badge>
                   </div>
-                  {c.planAbstract && <p className="text-sm text-muted-foreground mb-2">{c.planAbstract}</p>}
-                  <div className="grid grid-cols-5 gap-2 mb-3">
-                    {(['novelty', 'feasibility', 'impact', 'clarity', 'risk'] as const).map((key) => (
-                      <div key={key} className="space-y-1">
-                        <div className="flex justify-between text-xs">
-                          <span className="font-medium capitalize">{key}</span>
-                          <span className={getScoreColor(c.scoreBreakdown[key]) + ' px-1 rounded'}>{c.scoreBreakdown[key].toFixed(1)}</span>
-                        </div>
-                        <div className="h-1.5 bg-slate-200 rounded-full overflow-hidden">
-                          <div className="h-full bg-teal-500 rounded-full" style={{ width: `${c.scoreBreakdown[key] * 10}%` }} />
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-
-                  {/* Expand/Collapse */}
-                  <Button variant="ghost" size="sm" onClick={() => setExpandedCandidate(expandedCandidate === c.id ? null : c.id)} className="text-xs mb-2">
-                    {expandedCandidate === c.id ? <><ChevronUp className="h-3 w-3 mr-1" /> Hide Details</> : <><ChevronDown className="h-3 w-3 mr-1" /> Show Details</>}
+                  <CardTitle className="mt-3 text-xl leading-tight">{presentation?.title || planPackage.researchQuestion}</CardTitle>
+                  {(presentation?.researchQuestion || planPackage.researchQuestion) && (
+                    <CardDescription className="mt-2 text-sm text-slate-800">
+                      {presentation?.researchQuestion || planPackage.researchQuestion}
+                    </CardDescription>
+                  )}
+                  {(presentation?.hypothesis || planPackage.hypothesis) && (
+                    <CardDescription className="mt-2 text-sm text-slate-700">
+                      {presentation?.hypothesis || planPackage.hypothesis}
+                    </CardDescription>
+                  )}
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button variant="outline" onClick={() => navigate(`/code?packageId=${encodeURIComponent(planPackage.packageId)}`)}>
+                    <ArrowRight className="mr-2 h-4 w-4" />
+                    Code
                   </Button>
-                  {expandedCandidate === c.id && (
-                    <div className="mb-3 p-3 bg-white/60 rounded text-xs space-y-2 border">
-                      {c.method && <p><span className="font-medium text-teal-700">Method:</span> {c.method}</p>}
-                      {c.novelty && <p><span className="font-medium text-purple-700">Novelty:</span> {c.novelty}</p>}
-                      {c.feasibility && <p><span className="font-medium text-blue-700">Feasibility:</span> {c.feasibility}</p>}
-                      {c.risks && <p><span className="font-medium text-red-700">Risks:</span> {c.risks}</p>}
-                      {c.gapAnalysis && <p><span className="font-medium text-orange-700">Gap Analysis:</span> {c.gapAnalysis}</p>}
-                      {c.resourcesEstimate && <p><span className="font-medium text-slate-700">Resources:</span> {c.resourcesEstimate}</p>}
-                      {typeof c.experimentDesign?.research_question === 'string' && (
-                        <div className="mt-2 p-2 bg-teal-50 rounded">
-                          <p className="font-medium text-teal-800 mb-1">Experiment Design</p>
-                          <p><span className="font-medium">Research Q:</span> {c.experimentDesign.research_question}</p>
-                          {typeof c.experimentDesign.hypothesis === 'string' && (
-                            <p><span className="font-medium">Hypothesis:</span> {c.experimentDesign.hypothesis}</p>
-                          )}
-                        </div>
-                      )}
-                      {c.scoreBreakdown.rationale && <p><span className="font-medium text-gray-700">Score Rationale:</span> {c.scoreBreakdown.rationale}</p>}
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <QualityGateSummary gate={gate} />
+              {(gate.errors.length > 0 || gate.warnings.length > 0 || planPackage.generation.warnings.length > 0) && (
+                <div className="grid gap-3 lg:grid-cols-2">
+                  {gate.errors.length > 0 && (
+                    <div className="rounded-md border border-l-4 border-red-300 border-l-red-700 bg-white px-3 py-2 text-sm text-red-800">
+                      <p className="font-medium">Errors</p>
+                      <TextList items={gate.errors} emptyLabel="No errors" />
                     </div>
                   )}
-
-                  {/* Action buttons */}
-                  <div className="flex gap-2">
-                    <Button size="sm" onClick={() => selectCandidate(c.id)}
-                      disabled={!!selectedResult || session?.selectedCandidateId === c.id}
-                      className="bg-teal-500 hover:bg-teal-600">
-                      <ArrowRight className="h-4 w-4 mr-2" />
-                      {session?.selectedCandidateId === c.id ? 'Selected' : 'Select & Generate Plan'}
-                    </Button>
-                    <Button size="sm" variant="outline" onClick={() => {
-                      if (session?.resultingPlanId || selectedResult?.researchPlanId) {
-                        navigateToCode(c.id)
-                      } else {
-                        setError('Select a plan first to enable Code Generation')
-                      }
-                    }} disabled={!selectedResult && !session?.resultingPlanId}>
-                      <Code2 className="h-4 w-4 mr-2" />Code Generation
-                    </Button>
-                  </div>
+                  {(gate.warnings.length > 0 || planPackage.generation.warnings.length > 0) && (
+                    <div className="rounded-md border border-l-4 border-amber-300 border-l-amber-700 bg-white px-3 py-2 text-sm text-amber-900">
+                      <p className="font-medium">Warnings</p>
+                      <TextList items={[...gate.warnings, ...planPackage.generation.warnings]} emptyLabel="No warnings" />
+                    </div>
+                  )}
                 </div>
+              )}
+              {planPackage.metaReview && (
+                <div className="rounded-md border border-slate-300 bg-white px-4 py-3 shadow-sm">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-semibold text-slate-900">Reviewer decision</p>
+                      <p className="mt-1 text-xs text-slate-600">
+                        confidence {(planPackage.metaReview.confidence * 100).toFixed(0)} · {planPackage.metaReview.blockingIssues.length} blocking issues
+                      </p>
+                    </div>
+                    <Badge className={planPackage.metaReview.decision === 'approve' ? 'bg-emerald-700 text-white' : 'bg-amber-700 text-white'}>
+                      {planPackage.metaReview.decision}
+                    </Badge>
+                  </div>
+                  {planPackage.metaReview.requiredRepairs.length > 0 && (
+                    <div className="mt-3">
+                      <TextList items={planPackage.metaReview.requiredRepairs.slice(0, 4)} emptyLabel="No required repairs" />
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div className="grid gap-4 xl:grid-cols-[1fr_1.2fr]">
+                <div className="rounded-md border border-slate-300 bg-white px-4 py-3 shadow-sm">
+                  <div className="mb-3 flex items-center gap-2">
+                    <MessageSquareText className="h-4 w-4 text-indigo-700" />
+                    <p className="text-sm font-semibold text-slate-900">Human feedback</p>
+                  </div>
+                  <textarea
+                    value={feedbackComment}
+                    onChange={(event) => setFeedbackComment(event.target.value)}
+                    placeholder="Tell FAROS what to change before handoff."
+                    className="min-h-[118px] w-full rounded-md border border-slate-400 bg-white px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-600"
+                  />
+                  <Button
+                    className="mt-3 bg-indigo-700 text-white hover:bg-indigo-800"
+                    onClick={submitFeedbackAndRevise}
+                    disabled={!feedbackComment.trim() || isSubmittingFeedback || isRevising}
+                  >
+                    {isSubmittingFeedback || isRevising ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <Sparkles className="mr-2 h-4 w-4" />}
+                    Revise from Feedback
+                  </Button>
+                </div>
+                <div className="rounded-md border border-slate-300 bg-white px-4 py-3 shadow-sm">
+                  <p className="mb-3 text-sm font-semibold text-slate-900">Feedback history</p>
+                  <FeedbackList feedback={planPackage.humanFeedback} />
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+            <Tabs value={activeTab} onValueChange={setActiveTab}>
+            <TabsList className="h-auto flex-wrap justify-start">
+              <TabsTrigger value="summary">Summary</TabsTrigger>
+              <TabsTrigger value="overview">Overview</TabsTrigger>
+              <TabsTrigger value="implementation">Implementation</TabsTrigger>
+              <TabsTrigger value="context">Context</TabsTrigger>
+              <TabsTrigger value="literature">Literature</TabsTrigger>
+              <TabsTrigger value="evidence">Evidence</TabsTrigger>
+              <TabsTrigger value="review">Review</TabsTrigger>
+              <TabsTrigger value="json">JSON</TabsTrigger>
+            </TabsList>
+
+            <TabsContent value="summary" className="space-y-4">
+              {presentation ? (
+                <>
+                  <Card>
+                    <CardHeader className="pb-3">
+                      <CardTitle className="text-lg">{presentation.title}</CardTitle>
+                      <CardDescription>{presentation.executiveSummary}</CardDescription>
+                    </CardHeader>
+                    <CardContent className="grid gap-3 md:grid-cols-3">
+                      <div className="rounded-md border border-slate-300 bg-slate-50 px-3 py-2">
+                        <p className="text-xs font-semibold uppercase text-slate-500">Evidence</p>
+                        <p className="mt-1 text-sm font-semibold text-slate-900">{presentation.evidenceSummary.confidence}</p>
+                      </div>
+                      <div className="rounded-md border border-slate-300 bg-slate-50 px-3 py-2">
+                        <p className="text-xs font-semibold uppercase text-slate-500">Review</p>
+                        <p className="mt-1 text-sm font-semibold text-slate-900">{presentation.reviewSummary.decision}</p>
+                      </div>
+                      <div className="rounded-md border border-slate-300 bg-slate-50 px-3 py-2">
+                        <p className="text-xs font-semibold uppercase text-slate-500">Score</p>
+                        <p className="mt-1 text-sm font-semibold text-slate-900">{(presentation.reviewSummary.score * 100).toFixed(0)}</p>
+                      </div>
+                    </CardContent>
+                  </Card>
+
+                  <div className="grid gap-4 xl:grid-cols-2">
+                    <Card>
+                      <CardHeader className="pb-3">
+                        <CardTitle className="text-base">Background</CardTitle>
+                      </CardHeader>
+                      <CardContent className="space-y-3 text-sm text-slate-800">
+                        <p>{presentation.background.summary}</p>
+                        {presentation.background.whyValuable && <p>{presentation.background.whyValuable}</p>}
+                        <TextList items={presentation.background.currentLimitations} emptyLabel="No current limitations listed" />
+                      </CardContent>
+                    </Card>
+
+                    <Card>
+                      <CardHeader className="pb-3">
+                        <CardTitle className="text-base">GAP And Entry Point</CardTitle>
+                      </CardHeader>
+                      <CardContent className="space-y-3 text-sm text-slate-800">
+                        <p className="font-medium">{presentation.gap.statement}</p>
+                        {presentation.gap.unresolvedIssue && <p>{presentation.gap.unresolvedIssue}</p>}
+                        {presentation.gap.proposedEntry && (
+                          <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-emerald-950">
+                            {presentation.gap.proposedEntry}
+                          </div>
+                        )}
+                        <TextList items={presentation.gap.validationNeeds} emptyLabel="No validation needs listed" />
+                      </CardContent>
+                    </Card>
+                  </div>
+
+                  <Card>
+                    <CardHeader className="pb-3">
+                      <CardTitle className="text-base">Method And Contributions</CardTitle>
+                    </CardHeader>
+                    <CardContent className="grid gap-4 lg:grid-cols-2">
+                      <div className="space-y-3 text-sm text-slate-800">
+                        <p>{presentation.method.principle}</p>
+                        {presentation.method.mechanism && <p>{presentation.method.mechanism}</p>}
+                        {presentation.method.noveltyClaim && (
+                          <div className="rounded-md border border-indigo-200 bg-indigo-50 px-3 py-2 text-indigo-950">
+                            {presentation.method.noveltyClaim}
+                          </div>
+                        )}
+                      </div>
+                      <div>
+                        <p className="mb-2 text-xs font-semibold uppercase text-slate-500">Contributions</p>
+                        <TextList items={presentation.method.contributions} emptyLabel="No contribution statements" />
+                      </div>
+                    </CardContent>
+                  </Card>
+
+                  <Card>
+                    <CardHeader className="pb-3">
+                      <CardTitle className="text-base">Implementation Plan</CardTitle>
+                      <CardDescription>Readable plan for handoff, without raw trace IDs.</CardDescription>
+                    </CardHeader>
+                    <CardContent className="space-y-3">
+                      {presentation.implementationPlan.map((stage) => (
+                        <ReadableStageBlock key={stage.id} stage={stage} />
+                      ))}
+                    </CardContent>
+                  </Card>
+
+                  <div className="grid gap-4 xl:grid-cols-[1.2fr_1fr]">
+                    <Card>
+                      <CardHeader className="pb-3">
+                        <CardTitle className="text-base">Key Literature</CardTitle>
+                        <CardDescription>{presentation.literature.summary}</CardDescription>
+                      </CardHeader>
+                      <CardContent className="space-y-3">
+                        {presentation.literature.keyPapers.map((paper) => (
+                          <ReadablePaperRow key={paper.paperId} paper={paper} />
+                        ))}
+                      </CardContent>
+                    </Card>
+
+                    <Card>
+                      <CardHeader className="pb-3">
+                        <CardTitle className="text-base">Review And Next Actions</CardTitle>
+                      </CardHeader>
+                      <CardContent className="space-y-4">
+                        <div>
+                          <p className="mb-2 text-xs font-semibold uppercase text-slate-500">Main concerns</p>
+                          <TextList items={presentation.reviewSummary.mainConcerns} emptyLabel="No major concerns" />
+                        </div>
+                        <div>
+                          <p className="mb-2 text-xs font-semibold uppercase text-slate-500">Required fixes</p>
+                          <TextList items={presentation.reviewSummary.requiredFixes} emptyLabel="No required fixes" />
+                        </div>
+                        <div>
+                          <p className="mb-2 text-xs font-semibold uppercase text-slate-500">Next actions</p>
+                          <TextList items={presentation.nextActions} emptyLabel="No next actions" />
+                        </div>
+                      </CardContent>
+                    </Card>
+                  </div>
+                </>
+              ) : (
+                <Card>
+                  <CardContent className="py-8 text-sm text-muted-foreground">
+                    Presentation view is not available for this package.
+                  </CardContent>
+                </Card>
+              )}
+            </TabsContent>
+
+            <TabsContent value="overview" className="space-y-4">
+              <div className="grid gap-4 lg:grid-cols-3">
+                <Card>
+                  <CardHeader className="pb-3">
+                    <CardTitle className="flex items-center gap-2 text-base">
+                      <Lightbulb className="h-4 w-4 text-amber-600" />
+                      Idea
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-3 text-sm">
+                    <p className="font-semibold text-slate-900">{planPackage.idea.title}</p>
+                    <p className="text-slate-700">{planPackage.idea.problem}</p>
+                    {planPackage.idea.keyInsight && <p className="text-slate-600">{planPackage.idea.keyInsight}</p>}
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader className="pb-3">
+                    <CardTitle className="flex items-center gap-2 text-base">
+                      <Layers3 className="h-4 w-4 text-blue-600" />
+                      Plan Shape
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="grid grid-cols-2 gap-3 text-sm">
+                    <div className="rounded-md border border-slate-300 bg-slate-50 px-3 py-2">
+                      <p className="text-xs text-muted-foreground">Stages</p>
+                      <p className="text-2xl font-semibold">{planPackage.stages.length}</p>
+                    </div>
+                    <div className="rounded-md border border-slate-300 bg-slate-50 px-3 py-2">
+                      <p className="text-xs text-muted-foreground">Steps</p>
+                      <p className="text-2xl font-semibold">{totalSteps}</p>
+                    </div>
+                    <div className="col-span-2 rounded-md border border-slate-300 bg-slate-50 px-3 py-2">
+                      <p className="text-xs text-muted-foreground">Created</p>
+                      <p className="text-sm">{new Date(planPackage.createdAt).toLocaleString()}</p>
+                    </div>
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader className="pb-3">
+                    <CardTitle className="flex items-center gap-2 text-base">
+                      <BookOpen className="h-4 w-4 text-indigo-600" />
+                      Literature
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="grid grid-cols-2 gap-3 text-sm">
+                    <div className="rounded-md border border-slate-300 bg-slate-50 px-3 py-2">
+                      <p className="text-xs text-muted-foreground">Structured</p>
+                      <p className="text-2xl font-semibold">{planPackage.literatureSurvey.coverage.structuredPaperCount}</p>
+                    </div>
+                    <div className="rounded-md border border-slate-300 bg-slate-50 px-3 py-2">
+                      <p className="text-xs text-muted-foreground">Probe</p>
+                      <p className="text-2xl font-semibold">{planPackage.literatureSurvey.coverage.probePaperCount}</p>
+                    </div>
+                    <div className="col-span-2 rounded-md border border-slate-300 bg-slate-50 px-3 py-2">
+                      <p className="text-xs text-muted-foreground">Total summaries</p>
+                      <p className="text-2xl font-semibold">{planPackage.literatureSurvey.papers.length}</p>
+                    </div>
+                  </CardContent>
+                </Card>
+              </div>
+
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-base">Constants</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  {Object.keys(planPackage.constants).length === 0 ? (
+                    <p className="text-sm text-muted-foreground">No constants declared.</p>
+                  ) : (
+                    <div className="grid gap-2 md:grid-cols-2">
+                      {Object.entries(planPackage.constants).map(([key, value]) => (
+                        <div key={key} className="rounded-md border border-slate-300 bg-slate-50 px-3 py-2">
+                          <p className="text-xs font-medium text-slate-500">{key}</p>
+                          <p className="mt-1 break-words text-sm text-slate-800">{compactValue(value)}</p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            </TabsContent>
+
+            <TabsContent value="implementation" className="space-y-4">
+              {planPackage.stages.map((stage) => (
+                <StageBlock key={stage.id} stage={stage} />
               ))}
-            </div>
-          </CardContent>
-        </Card>
-      )}
+            </TabsContent>
 
-      {/* Selection Success */}
-      {selectedResult && (
-        <Card className="border-green-200 bg-green-50">
-          <CardContent className="pt-6">
-            <div className="flex items-center gap-3">
-              <CheckCircle2 className="h-6 w-6 text-green-600" />
-              <div>
-                <p className="font-semibold text-green-800">Research Plan Created!</p>
-                <p className="text-sm text-green-700">Plan ID: {selectedResult.researchPlanId}</p>
-              </div>
-              <div className="ml-auto flex gap-2">
-                <Button variant="outline" onClick={() => navigate('/runs')}>
-                  <Zap className="h-4 w-4 mr-2" /> View Runs
-                </Button>
-                <Button variant="outline" onClick={() => navigateToCode(selectedResult.candidateId)}>
-                  <Code2 className="h-4 w-4 mr-2" /> Code Generation
-                </Button>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      )}
+            <TabsContent value="context" className="space-y-4">
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-base">Background</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4 text-sm">
+                  <p className="text-slate-800">{planPackage.background.summary}</p>
+                  {planPackage.background.motivation && <p className="text-slate-700">{planPackage.background.motivation}</p>}
+                  <div className="grid gap-4 lg:grid-cols-2">
+                    <div>
+                      <p className="mb-2 text-xs font-semibold uppercase text-slate-500">Current limitations</p>
+                      <TextList items={planPackage.background.currentLimitations} emptyLabel="No limitations listed" />
+                    </div>
+                    <div>
+                      <p className="mb-2 text-xs font-semibold uppercase text-slate-500">Domain context</p>
+                      <TextList items={planPackage.background.domainContext} emptyLabel="No domain context listed" />
+                    </div>
+                  </div>
+                  <EvidenceChips refs={planPackage.background.evidenceRefs} />
+                </CardContent>
+              </Card>
 
-      {/* Module Navigation Links */}
-      <div className="flex justify-center gap-4 pt-2">
-        <Button variant="ghost" size="sm" onClick={() => navigate('/ideas')} className="text-muted-foreground">
-          <Sparkles className="h-4 w-4 mr-1" /> Ideas Module
-        </Button>
-        <Button variant="ghost" size="sm" onClick={() => navigate('/runs')} className="text-muted-foreground">
-          <Zap className="h-4 w-4 mr-1" /> Runs Module
-        </Button>
-        <Button variant="ghost" size="sm" onClick={() => navigate('/research/workflows')} className="text-muted-foreground">
-          <FileText className="h-4 w-4 mr-1" /> Workflows
-        </Button>
-      </div>
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-base">Gap</CardTitle>
+                  <CardDescription>{planPackage.gap.summary}</CardDescription>
+                </CardHeader>
+                <CardContent className="grid gap-3 lg:grid-cols-2">
+                  {planPackage.gap.items.map((gap) => (
+                    <GapItem key={gap.id} gap={gap} />
+                  ))}
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-base">Principle</CardTitle>
+                  <CardDescription>{planPackage.principle.summary}</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4 text-sm">
+                  {planPackage.principle.mechanism && (
+                    <div>
+                      <p className="mb-1 text-xs font-semibold uppercase text-slate-500">Mechanism</p>
+                      <p className="text-slate-800">{planPackage.principle.mechanism}</p>
+                    </div>
+                  )}
+                  {planPackage.principle.noveltyClaim && (
+                    <div>
+                      <p className="mb-1 text-xs font-semibold uppercase text-slate-500">Novelty claim</p>
+                      <p className="text-slate-800">{planPackage.principle.noveltyClaim}</p>
+                    </div>
+                  )}
+                  <div className="grid gap-4 lg:grid-cols-2">
+                    <div>
+                      <p className="mb-2 text-xs font-semibold uppercase text-slate-500">Assumptions</p>
+                      <TextList items={planPackage.principle.assumptions} emptyLabel="No assumptions listed" />
+                    </div>
+                    <div>
+                      <p className="mb-2 text-xs font-semibold uppercase text-slate-500">Risks</p>
+                      <TextList items={planPackage.principle.risks} emptyLabel="No risks listed" />
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            </TabsContent>
+
+            <TabsContent value="literature" className="space-y-3">
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    <BookOpen className="h-4 w-4 text-indigo-600" />
+                    Literature Survey
+                  </CardTitle>
+                  <CardDescription>{planPackage.literatureSurvey.summary}</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  {planPackage.literatureSurvey.papers.map((paper) => (
+                    <PaperRow key={`${paper.source}-${paper.paperId}`} paper={paper} />
+                  ))}
+                </CardContent>
+              </Card>
+            </TabsContent>
+
+            <TabsContent value="evidence" className="space-y-4">
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    <Network className="h-4 w-4 text-indigo-700" />
+                    Evidence Map
+                  </CardTitle>
+                  <CardDescription>
+                    {planPackage.evidenceTrace.structuredPaperIds.length + planPackage.evidenceTrace.selectedPaperIds.length} literature references,
+                    {' '}{planPackage.evidenceTrace.reasoningKgId ? 'reasoning graph attached' : 'no reasoning graph id'},
+                    {' '}{planPackage.evidenceTrace.probeResultIds.length} probe checks.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                    <EvidenceCoverageCard
+                      label="Idea"
+                      value={shortId(planPackage.evidenceTrace.ideaCandidateId)}
+                      detail={planPackage.idea.title || 'Selected candidate'}
+                      ok={Boolean(planPackage.evidenceTrace.ideaCandidateId)}
+                    />
+                    <EvidenceCoverageCard
+                      label="Papers"
+                      value={String(planPackage.evidenceTrace.structuredPaperIds.length + planPackage.evidenceTrace.selectedPaperIds.length)}
+                      detail={`${evidencePapers.length} matched to summaries`}
+                      ok={planPackage.evidenceTrace.structuredPaperIds.length + planPackage.evidenceTrace.selectedPaperIds.length > 0}
+                    />
+                    <EvidenceCoverageCard
+                      label="Reasoning Graph"
+                      value={planPackage.evidenceTrace.reasoningKgId ? 'Linked' : 'Missing'}
+                      detail={planPackage.evidenceTrace.reasoningKgId ? shortId(planPackage.evidenceTrace.reasoningKgId) : 'No KG artifact id'}
+                      ok={Boolean(planPackage.evidenceTrace.reasoningKgId)}
+                    />
+                    <EvidenceCoverageCard
+                      label="Probe"
+                      value={String(planPackage.evidenceTrace.probeResultIds.length)}
+                      detail={`${planPackage.evidenceTrace.graphPatchIds.length} graph patches`}
+                      ok={planPackage.evidenceTrace.probeResultIds.length > 0 || planPackage.evidenceTrace.graphPatchIds.length > 0}
+                    />
+                  </div>
+
+                  <div className="rounded-md border border-slate-300 bg-white px-4 py-3 shadow-sm">
+                    <p className="text-sm font-semibold text-slate-900">Evidence path</p>
+                    <div className="mt-3 grid gap-3 lg:grid-cols-5">
+                      {[
+                        {
+                          label: 'Selected idea',
+                          value: planPackage.idea.title || shortId(planPackage.evidenceTrace.ideaCandidateId),
+                          ok: Boolean(planPackage.evidenceTrace.ideaCandidateId),
+                        },
+                        {
+                          label: 'Gap',
+                          value: planPackage.gap.selectedGapId || planPackage.gap.summary,
+                          ok: Boolean(planPackage.gap.selectedGapId || planPackage.gap.items.length),
+                        },
+                        {
+                          label: 'Literature',
+                          value: `${planPackage.literatureSurvey.papers.length} paper summaries`,
+                          ok: planPackage.literatureSurvey.papers.length > 0,
+                        },
+                        {
+                          label: 'Reasoning',
+                          value: planPackage.evidenceTrace.reasoningKgId ? shortId(planPackage.evidenceTrace.reasoningKgId) : 'No graph id',
+                          ok: Boolean(planPackage.evidenceTrace.reasoningKgId),
+                        },
+                        {
+                          label: 'Plan readiness',
+                          value: planPackage.qualityGate.evidenceValid ? 'Evidence valid' : 'Needs review',
+                          ok: planPackage.qualityGate.evidenceValid,
+                        },
+                      ].map((item, index) => (
+                        <div key={item.label} className="relative rounded-md border border-slate-300 bg-slate-50 px-3 py-3">
+                          <div className="flex items-center gap-2">
+                            <span className={`flex h-6 w-6 items-center justify-center rounded-full text-xs font-semibold text-white ${item.ok ? 'bg-emerald-700' : 'bg-amber-700'}`}>
+                              {index + 1}
+                            </span>
+                            <p className="text-xs font-semibold uppercase text-slate-600">{item.label}</p>
+                          </div>
+                          <p className="mt-2 break-words text-sm text-slate-900">{item.value}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="grid gap-4 xl:grid-cols-[1.5fr_1fr]">
+                    <div className="rounded-md border border-slate-300 bg-white px-4 py-3 shadow-sm">
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="text-sm font-semibold text-slate-900">Supporting papers</p>
+                        <Badge variant="outline" className="border-slate-400 text-slate-700">
+                          {evidencePapers.length || planPackage.literatureSurvey.papers.length}
+                        </Badge>
+                      </div>
+                      <div className="mt-3 space-y-3">
+                        {(evidencePapers.length ? evidencePapers : planPackage.literatureSurvey.papers.slice(0, 5)).map((paper) => (
+                          <div key={`${paper.source}-${paper.paperId}`} className="rounded-md border border-slate-300 bg-slate-50 px-3 py-3">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <Badge className={paper.source === 'probe' ? 'bg-indigo-700 text-white' : 'bg-blue-700 text-white'}>
+                                {paper.source}
+                              </Badge>
+                              <span className="font-mono text-xs text-slate-600">{shortId(paper.paperId)}</span>
+                              {paper.year ? <span className="text-xs text-slate-600">{paper.year}</span> : null}
+                            </div>
+                            <p className="mt-2 text-sm font-semibold text-slate-950">{paper.title}</p>
+                            <p className="mt-1 text-sm text-slate-700">{paper.summary}</p>
+                            {paper.limitations.length > 0 && (
+                              <p className="mt-2 text-xs text-slate-600">
+                                Limitation: {paper.limitations[0]}
+                              </p>
+                            )}
+                          </div>
+                        ))}
+                        {evidencePapers.length === 0 && planPackage.literatureSurvey.papers.length === 0 && (
+                          <p className="text-sm text-muted-foreground">No paper summaries are attached.</p>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="space-y-4">
+                      <div className="rounded-md border border-slate-300 bg-white px-4 py-3 shadow-sm">
+                        <p className="text-sm font-semibold text-slate-900">Evidence signals</p>
+                        <div className="mt-3 space-y-3">
+                          <div>
+                            <p className="mb-2 text-xs font-semibold uppercase text-slate-500">Structured paper IDs</p>
+                            <TextList items={planPackage.evidenceTrace.structuredPaperIds.map(shortId)} emptyLabel="No structured paper IDs" />
+                          </div>
+                          <div>
+                            <p className="mb-2 text-xs font-semibold uppercase text-slate-500">Probe results</p>
+                            <TextList items={planPackage.evidenceTrace.probeResultIds.map(shortId)} emptyLabel="No probe results" />
+                          </div>
+                          <div>
+                            <p className="mb-2 text-xs font-semibold uppercase text-slate-500">Graph patches</p>
+                            <TextList items={planPackage.evidenceTrace.graphPatchIds.map(shortId)} emptyLabel="No graph patches" />
+                          </div>
+                        </div>
+                      </div>
+
+                      {evidencePaperIdsWithoutSummary.length > 0 && (
+                        <div className="rounded-md border border-amber-300 bg-white px-4 py-3 shadow-sm">
+                          <p className="text-sm font-semibold text-amber-900">Referenced IDs without summaries</p>
+                          <div className="mt-3">
+                            <TextList items={evidencePaperIdsWithoutSummary.map(shortId)} emptyLabel="All referenced IDs are summarized" />
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <details className="rounded-md border border-slate-300 bg-white px-4 py-3 shadow-sm">
+                    <summary className="cursor-pointer text-sm font-medium text-slate-800">Debug IDs and raw graph evidence</summary>
+                    <pre className="mt-3 max-h-80 overflow-auto rounded bg-slate-950 p-3 text-xs text-slate-100">
+                      {JSON.stringify(
+                        {
+                          traceIds: {
+                            ideaCandidateId: planPackage.evidenceTrace.ideaCandidateId,
+                            searchNodeId: planPackage.evidenceTrace.searchNodeId,
+                            pathSeedId: planPackage.evidenceTrace.pathSeedId,
+                            reasoningKgId: planPackage.evidenceTrace.reasoningKgId,
+                            literatureMapId: planPackage.evidenceTrace.literatureMapId,
+                          },
+                          reasoningTrace: planPackage.evidenceTrace.reasoningTrace,
+                          candidateGraphEvidence: planPackage.evidenceTrace.candidateGraphEvidence,
+                          sourceFields: planPackage.sourceFields,
+                          downstreamContract: planPackage.downstreamContract,
+                        },
+                        null,
+                        2
+                      )}
+                    </pre>
+                  </details>
+                </CardContent>
+              </Card>
+            </TabsContent>
+
+            <TabsContent value="review" className="space-y-4">
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    <ShieldCheck className="h-4 w-4 text-indigo-700" />
+                    Reviewer Committee
+                  </CardTitle>
+                  <CardDescription>
+                    Each dimension combines deterministic checks with a focused LLM reviewer when hybrid review is available.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  {planPackage.reviewReports.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">No reviewer reports yet. They are generated automatically when a package is created or revised.</p>
+                  ) : (
+                    <div className="grid gap-3 lg:grid-cols-2">
+                      {planPackage.reviewReports.map((report) => (
+                        <ReviewerReportCard key={report.reviewer} report={report} />
+                      ))}
+                    </div>
+                  )}
+                  {planPackage.revisions.length > 0 && (
+                    <div className="rounded-md border border-slate-300 bg-white px-4 py-3 shadow-sm">
+                      <p className="text-sm font-semibold text-slate-900">Revision history</p>
+                      <div className="mt-3 space-y-2">
+                        {planPackage.revisions.slice(0, 6).map((revision) => (
+                          <div key={revision.id} className="rounded-md border border-slate-300 bg-slate-50 px-3 py-2 text-sm">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <Badge variant="outline" className="font-mono text-[11px]">
+                                {revision.id}
+                              </Badge>
+                              <Badge variant="secondary">{revision.generationMode}</Badge>
+                              <span className="text-xs text-slate-500">{new Date(revision.createdAt).toLocaleString()}</span>
+                            </div>
+                            <p className="mt-2 text-slate-800">{revision.summary}</p>
+                            {revision.changedSections.length > 0 && (
+                              <p className="mt-1 text-xs text-slate-600">Changed: {revision.changedSections.join(', ')}</p>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            </TabsContent>
+
+            <TabsContent value="json">
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    <FileJson className="h-4 w-4 text-slate-600" />
+                    Raw PlanPackage
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <pre className="max-h-[720px] overflow-auto rounded-md bg-slate-950 p-4 text-xs text-slate-100">
+                    {JSON.stringify(planPackage, null, 2)}
+                  </pre>
+                </CardContent>
+              </Card>
+            </TabsContent>
+          </Tabs>
+        </div>
+      )}
     </div>
   )
 }
