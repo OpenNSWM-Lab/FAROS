@@ -331,6 +331,7 @@ def _find_cart_dir_for_project(project_id: str, ppkg_id: Optional[str] = None) -
     cart_dirs = _glob.glob(_os.path.join(cart_base, "cart_*"))
     if not cart_dirs:
         return None
+    cart_dirs.sort(key=lambda d: _os.path.getmtime(d), reverse=True)
 
     for cd in cart_dirs:
         manifest_path = _os.path.join(cd, "data", "manifest.json")
@@ -341,7 +342,7 @@ def _find_cart_dir_for_project(project_id: str, ppkg_id: Optional[str] = None) -
                 manifest = json.load(f)
             manifest_project_id = manifest.get("project_id") or manifest.get("projectId")
             manifest_package_id = manifest.get("package_id")
-            if manifest_project_id == project_id:
+            if manifest_project_id == project_id and (not ppkg_id or manifest_package_id == ppkg_id):
                 return cd
             if not manifest_project_id and ppkg_id and manifest_package_id == ppkg_id:
                 return cd

@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import time
+import uuid
 from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
@@ -384,18 +385,35 @@ async def cart_stream(request: CartRunRequest, db: Session = Depends(get_session
 
     # Start cart execution as a background task (independent of SSE connection)
     package_id = ppkg.get("packageId", "unknown")
-    cart_id = f"cart_{package_id.replace('ppkg_', '')[:12]}"
-    cart_dir = os.path.join(runner._base, cart_id)
-    event_log_path = os.path.join(cart_dir, "event_log.json")
+    active_key = f"{request.projectId}:{package_id}"
 
     # Track active carts to avoid duplicate runs
     if not hasattr(cart_stream, "_active_carts"):
         cart_stream._active_carts = {}
+    if not hasattr(cart_stream, "_active_cart_meta"):
+        cart_stream._active_cart_meta = {}
 
-    if cart_id in cart_stream._active_carts and not cart_stream._active_carts[cart_id].done():
+    active_task = cart_stream._active_carts.get(active_key)
+    active_meta = cart_stream._active_cart_meta.get(active_key, {})
+
+    if active_task and not active_task.done() and active_meta:
         # Cart already running, just stream existing events
         pass
     else:
+        run_id = uuid.uuid4().hex[:8]
+        project_short = request.projectId.replace("proj_", "")[:12]
+        package_short = package_id.replace("ppkg_", "")[:12]
+        cart_id = f"cart_{project_short}_{package_short}_{run_id}"
+        cart_dir = os.path.join(runner._base, cart_id)
+        event_log_path = os.path.join(cart_dir, "event_log.json")
+        active_meta = {
+            "cart_id": cart_id,
+            "cart_dir": cart_dir,
+            "event_log_path": event_log_path,
+            "run_id": run_id,
+        }
+        cart_stream._active_cart_meta[active_key] = active_meta
+
         # Start new cart execution
         def _append_cart_failure_event(message: str) -> None:
             os.makedirs(cart_dir, exist_ok=True)
@@ -419,16 +437,26 @@ async def cart_stream(request: CartRunRequest, db: Session = Depends(get_session
 
         async def _run_cart():
             try:
-                async for event in runner.run(ppkg, project_id=request.projectId):
+                async for event in runner.run(
+                    ppkg,
+                    project_id=request.projectId,
+                    cart_id=cart_id,
+                    run_id=run_id,
+                ):
                     pass  # Events are saved to event_log.json by runner.run()
             except Exception as exc:
                 logger.error("Cart execution failed: %s", exc)
                 _append_cart_failure_event(f"Cart execution failed: {exc}")
             finally:
-                cart_stream._active_carts.pop(cart_id, None)
+                cart_stream._active_carts.pop(active_key, None)
+                cart_stream._active_cart_meta.pop(active_key, None)
 
         task = _asyncio.create_task(_run_cart())
-        cart_stream._active_carts[cart_id] = task
+        cart_stream._active_carts[active_key] = task
+
+    cart_id = active_meta["cart_id"]
+    cart_dir = active_meta["cart_dir"]
+    event_log_path = active_meta["event_log_path"]
 
     async def event_stream():
         """Stream events from the event log file (polling).
@@ -455,7 +483,8 @@ async def cart_stream(request: CartRunRequest, db: Session = Depends(get_session
                 return
 
             # Check if task finished
-            if cart_id in cart_stream._active_carts and cart_stream._active_carts[cart_id].done():
+            active_task = cart_stream._active_carts.get(active_key)
+            if active_task and active_task.done():
                 # Send any remaining events and exit
                 if os.path.isfile(event_log_path):
                     try:

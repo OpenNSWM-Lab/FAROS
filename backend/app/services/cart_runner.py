@@ -92,6 +92,8 @@ class CartRunner:
         self,
         ppkg: dict,
         project_id: Optional[str] = None,
+        cart_id: Optional[str] = None,
+        run_id: Optional[str] = None,
         on_event: Optional[callable] = None,
     ) -> AsyncIterator[CartProgressEvent]:
         """Execute all nodes in the PlanPackage DAG.
@@ -104,7 +106,7 @@ class CartRunner:
             CartProgressEvent for each state change.
         """
         package_id = ppkg.get("packageId", "unknown")
-        cart_id = f"cart_{package_id.replace('ppkg_', '')[:12]}"
+        cart_id = cart_id or f"cart_{package_id.replace('ppkg_', '')[:12]}"
         cart_dir = os.path.join(self._base, cart_id)
 
         # Create cart directory structure
@@ -124,6 +126,7 @@ class CartRunner:
 
         manifest = {
             "cart_id": cart_id,
+            "run_id": run_id or cart_id,
             "package_id": package_id,
             "project_id": project_id or "",
             "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
