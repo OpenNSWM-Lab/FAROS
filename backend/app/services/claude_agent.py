@@ -32,6 +32,67 @@ DEFAULT_MAX_BUDGET = float(os.getenv("CLAUDE_AGENT_MAX_BUDGET", "10.0"))
 DEFAULT_TIMEOUT = int(os.getenv("CLAUDE_AGENT_TIMEOUT", "900"))
 ALLOWED_TOOLS = "Bash,Read,Write,Edit,Glob,Grep"
 
+OUTPUT_DISCIPLINE = (
+    "Token and output discipline:\n"
+    "- Prefer the smallest working implementation that satisfies the task.\n"
+    "- Do not narrate routine reasoning, file reads, or command output.\n"
+    "- Keep command stdout short; redirect verbose logs to files when needed.\n"
+    "- When running code, print only a compact JSON or one-line summary.\n"
+    "- Final response must be at most 5 bullets: status, files changed/created, "
+    "commands run, key metrics, blockers if any.\n"
+)
+
+
+def _get_settings_model_and_key() -> tuple[str, str, str]:
+    """Read model/API key/base URL from Settings — use the SAME config as the
+    rest of the system so the Claude Code CLI goes through the user's configured
+    provider (proxy, model, key).
+
+    Strategy:
+    1. Use the active provider's model + key + base_url (user's Settings choice)
+    2. If active provider has no base_url, check Anthropic provider for a proxy URL
+    3. Fall back to defaults
+
+    Returns (model, api_key, base_url).
+    """
+    try:
+        from app.core.settings import get_settings
+        settings = get_settings()
+        active = settings.ACTIVE_PROVIDER_NAME
+
+        # --- Active provider: model + key ---
+        model = settings.get_active_model(active) or DEFAULT_MODEL
+        api_key = settings.get_runtime_api_key(active) or ""
+        if not api_key:
+            try:
+                api_key = settings.get_provider_config(active).get_api_key() or ""
+            except Exception:
+                pass
+
+        # --- Base URL: prefer Anthropic-compatible proxy (Claude CLI speaks Anthropic API) ---
+        base_url = ""
+        # 1. Check Anthropic provider for proxy URL first
+        try:
+            base_url = settings.get_runtime_base_url("anthropic") or ""
+            if not base_url:
+                base_url = settings.get_provider_config("anthropic").get_base_url() or ""
+        except Exception:
+            pass
+        # 2. Fall back to active provider's base URL
+        if not base_url:
+            try:
+                base_url = settings.get_runtime_base_url(active) or ""
+                if not base_url:
+                    base_url = settings.get_provider_config(active).get_base_url() or ""
+                if not base_url:
+                    base_url = settings._get_default_base_url(active)
+            except Exception:
+                pass
+
+        return model, api_key, base_url
+    except Exception:
+        return DEFAULT_MODEL, "", ""
+
 # Preset research system prompts
 RESEARCH_TEMPLATES = {
     "run_experiment": (
@@ -40,6 +101,7 @@ RESEARCH_TEMPLATES = {
         "Do NOT try to read files outside this project — they are not relevant.\n\n"
         "You are running a scientific code experiment. "
         "Do NOT search the web. Do NOT ask questions. Just execute.\n\n"
+        f"{OUTPUT_DISCIPLINE}\n"
         "WORKFLOW:\n"
         "1. List the project files to understand the structure (use ls or Glob)\n"
         "2. Read the main entry point and understand what it does\n"
@@ -54,6 +116,7 @@ RESEARCH_TEMPLATES = {
         "CRITICAL: Work ONLY within the current project directory. "
         "Do NOT access files outside this directory.\n\n"
         "You are fixing bugs in this code project. Do NOT search the web.\n\n"
+        f"{OUTPUT_DISCIPLINE}\n"
         "WORKFLOW:\n"
         "1. Run the main entry point and tests to identify failures (use Bash)\n"
         "2. For each failure, trace the root cause by reading files (use Read)\n"
@@ -66,6 +129,7 @@ RESEARCH_TEMPLATES = {
         "CRITICAL: Work ONLY within the current project directory. "
         "Do NOT access files outside this directory.\n\n"
         "You are analyzing experimental data in this project. Do NOT search the web.\n\n"
+        f"{OUTPUT_DISCIPLINE}\n"
         "WORKFLOW:\n"
         "1. Find and load the experimental data files\n"
         "2. Run analysis scripts to process the data\n"
@@ -97,10 +161,10 @@ class ClaudeStreamEvent:
     def to_dict(self) -> dict:
         return {
             "event_type": self.event_type,
-            "content": self.content[:2000] if len(self.content) > 2000 else self.content,
+            "content": self.content[:800] if len(self.content) > 800 else self.content,
             "tool_name": self.tool_name,
-            "tool_input": self.tool_input[:500] if len(self.tool_input) > 500 else self.tool_input,
-            "tool_output": self.tool_output[:1000] if len(self.tool_output) > 1000 else self.tool_output,
+            "tool_input": self.tool_input[:240] if len(self.tool_input) > 240 else self.tool_input,
+            "tool_output": self.tool_output[:320] if len(self.tool_output) > 320 else self.tool_output,
             "step": self.step,
             "timestamp": self.timestamp,
         }
@@ -118,12 +182,18 @@ class ClaudeCodeAgent:
 
     def __init__(
         self,
-        model: str = DEFAULT_MODEL,
+        model: Optional[str] = None,
         max_budget: float = DEFAULT_MAX_BUDGET,
         timeout: int = DEFAULT_TIMEOUT,
         allowed_tools: str = ALLOWED_TOOLS,
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
     ):
-        self.model = model
+        # Read from Settings if not explicitly provided
+        settings_model, settings_key, settings_url = _get_settings_model_and_key()
+        self.model = model or settings_model
+        self.api_key = api_key or settings_key or ""
+        self.base_url = base_url or settings_url or ""
         self.max_budget = max_budget
         self.timeout = timeout
         self.allowed_tools = allowed_tools
@@ -167,25 +237,24 @@ class ClaudeCodeAgent:
             )
             return
 
+        # Use default system prompt if none provided
+        system_prompt = system_prompt or RESEARCH_TEMPLATES["run_experiment"]
         # Build prompt
         prompt = self._build_prompt(goal, workspace, system_prompt)
-        # Use default system prompt if none provided
-        sp = system_prompt or RESEARCH_TEMPLATES["run_experiment"]
 
         # Build concise prompt — combine task description into single -p argument
-        concise_prompt = prompt.replace('\n', ' ').replace('\r', '')[:2000]
+        concise_prompt = prompt.replace('\r', '').strip()[:4000]
 
         cmd = [
             claude_bin,
             "-p", concise_prompt,
-            "--print",
             "--output-format", "stream-json",
             "--verbose",
             "--model", self.model,
             "--allowedTools", self.allowed_tools,
             "--add-dir", workspace,
             "--max-budget-usd", str(self.max_budget),
-            "--permission-mode", "bypassPermissions",
+            "--dangerously-skip-permissions",
         ]
         if session_id:
             cmd.extend(["--resume", session_id])
@@ -200,6 +269,24 @@ class ClaudeCodeAgent:
             npm_bin = os.path.dirname(claude_bin)
             if npm_bin and npm_bin not in proc_env.get("PATH", ""):
                 proc_env["PATH"] = npm_bin + os.pathsep + proc_env.get("PATH", "")
+
+            # Pass API configuration from Settings to Claude CLI
+            # Claude Code uses ANTHROPIC_AUTH_TOKEN (not ANTHROPIC_API_KEY)
+            if self.api_key:
+                proc_env["ANTHROPIC_AUTH_TOKEN"] = self.api_key
+                proc_env["ANTHROPIC_API_KEY"] = self.api_key  # Also set for compatibility
+            if self.base_url:
+                proc_env["ANTHROPIC_BASE_URL"] = self.base_url
+
+            # Respect ANTHROPIC_MODEL from environment (user's settings.json)
+            env_model = os.environ.get("ANTHROPIC_MODEL", "")
+            if env_model:
+                self.model = env_model
+            # Update --model flag to match
+            for i, arg in enumerate(cmd):
+                if arg == "--model" and i + 1 < len(cmd):
+                    cmd[i + 1] = self.model
+                    break
 
             proc = _sp.Popen(
                 cmd,
@@ -313,10 +400,12 @@ class ClaudeCodeAgent:
         return (
             f"## Task\n{goal}\n\n"
             f"{context}\n\n"
+            + (f"## System Instructions\n{system_prompt}\n\n" if system_prompt else "")
+            + f"## Output Rules\n{OUTPUT_DISCIPLINE}\n"
             "IMPORTANT: Work ONLY with files in the current directory. "
             "Do not access external paths or search the web. "
             "Follow the system prompt's workflow step by step. "
-            "Report what you accomplished after completing the task."
+            "Report only key outcomes after completing the task."
         )
 
     @staticmethod

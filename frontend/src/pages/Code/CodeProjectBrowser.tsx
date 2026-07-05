@@ -23,7 +23,7 @@ import {
   CodeProjectV2, TreeEntry, SearchResult, PipelineStepResult,
 } from '@/lib/api/codeProjects'
 import {
-  streamClaudeAgent, streamCartRun,
+  streamClaudeAgent, streamCartRun, getCartStatus,
   ClaudeStreamEvent, CartProgressEvent,
 } from '@/lib/api/codeAgent'
 
@@ -99,12 +99,17 @@ export function CodeProjectBrowser() {
   const [cartAbortRef] = useState<{ current: AbortController | null }>({ current: null })
   const cartPanelRef = useRef<HTMLDivElement>(null)
   const [expandedCartNodes, setExpandedCartNodes] = useState<Record<number, boolean>>({})
-
-  useEffect(() => { return () => { stopPolling() } }, [])
+  const cartPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const stopPolling = useCallback(() => {
     if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
   }, [])
+
+  const stopCartPolling = useCallback(() => {
+    if (cartPollRef.current) { clearInterval(cartPollRef.current); cartPollRef.current = null }
+  }, [])
+
+  useEffect(() => { return () => { stopPolling(); stopCartPolling() } }, [stopPolling, stopCartPolling])
 
   // Load last pipeline results on mount
   useEffect(() => {
@@ -182,6 +187,42 @@ export function CodeProjectBrowser() {
   // ---- (AI Agent handlers removed — use Claude Agent instead) ----
 
   // ---- Claude Agent handlers ----
+  const toClaudeDisplayEvent = (
+    event: ClaudeStreamEvent,
+    previous: ClaudeStreamEvent[],
+  ): ClaudeStreamEvent | null => {
+    if (event.event_type === 'error' || event.event_type === 'done') return event
+
+    if (event.event_type !== 'tool_use') {
+      const text = event.content?.trim()
+      if (!text || text.length < 12) return null
+      if (previous.some(e => e.event_type === 'thinking')) return null
+      return {
+        ...event,
+        content: text.length > 160 ? `${text.slice(0, 160)}...` : text,
+        tool_input: '',
+        tool_output: '',
+      }
+    }
+
+    const tool = event.tool_name
+    const key = ['Read', 'Glob', 'Grep'].includes(tool)
+      ? 'Inspecting project files...'
+      : ['Write', 'Edit'].includes(tool)
+        ? 'Writing code changes...'
+        : tool === 'Bash'
+          ? 'Running commands...'
+          : ''
+
+    if (!key || previous.some(e => e.content === key)) return null
+    return {
+      ...event,
+      content: key,
+      tool_input: '',
+      tool_output: '',
+    }
+  }
+
   const handleClaudeStart = () => {
     if (!projectId || claudeRunning) return
     setClaudeRunning(true)
@@ -197,7 +238,10 @@ export function CodeProjectBrowser() {
         maxBudget: 10,
       },
       (event) => {
-        setClaudeEvents(prev => [...prev, event])
+        setClaudeEvents(prev => {
+          const displayEvent = toClaudeDisplayEvent(event, prev)
+          return displayEvent ? [...prev, displayEvent] : prev
+        })
         // Auto-scroll
         if (claudePanelRef.current) {
           claudePanelRef.current.scrollTop = claudePanelRef.current.scrollHeight
@@ -230,26 +274,69 @@ export function CodeProjectBrowser() {
   }
 
   // ---- Cart Runner handler ----
+
+  // Poll cart status as fallback for SSE (ensures we get events even if SSE disconnects)
+  const startCartPolling = useCallback(() => {
+    stopCartPolling()
+    cartPollRef.current = setInterval(() => {
+      if (!projectId) return
+      getCartStatus(projectId).then(status => {
+        if (status.events && status.events.length > 0) {
+          setCartEvents(prev => {
+            // Only update if backend has more events than frontend
+            if (status.events.length > prev.length) {
+              if (cartPanelRef.current) cartPanelRef.current.scrollTop = cartPanelRef.current.scrollHeight
+              return status.events
+            }
+            return prev
+          })
+          // Stop if cart is complete
+          if (status.status !== 'running' && status.status !== 'idle') {
+            setCartRunning(false)
+            stopCartPolling()
+            cartAbortRef.current?.abort()
+          }
+        }
+      }).catch(() => { /* ignore */ })
+    }, 3000) // Poll every 3 seconds
+  }, [projectId, stopCartPolling])
+
   const handleCartRun = () => {
     if (!projectId || cartRunning) return
     setCartRunning(true)
     setCartEvents([])
     const ctrl = streamCartRun(
-      { projectId, packageId: 'demo_ppkg_math', timeout: 900 },
+      { projectId, timeout: 900 },
       (event) => {
-        setCartEvents(prev => [...prev, event])
+        setCartEvents(prev => {
+          // Avoid duplicates from polling + SSE overlap
+          const lastEvt = prev[prev.length - 1]
+          if (lastEvt && lastEvt.event_type === event.event_type && lastEvt.node_id === event.node_id && lastEvt.message === event.message) {
+            return prev
+          }
+          return [...prev, event]
+        })
         if (cartPanelRef.current) cartPanelRef.current.scrollTop = cartPanelRef.current.scrollHeight
+        // Stop running state on cart_complete
+        if (event.event_type === 'cart_complete') {
+          setCartRunning(false)
+          stopCartPolling()
+        }
       },
       (error) => {
-        setCartRunning(false)
+        // SSE ended (possibly prematurely) — polling will catch up
         if (error && error !== 'Cancelled') {
           setCartEvents(prev => [...prev, {
-            event_type: 'cart_complete', node_id: '', status: 'failed', message: error, timestamp: new Date().toLocaleTimeString()
+            event_type: 'node_progress', node_id: '', status: 'running',
+            message: `SSE 连接断开，正在通过轮询同步状态...`, timestamp: new Date().toLocaleTimeString()
           }])
         }
+        // Don't set cartRunning to false — let polling handle it
       }
     )
     cartAbortRef.current = ctrl
+    // Start polling as fallback
+    startCartPolling()
   }
 
   const handleCartStop = () => {
@@ -289,6 +376,21 @@ export function CodeProjectBrowser() {
       }
     }
     load()
+  }, [projectId])
+
+  // Load cart status on mount (restore previous execution state)
+  useEffect(() => {
+    if (!projectId) return
+    getCartStatus(projectId)
+      .then(status => {
+        if (status.events && status.events.length > 0) {
+          setCartEvents(status.events)
+          if (status.status === 'running') {
+            setCartRunning(true)
+          }
+        }
+      })
+      .catch(() => { /* ignore — no cart history */ })
   }, [projectId])
 
   // Load tree when path changes
@@ -541,38 +643,65 @@ export function CodeProjectBrowser() {
       </div>
 
       {/* ---- Cart Pipeline Execution Panel ---- */}
-      {(cartEvents.length > 0 || cartRunning) && (
+      {(cartEvents.length > 0 || cartRunning) && (() => {
+        const nodeStarts = cartEvents.filter(e => e.event_type === 'node_start')
+        const nodeCompletes = cartEvents.filter(e => e.event_type === 'node_complete' && e.status !== 'skipped')
+        const succeeded = cartEvents.filter(e => e.event_type === 'node_complete' && (e.status === 'success' || e.status === 'succeeded'))
+        const failed = cartEvents.filter(e => e.event_type === 'node_complete' && e.status === 'failed')
+        const totalMatch = cartEvents.find(e => e.event_type === 'cart_start')?.message.match(/(\d+) nodes/)
+        const totalNodes = totalMatch ? parseInt(totalMatch[1]) : nodeStarts.length || 1
+        const completedCount = nodeCompletes.length
+        const progressPct = Math.min(100, Math.round((completedCount / totalNodes) * 100))
+        const currentNode = cartEvents.filter(e => e.event_type === 'node_progress').slice(-1)[0]
+        return (
         <Card className={`mb-4 border-2 ${
           cartRunning ? 'border-emerald-300' :
-          cartEvents.some(e => e.status === 'failed') ? 'border-red-300' :
+          failed.length > 0 ? 'border-red-300' :
           'border-emerald-300'
         }`}>
           <CardHeader className="py-2 px-4 flex-row items-center justify-between">
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <Play className={`h-4 w-4 ${cartRunning ? 'text-emerald-500' : 'text-emerald-600'}`} />
               <span className="font-medium text-sm">Cart Pipeline</span>
               <Badge variant="outline" className={`text-xs ${cartRunning ? 'border-emerald-300 text-emerald-700' : ''}`}>
                 {cartRunning ? <Loader2 className="h-3 w-3 mr-1 inline animate-spin" /> :
                  <CheckCircle2 className="h-3 w-3 mr-1 inline text-emerald-500" />}
-                {cartRunning ? 'Running...' : 'Complete'}
+                {cartRunning ? `执行中 ${completedCount}/${totalNodes}` : '已完成'}
               </Badge>
               {!cartRunning && cartEvents.length > 0 && (
                 <span className="text-xs text-muted-foreground">
-                  {cartEvents.filter(e => (e.status === 'success' || e.status === 'succeeded')).length} succeeded
-                  · {cartEvents.filter(e => e.status === 'failed').length} failed
+                  {succeeded.length} 成功 · {failed.length} 失败
                 </span>
               )}
             </div>
-            <Button variant="ghost" size="sm" onClick={() => { setCartEvents([]); setCartRunning(false) }}>
+            <Button variant="ghost" size="sm" onClick={() => { setCartEvents([]); setCartRunning(false); stopCartPolling() }}>
               <Square className="h-3 w-3 mr-1" /> Clear
             </Button>
           </CardHeader>
+          {/* Progress bar */}
+          <div className="px-4 pb-2">
+            <div className="flex items-center gap-2 mb-1">
+              <div className="flex-1 h-2 bg-slate-200 rounded-full overflow-hidden">
+                <div
+                  className={`h-full transition-all duration-500 rounded-full ${failed.length > 0 && !cartRunning ? 'bg-red-500' : 'bg-emerald-500'}`}
+                  style={{ width: `${progressPct}%` }}
+                />
+              </div>
+              <span className="text-xs text-muted-foreground w-10 text-right">{progressPct}%</span>
+            </div>
+            {cartRunning && currentNode && (
+              <p className="text-xs text-blue-600 truncate">
+                <Loader2 className="h-3 w-3 inline animate-spin mr-1" />
+                {currentNode.message.length > 120 ? currentNode.message.slice(0, 120) + '...' : currentNode.message}
+              </p>
+            )}
+          </div>
           <CardContent className="p-0">
             <div ref={cartPanelRef} className="divide-y max-h-80 overflow-auto">
               {cartEvents.map((event, idx) => {
                 const isStart = event.event_type === 'node_start' || event.event_type === 'cart_start'
                 const isComplete = event.event_type === 'node_complete' || event.event_type === 'cart_complete'
-                const isOk = event.status === 'succeeded'
+                const isOk = event.status === 'success' || event.status === 'succeeded'
                 const isFail = event.status === 'failed' || event.status === 'skipped'
                 return (
                   <div key={idx}>
@@ -629,7 +758,8 @@ export function CodeProjectBrowser() {
             </div>
           </CardContent>
         </Card>
-      )}
+        )
+      })()}
 
       {/* Pipeline Execution Panel */}
       {(pipelineSteps.length > 0 || lastRun) && (

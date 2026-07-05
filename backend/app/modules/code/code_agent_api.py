@@ -279,17 +279,20 @@ async def claude_stream(request: ClaudeStreamRequest):
 class CartRunRequest(BaseModel):
     """Request to start a Cart pipeline run."""
     projectId: str = Field(..., description="Code project ID")
-    packageId: str = Field("demo_ppkg_math", description="PlanPackage ID (or path to ppkg JSON)")
+    packageId: Optional[str] = Field(None, description="PlanPackage ID. If omitted, auto-discovers from project's source Idea session.")
     timeout: int = Field(900, ge=60, le=3600)
 
 
 @router.post("/cart/run")
-async def cart_stream(request: CartRunRequest):
+async def cart_stream(request: CartRunRequest, db: Session = Depends(get_session)):
     """Run a full Cart pipeline on a PlanPackage, streaming progress via SSE.
 
     Loads the PlanPackage, topologically sorts the DAG, and executes
     each node via Claude Code agent. Returns SSE events for real-time
     frontend monitoring.
+
+    If packageId is not provided, automatically discovers the PlanPackage
+    associated with the project's source Idea session.
     """
     import os as _os
     from fastapi.responses import StreamingResponse
@@ -298,32 +301,149 @@ async def cart_stream(request: CartRunRequest):
     if not repo_dir:
         raise HTTPException(status_code=400, detail=f"No repo found for project {request.projectId}")
 
-    # Load PlanPackage
-    ppkg_path = request.packageId
-    if not _os.path.isabs(ppkg_path):
-        from app.db.engine import _DATA_DIR
-        ppkg_dir = _os.path.join(_DATA_DIR, "plan_packages")
-        candidates = [
-            _os.path.join(ppkg_dir, f"{request.packageId}.json"),
-            _os.path.join(ppkg_dir, "demo_ppkg_math.json"),
-        ]
-        ppkg_path = None
-        for c in candidates:
-            if _os.path.isfile(c):
-                ppkg_path = c
-                break
-        if not ppkg_path:
-            raise HTTPException(status_code=404, detail=f"PlanPackage not found: {request.packageId}")
+    # Resolve PlanPackage
+    ppkg = None
 
-    with open(ppkg_path, "r", encoding="utf-8") as f:
-        ppkg = json.load(f)
+    if request.packageId:
+        # Explicit packageId: treat as absolute path or filename under plan_packages/
+        ppkg_path = request.packageId
+        if not _os.path.isabs(ppkg_path):
+            from app.db.engine import _DATA_DIR
+            ppkg_dir = _os.path.join(_DATA_DIR, "plan_packages")
+            ppkg_path = _os.path.join(ppkg_dir, f"{request.packageId}.json")
+            if not _os.path.isfile(ppkg_path):
+                # Try without .json suffix (might already have it)
+                ppkg_path2 = _os.path.join(ppkg_dir, request.packageId)
+                if _os.path.isfile(ppkg_path2):
+                    ppkg_path = ppkg_path2
+        if _os.path.isfile(ppkg_path):
+            with open(ppkg_path, "r", encoding="utf-8") as f:
+                ppkg = json.load(f)
+        else:
+            raise HTTPException(status_code=404, detail=f"PlanPackage not found: {request.packageId}")
+    else:
+        # Auto-discover from project's source Idea session or codegen sessions
+        project = crud.get_project_v2(db, request.projectId)
+        if not project:
+            raise HTTPException(status_code=404, detail=f"Project not found: {request.projectId}")
+
+        from app.modules.platform.storage import get_plan_package_storage
+        pkg_storage = get_plan_package_storage()
+
+        # Method 1: project's source_idea_session_id
+        source_idea_id = getattr(project, "source_idea_session_id", None)
+        if source_idea_id:
+            pkg = pkg_storage.get_by_idea_session(source_idea_id)
+            if pkg:
+                ppkg = pkg.model_dump(mode="json") if hasattr(pkg, "model_dump") else pkg
+
+        # Method 2: codegen session's planSessionId
+        if not ppkg:
+            try:
+                from app.agents.codegen.kernel import list_sessions as list_codegen_sessions
+                sessions = list_codegen_sessions(project_id=request.projectId)
+                for sess in sessions:
+                    plan_session_id = sess.get("config", {}).get("planSessionId")
+                    if plan_session_id:
+                        pkg = pkg_storage.get_by_idea_session(plan_session_id)
+                        if pkg:
+                            ppkg = pkg.model_dump(mode="json") if hasattr(pkg, "model_dump") else pkg
+                            break
+            except Exception:
+                pass
+
+        # Method 3: Try all PlanPackages — find one whose ideaSessionId matches any codegen session
+        if not ppkg:
+            try:
+                all_pkgs = pkg_storage.list_all()
+                from app.agents.codegen.kernel import list_sessions as list_codegen_sessions
+                sessions = list_codegen_sessions(project_id=request.projectId)
+                session_plan_ids = {
+                    sess.get("config", {}).get("planSessionId")
+                    for sess in sessions if sess.get("config", {}).get("planSessionId")
+                }
+                for pkg in (all_pkgs or []):
+                    pkg_idea_id = pkg.source.ideaSessionId if hasattr(pkg, "source") else pkg.get("source", {}).get("ideaSessionId")
+                    if pkg_idea_id in session_plan_ids:
+                        ppkg = pkg.model_dump(mode="json") if hasattr(pkg, "model_dump") else pkg
+                        break
+            except Exception:
+                pass
+
+    if not ppkg:
+        raise HTTPException(
+            status_code=404,
+            detail="No PlanPackage found for this project. Generate a PlanPackage from the Pipeline page first.",
+        )
 
     from app.services.cart_runner import CartRunner
+    import asyncio as _asyncio
+
     runner = CartRunner()
 
+    # Start cart execution as a background task (independent of SSE connection)
+    package_id = ppkg.get("packageId", "unknown")
+    cart_id = f"cart_{package_id.replace('ppkg_', '')[:12]}"
+    cart_dir = os.path.join(runner._base, cart_id)
+    event_log_path = os.path.join(cart_dir, "event_log.json")
+
+    # Track active carts to avoid duplicate runs
+    if not hasattr(cart_stream, "_active_carts"):
+        cart_stream._active_carts = {}
+
+    if cart_id in cart_stream._active_carts and not cart_stream._active_carts[cart_id].done():
+        # Cart already running, just stream existing events
+        pass
+    else:
+        # Start new cart execution
+        async def _run_cart():
+            try:
+                async for event in runner.run(ppkg):
+                    pass  # Events are saved to event_log.json by runner.run()
+            except Exception as exc:
+                logger.error("Cart execution failed: %s", exc)
+
+        task = _asyncio.create_task(_run_cart())
+        cart_stream._active_carts[cart_id] = task
+
     async def event_stream():
-        async for event in runner.run(ppkg):
-            yield event.to_sse()
+        """Stream events from the event log file (polling).
+        This survives SSE client disconnects — the cart keeps running."""
+        sent_count = 0
+        while True:
+            # Read current event log
+            events = []
+            if os.path.isfile(event_log_path):
+                try:
+                    with open(event_log_path, "r", encoding="utf-8") as f:
+                        events = json.load(f)
+                except Exception:
+                    pass
+
+            # Send new events
+            for evt in events[sent_count:]:
+                sse_data = f"data: {json.dumps(evt, ensure_ascii=False)}\n\n"
+                yield sse_data
+                sent_count += 1
+
+            # Check if cart is complete
+            if events and events[-1].get("event_type") == "cart_complete":
+                return
+
+            # Check if task finished
+            if cart_id in cart_stream._active_carts and cart_stream._active_carts[cart_id].done():
+                # Send any remaining events and exit
+                if os.path.isfile(event_log_path):
+                    try:
+                        with open(event_log_path, "r", encoding="utf-8") as f:
+                            events = json.load(f)
+                        for evt in events[sent_count:]:
+                            yield f"data: {json.dumps(evt, ensure_ascii=False)}\n\n"
+                    except Exception:
+                        pass
+                return
+
+            await _asyncio.sleep(1)  # Poll every 1 second
 
     return StreamingResponse(
         event_stream(),
@@ -333,6 +453,149 @@ async def cart_stream(request: CartRunRequest):
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
         },
+    )
+
+
+class CartStatusResponse(BaseModel):
+    """Cart execution status for a project."""
+    cartId: Optional[str] = None
+    status: str = "idle"  # idle | running | success | partial | failed
+    events: list = []
+    nodeStates: dict = {}
+    totalNodes: int = 0
+    succeededNodes: int = 0
+    failedNodes: int = 0
+
+
+@router.get("/cart/status/{project_id}", response_model=CartStatusResponse)
+async def get_cart_status(project_id: str, db: Session = Depends(get_session)):
+    """Get the latest cart execution status for a project.
+
+    Reads event_log.json and blueprint_state.json from the cart directory
+    to reconstruct the full execution history.
+    """
+    import os as _os
+    import glob as _glob
+    from app.db.engine import _DATA_DIR
+
+    cart_base = _os.path.join(_DATA_DIR, "cart_artifacts")
+    if not _os.path.isdir(cart_base):
+        return CartStatusResponse(status="idle")
+
+    # Find the correct cart directory by matching the project's PlanPackage
+    # First, discover the project's PlanPackage ID
+    project_ppkg_id = None
+    try:
+        project = crud.get_project_v2(db, project_id)
+        if project:
+            source_idea_id = getattr(project, "source_idea_session_id", None)
+            if source_idea_id:
+                from app.modules.platform.storage import get_plan_package_storage
+                pkg_storage = get_plan_package_storage()
+                pkg = pkg_storage.get_by_idea_session(source_idea_id)
+                if pkg:
+                    project_ppkg_id = pkg.packageId
+    except Exception:
+        pass
+
+    # Also check codegen sessions for the planSessionId
+    if not project_ppkg_id:
+        try:
+            from app.agents.codegen.kernel import list_sessions as list_codegen_sessions
+            sessions = list_codegen_sessions(project_id=project_id)
+            for sess in sessions:
+                plan_session_id = sess.get("config", {}).get("planSessionId")
+                if plan_session_id:
+                    from app.modules.platform.storage import get_plan_package_storage
+                    pkg_storage = get_plan_package_storage()
+                    packages = pkg_storage.list_by_idea_session(plan_session_id) if hasattr(pkg_storage, 'list_by_idea_session') else []
+                    for pkg in (packages or []):
+                        pid = pkg.get("packageId") if isinstance(pkg, dict) else getattr(pkg, "packageId", None)
+                        if pid:
+                            project_ppkg_id = pid
+                            break
+                if project_ppkg_id:
+                    break
+        except Exception:
+            pass
+
+    # Search cart directories for matching package_id
+    cart_dir = None
+    cart_dirs = _glob.glob(_os.path.join(cart_base, "cart_*"))
+    # Sort by modification time (most recent first)
+    cart_dirs.sort(key=lambda d: _os.path.getmtime(d), reverse=True)
+
+    for cd in cart_dirs:
+        manifest_path = _os.path.join(cd, "data", "manifest.json")
+        if _os.path.isfile(manifest_path):
+            try:
+                with open(manifest_path, "r", encoding="utf-8") as f:
+                    manifest = json.load(f)
+                if project_ppkg_id and manifest.get("package_id") == project_ppkg_id:
+                    cart_dir = cd
+                    break
+            except Exception:
+                pass
+
+    # Fallback: use the most recently modified cart directory
+    if not cart_dir and cart_dirs:
+        cart_dir = cart_dirs[0]
+
+    if not cart_dir:
+        return CartStatusResponse(status="idle")
+
+    cart_id = _os.path.basename(cart_dir)
+
+    # Read event log
+    events: list = []
+    event_log_path = _os.path.join(cart_dir, "event_log.json")
+    if _os.path.isfile(event_log_path):
+        try:
+            with open(event_log_path, "r", encoding="utf-8") as f:
+                events = json.load(f)
+        except Exception:
+            pass
+
+    # Read blueprint state (per-node execution results)
+    node_states: dict = {}
+    bp_state_path = _os.path.join(cart_dir, "blueprint_state.json")
+    if _os.path.isfile(bp_state_path):
+        try:
+            with open(bp_state_path, "r", encoding="utf-8") as f:
+                node_states = json.load(f)
+        except Exception:
+            pass
+
+    # Determine overall status from events
+    status = "idle"
+    total_nodes = 0
+    succeeded = 0
+    failed = 0
+
+    if events:
+        last_event = events[-1]
+        if last_event.get("event_type") == "cart_complete":
+            status = last_event.get("status", "success")
+        elif last_event.get("event_type") in ("node_start", "node_progress"):
+            status = "running"
+        elif any(e.get("event_type") == "cart_start" for e in events):
+            status = "running"
+
+    for nid, ns in node_states.items():
+        total_nodes += 1
+        if ns.get("status") == "success":
+            succeeded += 1
+        else:
+            failed += 1
+
+    return CartStatusResponse(
+        cartId=cart_id,
+        status=status,
+        events=events,
+        nodeStates=node_states,
+        totalNodes=total_nodes,
+        succeededNodes=succeeded,
+        failedNodes=failed,
     )
 
 

@@ -199,12 +199,29 @@ export interface CartRunRequest {
 }
 
 export interface CartProgressEvent {
-  event_type: string;  // "cart_start" | "node_start" | "node_complete" | "cart_complete"
+  event_type: string;  // "cart_start" | "node_start" | "node_progress" | "node_complete" | "cart_complete"
   node_id: string;
   status: string;      // "running" | "succeeded" | "failed" | "skipped" | "partial"
   message: string;
   result?: Record<string, unknown>;
   timestamp: string;
+}
+
+export interface CartStatusResponse {
+  cartId: string | null;
+  status: string;  // "idle" | "running" | "success" | "partial" | "failed"
+  events: CartProgressEvent[];
+  nodeStates: Record<string, { status: string; artifacts: string[]; duration_ms: number }>;
+  totalNodes: number;
+  succeededNodes: number;
+  failedNodes: number;
+}
+
+/** Fetch the latest cart execution status for a project. */
+export async function getCartStatus(projectId: string): Promise<CartStatusResponse> {
+  const resp = await fetch(`${API_BASE}/api/v1/code/agent/cart/status/${encodeURIComponent(projectId)}`);
+  if (!resp.ok) throw new Error(`Failed to fetch cart status: ${resp.status}`);
+  return resp.json();
 }
 
 /** Stream Cart pipeline execution via SSE. Returns AbortController for cancellation. */

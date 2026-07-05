@@ -113,19 +113,23 @@ async def get_project_blueprint(
         raise HTTPException(status_code=404, detail=f"Project not found: {project_id}")
 
     repo_dir = _resolve_repo_dir(project)
+    source_idea_id = getattr(project, "source_idea_session_id", None)
 
-    # Try PlanPackage path first
-    ppkg = _load_plan_package_for_project(project_id, project.title)
+    # Try PlanPackage path first — use source_idea_session_id to find the correct one
+    ppkg = _load_plan_package_for_project(project_id, project.title, source_idea_id)
     if ppkg:
+        # Use the proper blueprint converter from the service layer
         blueprint = _convert_ppkg_to_blueprint(ppkg, project_id, project.title)
         blueprint["projectId"] = project_id
         blueprint["projectTitle"] = project.title
         blueprint["source"] = "plan_package"
-        _merge_cart_state(blueprint)
+        # Find the correct cart for this PlanPackage
+        ppkg_id = ppkg.get("packageId")
+        cart_dir = _find_cart_dir_for_project(project_id, ppkg_id)
+        _merge_cart_state(blueprint, cart_dir)
         return blueprint
 
     # Try legacy Idea session path
-    source_idea_id = getattr(project, "source_idea_session_id", None)
     if source_idea_id:
         try:
             blueprint = _load_blueprint_from_idea(source_idea_id)
@@ -133,6 +137,8 @@ async def get_project_blueprint(
                 blueprint["projectId"] = project_id
                 blueprint["projectTitle"] = project.title
                 blueprint["source"] = "plan_package"
+                cart_dir = _find_cart_dir_for_project(project_id)
+                _merge_cart_state(blueprint, cart_dir)
                 return blueprint
         except Exception as exc:
             logger.warning("Failed to load blueprint from idea %s: %s", source_idea_id, exc)
@@ -143,8 +149,9 @@ async def get_project_blueprint(
     blueprint["projectTitle"] = project.title
     blueprint["source"] = "project_structure"
 
-    # Merge execution state from any running/completed carts
-    _merge_cart_state(blueprint)
+    # Merge execution state from the correct cart only
+    cart_dir = _find_cart_dir_for_project(project_id)
+    _merge_cart_state(blueprint, cart_dir)
     return blueprint
 
 
@@ -192,13 +199,23 @@ async def list_project_blueprints(
 
 # ---- helpers ----
 
-def _load_plan_package_for_project(project_id: str, title: str) -> Optional[dict]:
-    """Try to load a PlanPackage JSON for this project."""
+def _load_plan_package_for_project(project_id: str, title: str, source_idea_session_id: Optional[str] = None) -> Optional[dict]:
+    """Try to load the PlanPackage associated with this project.
+
+    Lookup order:
+    1. If project has source_idea_session_id, find the PlanPackage whose
+       source.ideaSessionId matches.
+    2. Check codegen sessions for this project to find the planSessionId.
+    3. Fall back: return the most recent approved PlanPackage.
+    """
     import os as _os
     from app.db.engine import _DATA_DIR
     ppkg_dir = _os.path.join(_DATA_DIR, "plan_packages")
     if not _os.path.isdir(ppkg_dir):
         return None
+
+    # Collect all PlanPackage JSON files
+    candidates: list[tuple[str, dict]] = []
     for fname in _os.listdir(ppkg_dir):
         if fname.endswith(".json"):
             try:
@@ -206,27 +223,72 @@ def _load_plan_package_for_project(project_id: str, title: str) -> Optional[dict
                 with open(path, "r", encoding="utf-8") as f:
                     ppkg = json.load(f)
                 if ppkg.get("packageId"):
-                    return ppkg
+                    candidates.append((fname, ppkg))
             except Exception:
                 pass
-    return None
+
+    if not candidates:
+        return None
+
+    # 1. Match by source_idea_session_id
+    if source_idea_session_id:
+        for _fname, ppkg in candidates:
+            if ppkg.get("source", {}).get("ideaSessionId") == source_idea_session_id:
+                return ppkg
+
+    # 2. Check codegen sessions for this project to discover the planSessionId
+    try:
+        from app.agents.codegen.kernel import list_sessions as list_codegen_sessions
+        sessions = list_codegen_sessions(project_id=project_id)
+        for sess in sessions:
+            plan_session_id = sess.get("config", {}).get("planSessionId")
+            if plan_session_id:
+                for _fname, ppkg in candidates:
+                    if ppkg.get("source", {}).get("ideaSessionId") == plan_session_id:
+                        return ppkg
+    except Exception as exc:
+        logger.warning("Failed to query codegen sessions for project %s: %s", project_id, exc)
+
+    # 3. Fallback: return the most recent approved PlanPackage
+    for _fname, ppkg in candidates:
+        if ppkg.get("status") == "approved":
+            return ppkg
+
+    # Last resort: return the most recent PlanPackage
+    return candidates[0][1] if candidates else None
 
 
 def _convert_ppkg_to_blueprint(ppkg: dict, project_id: str, title: str) -> dict:
-    """Convert PlanPackage stages/steps to ExperimentBlueprint DAG format."""
+    """Convert PlanPackage to ExperimentBlueprint DAG format.
+
+    Uses the proper blueprint_converter service for correct field mapping,
+    falls back to inline conversion if the model can't be loaded.
+    """
+    # Try using the proper service-layer converter
+    try:
+        from app.models.plan_package import PlanPackage
+        from app.services.blueprint_converter import convert_plan_package_to_blueprint
+        model = PlanPackage.model_validate(ppkg)
+        result = convert_plan_package_to_blueprint(model)
+        result["id"] = f"ppkg_{project_id}"
+        result["title"] = f"{title} — Experiment Blueprint"
+        return result
+    except Exception as exc:
+        logger.warning("Service converter failed, using inline fallback: %s", exc)
+
+    # Inline fallback for raw dicts that don't validate as PlanPackage
     nodes: list[dict] = []
     edges: list[dict] = []
     edge_idx = 0
 
     for stage in ppkg.get("stages", []):
         sid = stage["id"]
-        # Stage header node
         nodes.append({
             "id": sid,
             "label": stage.get("title", sid),
             "stage": stage.get("title", ""),
             "status": "pending",
-            "description": stage.get("desc", ""),
+            "description": stage.get("goal", stage.get("desc", "")),
             "method": "stage-header",
             "inputs": [],
             "outputs": [],
@@ -241,9 +303,9 @@ def _convert_ppkg_to_blueprint(ppkg: dict, project_id: str, title: str) -> dict:
                 "label": f"{step.get('order', 0)}. {step.get('title', step_id)}",
                 "stage": stage.get("title", ""),
                 "status": "pending",
-                "description": step.get("desc", ""),
+                "description": step.get("description", step.get("desc", "")),
                 "method": step.get("method", ""),
-                "inputs": step.get("inputFrom", []),
+                "inputs": step.get("inputFrom", step.get("inputs", [])),
                 "outputs": [o.get("name", "") for o in step.get("outputs", [])],
                 "result": None,
                 "startedAt": None, "finishedAt": None, "duration": None,
@@ -261,62 +323,83 @@ def _convert_ppkg_to_blueprint(ppkg: dict, project_id: str, title: str) -> dict:
     }
 
 
-def _list_cart_artifacts(node_id: str) -> list[str]:
-    """List all files in cart data/ and runs/ for a node."""
-    import os as _os, glob as _glob
-    from app.db.engine import _DATA_DIR
-    files = []
-    cart_base = _os.path.join(_DATA_DIR, "cart_artifacts")
-    if not _os.path.isdir(cart_base):
-        return files
-    for cart_dir in sorted(_glob.glob(_os.path.join(cart_base, "cart_*")), reverse=True):
-        for sub in ["data", "runs"]:
-            node_dir = _os.path.join(cart_dir, sub, node_id)
-            if _os.path.isdir(node_dir):
-                for fname in sorted(_os.listdir(node_dir)):
-                    if not fname.startswith('.') and fname != 'result.json' and fname not in files:
-                        files.append(fname)
-        if files:
-            return files
-    return files
+def _find_cart_dir_for_project(project_id: str, ppkg_id: Optional[str] = None) -> Optional[str]:
+    """Find the correct cart directory for a project.
 
-
-def _load_cart_node_result(node_id: str) -> Optional[dict]:
-    """Load result.json from a cart run for a specific node."""
+    Matches by PlanPackage ID in the cart's manifest, or falls back to
+    the most recently modified cart directory.
+    """
     import os as _os, glob as _glob
     from app.db.engine import _DATA_DIR
     cart_base = _os.path.join(_DATA_DIR, "cart_artifacts")
     if not _os.path.isdir(cart_base):
         return None
-    for cart_dir in sorted(_glob.glob(_os.path.join(cart_base, "cart_*")), reverse=True):
-        result_path = _os.path.join(cart_dir, "data", node_id, "result.json")
-        if _os.path.isfile(result_path):
-            try:
-                with open(result_path, "r", encoding="utf-8") as f:
-                    return json.load(f)
-            except Exception:
-                pass
+
+    cart_dirs = _glob.glob(_os.path.join(cart_base, "cart_*"))
+    if not cart_dirs:
+        return None
+
+    # Match by package_id in manifest
+    if ppkg_id:
+        for cd in cart_dirs:
+            manifest_path = _os.path.join(cd, "data", "manifest.json")
+            if _os.path.isfile(manifest_path):
+                try:
+                    with open(manifest_path, "r", encoding="utf-8") as f:
+                        manifest = json.load(f)
+                    if manifest.get("package_id") == ppkg_id:
+                        return cd
+                except Exception:
+                    pass
+
+    # Fallback: most recently modified cart
+    cart_dirs.sort(key=lambda d: _os.path.getmtime(d), reverse=True)
+    return cart_dirs[0] if cart_dirs else None
+
+
+def _list_cart_artifacts(node_id: str, cart_dir: Optional[str] = None) -> list[str]:
+    """List all files in cart data/ and runs/ for a node."""
+    import os as _os
+    files = []
+    if not cart_dir:
+        return files
+    for sub in ["data", "runs"]:
+        node_dir = _os.path.join(cart_dir, sub, node_id)
+        if _os.path.isdir(node_dir):
+            for fname in sorted(_os.listdir(node_dir)):
+                if not fname.startswith('.') and fname != 'result.json' and fname not in files:
+                    files.append(fname)
+    return files
+
+
+def _load_cart_node_result(node_id: str, cart_dir: Optional[str] = None) -> Optional[dict]:
+    """Load result.json from a cart run for a specific node."""
+    import os as _os
+    if not cart_dir:
+        return None
+    result_path = _os.path.join(cart_dir, "data", node_id, "result.json")
+    if _os.path.isfile(result_path):
+        try:
+            with open(result_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
     return None
 
 
-def _merge_cart_state(blueprint: dict) -> None:
+def _merge_cart_state(blueprint: dict, cart_dir: Optional[str] = None) -> None:
     """Merge execution status from cart blueprint_state.json into DAG nodes."""
-    import os as _os, glob as _glob
-    from app.db.engine import _DATA_DIR
-    cart_base = _os.path.join(_DATA_DIR, "cart_artifacts")
-    if not _os.path.isdir(cart_base):
+    import os as _os
+    if not cart_dir:
         return
-    # Find the latest cart for this package
-    states = {}
-    for cart_dir in sorted(_glob.glob(_os.path.join(cart_base, "cart_*")), reverse=True):
-        bp_file = _os.path.join(cart_dir, "blueprint_state.json")
-        if _os.path.isfile(bp_file):
-            try:
-                with open(bp_file, "r", encoding="utf-8") as f:
-                    cart_state = json.load(f)
-                states.update(cart_state)
-            except Exception:
-                pass
+    bp_file = _os.path.join(cart_dir, "blueprint_state.json")
+    if not _os.path.isfile(bp_file):
+        return
+    try:
+        with open(bp_file, "r", encoding="utf-8") as f:
+            states = json.load(f)
+    except Exception:
+        return
     if not states:
         return
     nodes = blueprint.get("nodes", [])
@@ -325,10 +408,10 @@ def _merge_cart_state(blueprint: dict) -> None:
         if nid in states:
             node["status"] = states[nid].get("status", "pending")
             # Merge full result data from cart
-            cart_data = _load_cart_node_result(nid)
+            cart_data = _load_cart_node_result(nid, cart_dir)
             if cart_data:
-                # Collect ALL artifacts from cart directories
-                all_artifacts = _list_cart_artifacts(nid)
+                # Collect artifacts from THIS cart directory only
+                all_artifacts = _list_cart_artifacts(nid, cart_dir)
                 node["result"] = {
                     "summary": cart_data.get("message", ""),
                     "metrics": cart_data.get("outputs", {}).get("metrics", {}),
@@ -342,12 +425,12 @@ def _merge_cart_state(blueprint: dict) -> None:
 
     # Update stage headers based on child step statuses
     for node in nodes:
-        if node.get("method") == "stage-header" and node["id"].startswith("stage-"):
-            stage_id = node["id"]
+        if node["id"].startswith("stage-"):
+            stage_ref = node.get("stage", "")  # e.g., "stage-1"
             child_statuses = [
                 n.get("status", "pending")
                 for n in nodes
-                if n.get("id", "").startswith(f"step-{stage_id.split('-')[-1]}-")
+                if n.get("stage") == stage_ref and not n["id"].startswith("stage-")
             ]
             if child_statuses:
                 if all(s == "success" for s in child_statuses):

@@ -275,6 +275,9 @@ class PlanPackageService:
             raise PlanPackageNotFoundError(f"PlanPackage {package_id} not found")
         return build_plan_package_handoff(package)
 
+    def list_all(self) -> List[PlanPackage]:
+        return self.package_storage.list_all()
+
     def get_by_idea_session(self, idea_session_id: str) -> Optional[PlanPackage]:
         return self.package_storage.get_by_idea_session(idea_session_id)
 

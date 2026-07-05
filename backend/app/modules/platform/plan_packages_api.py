@@ -113,6 +113,41 @@ async def create_plan_package_from_idea_session(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc))
 
 
+class PlanPackageSummary(BaseModel):
+    packageId: str
+    status: str
+    researchQuestion: str
+    ideaTitle: str
+    overallScore: float
+    createdAt: str
+    source: dict
+
+
+@router.get(
+    "/plans/packages",
+    response_model=list[PlanPackageSummary],
+    summary="List all PlanPackages",
+)
+async def list_plan_packages() -> list[PlanPackageSummary]:
+    service = get_plan_package_service()
+    packages = service.list_all()
+    return [
+        PlanPackageSummary(
+            packageId=p.packageId,
+            status=p.status.value if hasattr(p.status, "value") else str(p.status),
+            researchQuestion=p.researchQuestion,
+            ideaTitle=p.idea.title if p.idea else "",
+            overallScore=p.qualityGate.overallScore,
+            createdAt=p.createdAt.isoformat() if p.createdAt else "",
+            source={
+                "ideaSessionId": p.source.ideaSessionId,
+                "ideaCandidateId": p.source.ideaCandidateId,
+            },
+        )
+        for p in packages
+    ]
+
+
 @router.get(
     "/plans/packages/{package_id}",
     response_model=PlanPackage,
