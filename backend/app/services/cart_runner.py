@@ -556,6 +556,10 @@ class CartRunner:
             has_output = any(not f.startswith('.') and not f.endswith('.pyc') for f in files_after)
             claude_failed = any(e.get("event_type") == "error" for e in events_list)
             result.success = has_output or (not claude_failed and len(events_list) > 1)
+            missing_outputs = self._missing_expected_outputs(node, self._scan_outputs(run_dir, node.get("outputs", [])))
+            if result.success and missing_outputs:
+                result.success = False
+                result.message = f"Missing expected outputs after Claude execution: {', '.join(missing_outputs[:5])}"
             if result.success:
                 clean = [p for p in final_parts if "tool_use_id" not in p]
                 result.message = "\n".join(clean) if clean else "Claude 智能体执行完成"
@@ -592,10 +596,16 @@ class CartRunner:
 
         # Collect artifacts
         artifacts = self._scan_outputs(run_dir, node.get("outputs", []))
+        missing_outputs = self._missing_expected_outputs(node, artifacts)
+        if result.success and missing_outputs:
+            result.success = False
+            result.error = f"Missing expected outputs: {', '.join(missing_outputs[:5])}"
+            result.message = result.error
         result.artifacts = artifacts
         result.outputs = {
             "files_generated": len(artifacts),
             "metrics": self._extract_metrics(node, artifacts, run_dir),
+            "missing_expected_outputs": missing_outputs,
         }
 
 
@@ -608,6 +618,7 @@ class CartRunner:
             "message": result.message,
             "error": result.error,
             "duration_ms": result.duration_ms,
+            "missing_expected_outputs": missing_outputs,
         })
 
         return result
@@ -661,7 +672,6 @@ class CartRunner:
     def _scan_outputs(run_dir: str, expected_outputs: list[dict]) -> list[dict]:
         """Scan for generated files matching expected outputs."""
         artifacts: list[dict] = []
-        expected_names = {o.get("name", "") for o in expected_outputs}
 
         if not os.path.isdir(run_dir):
             return artifacts
@@ -686,6 +696,41 @@ class CartRunner:
                 })
 
         return artifacts
+
+    @staticmethod
+    def _expected_output_names(node: dict) -> list[str]:
+        """Return concrete output file names declared by the PlanPackage node."""
+        names: list[str] = []
+        for output in node.get("outputs", []) or []:
+            if not isinstance(output, dict):
+                continue
+            name = str(output.get("name", "")).strip().replace("\\", "/")
+            if name and name not in names:
+                names.append(name)
+        return names
+
+    @staticmethod
+    def _missing_expected_outputs(node: dict, artifacts: list[dict]) -> list[str]:
+        """Find declared output files that were not produced by the node run."""
+        expected = CartRunner._expected_output_names(node)
+        if not expected:
+            return []
+
+        artifact_keys: set[str] = set()
+        for artifact in artifacts:
+            name = str(artifact.get("name", "")).replace("\\", "/")
+            path = str(artifact.get("path", "")).replace("\\", "/")
+            if name:
+                artifact_keys.add(name)
+            if path:
+                artifact_keys.add(path)
+
+        missing: list[str] = []
+        for name in expected:
+            base_name = os.path.basename(name)
+            if name not in artifact_keys and base_name not in artifact_keys:
+                missing.append(name)
+        return missing
 
     @staticmethod
     def _collect_artifacts(run_dir: str, data_dir: str, result: CartNodeResult) -> None:
