@@ -91,6 +91,7 @@ class CartRunner:
     async def run(
         self,
         ppkg: dict,
+        project_id: Optional[str] = None,
         on_event: Optional[callable] = None,
     ) -> AsyncIterator[CartProgressEvent]:
         """Execute all nodes in the PlanPackage DAG.
@@ -124,6 +125,7 @@ class CartRunner:
         manifest = {
             "cart_id": cart_id,
             "package_id": package_id,
+            "project_id": project_id or "",
             "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
             # Paper-compatible fields
             "experiment_plan": idea.get("proposedMethod", ""),

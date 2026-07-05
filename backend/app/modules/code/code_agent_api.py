@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
@@ -396,12 +397,35 @@ async def cart_stream(request: CartRunRequest, db: Session = Depends(get_session
         pass
     else:
         # Start new cart execution
+        def _append_cart_failure_event(message: str) -> None:
+            os.makedirs(cart_dir, exist_ok=True)
+            events: list = []
+            if os.path.isfile(event_log_path):
+                try:
+                    with open(event_log_path, "r", encoding="utf-8") as f:
+                        events = json.load(f)
+                except Exception:
+                    events = []
+            events.append({
+                "event_type": "cart_complete",
+                "node_id": cart_id,
+                "status": "failed",
+                "message": message,
+                "result": None,
+                "timestamp": time.strftime("%H:%M:%S"),
+            })
+            with open(event_log_path, "w", encoding="utf-8") as f:
+                json.dump(events, f, indent=2, ensure_ascii=False, default=str)
+
         async def _run_cart():
             try:
-                async for event in runner.run(ppkg):
+                async for event in runner.run(ppkg, project_id=request.projectId):
                     pass  # Events are saved to event_log.json by runner.run()
             except Exception as exc:
                 logger.error("Cart execution failed: %s", exc)
+                _append_cart_failure_event(f"Cart execution failed: {exc}")
+            finally:
+                cart_stream._active_carts.pop(cart_id, None)
 
         task = _asyncio.create_task(_run_cart())
         cart_stream._active_carts[cart_id] = task
@@ -531,15 +555,16 @@ async def get_cart_status(project_id: str, db: Session = Depends(get_session)):
             try:
                 with open(manifest_path, "r", encoding="utf-8") as f:
                     manifest = json.load(f)
-                if project_ppkg_id and manifest.get("package_id") == project_ppkg_id:
+                manifest_project_id = manifest.get("project_id") or manifest.get("projectId")
+                manifest_package_id = manifest.get("package_id")
+                if manifest_project_id == project_id:
+                    cart_dir = cd
+                    break
+                if not manifest_project_id and project_ppkg_id and manifest_package_id == project_ppkg_id:
                     cart_dir = cd
                     break
             except Exception:
                 pass
-
-    # Fallback: use the most recently modified cart directory
-    if not cart_dir and cart_dirs:
-        cart_dir = cart_dirs[0]
 
     if not cart_dir:
         return CartStatusResponse(status="idle")

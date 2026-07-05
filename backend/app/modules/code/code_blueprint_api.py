@@ -249,13 +249,7 @@ def _load_plan_package_for_project(project_id: str, title: str, source_idea_sess
     except Exception as exc:
         logger.warning("Failed to query codegen sessions for project %s: %s", project_id, exc)
 
-    # 3. Fallback: return the most recent approved PlanPackage
-    for _fname, ppkg in candidates:
-        if ppkg.get("status") == "approved":
-            return ppkg
-
-    # Last resort: return the most recent PlanPackage
-    return candidates[0][1] if candidates else None
+    return None
 
 
 def _convert_ppkg_to_blueprint(ppkg: dict, project_id: str, title: str) -> dict:
@@ -326,8 +320,7 @@ def _convert_ppkg_to_blueprint(ppkg: dict, project_id: str, title: str) -> dict:
 def _find_cart_dir_for_project(project_id: str, ppkg_id: Optional[str] = None) -> Optional[str]:
     """Find the correct cart directory for a project.
 
-    Matches by PlanPackage ID in the cart's manifest, or falls back to
-    the most recently modified cart directory.
+    Matches only by project ID or explicit PlanPackage ID in the cart manifest.
     """
     import os as _os, glob as _glob
     from app.db.engine import _DATA_DIR
@@ -339,22 +332,22 @@ def _find_cart_dir_for_project(project_id: str, ppkg_id: Optional[str] = None) -
     if not cart_dirs:
         return None
 
-    # Match by package_id in manifest
-    if ppkg_id:
-        for cd in cart_dirs:
-            manifest_path = _os.path.join(cd, "data", "manifest.json")
-            if _os.path.isfile(manifest_path):
-                try:
-                    with open(manifest_path, "r", encoding="utf-8") as f:
-                        manifest = json.load(f)
-                    if manifest.get("package_id") == ppkg_id:
-                        return cd
-                except Exception:
-                    pass
-
-    # Fallback: most recently modified cart
-    cart_dirs.sort(key=lambda d: _os.path.getmtime(d), reverse=True)
-    return cart_dirs[0] if cart_dirs else None
+    for cd in cart_dirs:
+        manifest_path = _os.path.join(cd, "data", "manifest.json")
+        if not _os.path.isfile(manifest_path):
+            continue
+        try:
+            with open(manifest_path, "r", encoding="utf-8") as f:
+                manifest = json.load(f)
+            manifest_project_id = manifest.get("project_id") or manifest.get("projectId")
+            manifest_package_id = manifest.get("package_id")
+            if manifest_project_id == project_id:
+                return cd
+            if not manifest_project_id and ppkg_id and manifest_package_id == ppkg_id:
+                return cd
+        except Exception:
+            pass
+    return None
 
 
 def _list_cart_artifacts(node_id: str, cart_dir: Optional[str] = None) -> list[str]:
