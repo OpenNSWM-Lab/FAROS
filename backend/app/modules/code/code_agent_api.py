@@ -283,6 +283,8 @@ class CartRunRequest(BaseModel):
     projectId: str = Field(..., description="Code project ID")
     packageId: Optional[str] = Field(None, description="PlanPackage ID. If omitted, auto-discovers from project's source Idea session.")
     timeout: int = Field(900, ge=60, le=3600)
+    nodeTimeout: int = Field(180, ge=30, le=900, description="Max execution time per PlanPackage node")
+    nodeBudget: float = Field(1.0, ge=0.1, le=10.0, description="Max Claude Code USD budget per node")
 
 
 @router.post("/cart/run")
@@ -442,6 +444,9 @@ async def cart_stream(request: CartRunRequest, db: Session = Depends(get_session
                     project_id=request.projectId,
                     cart_id=cart_id,
                     run_id=run_id,
+                    timeout_sec=request.timeout,
+                    node_timeout_sec=request.nodeTimeout,
+                    node_budget_usd=request.nodeBudget,
                 ):
                     pass  # Events are saved to event_log.json by runner.run()
             except Exception as exc:

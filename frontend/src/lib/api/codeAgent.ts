@@ -196,6 +196,8 @@ export interface CartRunRequest {
   projectId: string;
   packageId?: string;
   timeout?: number;
+  nodeTimeout?: number;
+  nodeBudget?: number;
 }
 
 export interface CartProgressEvent {

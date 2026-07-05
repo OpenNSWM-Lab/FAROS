@@ -94,6 +94,9 @@ class CartRunner:
         project_id: Optional[str] = None,
         cart_id: Optional[str] = None,
         run_id: Optional[str] = None,
+        timeout_sec: Optional[int] = None,
+        node_timeout_sec: int = 180,
+        node_budget_usd: float = 1.0,
         on_event: Optional[callable] = None,
     ) -> AsyncIterator[CartProgressEvent]:
         """Execute all nodes in the PlanPackage DAG.
@@ -130,6 +133,9 @@ class CartRunner:
             "package_id": package_id,
             "project_id": project_id or "",
             "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "timeout_sec": timeout_sec,
+            "node_timeout_sec": node_timeout_sec,
+            "node_budget_usd": node_budget_usd,
             # Paper-compatible fields
             "experiment_plan": idea.get("proposedMethod", ""),
             "hypothesis": idea.get("hypothesisStatement", ""),
@@ -161,9 +167,23 @@ class CartRunner:
 
         completed: dict[str, CartNodeResult] = {}
         skipped: set = set()
+        deadline = time.monotonic() + timeout_sec if timeout_sec else None
 
         for idx, node_info in enumerate(nodes):
             node_id = node_info["id"]
+
+            if deadline and time.monotonic() >= deadline:
+                skip_msg = f"Skipped: cart run exceeded timeout of {timeout_sec}s"
+                skipped.add(node_id)
+                evt = CartProgressEvent(
+                    event_type="node_complete", node_id=node_id, status="skipped", message=skip_msg,
+                )
+                if on_event:
+                    await on_event(evt)
+                yield evt
+                event_log.append(evt.to_dict())
+                _write_json(event_log_path, event_log)
+                continue
 
             # Check if all inputs are satisfied
             deps = node_info.get("inputFrom", [])
@@ -203,7 +223,15 @@ class CartRunner:
 
             # Run _execute_node concurrently so we can drain progress events
             exec_task = asyncio.create_task(
-                self._execute_node(node_info, ppkg, cart_dir, completed, progress_callback=_progress_cb)
+                self._execute_node(
+                    node_info,
+                    ppkg,
+                    cart_dir,
+                    completed,
+                    progress_callback=_progress_cb,
+                    node_timeout_sec=self._remaining_node_timeout(deadline, node_timeout_sec),
+                    node_budget_usd=node_budget_usd,
+                )
             )
 
             # Drain progress events until _execute_node finishes
@@ -320,7 +348,7 @@ class CartRunner:
         complete_evt = CartProgressEvent(
             event_type="cart_complete",
             node_id=cart_id,
-            status="success" if failed == 0 else "partial",
+            status="success" if failed == 0 and not skipped else "partial",
             message=f"Done: {succeeded} succeeded, {failed} failed, {len(skipped)} skipped out of {total}",
         )
         yield complete_evt
@@ -494,6 +522,16 @@ class CartRunner:
 
         return None
 
+    @staticmethod
+    def _remaining_node_timeout(deadline: Optional[float], default_timeout: int) -> int:
+        """Bound a node timeout by the remaining cart run time."""
+        if not deadline:
+            return default_timeout
+        remaining = int(deadline - time.monotonic())
+        if remaining <= 0:
+            return 1
+        return max(1, min(default_timeout, remaining))
+
     async def _execute_node(
         self,
         node: dict,
@@ -501,6 +539,8 @@ class CartRunner:
         cart_dir: str,
         completed: dict[str, CartNodeResult],
         progress_callback: Optional[callable] = None,
+        node_timeout_sec: int = 180,
+        node_budget_usd: float = 1.0,
     ) -> Optional[CartNodeResult]:
         """Execute a single DAG node via Claude Code."""
         node_id = node["id"]
@@ -512,6 +552,7 @@ class CartRunner:
 
         result = CartNodeResult(node_id=node_id, success=False)
         result.session_id = f"cart:{ppkg.get('packageId', '')}:{node_id}"
+        node_deadline = time.monotonic() + node_timeout_sec
 
         # ---- Determine execution strategy ----
         from app.services.claude_agent import ClaudeCodeAgent, _get_settings_model_and_key
@@ -527,7 +568,10 @@ class CartRunner:
                 timestamp=time.strftime("%H:%M:%S"),
             ))
 
-        agent = ClaudeCodeAgent(timeout=90, max_budget=5.0)
+        agent = ClaudeCodeAgent(
+            timeout=self._remaining_node_timeout(node_deadline, node_timeout_sec),
+            max_budget=node_budget_usd,
+        )
         try:
             events_list: list = []
             final_parts: list[str] = []
@@ -575,7 +619,14 @@ class CartRunner:
                     message=f"🧠 Claude 智能体不可用，调用 {settings_model} API 生成代码...",
                     timestamp=time.strftime("%H:%M:%S"),
                 ))
-            llm_ok = await self._execute_via_llm_api(node, ppkg, run_dir, result, progress_callback)
+            llm_ok = await self._execute_via_llm_api(
+                node,
+                ppkg,
+                run_dir,
+                result,
+                progress_callback,
+                timeout_sec=self._remaining_node_timeout(node_deadline, node_timeout_sec),
+            )
             if llm_ok:
                 result.success = True
 
@@ -587,7 +638,12 @@ class CartRunner:
                     message="⏳ 智能体均失败，尝试直接执行...",
                     timestamp=time.strftime("%H:%M:%S"),
                 ))
-            direct_ok = self._execute_direct(node, run_dir, result)
+            direct_ok = self._execute_direct(
+                node,
+                run_dir,
+                result,
+                timeout_sec=self._remaining_node_timeout(node_deadline, node_timeout_sec),
+            )
             if direct_ok:
                 result.success = True
                 result.message = "直接执行完成"
@@ -753,6 +809,7 @@ class CartRunner:
         run_dir: str,
         result: CartNodeResult,
         progress_callback: Optional[callable] = None,
+        timeout_sec: int = 180,
     ) -> bool:
         """Execute a node by calling the configured LLM API (via ProviderClient/litellm)
         to generate experiment code, then run it.
@@ -848,7 +905,7 @@ Generate ONLY the Python code, no explanations. Start with `#!/usr/bin/env pytho
             proc = _sp.run(
                 ["python", script_path],
                 capture_output=True, text=True,
-                timeout=120, cwd=run_dir,
+                timeout=timeout_sec, cwd=run_dir,
                 env={**os.environ, "PYTHONUNBUFFERED": "1"},
             )
 
@@ -880,7 +937,7 @@ Generate ONLY the Python code, no explanations. Start with `#!/usr/bin/env pytho
             return False
 
     @staticmethod
-    def _execute_direct(node: dict, run_dir: str, result: CartNodeResult) -> bool:
+    def _execute_direct(node: dict, run_dir: str, result: CartNodeResult, timeout_sec: int = 180) -> bool:
         """Auto-generate Python code for this node and run it directly via subprocess.
 
         This is the fallback when Claude Code CLI is unavailable or unreliable.
@@ -914,7 +971,7 @@ Generate ONLY the Python code, no explanations. Start with `#!/usr/bin/env pytho
             proc = _sp.run(
                 ["python", script_path],
                 capture_output=True, text=True,
-                timeout=120, cwd=run_dir,
+                timeout=timeout_sec, cwd=run_dir,
                 env={**os.environ, "PYTHONUNBUFFERED": "1"},
             )
             result.message += f"\n[Direct exec: exit={proc.returncode}, stdout={len(proc.stdout)}B, stderr={len(proc.stderr)}B]"
