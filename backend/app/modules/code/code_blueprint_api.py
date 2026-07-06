@@ -78,15 +78,32 @@ async def get_artifact_file(node_id: str, filename: str, download: bool = False)
     cart_base = _os.path.join(_DATA_DIR, "cart_artifacts")
     if not _os.path.isdir(cart_base):
         raise HTTPException(status_code=404, detail="No artifacts")
+    safe_node_id = _os.path.basename(_os.path.normpath(node_id))
+    safe_filename = filename.replace("\\", "/").lstrip("/")
+    normalized_filename = _os.path.normpath(safe_filename)
+    if (
+        safe_node_id != node_id
+        or normalized_filename in ("", ".")
+        or normalized_filename.startswith("..")
+        or _os.path.isabs(normalized_filename)
+    ):
+        raise HTTPException(status_code=400, detail="Invalid artifact path")
     for cart_dir in sorted(_glob.glob(_os.path.join(cart_base, "cart_*")), reverse=True):
         for sub in ["runs", "data"]:
-            fp = _os.path.join(cart_dir, sub, node_id, filename)
+            node_dir = _os.path.realpath(_os.path.join(cart_dir, sub, safe_node_id))
+            fp = _os.path.realpath(_os.path.join(node_dir, normalized_filename))
+            try:
+                common = _os.path.commonpath([node_dir, fp])
+            except ValueError:
+                continue
+            if common != node_dir:
+                continue
             if _os.path.isfile(fp):
                 if download:
-                    return FileResponse(fp, filename=filename)
+                    return FileResponse(fp, filename=_os.path.basename(normalized_filename))
                 # For text files, return content inline (not download)
                 text_exts = {'.py', '.js', '.ts', '.json', '.yml', '.yaml', '.txt', '.md', '.csv', '.log', '.xml', '.html', '.css', '.sh', '.bat', '.cfg', '.ini', '.toml'}
-                _, ext = _os.path.splitext(filename)
+                _, ext = _os.path.splitext(normalized_filename)
                 if ext.lower() in text_exts:
                     try:
                         with open(fp, 'r', encoding='utf-8', errors='replace') as f:
@@ -94,7 +111,7 @@ async def get_artifact_file(node_id: str, filename: str, download: bool = False)
                         return PlainTextResponse(content, media_type="text/plain; charset=utf-8")
                     except Exception:
                         pass
-                return FileResponse(fp, filename=filename)
+                return FileResponse(fp, filename=_os.path.basename(normalized_filename))
     raise HTTPException(status_code=404, detail=f"File not found: {filename}")
 
 
@@ -174,14 +191,15 @@ async def list_project_blueprints(
             from app.modules.platform.storage import get_plan_package_storage
             pkg_storage = get_plan_package_storage()
             # Try to find by idea session
-            packages = pkg_storage.list_by_idea_session(source_idea_id)
-            for pkg in (packages or []):
+            pkg = pkg_storage.get_by_idea_session(source_idea_id)
+            if pkg:
+                pkg_data = pkg.model_dump(mode="json") if hasattr(pkg, "model_dump") else pkg
                 summaries.append(BlueprintSummary(
-                    id=pkg.get("packageId", ""),
-                    title=pkg.get("researchQuestion", "Blueprint"),
+                    id=pkg_data.get("packageId", ""),
+                    title=pkg_data.get("researchQuestion", "Blueprint"),
                     source="plan_package",
-                    nodeCount=sum(1 + len(s.get("steps", [])) for s in pkg.get("stages", [])),
-                    createdAt=pkg.get("createdAt"),
+                    nodeCount=sum(1 + len(s.get("steps", [])) for s in pkg_data.get("stages", [])),
+                    createdAt=pkg_data.get("createdAt"),
                 ))
         except Exception:
             pass
@@ -465,13 +483,9 @@ def _load_blueprint_from_idea(idea_session_id: str) -> Optional[dict]:
         from app.services.blueprint_converter import convert_plan_package_to_blueprint
 
         pkg_storage = get_plan_package_storage()
-        packages = pkg_storage.list_by_idea_session(idea_session_id)
-        if packages and len(packages) > 0:
-            pkg = packages[0]
-            # Convert to full pkg object if needed
-            full_pkg = pkg_storage.get(pkg.get("packageId", ""))
-            if full_pkg:
-                return convert_plan_package_to_blueprint(full_pkg)
+        pkg = pkg_storage.get_by_idea_session(idea_session_id)
+        if pkg:
+            return convert_plan_package_to_blueprint(pkg)
     except ImportError:
         pass
     except Exception as exc:

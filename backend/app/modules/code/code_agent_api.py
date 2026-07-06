@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
 import uuid
 from typing import Optional
@@ -30,6 +31,8 @@ from app.modules.code.storage import get_session
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/code/agent", tags=["code_agent"])
+
+_PLAN_PACKAGE_ID_RE = re.compile(r"^ppkg_[A-Za-z0-9_-]+$")
 
 
 # ---- Request/Response models ----
@@ -309,20 +312,13 @@ async def cart_stream(request: CartRunRequest, db: Session = Depends(get_session
     ppkg = None
 
     if request.packageId:
-        # Explicit packageId: treat as absolute path or filename under plan_packages/
-        ppkg_path = request.packageId
-        if not _os.path.isabs(ppkg_path):
-            from app.db.engine import _DATA_DIR
-            ppkg_dir = _os.path.join(_DATA_DIR, "plan_packages")
-            ppkg_path = _os.path.join(ppkg_dir, f"{request.packageId}.json")
-            if not _os.path.isfile(ppkg_path):
-                # Try without .json suffix (might already have it)
-                ppkg_path2 = _os.path.join(ppkg_dir, request.packageId)
-                if _os.path.isfile(ppkg_path2):
-                    ppkg_path = ppkg_path2
-        if _os.path.isfile(ppkg_path):
-            with open(ppkg_path, "r", encoding="utf-8") as f:
-                ppkg = json.load(f)
+        if not _PLAN_PACKAGE_ID_RE.fullmatch(request.packageId):
+            raise HTTPException(status_code=422, detail="Invalid PlanPackage ID")
+        from app.modules.platform.storage import get_plan_package_storage
+        pkg_storage = get_plan_package_storage()
+        pkg = pkg_storage.get(request.packageId)
+        if pkg:
+            ppkg = pkg.model_dump(mode="json") if hasattr(pkg, "model_dump") else pkg
         else:
             raise HTTPException(status_code=404, detail=f"PlanPackage not found: {request.packageId}")
     else:
@@ -566,12 +562,9 @@ async def get_cart_status(project_id: str, db: Session = Depends(get_session)):
                 if plan_session_id:
                     from app.modules.platform.storage import get_plan_package_storage
                     pkg_storage = get_plan_package_storage()
-                    packages = pkg_storage.list_by_idea_session(plan_session_id) if hasattr(pkg_storage, 'list_by_idea_session') else []
-                    for pkg in (packages or []):
-                        pid = pkg.get("packageId") if isinstance(pkg, dict) else getattr(pkg, "packageId", None)
-                        if pid:
-                            project_ppkg_id = pid
-                            break
+                    pkg = pkg_storage.get_by_idea_session(plan_session_id)
+                    if pkg:
+                        project_ppkg_id = pkg.get("packageId") if isinstance(pkg, dict) else getattr(pkg, "packageId", None)
                 if project_ppkg_id:
                     break
         except Exception:
