@@ -103,10 +103,24 @@ export function CodeProjectWorkspace() {
   const navigate = useNavigate()
   const location = useLocation()
   const linkId = searchParams.get('linkId')
+  const packageIdParam = searchParams.get('packageId')
 
   // Plan context
   const [planContext, setPlanContext] = useState<PlanContext | null>(null)
   const [loadingContext, setLoadingContext] = useState(false)
+
+  // Available PlanPackages for selection
+  interface PlanPackageSummary {
+    packageId: string
+    status: string
+    researchQuestion: string
+    ideaTitle: string
+    overallScore: number
+    createdAt: string
+    source: { ideaSessionId: string; ideaCandidateId: string }
+  }
+  const [availablePackages, setAvailablePackages] = useState<PlanPackageSummary[]>([])
+  const [loadingPackages, setLoadingPackages] = useState(false)
 
   // Generation
   const [codeGenSession, setCodeGenSession] = useState<CodeGenSessionData | null>(null)
@@ -145,6 +159,54 @@ export function CodeProjectWorkspace() {
       .catch(() => setPlanContext(null))
       .finally(() => setLoadingContext(false))
   }, [linkId])
+
+  // Load available PlanPackages when no linkId is present
+  useEffect(() => {
+    if (linkId) return
+    setLoadingPackages(true)
+    fetch(`${API_BASE}/api/v1/plans/packages`)
+      .then(r => r.ok ? r.json() : [])
+      .then((data: PlanPackageSummary[]) => setAvailablePackages(data || []))
+      .catch(() => setAvailablePackages([]))
+      .finally(() => setLoadingPackages(false))
+  }, [linkId])
+
+  // Load plan context from packageId param
+  const loadFromPackage = useCallback(async (pkgId: string) => {
+    setLoadingContext(true)
+    try {
+      const resp = await fetch(`${API_BASE}/api/v1/plans/packages/${pkgId}`)
+      if (!resp.ok) throw new Error('PlanPackage not found')
+      const pkg = await resp.json()
+      const ctx: PlanContext = {
+        linkId: pkg.packageId,
+        planSessionId: pkg.source?.ideaSessionId || '',
+        candidateId: pkg.source?.ideaCandidateId || '',
+        createdAt: pkg.createdAt || '',
+        candidate: {
+          title: pkg.idea?.title || pkg.researchQuestion || '',
+          planAbstract: pkg.idea?.problem || '',
+          method: pkg.principle?.mechanism || '',
+          gapAnalysis: pkg.gap?.summary || '',
+          experimentDesign: { research_question: pkg.researchQuestion || '' },
+          evaluationProtocol: {},
+          overallScore: pkg.qualityGate?.overallScore ?? 0,
+        },
+      }
+      setPlanContext(ctx)
+      setActiveTab('plan')
+    } catch {
+      setPlanContext(null)
+    } finally {
+      setLoadingContext(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (packageIdParam && !linkId && !planContext) {
+      void loadFromPackage(packageIdParam)
+    }
+  }, [packageIdParam, linkId, planContext, loadFromPackage])
 
   // Load past sessions
   useEffect(() => {
@@ -304,10 +366,58 @@ export function CodeProjectWorkspace() {
     }
     if (!planContext) {
       return (
-        <div className="p-4 text-center text-muted-foreground">
-          <FileText className="h-8 w-8 mx-auto mb-2 opacity-50" />
-          <p className="text-sm">No plan context loaded.</p>
-          <p className="text-xs mt-1">Navigate from the Plan page to load a plan.</p>
+        <div className="p-4 space-y-3">
+          {loadingPackages ? (
+            <div className="flex items-center gap-2 text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" /> Loading available plans...
+            </div>
+          ) : availablePackages.length === 0 ? (
+            <div className="text-center text-muted-foreground py-4">
+              <FileText className="h-8 w-8 mx-auto mb-2 opacity-50" />
+              <p className="text-sm">No PlanPackages available.</p>
+              <p className="text-xs mt-1">Generate a PlanPackage from the Pipeline page first.</p>
+              <Button variant="outline" size="sm" className="mt-3" onClick={() => navigate('/research/pipeline')}>
+                Go to Pipeline
+              </Button>
+            </div>
+          ) : (
+            <>
+              <p className="text-sm font-medium text-slate-700 mb-2">Select a PlanPackage to generate code from:</p>
+              <div className="space-y-2">
+                {availablePackages.map((pkg) => (
+                  <button
+                    key={pkg.packageId}
+                    className="w-full text-left rounded-lg border border-slate-200 bg-white p-3 hover:border-violet-400 hover:bg-violet-50 transition-colors"
+                    onClick={() => void loadFromPackage(pkg.packageId)}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-semibold text-slate-900 truncate">{pkg.ideaTitle || pkg.researchQuestion}</p>
+                        <p className="text-xs text-muted-foreground mt-0.5 line-clamp-2">{pkg.researchQuestion}</p>
+                      </div>
+                      <div className="flex flex-col items-end gap-1 shrink-0">
+                        <span className={`inline-block rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                          pkg.status === 'approved' ? 'bg-green-100 text-green-800' :
+                          pkg.status === 'needs_revision' ? 'bg-red-100 text-red-800' :
+                          'bg-amber-100 text-amber-800'
+                        }`}>
+                          {pkg.status}
+                        </span>
+                        <span className="text-[10px] text-muted-foreground">
+                          Score: {(pkg.overallScore * 100).toFixed(0)}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 mt-1.5 text-[10px] text-muted-foreground">
+                      <span className="font-mono">{pkg.packageId.slice(0, 20)}</span>
+                      <span>·</span>
+                      <span>{new Date(pkg.createdAt).toLocaleDateString()}</span>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
         </div>
       )
     }

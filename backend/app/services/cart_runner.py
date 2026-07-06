@@ -62,8 +62,8 @@ class CartProgressEvent:
     result: Optional[dict] = None
     timestamp: str = field(default_factory=lambda: time.strftime("%H:%M:%S"))
 
-    def to_sse(self) -> str:
-        data = {
+    def to_dict(self) -> dict:
+        return {
             "event_type": self.event_type,
             "node_id": self.node_id,
             "status": self.status,
@@ -71,7 +71,9 @@ class CartProgressEvent:
             "result": self.result,
             "timestamp": self.timestamp,
         }
-        return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+    def to_sse(self) -> str:
+        return f"data: {json.dumps(self.to_dict(), ensure_ascii=False)}\n\n"
 
 
 class CartRunner:
@@ -89,6 +91,12 @@ class CartRunner:
     async def run(
         self,
         ppkg: dict,
+        project_id: Optional[str] = None,
+        cart_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+        timeout_sec: Optional[int] = None,
+        node_timeout_sec: int = 180,
+        node_budget_usd: float = 1.0,
         on_event: Optional[callable] = None,
     ) -> AsyncIterator[CartProgressEvent]:
         """Execute all nodes in the PlanPackage DAG.
@@ -101,7 +109,7 @@ class CartRunner:
             CartProgressEvent for each state change.
         """
         package_id = ppkg.get("packageId", "unknown")
-        cart_id = f"cart_{package_id.replace('ppkg_', '')[:12]}"
+        cart_id = cart_id or f"cart_{package_id.replace('ppkg_', '')[:12]}"
         cart_dir = os.path.join(self._base, cart_id)
 
         # Create cart directory structure
@@ -110,18 +118,32 @@ class CartRunner:
 
         # Save manifest
         idea = ppkg.get("idea", {})
+        raw_constants = ppkg.get("constants", {})
+        # constants is Dict[str, Any] in PlanPackage — normalize to dict
+        if isinstance(raw_constants, dict):
+            constants_dict = raw_constants
+        elif isinstance(raw_constants, list):
+            constants_dict = {c.get("name", f"c{i}"): c.get("value") for i, c in enumerate(raw_constants)}
+        else:
+            constants_dict = {}
+
         manifest = {
             "cart_id": cart_id,
+            "run_id": run_id or cart_id,
             "package_id": package_id,
+            "project_id": project_id or "",
             "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "timeout_sec": timeout_sec,
+            "node_timeout_sec": node_timeout_sec,
+            "node_budget_usd": node_budget_usd,
             # Paper-compatible fields
             "experiment_plan": idea.get("proposedMethod", ""),
             "hypothesis": idea.get("hypothesisStatement", ""),
             "research_question": idea.get("title", ""),
-            "datasets": [c.get("value") for c in ppkg.get("constants", []) if c.get("type") == "dataset"],
+            "datasets": [v for k, v in constants_dict.items() if "dataset" in str(k).lower()],
             "methods": [idea.get("proposedMethod", "")[:80]],
             "metrics": [],
-            "constants": {c.get("name"): c.get("value") for c in ppkg.get("constants", [])},
+            "constants": constants_dict,
         }
         _write_json(os.path.join(cart_dir, "data", "manifest.json"), manifest)
 
@@ -129,18 +151,39 @@ class CartRunner:
         nodes = self._topological_sort(ppkg)
         logger.info("CartRunner: %d nodes in execution order for %s", len(nodes), cart_id)
 
-        yield CartProgressEvent(
+        # Initialize persistent event log BEFORE yielding (crash safety)
+        event_log_path = os.path.join(cart_dir, "event_log.json")
+        event_log: list[dict] = []
+
+        start_evt = CartProgressEvent(
             event_type="cart_start",
             node_id=cart_id,
             status="running",
             message=f"Starting execution: {len(nodes)} nodes across {len(ppkg.get('stages', []))} stages",
         )
+        event_log.append(start_evt.to_dict())
+        _write_json(event_log_path, event_log)
+        yield start_evt
 
         completed: dict[str, CartNodeResult] = {}
         skipped: set = set()
+        deadline = time.monotonic() + timeout_sec if timeout_sec else None
 
         for idx, node_info in enumerate(nodes):
             node_id = node_info["id"]
+
+            if deadline and time.monotonic() >= deadline:
+                skip_msg = f"Skipped: cart run exceeded timeout of {timeout_sec}s"
+                skipped.add(node_id)
+                evt = CartProgressEvent(
+                    event_type="node_complete", node_id=node_id, status="skipped", message=skip_msg,
+                )
+                if on_event:
+                    await on_event(evt)
+                yield evt
+                event_log.append(evt.to_dict())
+                _write_json(event_log_path, event_log)
+                continue
 
             # Check if all inputs are satisfied
             deps = node_info.get("inputFrom", [])
@@ -156,19 +199,60 @@ class CartRunner:
                     if on_event:
                         await on_event(evt)
                     yield evt
+                    event_log.append(evt.to_dict())
+                    _write_json(event_log_path, event_log)
                     continue
 
             # Emit start event
-            yield CartProgressEvent(
+            start_evt = CartProgressEvent(
                 event_type="node_start",
                 node_id=node_id,
                 status="running",
                 message=f"[{idx+1}/{len(nodes)}] {node_info['title']}",
             )
+            yield start_evt
+            event_log.append(start_evt.to_dict())
+            _write_json(event_log_path, event_log)
 
-            # Execute node
+            # Execute node with real-time progress via asyncio.Queue
             start_ts = time.time()
-            result = await self._execute_node(node_info, ppkg, cart_dir, completed)
+            progress_queue: asyncio.Queue = asyncio.Queue()
+
+            async def _progress_cb(evt: CartProgressEvent):
+                await progress_queue.put(evt)
+
+            # Run _execute_node concurrently so we can drain progress events
+            exec_task = asyncio.create_task(
+                self._execute_node(
+                    node_info,
+                    ppkg,
+                    cart_dir,
+                    completed,
+                    progress_callback=_progress_cb,
+                    node_timeout_sec=self._remaining_node_timeout(deadline, node_timeout_sec),
+                    node_budget_usd=node_budget_usd,
+                )
+            )
+
+            # Drain progress events until _execute_node finishes
+            result = None
+            while not exec_task.done():
+                try:
+                    evt = await asyncio.wait_for(progress_queue.get(), timeout=1.0)
+                    yield evt
+                    event_log.append(evt.to_dict())
+                    _write_json(event_log_path, event_log)
+                except asyncio.TimeoutError:
+                    continue
+
+            # Drain remaining events
+            while not progress_queue.empty():
+                evt = await progress_queue.get()
+                yield evt
+                event_log.append(evt.to_dict())
+
+            result = exec_task.result()
+            _write_json(event_log_path, event_log)
 
             if result is None:
                 result = CartNodeResult(
@@ -251,6 +335,8 @@ class CartRunner:
             if on_event:
                 await on_event(evt)
             yield evt
+            event_log.append(evt.to_dict())
+            _write_json(event_log_path, event_log)
 
         # Cart complete
         # Save aggregated results summary
@@ -259,12 +345,15 @@ class CartRunner:
         total = len(nodes)
         succeeded = sum(1 for n in completed.values() if n.success)
         failed = total - succeeded - len(skipped)
-        yield CartProgressEvent(
+        complete_evt = CartProgressEvent(
             event_type="cart_complete",
             node_id=cart_id,
-            status="success" if failed == 0 else "partial",
+            status="success" if failed == 0 and not skipped else "partial",
             message=f"Done: {succeeded} succeeded, {failed} failed, {len(skipped)} skipped out of {total}",
         )
+        yield complete_evt
+        event_log.append(complete_evt.to_dict())
+        _write_json(event_log_path, event_log)
 
     # ---- internals ----
 
@@ -342,7 +431,7 @@ class CartRunner:
             "all_metrics": all_metrics,
             "all_artifacts": sorted(set(all_artifacts)),
             "stages": stage_summaries,
-            "constants": {c.get("name"): c.get("value") for c in ppkg.get("constants", [])},
+            "constants": ppkg.get("constants", {}) if isinstance(ppkg.get("constants"), dict) else {c.get("name"): c.get("value") for c in ppkg.get("constants", []) if isinstance(c, dict)},
         }
 
         _write_json(os.path.join(cart_dir, "cart_results.json"), summary)
@@ -403,12 +492,55 @@ class CartRunner:
 
         return ordered
 
+    @staticmethod
+    def _claude_progress_milestone(event: dict, sent: set[str]) -> Optional[str]:
+        """Collapse noisy Claude stream events into user-facing milestones."""
+        event_type = event.get("event_type", "")
+        tool_name = str(event.get("tool_name", "")).lower()
+        content = str(event.get("content", "") or "")
+
+        if event_type == "error":
+            return f"Agent error: {content[:160] or 'execution failed'}"
+
+        if event_type == "done":
+            return "Agent finished this step; collecting outputs..."
+
+        if event_type != "tool_use":
+            return None
+
+        if tool_name in {"glob", "grep", "read"} and "inspect" not in sent:
+            sent.add("inspect")
+            return "Inspecting project files..."
+
+        if tool_name in {"write", "edit"} and "edit" not in sent:
+            sent.add("edit")
+            return "Writing experiment code..."
+
+        if tool_name == "bash" and "run" not in sent:
+            sent.add("run")
+            return "Running generated code..."
+
+        return None
+
+    @staticmethod
+    def _remaining_node_timeout(deadline: Optional[float], default_timeout: int) -> int:
+        """Bound a node timeout by the remaining cart run time."""
+        if not deadline:
+            return default_timeout
+        remaining = int(deadline - time.monotonic())
+        if remaining <= 0:
+            return 1
+        return max(1, min(default_timeout, remaining))
+
     async def _execute_node(
         self,
         node: dict,
         ppkg: dict,
         cart_dir: str,
         completed: dict[str, CartNodeResult],
+        progress_callback: Optional[callable] = None,
+        node_timeout_sec: int = 180,
+        node_budget_usd: float = 1.0,
     ) -> Optional[CartNodeResult]:
         """Execute a single DAG node via Claude Code."""
         node_id = node["id"]
@@ -418,63 +550,118 @@ class CartRunner:
         # Build the task prompt
         prompt = self._build_node_prompt(node, ppkg, cart_dir, completed)
 
-        # ---- Primary: Claude Code agent ----
-        from app.services.claude_agent import ClaudeCodeAgent
-        agent = ClaudeCodeAgent(timeout=300, max_budget=5.0)
         result = CartNodeResult(node_id=node_id, success=False)
         result.session_id = f"cart:{ppkg.get('packageId', '')}:{node_id}"
+        node_deadline = time.monotonic() + node_timeout_sec
 
+        # ---- Determine execution strategy ----
+        from app.services.claude_agent import ClaudeCodeAgent, _get_settings_model_and_key
+        settings_model, _, _ = _get_settings_model_and_key()
+
+        # ---- Primary: Claude Code agent (always try first) ----
+        if progress_callback:
+            await progress_callback(CartProgressEvent(
+                event_type="node_progress",
+                node_id=node_id,
+                status="running",
+                message=f"🤖 启动 Claude 智能体 (model={settings_model})...",
+                timestamp=time.strftime("%H:%M:%S"),
+            ))
+
+        agent = ClaudeCodeAgent(
+            timeout=self._remaining_node_timeout(node_deadline, node_timeout_sec),
+            max_budget=node_budget_usd,
+        )
         try:
             events_list: list = []
             final_parts: list[str] = []
-
+            progress_milestones: set[str] = set()
             async for event in agent.stream(
-                workspace=run_dir,
-                goal=prompt,
-                system_prompt="Execute directly. Write code, run it, report results. No questions.",
+                workspace=run_dir, goal=prompt,
+                system_prompt=(
+                    "Execute directly. Write code, run it, and report results. No questions. "
+                    "Minimize token usage: do not explain routine steps, do not paste long command output, "
+                    "and keep the final answer to a compact status summary."
+                ),
             ):
                 d = event.to_dict()
                 events_list.append(d)
-                # Capture ALL event content for the log
-                content = d.get("content", "")
-                if content and "Claude Code agent starting" not in content:
-                    final_parts.append(f"[{d.get('event_type','?')}] {content[:500]}")
-                if d.get("tool_name"):
-                    final_parts.append(f"[{d.get('event_type','?')}:{d['tool_name']}] {d.get('tool_input','')[:300]}")
-
-            # Filter to only meaningful content (skip raw JSON tool events)
-            clean_parts = [p for p in final_parts if not p.startswith("[thinking] {'type'") and "tool_use_id" not in p]
-            result.message = "\n".join(clean_parts) if clean_parts else "Claude completed (no text output)"
-
-            # Check for generated files as evidence of successful execution
+                if d.get("event_type") == "done" and d.get("content"):
+                    final_parts.append(str(d.get("content", ""))[:800])
+                if progress_callback:
+                    msg = self._claude_progress_milestone(d, progress_milestones)
+                    if msg:
+                        await progress_callback(CartProgressEvent(
+                            event_type="node_progress", node_id=node_id, status="running",
+                            message=msg, timestamp=time.strftime("%H:%M:%S"),
+                        ))
+                    continue
             files_after = os.listdir(run_dir) if os.path.isdir(run_dir) else []
             has_output = any(not f.startswith('.') and not f.endswith('.pyc') for f in files_after)
-
-            claude_failed = any(
-                e.get("event_type") == "error" and "exit" in str(e.get("content", "")).lower()
-                for e in events_list
-            )
+            claude_failed = any(e.get("event_type") == "error" for e in events_list)
             result.success = has_output or (not claude_failed and len(events_list) > 1)
-
+            missing_outputs = self._missing_expected_outputs(node, self._scan_outputs(run_dir, node.get("outputs", [])))
+            if result.success and missing_outputs:
+                result.success = False
+                result.message = f"Missing expected outputs after Claude execution: {', '.join(missing_outputs[:5])}"
+            if result.success:
+                clean = [p for p in final_parts if "tool_use_id" not in p]
+                result.message = "\n".join(clean) if clean else "Claude 智能体执行完成"
         except Exception as exc:
-            logger.warning("Claude agent failed for %s: %s — falling back to direct", node_id, exc)
+            logger.warning("Claude CLI failed for %s: %s", node_id, exc)
             result.success = False
-            result.message = f"Claude error: {exc}"
 
-        # ---- Fallback: direct execution if Claude failed ----
+        # ---- Fallback 1: LLM API agent (if Claude CLI failed) ----
         if not result.success:
-            logger.info("Falling back to direct execution for %s", node_id)
-            direct_ok = self._execute_direct(node, run_dir, result)
+            if progress_callback:
+                await progress_callback(CartProgressEvent(
+                    event_type="node_progress", node_id=node_id, status="running",
+                    message=f"🧠 Claude 智能体不可用，调用 {settings_model} API 生成代码...",
+                    timestamp=time.strftime("%H:%M:%S"),
+                ))
+            llm_ok = await self._execute_via_llm_api(
+                node,
+                ppkg,
+                run_dir,
+                result,
+                progress_callback,
+                timeout_sec=self._remaining_node_timeout(node_deadline, node_timeout_sec),
+            )
+            if llm_ok:
+                result.success = True
+
+        # ---- Fallback 2: direct execution (last resort) ----
+        if not result.success:
+            if progress_callback:
+                await progress_callback(CartProgressEvent(
+                    event_type="node_progress", node_id=node_id, status="running",
+                    message="⏳ 智能体均失败，尝试直接执行...",
+                    timestamp=time.strftime("%H:%M:%S"),
+                ))
+            direct_ok = self._execute_direct(
+                node,
+                run_dir,
+                result,
+                timeout_sec=self._remaining_node_timeout(node_deadline, node_timeout_sec),
+            )
             if direct_ok:
                 result.success = True
-                result.message += "\n[Direct fallback succeeded]"
+                result.message = "直接执行完成"
+
+        # (Execution handled above: Claude CLI → LLM API → direct fallback)
 
         # Collect artifacts
         artifacts = self._scan_outputs(run_dir, node.get("outputs", []))
+        missing_outputs = self._missing_expected_outputs(node, artifacts)
+        if result.success and missing_outputs:
+            result.success = False
+            result.error = f"Missing expected outputs: {', '.join(missing_outputs[:5])}"
+            result.message = result.error
         result.artifacts = artifacts
         result.outputs = {
             "files_generated": len(artifacts),
             "metrics": self._extract_metrics(node, artifacts, run_dir),
+            "missing_expected_outputs": missing_outputs,
         }
 
 
@@ -487,6 +674,7 @@ class CartRunner:
             "message": result.message,
             "error": result.error,
             "duration_ms": result.duration_ms,
+            "missing_expected_outputs": missing_outputs,
         })
 
         return result
@@ -530,15 +718,16 @@ class CartRunner:
             + f"### Expected Output Files\n{files_str}\n\n"
             f"### Expected Metrics\n{metrics_str}\n\n"
             f"WRITE AND RUN Python code in this directory to complete this task. "
-            f"Do NOT ask questions. Do NOT explain. Just write the code, "
-            f"execute it, and report what files you produced."
+            f"Do NOT ask questions. Do NOT explain routine work. Just write the code, "
+            f"execute it, and report what files you produced. Keep stdout minimal: "
+            f"print only compact JSON summaries or one-line status messages, never long logs. "
+            f"Prefer simple runnable code over elaborate abstractions."
         )
 
     @staticmethod
     def _scan_outputs(run_dir: str, expected_outputs: list[dict]) -> list[dict]:
         """Scan for generated files matching expected outputs."""
         artifacts: list[dict] = []
-        expected_names = {o.get("name", "") for o in expected_outputs}
 
         if not os.path.isdir(run_dir):
             return artifacts
@@ -565,6 +754,41 @@ class CartRunner:
         return artifacts
 
     @staticmethod
+    def _expected_output_names(node: dict) -> list[str]:
+        """Return concrete output file names declared by the PlanPackage node."""
+        names: list[str] = []
+        for output in node.get("outputs", []) or []:
+            if not isinstance(output, dict):
+                continue
+            name = str(output.get("name", "")).strip().replace("\\", "/")
+            if name and name not in names:
+                names.append(name)
+        return names
+
+    @staticmethod
+    def _missing_expected_outputs(node: dict, artifacts: list[dict]) -> list[str]:
+        """Find declared output files that were not produced by the node run."""
+        expected = CartRunner._expected_output_names(node)
+        if not expected:
+            return []
+
+        artifact_keys: set[str] = set()
+        for artifact in artifacts:
+            name = str(artifact.get("name", "")).replace("\\", "/")
+            path = str(artifact.get("path", "")).replace("\\", "/")
+            if name:
+                artifact_keys.add(name)
+            if path:
+                artifact_keys.add(path)
+
+        missing: list[str] = []
+        for name in expected:
+            base_name = os.path.basename(name)
+            if name not in artifact_keys and base_name not in artifact_keys:
+                missing.append(name)
+        return missing
+
+    @staticmethod
     def _collect_artifacts(run_dir: str, data_dir: str, result: CartNodeResult) -> None:
         """Copy generated artifacts from run workspace to data directory."""
         if not os.path.isdir(run_dir):
@@ -578,8 +802,142 @@ class CartRunner:
                 except OSError:
                     pass
 
+    async def _execute_via_llm_api(
+        self,
+        node: dict,
+        ppkg: dict,
+        run_dir: str,
+        result: CartNodeResult,
+        progress_callback: Optional[callable] = None,
+        timeout_sec: int = 180,
+    ) -> bool:
+        """Execute a node by calling the configured LLM API (via ProviderClient/litellm)
+        to generate experiment code, then run it.
+
+        This is the primary fallback when Claude Code CLI is unavailable.
+        Uses the same API configuration as the rest of the system (Settings page).
+        """
+        import subprocess as _sp
+
+        node_id = node["id"]
+        title = node.get("title", "")
+        desc = node.get("desc", "")
+        method = node.get("method", "")
+        expected = node.get("expected", [])
+        outputs = node.get("outputs", [])
+
+        try:
+            from app.llm.provider_client import get_provider_client, ChatMessage
+            client = get_provider_client()
+        except Exception as exc:
+            logger.warning("ProviderClient unavailable: %s", exc)
+            return False
+
+        if progress_callback:
+            await progress_callback(CartProgressEvent(
+                event_type="node_progress", node_id=node_id, status="running",
+                message=f"🧠 调用 LLM 生成实验代码...",
+                timestamp=time.strftime("%H:%M:%S"),
+            ))
+
+        # Build code generation prompt
+        output_names = [o.get("name", "") for o in outputs] if outputs else []
+        expected_metrics = [f"- {e.get('metric','')}: {e.get('target','')}" for e in expected] if expected else []
+
+        prompt = f"""You are executing a scientific experiment step. Generate a COMPLETE Python script that:
+
+**Task**: {title}
+**Description**: {desc}
+**Method**: {method}
+**Expected outputs**: {', '.join(output_names) if output_names else 'results in JSON'}
+**Expected metrics**:
+{chr(10).join(expected_metrics) if expected_metrics else 'N/A'}
+
+Requirements:
+1. The script MUST be self-contained and runnable with `python script.py`
+2. Write all output files to the current directory
+3. Keep the implementation minimal and robust; avoid unnecessary abstractions
+4. Keep stdout short: at the end, print only one compact JSON summary
+5. Generate realistic experiment code — data loading, processing, analysis, visualization
+6. Do not print large arrays, dataframes, stack traces, or verbose logs unless failing
+7. Generate only the files needed by the expected outputs
+8. If the task involves literature/data summarization, create structured output files
+
+Generate ONLY the Python code, no explanations. Start with `#!/usr/bin/env python3`."""
+
+        try:
+            loop = asyncio.get_event_loop()
+            response = await loop.run_in_executor(
+                None,
+                lambda: client.chat(
+                    messages=[ChatMessage(role="user", content=prompt)],
+                    temperature=0.3,
+                    max_tokens=1800,
+                )
+            )
+
+            code = response.text.strip()
+            # Remove markdown code fences if present
+            if code.startswith("```"):
+                code = code.split("\n", 1)[-1]
+                if code.endswith("```"):
+                    code = code[:-3]
+                code = code.strip()
+
+            if not code:
+                result.message = "LLM returned empty code"
+                return False
+
+            if progress_callback:
+                await progress_callback(CartProgressEvent(
+                    event_type="node_progress", node_id=node_id, status="running",
+                    message=f"📝 代码已生成 ({len(code)} bytes)，正在执行...",
+                    timestamp=time.strftime("%H:%M:%S"),
+                ))
+
+            # Write generated code
+            script_name = f"_run_{node_id.replace('-', '_')}.py"
+            script_path = os.path.join(run_dir, script_name)
+            with open(script_path, "w", encoding="utf-8") as f:
+                f.write(code)
+
+            # Execute the generated code
+            proc = _sp.run(
+                ["python", script_path],
+                capture_output=True, text=True,
+                timeout=timeout_sec, cwd=run_dir,
+                env={**os.environ, "PYTHONUNBUFFERED": "1"},
+            )
+
+            stdout_preview = proc.stdout[-500:] if proc.stdout else ""
+            stderr_preview = proc.stderr[-300:] if proc.stderr else ""
+
+            if proc.returncode == 0:
+                result.message = f"✅ LLM 生成代码执行成功 (stdout: {len(proc.stdout)}B)"
+                if progress_callback:
+                    await progress_callback(CartProgressEvent(
+                        event_type="node_progress", node_id=node_id, status="running",
+                        message="✅ 实验代码执行完成，收集结果...",
+                        timestamp=time.strftime("%H:%M:%S"),
+                    ))
+                return True
+            else:
+                result.message = f"LLM 代码执行失败 (exit={proc.returncode}): {stderr_preview[:200]}"
+                if progress_callback:
+                    await progress_callback(CartProgressEvent(
+                        event_type="node_progress", node_id=node_id, status="running",
+                        message=f"⚠️ 代码执行出错: {stderr_preview[:100]}",
+                        timestamp=time.strftime("%H:%M:%S"),
+                    ))
+                return False
+
+        except Exception as exc:
+            logger.warning("LLM API execution failed for %s: %s", node_id, exc)
+            result.message = f"LLM API error: {exc}"
+            return False
+
     @staticmethod
-    def _execute_direct(node: dict, run_dir: str, result: CartNodeResult) -> bool:
+    def _execute_direct(node: dict, run_dir: str, result: CartNodeResult, timeout_sec: int = 180) -> bool:
         """Auto-generate Python code for this node and run it directly via subprocess.
 
         This is the fallback when Claude Code CLI is unavailable or unreliable.
@@ -613,7 +971,7 @@ class CartRunner:
             proc = _sp.run(
                 ["python", script_path],
                 capture_output=True, text=True,
-                timeout=120, cwd=run_dir,
+                timeout=timeout_sec, cwd=run_dir,
                 env={**os.environ, "PYTHONUNBUFFERED": "1"},
             )
             result.message += f"\n[Direct exec: exit={proc.returncode}, stdout={len(proc.stdout)}B, stderr={len(proc.stderr)}B]"
@@ -786,11 +1144,18 @@ class CartRunner:
         )
 
         # Build dataset info from ppkg constants + node outputs
-        constants = ppkg.get("constants", [])
+        raw_constants = ppkg.get("constants", {})
+        if isinstance(raw_constants, dict):
+            constants_dict = raw_constants
+        elif isinstance(raw_constants, list):
+            constants_dict = {c.get("name", f"c{i}"): c.get("value") for i, c in enumerate(raw_constants) if isinstance(c, dict)}
+        else:
+            constants_dict = {}
+
         dataset_info = {
-            "source": [c.get("value", "") for c in constants if c.get("type") == "dataset"],
-            "seed": next((c.get("value") for c in constants if c.get("name") == "SEED"), None),
-            "parameters": {c.get("name"): c.get("value") for c in constants},
+            "source": [v for k, v in constants_dict.items() if "dataset" in str(k).lower()],
+            "seed": constants_dict.get("SEED"),
+            "parameters": constants_dict,
             "files_generated": files_generated,
             "output_files": [o.get("name", "") for o in outputs],
         }
