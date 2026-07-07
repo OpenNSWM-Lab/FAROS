@@ -100,12 +100,16 @@ export interface PaperDTO {
   id: string
   runId?: string
   title: string
-  authors: string[]
-  sections: PaperSectionDTO[]
+  authors?: string[]
+  sections?: PaperSectionDTO[]
   bibliography?: string
-  createdAt: string
-  updatedAt: string
-  status: 'draft' | 'review' | 'final'
+  createdAt?: string
+  updatedAt?: string
+  status?: 'created' | 'generating' | 'completed' | 'failed' | 'draft' | 'review' | 'final'
+  outlineJson?: {
+    authors?: string[]
+    sections?: PaperSectionDTO[]
+  } | null
 }
 
 export interface PaperSectionDTO {
@@ -126,6 +130,11 @@ export interface ReviewFindingDTO {
   title: string
   description: string
   evidence?: string
+  riskType?: string
+  claimId?: string
+  evidenceIds?: string[]
+  targetModule?: string
+  confidence?: number
   location?: {
     section: string
     line?: number

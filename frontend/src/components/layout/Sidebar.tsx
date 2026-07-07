@@ -6,6 +6,7 @@ import {
   BarChart3,
   FileEdit,
   CheckCircle,
+  MessageSquareText,
   Settings,
   Activity,
   Code2,
@@ -20,7 +21,8 @@ const navigation = [
   { name: 'Runs', href: '/runs', icon: PlayCircle },
   { name: 'Experiments', href: '/experiments', icon: BarChart3 },
   { name: 'Papers', href: '/papers', icon: FileEdit },
-  { name: 'Review', href: '/review/consistency', icon: CheckCircle },
+  { name: 'ReviewX', href: '/review/consistency', icon: CheckCircle },
+  { name: 'Legacy Review', href: '/review/simulator', icon: MessageSquareText },
   { name: 'Settings', href: '/settings/providers', icon: Settings },
   { name: 'System', href: '/system/health', icon: Activity },
 ]

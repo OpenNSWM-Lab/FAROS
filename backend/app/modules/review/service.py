@@ -14,6 +14,13 @@ from typing import Optional, Dict, Any, List
 
 from app.core.settings import get_settings
 from app.llm.provider_client import get_provider_client, ChatMessage
+from app.modules.review.artifact_collector import collect_reviewx_artifacts
+from app.modules.review.claim_extractor import extract_claims
+from app.modules.review.evidence_graph import build_evidence, link_claims_to_evidence
+from app.modules.review.model_router import refine_findings_with_budget
+from app.modules.review.risk_analyzer import analyze_reviewx_risks
+from app.modules.review.revision_planner import findings_to_action_items
+from app.modules.review.reviewx_models import ReviewXReport
 from app.modules.review.storage import get_paper, read_paper_file, list_paper_files
 from app.modules.review.storage import get_review, update_review
 
@@ -205,3 +212,156 @@ def generate_review(review_id: str) -> Dict[str, Any]:
         raise
 
     return get_review(review_id)
+
+
+def generate_reviewx(review_id: str) -> Dict[str, Any]:
+    """
+    Evidence-grounded ReviewX pipeline.
+
+    This first version is deterministic and local-first:
+    1. Collect FAROS artifacts for a paper.
+    2. Extract claims from briefJson and LaTeX.
+    3. Build local evidence objects from brief, citations, experiments, metrics, and code exports.
+    4. Link claims to evidence and turn risk gaps into actionable findings.
+    5. Persist ReviewX data on the review record.
+    """
+    review = get_review(review_id)
+    if not review:
+        raise ValueError(f"Review not found: {review_id}")
+
+    paper_id = review.get("paperId")
+    paper = get_paper(paper_id)
+    if not paper:
+        raise ValueError(f"Paper not found: {paper_id}")
+
+    update_review(review_id, {"status": "generating"})
+
+    try:
+        artifacts = collect_reviewx_artifacts(paper_id)
+        claims = extract_claims(artifacts)
+        evidence = build_evidence(artifacts)
+        links = link_claims_to_evidence(claims, evidence)
+        findings, risk_tree = analyze_reviewx_risks(paper, claims, evidence, links)
+        settings = get_settings()
+        provider_name = review.get("providerName") or settings.get_active_provider()
+        model = review.get("model") or settings.get_active_model(provider_name)
+        budget_mode = review.get("budgetMode", "balanced")
+        findings, routing_trace = refine_findings_with_budget(
+            paper=paper,
+            claims=claims,
+            evidence=evidence,
+            findings=findings,
+            provider_name=provider_name,
+            model=model,
+            budget_mode=budget_mode,
+        )
+        action_items = findings_to_action_items(findings)
+
+        severity_counts: Dict[str, int] = {"blocker": 0, "major": 0, "minor": 0, "info": 0}
+        for finding in findings:
+            severity_counts[finding.severity] = severity_counts.get(finding.severity, 0) + 1
+
+        valid_evidence_links = sum(1 for ids in links.values() if ids)
+        summary = {
+            "mode": "reviewx_local_mvp",
+            "paperTitle": paper.get("title", "Untitled"),
+            "claimCount": len(claims),
+            "evidenceCount": len(evidence),
+            "findingCount": len(findings),
+            "evidenceLinkedClaimCount": valid_evidence_links,
+            "severityCounts": severity_counts,
+            "coverage": round(valid_evidence_links / len(claims), 3) if claims else 0,
+        }
+        model_trace = {
+            "routingMode": budget_mode,
+            "localRulePasses": [
+                "artifact_collection",
+                "claim_extraction",
+                "evidence_linking",
+                "risk_analysis",
+                "revision_planning",
+            ],
+            "llmRouting": routing_trace,
+            "llmCalls": routing_trace.get("llmCalls", []),
+            "estimatedTokenCost": routing_trace.get("estimatedTokenCost", 0),
+            "note": "ReviewX runs deterministic local checks first, then optionally escalates high-risk findings.",
+        }
+
+        report = ReviewXReport(
+            reviewId=review_id,
+            paperId=paper_id,
+            claims=claims,
+            evidence=evidence,
+            findings=findings,
+            riskTree=risk_tree,
+            actionItems=action_items,
+            summary=summary,
+            modelTrace=model_trace,
+        ).to_dict()
+
+        markdown_report = _build_reviewx_markdown(paper, report)
+
+        update_review(review_id, {
+            "status": "completed",
+            "reviewKind": "reviewx",
+            "scoreSuggestion": _score_from_findings(severity_counts),
+            "jsonReport": report,
+            "markdownReport": markdown_report,
+            "actionItems": action_items,
+            "claims": report["claims"],
+            "evidence": report["evidence"],
+            "findings": report["findings"],
+            "riskTree": report["riskTree"],
+            "modelTrace": model_trace,
+        })
+    except Exception as e:
+        logger.error(f"ReviewX generation failed: {e}", exc_info=True)
+        update_review(review_id, {"status": "failed", "markdownReport": f"ReviewX failed: {str(e)[:500]}"})
+        raise
+
+    return get_review(review_id)
+
+
+def _score_from_findings(severity_counts: Dict[str, int]) -> int:
+    score = 8
+    score -= min(4, severity_counts.get("blocker", 0) * 2)
+    score -= min(3, severity_counts.get("major", 0))
+    score -= min(1, severity_counts.get("minor", 0) // 3)
+    return max(1, min(10, score))
+
+
+def _build_reviewx_markdown(paper: Dict[str, Any], report: Dict[str, Any]) -> str:
+    summary = report.get("summary", {})
+    findings = report.get("findings", [])
+    claims = report.get("claims", [])
+    evidence = report.get("evidence", [])
+    md = [
+        f"# ReviewX Evidence Audit: {paper.get('title', 'Untitled')}",
+        "",
+        "## Summary",
+        f"- Claims extracted: {summary.get('claimCount', 0)}",
+        f"- Evidence artifacts: {summary.get('evidenceCount', 0)}",
+        f"- Findings: {summary.get('findingCount', 0)}",
+        f"- Claim evidence coverage: {summary.get('coverage', 0)}",
+        f"- Severity counts: {json.dumps(summary.get('severityCounts', {}), ensure_ascii=False)}",
+        "",
+        "## Highest-Risk Findings",
+    ]
+    for finding in findings[:12]:
+        ev = ", ".join(finding.get("evidenceIds", [])) or "missing evidence"
+        md.extend([
+            f"### [{finding.get('severity', 'major').upper()}] {finding.get('title', '')}",
+            finding.get("description", ""),
+            f"- Target module: {finding.get('targetModule', 'papers')}",
+            f"- Evidence: {ev}",
+            f"- Suggested fix: {finding.get('suggestedFix', '')}",
+            "",
+        ])
+    md.extend(["## Claims", ""])
+    for claim in claims[:20]:
+        source = claim.get("sourceSpan", {})
+        md.append(f"- `{claim.get('id')}` [{claim.get('claimType')}] {claim.get('text')} ({source.get('file')}:{source.get('line', '')})")
+    md.extend(["", "## Evidence", ""])
+    for ev in evidence[:20]:
+        md.append(f"- `{ev.get('id')}` [{ev.get('sourceModule')}/{ev.get('evidenceType')}] {ev.get('summary')}")
+    return "\n".join(md)
