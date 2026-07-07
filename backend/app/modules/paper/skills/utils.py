@@ -227,6 +227,7 @@ def get_linked_figure_entries(
 def collect_context(paper: Dict[str, Any]) -> Dict[str, str]:
     ctx = {
         "plan_context": "N/A",
+        "plan_evidence": "N/A",
         "project_summary": "N/A",
         "metrics_summary": "N/A",
         "runs_summary": "N/A",
@@ -243,6 +244,13 @@ def collect_context(paper: Dict[str, Any]) -> Dict[str, str]:
                 ctx["plan_context"] = json.dumps(link_data, default=str)[:2000]
         except Exception:
             pass
+
+    try:
+        evidence = paper.get("evidenceJson")
+        if evidence and evidence.get("status") == "collected":
+            ctx["plan_evidence"] = json.dumps(evidence, ensure_ascii=False, default=str)[:8000]
+    except Exception:
+        pass
 
     project_id = paper.get("projectId")
     if project_id:

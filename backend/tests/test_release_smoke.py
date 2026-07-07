@@ -23,6 +23,7 @@ from app.modules.paper.skills.section_writers import classify_section, get_secti
 from app.modules.paper.skills.section_writers.base import render_prompt
 from app.modules.paper.skills.utils import (
     build_bibtex,
+    collect_context,
     dedupe_figure_entries,
     figure_record_to_entry,
     load_venue_style_guide,
@@ -82,6 +83,39 @@ def test_paper_selected_figure_and_rewrite_routes_are_mounted():
     assert "/api/v1/papers/{paper_id}/selected-figures" in paths
     assert "/api/v1/papers/{paper_id}/figures/{figure_id}/select" in paths
     assert "/api/v1/papers/{paper_id}/sections/{section_id}/rewrite" in paths
+    assert "/api/v1/papers/{paper_id}/evidence/collect" in paths
+
+
+def test_paper_evidence_skill_collects_plan_package_context():
+    paper = create_paper({
+        "title": "Evidence backed paper",
+        "planLinkId": "ppkg_a324a7a4a631",
+    })
+
+    response = client.post(
+        f"/api/v1/papers/{paper['id']}/evidence/collect",
+        json={"force": True},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    evidence = payload["evidence"]
+    assert payload["evidenceStatus"] == "collected"
+    assert evidence["package"]["packageId"] == "ppkg_a324a7a4a631"
+    assert evidence["researchQuestion"]
+    assert evidence["literature"]["keyPapers"]
+    assert evidence["validationPlan"]
+
+
+def test_collect_context_does_not_recompute_plan_evidence_without_skill():
+    paper = create_paper({
+        "title": "Context should not recompute evidence",
+        "planLinkId": "ppkg_a324a7a4a631",
+    })
+
+    context = collect_context(paper)
+
+    assert context["plan_evidence"] == "N/A"
 
 
 def test_paper_selected_figures_storage_round_trip():

@@ -3,6 +3,7 @@ from typing import Callable, List
 
 from app.modules.paper.storage import add_log
 from .base import PaperSkillContext, PaperSkillResult
+from .evidence_collect import run as evidence_collect
 from .collect_context import run as collect_context
 from .paper_brief import run as paper_brief
 from .outline import run as outline
@@ -17,6 +18,7 @@ from .qa_audit import run as qa_audit
 
 def build_default_skill_chain() -> List[Callable[[PaperSkillContext], PaperSkillResult]]:
     return [
+        evidence_collect,
         collect_context,
         paper_brief,
         outline,

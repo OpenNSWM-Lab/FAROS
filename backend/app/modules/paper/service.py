@@ -6,7 +6,7 @@ Each skill emits intermediate artifacts under: artifacts/<step>.{json,md}
 
 import logging
 import time
-from typing import Any, Dict
+from typing import Any, Callable, Dict
 
 from app.core.settings import get_settings
 from app.llm.provider_client import get_provider_client
@@ -14,6 +14,7 @@ from app.modules.paper.storage import add_log, get_paper, get_paper_latex_dir, u
 from app.modules.paper.skills import PaperSkillContext, PaperSkillLeader, build_default_skill_chain
 from app.modules.paper.skills.collect_context import run as collect_context_skill
 from app.modules.paper.skills.constants import VENUE_CONFIGS
+from app.modules.paper.skills.evidence_collect import run as evidence_collect_skill
 from app.modules.paper.skills.outline import build_outline
 from app.modules.paper.skills.paper_brief import build_brief
 from app.modules.paper.skills.section_rewrite import rewrite_section
@@ -56,6 +57,53 @@ def _apply_result_data(ctx: PaperSkillContext, result: Any) -> None:
             ctx.update(k, v)
 
 
+def _run_skill(
+    paper_id: str,
+    ctx: PaperSkillContext,
+    label: str,
+    skill: Callable[[PaperSkillContext], Any],
+) -> Any:
+    add_log(paper_id, f"Running skill: {label}")
+    result = skill(ctx)
+    _apply_result_data(ctx, result)
+    add_log(paper_id, f"{result.name}: {result.summary}")
+    if result.artifacts:
+        add_log(paper_id, f"Artifacts: {', '.join(result.artifacts)}")
+    return result
+
+
+def _run_prerequisite_skills(paper_id: str, ctx: PaperSkillContext) -> None:
+    _run_skill(paper_id, ctx, "evidence_collect", evidence_collect_skill)
+    _run_skill(paper_id, ctx, "collect_context", collect_context_skill)
+
+
+def collect_paper_evidence(paper_id: str, force: bool = True) -> Dict[str, Any]:
+    paper = get_paper(paper_id)
+    if not paper:
+        raise ValueError(f"Paper not found: {paper_id}")
+
+    existing = paper.get("evidenceJson")
+    if existing and not force:
+        return {
+            "paperId": paper_id,
+            "evidence": existing,
+            "evidenceStatus": paper.get("evidenceStatus", "collected"),
+        }
+
+    step_log: list[Dict[str, Any]] = []
+    ctx = _build_skill_context(paper_id, paper, step_log)
+    result = _run_skill(paper_id, ctx, "evidence_collect", evidence_collect_skill)
+    evidence = result.data.get("plan_evidence", {})
+    updated = get_paper(paper_id) or paper
+    artifacts = result.artifacts
+    return {
+        "paperId": paper_id,
+        "evidence": updated.get("evidenceJson", evidence),
+        "evidenceStatus": updated.get("evidenceStatus", "missing"),
+        "artifacts": artifacts,
+    }
+
+
 def generate_paper_brief(paper_id: str, brief_user_edits: str | None = None, force: bool = True) -> Dict[str, Any]:
     paper = get_paper(paper_id)
     if not paper:
@@ -66,17 +114,9 @@ def generate_paper_brief(paper_id: str, brief_user_edits: str | None = None, for
 
     step_log: list[Dict[str, Any]] = []
     ctx = _build_skill_context(paper_id, paper, step_log)
-    add_log(paper_id, "Running skill: collect_context")
-    context_result = collect_context_skill(ctx)
-    _apply_result_data(ctx, context_result)
-    add_log(paper_id, f"collect_context: {context_result.summary}")
+    _run_prerequisite_skills(paper_id, ctx)
 
-    add_log(paper_id, "Running skill: paper_brief")
-    brief_result = build_brief(ctx, force=force)
-    _apply_result_data(ctx, brief_result)
-    add_log(paper_id, f"paper_brief: {brief_result.summary}")
-    if brief_result.artifacts:
-        add_log(paper_id, f"Artifacts: {', '.join(brief_result.artifacts)}")
+    _run_skill(paper_id, ctx, "paper_brief", lambda skill_ctx: build_brief(skill_ctx, force=force))
 
     return get_paper(paper_id)
 
@@ -89,25 +129,14 @@ def generate_paper_outline(paper_id: str, force: bool = True) -> Dict[str, Any]:
     step_log: list[Dict[str, Any]] = []
     ctx = _build_skill_context(paper_id, paper, step_log)
 
-    add_log(paper_id, "Running skill: collect_context")
-    context_result = collect_context_skill(ctx)
-    _apply_result_data(ctx, context_result)
-    add_log(paper_id, f"collect_context: {context_result.summary}")
+    _run_prerequisite_skills(paper_id, ctx)
 
-    add_log(paper_id, "Running skill: paper_brief")
-    brief_result = build_brief(ctx, force=False)
-    _apply_result_data(ctx, brief_result)
-    add_log(paper_id, f"paper_brief: {brief_result.summary}")
+    _run_skill(paper_id, ctx, "paper_brief", lambda skill_ctx: build_brief(skill_ctx, force=False))
 
     refreshed = get_paper(paper_id) or paper
     ctx.paper = refreshed
 
-    add_log(paper_id, "Running skill: outline")
-    outline_result = build_outline(ctx, force=force)
-    _apply_result_data(ctx, outline_result)
-    add_log(paper_id, f"outline: {outline_result.summary}")
-    if outline_result.artifacts:
-        add_log(paper_id, f"Artifacts: {', '.join(outline_result.artifacts)}")
+    _run_skill(paper_id, ctx, "outline", lambda skill_ctx: build_outline(skill_ctx, force=force))
 
     return get_paper(paper_id)
 
@@ -178,10 +207,7 @@ def rewrite_paper_section(
     step_log: list[Dict[str, Any]] = []
     ctx = _build_skill_context(paper_id, paper, step_log)
 
-    add_log(paper_id, "Running skill: collect_context")
-    context_result = collect_context_skill(ctx)
-    _apply_result_data(ctx, context_result)
-    add_log(paper_id, f"collect_context: {context_result.summary}")
+    _run_prerequisite_skills(paper_id, ctx)
 
     add_log(paper_id, f"Running skill: section_rewrite:{section_id}")
     rewrite_result = rewrite_section(

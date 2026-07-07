@@ -16,6 +16,7 @@ OUTLINE_PROMPT = """You are a senior ML researcher writing a {paper_type} paper 
 **Title:** {title}
 **Venue style guide:** {venue_style_guide}
 **Context from plan/project:** {plan_context}
+**Plan evidence package:** {plan_evidence}
 **Experiment metrics:** {metrics_summary}
 **Run execution results:** {runs_summary}
 **Available paper figures:** {figures_summary}
@@ -29,6 +30,7 @@ Generate a DETAILED paper outline. You MUST include:
 - Mark which sections need: algorithms (at least {min_algos}), equations (at least {min_eqs}), tables (at least {min_tables}), figures (at least {min_figs})
 - If Available paper figures are listed, assign them to the most relevant sections using their exact path, label, and caption. Do not invent alternate filenames.
 - Follow the Paper writing brief. Preserve its research question, core claim, must-use evidence, and avoid-claims constraints.
+- If a Plan evidence package is present, keep the outline aligned to its research question, hypothesis, gap, principle, contribution statements, literature, and planned validation stages. Do not switch to another topic.
 - Follow the Venue style guide when choosing section order, contribution framing, evaluation emphasis, limitations, and appendix-worthy material.
 
 Return strict JSON:
@@ -123,13 +125,39 @@ def _normalize_outline(outline: Dict[str, Any], ctx: PaperSkillContext) -> Dict[
     return normalized
 
 
+def _parse_plan_evidence(context: Dict[str, str]) -> Dict[str, Any]:
+    raw = context.get("plan_evidence", "N/A")
+    if not raw or raw == "N/A":
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return {}
+    return parsed if isinstance(parsed, dict) and parsed.get("status") == "collected" else {}
+
+
+def _evidence_package_id(context: Dict[str, str]) -> str:
+    evidence = _parse_plan_evidence(context)
+    package = evidence.get("package") if isinstance(evidence.get("package"), dict) else {}
+    return str(package.get("packageId") or "")
+
+
+def _existing_matches_evidence(existing: Any, evidence_package_id: str) -> bool:
+    if not evidence_package_id:
+        return True
+    if not isinstance(existing, dict):
+        return False
+    return existing.get("_evidencePackageId") == evidence_package_id
+
+
 def build_outline(ctx: PaperSkillContext, force: bool = False) -> PaperSkillResult:
     context = ctx.get("context", {})
     paper_brief = ctx.get("paper_brief", {})
     existing = ctx.paper.get("outlineJson")
+    evidence_package_id = _evidence_package_id(context)
     source = "existing"
 
-    if existing and not force:
+    if existing and not force and _existing_matches_evidence(existing, evidence_package_id):
         source = ctx.paper.get("outlineStatus") or "existing"
         outline = _normalize_outline(existing, ctx)
     else:
@@ -140,6 +168,7 @@ def build_outline(ctx: PaperSkillContext, force: bool = False) -> PaperSkillResu
             title=ctx.paper.get("title", "Untitled"),
             venue_style_guide=load_venue_style_guide(ctx.venue)[:3000],
             plan_context=context.get("plan_context", "N/A")[:1500],
+            plan_evidence=context.get("plan_evidence", "N/A")[:7000],
             metrics_summary=context.get("metrics_summary", "N/A")[:1500],
             runs_summary=context.get("runs_summary", "N/A")[:1500],
             figures_summary=context.get("figures_summary", "N/A")[:1500],
@@ -160,6 +189,8 @@ def build_outline(ctx: PaperSkillContext, force: bool = False) -> PaperSkillResu
         if not parsed or "sections" not in parsed:
             raise ValueError(f"LLM returned invalid outline: {resp.text[:500]}")
         outline = _normalize_outline(parsed, ctx)
+        if evidence_package_id:
+            outline["_evidencePackageId"] = evidence_package_id
         update_paper(ctx.paper_id, {"outlineJson": outline, "outlineStatus": source})
 
     summary_lines = [

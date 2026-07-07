@@ -72,6 +72,10 @@ class GeneratePaperBriefRequest(BaseModel):
     force: bool = True
 
 
+class CollectPaperEvidenceRequest(BaseModel):
+    force: bool = True
+
+
 class UpdatePaperBriefRequest(BaseModel):
     briefJson: Optional[Dict[str, Any]] = None
     briefUserEdits: Optional[str] = None
@@ -180,6 +184,32 @@ async def update_paper_context_endpoint(paper_id: str, req: UpdatePaperContextRe
         "notes": req.notes,
     }
     return _update_paper(paper_id, updates)
+
+
+@router.get("/{paper_id}/evidence", status_code=status.HTTP_200_OK)
+async def get_paper_evidence_endpoint(paper_id: str):
+    record = _get_paper(paper_id)
+    if not record:
+        raise HTTPException(status_code=404, detail=f"Paper '{paper_id}' not found")
+    return {
+        "paperId": paper_id,
+        "evidence": record.get("evidenceJson"),
+        "evidenceStatus": record.get("evidenceStatus", "missing"),
+    }
+
+
+@router.post("/{paper_id}/evidence/collect", status_code=status.HTTP_200_OK)
+async def collect_paper_evidence_endpoint(paper_id: str, req: CollectPaperEvidenceRequest):
+    record = _get_paper(paper_id)
+    if not record:
+        raise HTTPException(status_code=404, detail=f"Paper '{paper_id}' not found")
+    try:
+        from app.modules.paper.service import collect_paper_evidence
+
+        return collect_paper_evidence(paper_id, force=req.force)
+    except Exception as exc:
+        logger.error(f"Paper evidence collection failed: {exc}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc)[:500]) from exc
 
 
 @router.get("/{paper_id}/brief", status_code=status.HTTP_200_OK)
