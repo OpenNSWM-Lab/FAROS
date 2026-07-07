@@ -32,6 +32,7 @@ def _normalize_record(record: Dict[str, Any]) -> Dict[str, Any]:
     record.setdefault("figureIds", [])
     record.setdefault("selectedFigures", [])
     record.setdefault("runIds", [])
+    record.setdefault("authors", [])
     record.setdefault("logs", [])
     record.setdefault("pdfAvailable", False)
     record.setdefault("briefJson", None)
@@ -53,6 +54,7 @@ def create_paper(data: Dict[str, Any]) -> Dict[str, Any]:
         "paperType": data.get("paperType", "algorithm"),
         "targetVenue": data.get("targetVenue", "generic"),
         "status": "created",
+        "authors": data.get("authors", []),
         "planLinkId": data.get("planLinkId"),
         "projectId": data.get("projectId"),
         "experimentIds": data.get("experimentIds", []),

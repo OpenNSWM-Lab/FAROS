@@ -6,7 +6,7 @@ from app.llm.provider_client import ChatMessage
 from app.modules.paper.storage import update_paper
 from .base import PaperSkillContext, PaperSkillResult
 from .constants import MIN_ALGORITHMS, MIN_EQUATIONS, MIN_FIGURES, MIN_REFERENCES, MIN_TABLES
-from .utils import _extract_json, load_venue_style_guide, write_artifact
+from .utils import _extract_json, load_venue_style_guide, normalize_paper_authors, write_artifact
 
 
 STEP_ID = "03_outline"
@@ -32,11 +32,12 @@ Generate a DETAILED paper outline. You MUST include:
 - Follow the Paper writing brief. Preserve its research question, core claim, must-use evidence, and avoid-claims constraints.
 - If a Plan evidence package is present, keep the outline aligned to its research question, hypothesis, gap, principle, contribution statements, literature, and planned validation stages. Do not switch to another topic.
 - Follow the Venue style guide when choosing section order, contribution framing, evaluation emphasis, limitations, and appendix-worthy material.
+- Do not invent author names. If explicit authors are not provided by the paper record or user notes, use ["Anonymous"].
 
 Return strict JSON:
 {{
   "title": "...",
-  "authors": ["Author One", "Author Two"],
+  "authors": ["Anonymous"],
   "abstract": "200-300 word abstract covering motivation, method, results, and significance",
   "sections": [
     {{
@@ -116,7 +117,7 @@ def _normalize_sections(sections: Any) -> List[Dict[str, Any]]:
 def _normalize_outline(outline: Dict[str, Any], ctx: PaperSkillContext) -> Dict[str, Any]:
     normalized = dict(outline)
     normalized["title"] = str(normalized.get("title") or ctx.paper.get("title") or "Untitled Paper").strip()
-    normalized["authors"] = _normalize_string_list(normalized.get("authors")) or ["Auto-LLM Draft"]
+    normalized["authors"] = normalize_paper_authors(ctx.paper.get("authors"))
     normalized["abstract"] = str(normalized.get("abstract") or "").strip()
     normalized["sections"] = _normalize_sections(normalized.get("sections"))
     normalized["references"] = normalized.get("references") if isinstance(normalized.get("references"), list) else []

@@ -54,6 +54,7 @@ class CreatePaperRequest(BaseModel):
     targetVenue: str = "generic"
     planLinkId: Optional[str] = None
     projectId: Optional[str] = None
+    authors: List[str] = Field(default_factory=list)
     experimentIds: List[str] = Field(default_factory=list)
     figureIds: List[str] = Field(default_factory=list)
     runIds: List[str] = Field(default_factory=list)

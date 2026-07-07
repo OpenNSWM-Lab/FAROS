@@ -7,6 +7,7 @@ from .utils import (
     build_main_tex,
     copy_template_assets,
     normalize_duplicate_latex_labels,
+    normalize_paper_authors,
     sanitize_latex_text_specials,
     normalize_section_citations,
     normalize_section_figure_references,
@@ -67,6 +68,7 @@ def run(ctx: PaperSkillContext) -> PaperSkillResult:
             write_paper_file(ctx.paper_id, f"sections/{section_id}.tex", normalized_content)
             sections_content[section_id] = normalized_content
 
+    outline = {**outline, "authors": normalize_paper_authors(ctx.paper.get("authors"))}
     main_tex = build_main_tex(outline, sections, ctx.venue)
     write_paper_file(ctx.paper_id, "main.tex", main_tex)
 

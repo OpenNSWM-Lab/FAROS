@@ -137,7 +137,7 @@ def ensure_section_heading(content: str, section_title: str) -> str:
     if re.search(r"\\section\*?\{", content):
         return re.sub(
             r"\\section\*?\{[^}]*\}",
-            f"\\section{{{section_title}}}",
+            lambda _match: f"\\section{{{section_title}}}",
             content,
             count=1,
         )

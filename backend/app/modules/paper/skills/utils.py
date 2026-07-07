@@ -629,9 +629,19 @@ def normalize_duplicate_latex_labels(
     return normalized_sections, rewrites
 
 
+def normalize_paper_authors(value: Any) -> List[str]:
+    """Return explicitly supplied paper authors, or Anonymous when absent."""
+    if isinstance(value, list):
+        authors = [str(item).strip() for item in value if str(item).strip()]
+    else:
+        raw = str(value or "").strip()
+        authors = [raw] if raw else []
+    return authors or ["Anonymous"]
+
+
 def build_main_tex(outline: Dict[str, Any], sections: List[Dict[str, Any]], venue: str) -> str:
     title = sanitize_latex_text_specials(outline.get("title", "Untitled Paper"))
-    authors = outline.get("authors", ["Auto-LLM Draft"]) or ["Auto-LLM Draft"]
+    authors = normalize_paper_authors(outline.get("authors"))
     abstract = sanitize_latex_text_specials(outline.get("abstract", ""))
     running_title = title if len(title) <= 70 else title[:67] + "..."
     authors_text = sanitize_latex_text_specials(", ".join(authors[:4]))

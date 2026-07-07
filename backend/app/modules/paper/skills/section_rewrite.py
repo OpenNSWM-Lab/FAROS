@@ -226,7 +226,7 @@ def rewrite_section(
     else:
         rewritten = re.sub(
             r"\\section\*?\{[^}]*\}",
-            f"\\section{{{section_title}}}",
+            lambda _match: f"\\section{{{section_title}}}",
             rewritten,
             count=1,
         )
