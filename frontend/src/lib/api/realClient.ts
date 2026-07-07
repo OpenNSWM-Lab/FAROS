@@ -197,17 +197,18 @@ export class RealApiClient implements ApiClient {
 
   // Papers
   async getPapers() {
-    const dtos = await this.fetchWithError<PaperDTO[]>('/api/papers')
+    const raw = await this.fetchWithError<{ papers: PaperDTO[]; total: number } | PaperDTO[]>('/api/v1/papers')
+    const dtos = Array.isArray(raw) ? raw : (raw.papers ?? [])
     return dtos.map(mapPaperDTOToPaper)
   }
 
   async getPaper(id: string) {
-    const dto = await this.fetchWithError<PaperDTO>(`/api/papers/${id}`)
+    const dto = await this.fetchWithError<PaperDTO>(`/api/v1/papers/${id}`)
     return mapPaperDTOToPaper(dto)
   }
 
   async createPaper(paper: Partial<PaperDraft>) {
-    const dto = await this.fetchWithError<PaperDTO>('/api/papers', {
+    const dto = await this.fetchWithError<PaperDTO>('/api/v1/papers', {
       method: 'POST',
       body: JSON.stringify(paper),
     })
@@ -215,7 +216,7 @@ export class RealApiClient implements ApiClient {
   }
 
   async updatePaper(id: string, updates: Partial<PaperDraft>) {
-    const dto = await this.fetchWithError<PaperDTO>(`/api/papers/${id}`, {
+    const dto = await this.fetchWithError<PaperDTO>(`/api/v1/papers/${id}`, {
       method: 'PUT',
       body: JSON.stringify(updates),
     })
@@ -224,7 +225,7 @@ export class RealApiClient implements ApiClient {
 
   async exportPaper(id: string, format: 'pdf' | 'latex' | 'docx') {
     const response = await this.fetchWithError<{ url: string }>(
-      `/api/papers/${id}/export?format=${format}`
+      `/api/v1/papers/${id}/export?format=${format}`
     )
     return response
   }
@@ -232,7 +233,7 @@ export class RealApiClient implements ApiClient {
   // Review
   async getReviewFindings(paperId?: string) {
     const query = paperId ? `?paperId=${paperId}` : ''
-    const dtos = await this.fetchWithError<ReviewFindingDTO[]>(`/api/review/findings${query}`)
+    const dtos = await this.fetchWithError<ReviewFindingDTO[]>(`/api/v1/reviews/reviewx/findings${query}`)
     return dtos.map(mapReviewFindingDTOToFinding)
   }
 
@@ -243,10 +244,12 @@ export class RealApiClient implements ApiClient {
     return dtos.map(mapReviewerSimulationDTOToSimulation)
   }
 
-  async runConsistencyCheck(paperId: string) {
-    const dtos = await this.fetchWithError<ReviewFindingDTO[]>('/api/review/consistency', {
+  async runConsistencyCheck(input: string | { paperId: string; budgetMode?: string }) {
+    const paperId = typeof input === 'string' ? input : input.paperId
+    const budgetMode = typeof input === 'string' ? 'balanced' : input.budgetMode ?? 'balanced'
+    const dtos = await this.fetchWithError<ReviewFindingDTO[]>('/api/v1/reviews/reviewx/run', {
       method: 'POST',
-      body: JSON.stringify({ paperId }),
+      body: JSON.stringify({ paperId, budgetMode }),
     })
     return dtos.map(mapReviewFindingDTOToFinding)
   }
