@@ -9,16 +9,17 @@
  */
 
 import { useState, useEffect, useCallback } from 'react'
-import { useSearchParams, useNavigate } from 'react-router-dom'
+import { useSearchParams, useNavigate, useLocation } from 'react-router-dom'
 import { AppPageLayout } from '@/components/layout/AppPageLayout'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { cn } from '@/lib/utils'
 import {
   Code2, Loader2, CheckCircle2, XCircle, Clock, Play,
   FileText, FolderTree, Download,
   AlertTriangle, Sparkles,
-  SkipForward, Wrench, Eye,
+  SkipForward, Wrench, GitBranch, FolderOpen, FlaskConical, Eye,
 } from 'lucide-react'
 const API_BASE = import.meta.env.VITE_API_BASE_URL || ''
 
@@ -100,11 +101,26 @@ interface TreeEntry {
 export function CodeProjectWorkspace() {
   const [searchParams] = useSearchParams()
   const navigate = useNavigate()
+  const location = useLocation()
   const linkId = searchParams.get('linkId')
+  const packageIdParam = searchParams.get('packageId')
 
   // Plan context
   const [planContext, setPlanContext] = useState<PlanContext | null>(null)
   const [loadingContext, setLoadingContext] = useState(false)
+
+  // Available PlanPackages for selection
+  interface PlanPackageSummary {
+    packageId: string
+    status: string
+    researchQuestion: string
+    ideaTitle: string
+    overallScore: number
+    createdAt: string
+    source: { ideaSessionId: string; ideaCandidateId: string }
+  }
+  const [availablePackages, setAvailablePackages] = useState<PlanPackageSummary[]>([])
+  const [loadingPackages, setLoadingPackages] = useState(false)
 
   // Generation
   const [codeGenSession, setCodeGenSession] = useState<CodeGenSessionData | null>(null)
@@ -128,7 +144,7 @@ export function CodeProjectWorkspace() {
   const [loadingTree, setLoadingTree] = useState(false)
 
   // Tabs
-  const [activeTab, setActiveTab] = useState<'plan' | 'generation'>('plan')
+  const [activeTab, setActiveTab] = useState<'plan' | 'generation' | 'blueprint'>('plan')
 
   // Past sessions
   const [pastSessions, setPastSessions] = useState<CodeGenSessionData[]>([])
@@ -143,6 +159,54 @@ export function CodeProjectWorkspace() {
       .catch(() => setPlanContext(null))
       .finally(() => setLoadingContext(false))
   }, [linkId])
+
+  // Load available PlanPackages when no linkId is present
+  useEffect(() => {
+    if (linkId) return
+    setLoadingPackages(true)
+    fetch(`${API_BASE}/api/v1/plans/packages`)
+      .then(r => r.ok ? r.json() : [])
+      .then((data: PlanPackageSummary[]) => setAvailablePackages(data || []))
+      .catch(() => setAvailablePackages([]))
+      .finally(() => setLoadingPackages(false))
+  }, [linkId])
+
+  // Load plan context from packageId param
+  const loadFromPackage = useCallback(async (pkgId: string) => {
+    setLoadingContext(true)
+    try {
+      const resp = await fetch(`${API_BASE}/api/v1/plans/packages/${pkgId}`)
+      if (!resp.ok) throw new Error('PlanPackage not found')
+      const pkg = await resp.json()
+      const ctx: PlanContext = {
+        linkId: pkg.packageId,
+        planSessionId: pkg.source?.ideaSessionId || '',
+        candidateId: pkg.source?.ideaCandidateId || '',
+        createdAt: pkg.createdAt || '',
+        candidate: {
+          title: pkg.idea?.title || pkg.researchQuestion || '',
+          planAbstract: pkg.idea?.problem || '',
+          method: pkg.principle?.mechanism || '',
+          gapAnalysis: pkg.gap?.summary || '',
+          experimentDesign: { research_question: pkg.researchQuestion || '' },
+          evaluationProtocol: {},
+          overallScore: pkg.qualityGate?.overallScore ?? 0,
+        },
+      }
+      setPlanContext(ctx)
+      setActiveTab('plan')
+    } catch {
+      setPlanContext(null)
+    } finally {
+      setLoadingContext(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (packageIdParam && !linkId && !planContext) {
+      void loadFromPackage(packageIdParam)
+    }
+  }, [packageIdParam, linkId, planContext, loadFromPackage])
 
   // Load past sessions
   useEffect(() => {
@@ -302,10 +366,58 @@ export function CodeProjectWorkspace() {
     }
     if (!planContext) {
       return (
-        <div className="p-4 text-center text-muted-foreground">
-          <FileText className="h-8 w-8 mx-auto mb-2 opacity-50" />
-          <p className="text-sm">No plan context loaded.</p>
-          <p className="text-xs mt-1">Navigate from the Plan page to load a plan.</p>
+        <div className="p-4 space-y-3">
+          {loadingPackages ? (
+            <div className="flex items-center gap-2 text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" /> Loading available plans...
+            </div>
+          ) : availablePackages.length === 0 ? (
+            <div className="text-center text-muted-foreground py-4">
+              <FileText className="h-8 w-8 mx-auto mb-2 opacity-50" />
+              <p className="text-sm">No PlanPackages available.</p>
+              <p className="text-xs mt-1">Generate a PlanPackage from the Pipeline page first.</p>
+              <Button variant="outline" size="sm" className="mt-3" onClick={() => navigate('/research/pipeline')}>
+                Go to Pipeline
+              </Button>
+            </div>
+          ) : (
+            <>
+              <p className="text-sm font-medium text-slate-700 mb-2">Select a PlanPackage to generate code from:</p>
+              <div className="space-y-2">
+                {availablePackages.map((pkg) => (
+                  <button
+                    key={pkg.packageId}
+                    className="w-full text-left rounded-lg border border-slate-200 bg-white p-3 hover:border-violet-400 hover:bg-violet-50 transition-colors"
+                    onClick={() => void loadFromPackage(pkg.packageId)}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-semibold text-slate-900 truncate">{pkg.ideaTitle || pkg.researchQuestion}</p>
+                        <p className="text-xs text-muted-foreground mt-0.5 line-clamp-2">{pkg.researchQuestion}</p>
+                      </div>
+                      <div className="flex flex-col items-end gap-1 shrink-0">
+                        <span className={`inline-block rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                          pkg.status === 'approved' ? 'bg-green-100 text-green-800' :
+                          pkg.status === 'needs_revision' ? 'bg-red-100 text-red-800' :
+                          'bg-amber-100 text-amber-800'
+                        }`}>
+                          {pkg.status}
+                        </span>
+                        <span className="text-[10px] text-muted-foreground">
+                          Score: {(pkg.overallScore * 100).toFixed(0)}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 mt-1.5 text-[10px] text-muted-foreground">
+                      <span className="font-mono">{pkg.packageId.slice(0, 20)}</span>
+                      <span>·</span>
+                      <span>{new Date(pkg.createdAt).toLocaleDateString()}</span>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
         </div>
       )
     }
@@ -558,76 +670,100 @@ export function CodeProjectWorkspace() {
       iconColor="violet"
       accentColor="violet"
     >
+      {/* Unified Code sub-navigation — shared across all Code pages */}
+      <div className="flex items-center gap-1 mb-4 border-b pb-2">
+        {[
+          { label: 'Projects', href: '/code/projects', icon: FolderOpen },
+          { label: 'Workspace', href: '/code/workspace', icon: FlaskConical },
+          { label: 'Blueprint', href: '/code/blueprint', icon: GitBranch },
+        ].map((tab) => (
+          <Button
+            key={tab.href}
+            variant={location.pathname === tab.href ? 'default' : 'ghost'}
+            size="sm"
+            onClick={() => navigate(tab.href)}
+            className={cn(
+              'text-sm',
+              location.pathname === tab.href
+                ? 'bg-violet-600 text-white hover:bg-violet-700'
+                : 'text-muted-foreground hover:text-foreground'
+            )}
+          >
+            <tab.icon className="h-4 w-4 mr-1.5" />
+            {tab.label}
+          </Button>
+        ))}
+      </div>
+
+      {/* Workspace internal tabs — Plan Context / Generation */}
+      <div className="flex border-b mb-4">
+        <button
+          className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'plan' ? 'border-teal-500 text-teal-700' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
+          onClick={() => setActiveTab('plan')}
+        >
+          <FileText className="h-4 w-4 inline mr-1" />Plan Context
+        </button>
+        <button
+          className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'generation' ? 'border-violet-500 text-violet-700' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
+          onClick={() => setActiveTab('generation')}
+        >
+          <Wrench className="h-4 w-4 inline mr-1" />Generation
+          {codeGenSession?.status === 'running' && <Loader2 className="h-3 w-3 inline ml-1 animate-spin" />}
+        </button>
+      </div>
+
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* LEFT: Project Tree + File Viewer */}
-        <div className="lg:col-span-2 space-y-4">
-          {projectId && renderFileTree()}
+          {/* LEFT: Project Tree + File Viewer */}
+          <div className="lg:col-span-2 space-y-4">
+            {projectId && renderFileTree()}
 
-          {/* File content viewer */}
-          {selectedFile && fileContent !== null && (
-            <div className="border rounded-lg overflow-hidden">
-              <div className="bg-slate-50 px-3 py-2 border-b flex items-center gap-2">
-                <FileText className="h-4 w-4 text-violet-500" />
-                <span className="text-sm font-medium truncate">{selectedFile}</span>
-                <Button variant="ghost" size="sm" className="ml-auto h-6 text-xs" onClick={() => { setSelectedFile(null); setFileContent(null) }}>Close</Button>
+            {/* File content viewer */}
+            {selectedFile && fileContent !== null && (
+              <div className="border rounded-lg overflow-hidden">
+                <div className="bg-slate-50 px-3 py-2 border-b flex items-center gap-2">
+                  <FileText className="h-4 w-4 text-violet-500" />
+                  <span className="text-sm font-medium truncate">{selectedFile}</span>
+                  <Button variant="ghost" size="sm" className="ml-auto h-6 text-xs" onClick={() => { setSelectedFile(null); setFileContent(null) }}>Close</Button>
+                </div>
+                <pre className="p-4 text-xs font-mono overflow-auto max-h-[500px] bg-slate-900 text-slate-100">
+                  {fileContent}
+                </pre>
               </div>
-              <pre className="p-4 text-xs font-mono overflow-auto max-h-[500px] bg-slate-900 text-slate-100">
-                {fileContent}
-              </pre>
-            </div>
-          )}
+            )}
 
-          {/* When no project yet and no linkId, show past sessions */}
-          {!projectId && !linkId && renderPastSessions()}
+            {/* When no project yet and no linkId, show past sessions */}
+            {!projectId && !linkId && renderPastSessions()}
 
-          {/* When linkId but no project yet, show welcome */}
-          {!projectId && linkId && planContext && !codeGenSession && (
-            <Card>
-              <CardContent className="py-8 text-center">
-                <Sparkles className="h-10 w-10 text-violet-400 mx-auto mb-3" />
-                <h3 className="text-lg font-medium mb-1">Ready to Generate</h3>
-                <p className="text-sm text-muted-foreground mb-4">
-                  Plan loaded: <strong>{planContext.candidate?.title || 'Research Plan'}</strong>
-                </p>
-                <p className="text-xs text-muted-foreground">Configure options and click "Generate Project Code" in the right panel →</p>
-              </CardContent>
-            </Card>
-          )}
-        </div>
-
-        {/* RIGHT: Tabs */}
-        <div className="space-y-4">
-          {/* Tab headers */}
-          <div className="flex border-b">
-            <button
-              className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'plan' ? 'border-teal-500 text-teal-700' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
-              onClick={() => setActiveTab('plan')}
-            >
-              <FileText className="h-4 w-4 inline mr-1" />Plan Context
-            </button>
-            <button
-              className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'generation' ? 'border-violet-500 text-violet-700' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
-              onClick={() => setActiveTab('generation')}
-            >
-              <Wrench className="h-4 w-4 inline mr-1" />Generation
-              {codeGenSession?.status === 'running' && <Loader2 className="h-3 w-3 inline ml-1 animate-spin" />}
-            </button>
+            {/* When linkId but no project yet, show welcome */}
+            {!projectId && linkId && planContext && !codeGenSession && (
+              <Card>
+                <CardContent className="py-8 text-center">
+                  <Sparkles className="h-10 w-10 text-violet-400 mx-auto mb-3" />
+                  <h3 className="text-lg font-medium mb-1">Ready to Generate</h3>
+                  <p className="text-sm text-muted-foreground mb-4">
+                    Plan loaded: <strong>{planContext.candidate?.title || 'Research Plan'}</strong>
+                  </p>
+                  <p className="text-xs text-muted-foreground">Configure options and click "Generate Project Code" in the right panel →</p>
+                </CardContent>
+              </Card>
+            )}
           </div>
 
-          {/* Tab content */}
-          <Card>
-            <CardContent className="p-0">
-              {activeTab === 'plan' ? renderPlanContext() : renderGeneration()}
-            </CardContent>
-          </Card>
+          {/* RIGHT: Plan / Generation content */}
+          <div className="space-y-4">
+            <Card>
+              <CardContent className="p-0">
+                {activeTab === 'plan' ? renderPlanContext() : renderGeneration()}
+              </CardContent>
+            </Card>
 
-          {genError && (
-            <div className="p-3 rounded bg-red-50 border border-red-200 text-sm text-red-700">
-              <AlertTriangle className="h-4 w-4 inline mr-1" />{genError}
-            </div>
-          )}
+            {genError && (
+              <div className="p-3 rounded bg-red-50 border border-red-200 text-sm text-red-700">
+                <AlertTriangle className="h-4 w-4 inline mr-1" />{genError}
+              </div>
+            )}
+          </div>
         </div>
-      </div>
     </AppPageLayout>
   )
 }

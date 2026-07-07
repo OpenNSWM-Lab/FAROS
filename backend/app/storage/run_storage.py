@@ -187,10 +187,10 @@ class RunStorage:
     
     def list_by_plan(self, plan_id: str) -> List[Run]:
         """
-        List all Runs for a specific ResearchPlan.
+        List all Runs for a specific PlanPackage.
         
         Args:
-            plan_id: ResearchPlan identifier
+            plan_id: PlanPackage identifier
             
         Returns:
             List of runs linked to this plan, sorted by creation time

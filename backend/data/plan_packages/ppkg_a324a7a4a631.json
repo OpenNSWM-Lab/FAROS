@@ -1,0 +1,2785 @@
+{
+  "schemaVersion": "plan-package/v4",
+  "packageId": "ppkg_a324a7a4a631",
+  "createdAt": "2026-06-16T11:16:44.876508Z",
+  "status": "approved",
+  "source": {
+    "ideaSessionId": "idea_9ca98c4feca3",
+    "ideaCandidateId": "cand_e220b63f884c",
+    "rankedOutputId": "rio_eddddc8f0130",
+    "searchTreeId": "ist_1d3ef59de52a",
+    "searchNodeId": "in_26e50a9e9066",
+    "pathSeedId": "rps_0cba362e4198",
+    "reasoningKgId": "rkg_b9b64a3f87f1",
+    "literatureMapId": "lm_2c431023198a",
+    "bftsHandoffId": "bh_a80fce629bd8"
+  },
+  "idea": {
+    "id": "cand_e220b63f884c",
+    "title": "Dynamic Hybrid Retrieval with Adaptive Graph Traversal for Multi-Hop Question Answering",
+    "problem": "A hybrid retrieval mechanism that dynamically switches between dense retrieval and graph traversal based on query complexity and uncertainty can improve both accuracy and efficiency in multi-hop QA.",
+    "hypothesisStatement": "A hybrid retrieval mechanism that dynamically switches between dense retrieval and graph traversal based on query complexity and uncertainty can improve both accuracy and efficiency in multi-hop QA.",
+    "keyInsight": "A hybrid retrieval mechanism that dynamically switches between dense retrieval and graph traversal based on query complexity and uncertainty can improve both accuracy and efficiency in multi-hop QA.",
+    "proposedMethod": "We propose a novel algorithm, DyHART (Dynamic Hybrid Adaptive Retrieval and Traversal), for multi-hop question answering. DyHART integrates a hybrid retrieval mechanism that adaptively selects between dense passage retrieval and graph-based traversal based on real-time uncertainty estimates from a lightweight probe. The system constructs a dual-graph representation from the corpus, combining semantic similarity edges and structural document relationships. During inference, it iteratively expands evidence chains by either retrieving semantically relevant nodes or traversing graph edges, guided by a learned policy that minimizes noise and computation. Planned experiments on multi-hop QA benchmarks (HotpotQA, MuSiQue, 2WikiMultihop) should test whether DyHART outperforms existing graph-based RAG methods (e.g., BifrostRAG, S-Path-RAG) in accuracy while reducing retrieval cost by 30%. The approach is feasible with standard academic compute resources and open-source models.",
+    "expectedOutcome": "Planned validation should show whether: A hybrid retrieval mechanism that dynamically switches between dense retrieval and graph traversal based on query complexity and uncertainty can improve both accuracy and efficiency in multi-hop QA. Key planned checks: Main Benchmark Evaluation - Evaluate DyHART on HotpotQA, MuSiQue, and 2WikiMultihop datasets. Compare against baselines: BifrostRAG, MultiCube-RAG, SentGraph, and S-Path-RAG. Report F1, Exact Match, and retrieval efficiency (steps, time). - metrics: F1 score, Exact Match, average retrieval steps, total inference time; Ablation Study on Policy - Ablate the adaptive policy by replacing it with fixed dense-only, graph-only, and random-policy variants. Measure impact on accuracy and efficiency. - metrics: F1 score, average retrieval steps, variance in steps; Noise Robustness Test - Inject random edges (10%, 20% noise) into the dual graph and measure DyHART's performance degradation compared to static graph methods. - metrics: F1 score drop, retrieval steps increase",
+    "scores": {
+      "novelty": 6.5,
+      "feasibility": 8.0,
+      "impact": 7.0,
+      "clarity": 7.5,
+      "risk": 7.5,
+      "alignment": 8.5,
+      "referenceSupport": 3.0,
+      "experimentSpecificity": 4.5,
+      "total": 7.03
+    },
+    "critiqueSummary": "DyHART is a promising idea with clear practical motivation, but its current description lacks sufficient algorithmic detail and does not address known pitfalls (graph noise, uncertainty reliability). Strengthening the uncertainty estimation mechanism and comparing with iterative methods like [5] would substantially improve the proposal. The core concept of adaptive retrieval mode selection is novel and worth pursuing.",
+    "closestPriorWork": [
+      {
+        "candidateId": "cand_e220b63f884c",
+        "comparedPaperIds": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5"
+        ],
+        "differences": [
+          "DyHART proposes dynamic switching between dense retrieval and graph traversal based on uncertainty estimates, whereas [1] uses a static dual-graph structure (linguistic + document) without adaptive retrieval mode selection.",
+          "Unlike [2] which focuses on reducing graph noise and training instability, DyHART addresses query-level adaptation rather than graph construction or training optimization.",
+          "DyHART's real-time uncertainty estimation contrasts with [3]'s hierarchical sentence graph that pre-structures evidence without query-aware retrieval mode switching.",
+          "While [4] uses a multi-information level KG to model question semantics, DyHART adapts retrieval strategy per query rather than enriching the graph itself.",
+          "[5] employs a Neural-Socratic loop for adaptive retrieval triggered by model uncertainty, which is conceptually similar but DyHART extends this to hybrid dense-graph switching rather than just graph traversal refinement."
+        ],
+        "advantages": [
+          "Dynamic mode selection can reduce computational cost by avoiding full graph traversal on simple queries, improving efficiency over static hybrid methods.",
+          "Uncertainty-aware switching may reduce hallucination by triggering graph traversal when dense retrieval is insufficient, enhancing answer reliability.",
+          "Adaptability to query complexity offers a more scalable solution for diverse multi-hop QA datasets compared to fixed retrieval strategies.",
+          "Potential to combine strengths of dense retrieval (speed, broad coverage) and graph traversal (precision, multi-hop reasoning) in a principled way."
+        ],
+        "risks": [
+          "Uncertainty estimation may itself be noisy or unreliable, leading to suboptimal retrieval mode switches and degraded performance.",
+          "Dynamic switching introduces additional complexity and latency, which could offset efficiency gains on simple queries.",
+          "Over-reliance on graph traversal for complex queries might still suffer from graph noise issues noted in [2], unless graph quality is explicitly addressed.",
+          "Compared to [5]'s iterative refinement loop, DyHART's one-shot switching may miss opportunities for gradual evidence gathering."
+        ],
+        "overallAssessment": "DyHART presents a novel adaptive hybrid retrieval idea that addresses efficiency and accuracy trade-offs in multi-hop QA, distinguishing itself from static graph-based methods ([1], [3], [4]) and training-heavy approaches ([2]). Its closest relative is [5], but DyHART's focus on mode switching rather than iterative refinement offers a complementary perspective. The main risk is the reliability of uncertainty estimates and the potential for added overhead.",
+        "comparisonConfidence": 0.8
+      }
+    ]
+  },
+  "background": {
+    "summary": "The selected idea is grounded in 5 investigated papers covering graph-based multi-hop RAG, evidence path retrieval, and answer verification. Bridging Dual Knowledge Graphs for Multi-Hop Question Answering in Construction Safety: This paper introduces BifrostRAG, a dual-graph retrieval-augmented generation system for multi-hop question answering in construction safety regulations. It combines linguistic and structural knowledge graphs with a hybr MultiCube-RAG for Multi-hop Question Answering: This paper proposes MultiCube-RAG, a training-free framework for multi-hop question answering that uses an ontology-based cube structure with multiple orthogonal dimensions to model subjects, attributes, and relations. T SentGraph: Hierarchical Sentence Graph for Multi-hop Retrieval-Augmented Question Answering: SentGraph proposes a novel sentence-level graph-based RAG framework that addresses the limitations of traditional chunk-based retrieval in multi-hop question answering. It constructs a hierarchical sentence graph offline The plan is motivated by: A hybrid retrieval mechanism that dynamically switches between dense retrieval and graph traversal based on query complexity and uncertainty can improve both accuracy and efficiency in multi-hop QA.",
+    "motivation": "A hybrid retrieval mechanism that dynamically switches between dense retrieval and graph traversal based on query complexity and uncertainty can improve both accuracy and efficiency in multi-hop QA.",
+    "currentLimitations": [
+      "The proposed approach description is truncated; key details (e.g., how uncertainty is estimated, switching threshold, traversal algorithm) are missing.",
+      "No explicit handling of graph noise or evidence coherence issues raised in [2] and [3].",
+      "Lack of evaluation plan or baselines for comparison with existing methods like [5]'s adaptive loop."
+    ],
+    "domainContext": [
+      "Cluster: question, graph, multi"
+    ],
+    "evidenceRefs": [
+      {
+        "type": "paper",
+        "id": "raw_b74f66777a8d",
+        "source": "structured",
+        "note": ""
+      },
+      {
+        "type": "paper",
+        "id": "raw_31b604fedb7c",
+        "source": "structured",
+        "note": ""
+      },
+      {
+        "type": "paper",
+        "id": "raw_86c5464baa34",
+        "source": "structured",
+        "note": ""
+      },
+      {
+        "type": "paper",
+        "id": "raw_05e2254586dc",
+        "source": "structured",
+        "note": ""
+      },
+      {
+        "type": "paper",
+        "id": "raw_c3cb284c64a0",
+        "source": "structured",
+        "note": ""
+      }
+    ]
+  },
+  "literatureSurvey": {
+    "summary": "Investigated literature covers selected deep-read papers.",
+    "coverage": {
+      "rawPaperCount": 5,
+      "selectedPaperCount": 5,
+      "structuredPaperCount": 5,
+      "probePaperCount": 0,
+      "clusterCount": 1
+    },
+    "clusters": [
+      {
+        "clusterId": "cl_89090252",
+        "label": "Cluster: question, graph, multi",
+        "paperIds": [
+          "raw_05e2254586dc",
+          "raw_31b604fedb7c",
+          "raw_86c5464baa34",
+          "raw_b74f66777a8d",
+          "raw_c3cb284c64a0"
+        ],
+        "centroidPaperId": "raw_86c5464baa34",
+        "themeTokens": [
+          "question",
+          "graph",
+          "multi",
+          "adaptive",
+          "augmented",
+          "hop",
+          "retrieval",
+          "learning",
+          "generation",
+          "rag"
+        ]
+      }
+    ],
+    "papers": [
+      {
+        "paperId": "raw_b74f66777a8d",
+        "structuredPaperId": "raw_b74f66777a8d",
+        "source": "structured",
+        "title": "Bridging Dual Knowledge Graphs for Multi-Hop Question Answering in Construction Safety",
+        "authors": [
+          "Yuxin Zhang",
+          "Xi Wang",
+          "Mo Hu",
+          "Zhenyu Zhang"
+        ],
+        "year": 2025,
+        "venue": "arXiv",
+        "url": "http://arxiv.org/abs/2507.13625v2",
+        "role": "supporting_evidence",
+        "relevanceScore": 1.0,
+        "relevanceSignals": [
+          "rag",
+          "graph",
+          "multi",
+          "hop",
+          "question",
+          "answering",
+          "answer",
+          "evidence",
+          "hybrid",
+          "retrieval",
+          "mechanism",
+          "traversal"
+        ],
+        "relevanceReason": "Strong overlap with the selected idea topic anchors.",
+        "summary": "This paper introduces BifrostRAG, a dual-graph retrieval-augmented generation system for multi-hop question answering in construction safety regulations. It combines linguistic and structural knowledge graphs with a hybrid retrieval mechanism that fuses graph traversal and vector-based semantic search, enabling LLMs to reason over both content and document structure. Empirical results show significant improvements over vector-only and graph-only baselines, with 92.8% precision and 87.3% F1 score, demonstrating a transferable blueprint for complex technical document navigation.",
+        "methods": [
+          {
+            "methodId": "mm_2a2c1c53",
+            "paperId": "raw_b74f66777a8d",
+            "name": "BifrostRAG",
+            "description": "BifrostRAG: a dual-graph retrieval-augmented generation system that models both linguistic relationships and document structure.",
+            "category": "framework"
+          },
+          {
+            "methodId": "mm_8a83add0",
+            "paperId": "raw_b74f66777a8d",
+            "name": "Hybrid retrieval mechanism",
+            "description": "Hybrid retrieval mechanism combining graph traversal with vector-based semantic search.",
+            "category": "technique"
+          },
+          {
+            "methodId": "mm_800e0b7f",
+            "paperId": "raw_b74f66777a8d",
+            "name": "Graph traversal",
+            "description": "Graph traversal over dual knowledge graphs (linguistic and structural).",
+            "category": "technique"
+          },
+          {
+            "methodId": "mm_4913b6bb",
+            "paperId": "raw_b74f66777a8d",
+            "name": "Vector-based semantic search",
+            "description": "Vector-based semantic search for content-level retrieval.",
+            "category": "technique"
+          },
+          {
+            "methodId": "mm_a253df33",
+            "paperId": "raw_b74f66777a8d",
+            "name": "Multi-hop QA dataset (construction safety)",
+            "description": "A multi-hop question dataset for construction safety regulations.",
+            "category": "dataset"
+          }
+        ],
+        "findings": [
+          {
+            "findingId": "fn_21950f7c",
+            "paperId": "raw_b74f66777a8d",
+            "description": "BifrostRAG achieves 92.8% precision, 85.5% recall, and 87.3% F1 score on a multi-hop QA dataset for construction safety regulations.",
+            "category": "empirical",
+            "relatedClaims": []
+          },
+          {
+            "findingId": "fn_291ec3f2",
+            "paperId": "raw_b74f66777a8d",
+            "description": "Dual-graph modeling of both linguistic relationships and document structure is effective for multi-hop QA in complex regulatory text.",
+            "category": "methodological",
+            "relatedClaims": []
+          },
+          {
+            "findingId": "fn_5c7e4b54",
+            "paperId": "raw_b74f66777a8d",
+            "description": "Vector-only and graph-only RAG baselines are significantly outperformed by the hybrid retrieval mechanism.",
+            "category": "negative",
+            "relatedClaims": []
+          }
+        ],
+        "limitations": [],
+        "claims": [
+          {
+            "claimId": "cl_2d00ccf0",
+            "paperId": "raw_b74f66777a8d",
+            "text": "The paper claims that multi-hop queries in construction safety regulations require synthesis across interlinked clauses, which is a key challenge for automated compliance checking.",
+            "claimType": "premise_conclusion",
+            "evidenceText": "",
+            "confidence": 0.9,
+            "evidenceSpan": "Information retrieval and question answering from safety regulations are essential for automated construction compliance checking but are hindered by the linguistic and structural complexity of regulatory text. Many queries are multi-hop, requiring synthesis across interlinked clauses."
+          },
+          {
+            "claimId": "cl_6d8701f7",
+            "paperId": "raw_b74f66777a8d",
+            "text": "The paper claims that BifrostRAG, a dual-graph RAG system modeling both linguistic relationships and document structure, can effectively address the multi-hop QA challenge.",
+            "claimType": "method_result",
+            "evidenceText": "",
+            "confidence": 0.9,
+            "evidenceSpan": "To address the challenge, this paper introduces BifrostRAG, a dual-graph retrieval-augmented generation (RAG) system that models both linguistic relationships and document structure."
+          },
+          {
+            "claimId": "cl_8779af48",
+            "paperId": "raw_b74f66777a8d",
+            "text": "The paper claims that a hybrid retrieval mechanism combining graph traversal with vector-based semantic search enables LLMs to reason over both content and structure of text.",
+            "claimType": "method_result",
+            "evidenceText": "",
+            "confidence": 0.85,
+            "evidenceSpan": "The proposed architecture supports a hybrid retrieval mechanism that combines graph traversal with vector-based semantic search, enabling large language models to reason over both the content and the structure of the text."
+          },
+          {
+            "claimId": "cl_ad86b9bd",
+            "paperId": "raw_b74f66777a8d",
+            "text": "The paper claims that BifrostRAG achieves 92.8% precision, 85.5% recall, and an F1 score of 87.3% on a multi-hop question dataset, significantly outperforming vector-only and graph-only RAG baselines.",
+            "claimType": "method_result",
+            "evidenceText": "",
+            "confidence": 0.95,
+            "evidenceSpan": "On a multi-hop question dataset, BifrostRAG achieves 92.8% precision, 85.5% recall, and an F1 score of 87.3%. These results significantly outperform vector-only and graph-only RAG baselines, establishing BifrostRAG as a robust knowledge engine for LLM-driven compliance checking."
+          },
+          {
+            "claimId": "cl_6d4f722d",
+            "paperId": "raw_b74f66777a8d",
+            "text": "The paper claims that the dual-graph, hybrid retrieval mechanism is transferable to other knowledge-intensive engineering domains beyond construction safety.",
+            "claimType": "simple_finding",
+            "evidenceText": "",
+            "confidence": 0.8,
+            "evidenceSpan": "The dual-graph, hybrid retrieval mechanism presented in this paper offers a transferable blueprint for navigating complex technical documents across knowledge-intensive engineering domains."
+          }
+        ],
+        "usedByStageIds": [],
+        "usedByStepIds": [],
+        "evidenceRefs": [
+          {
+            "type": "paper",
+            "id": "raw_b74f66777a8d",
+            "source": "structured",
+            "note": ""
+          }
+        ]
+      },
+      {
+        "paperId": "raw_31b604fedb7c",
+        "structuredPaperId": "raw_31b604fedb7c",
+        "source": "structured",
+        "title": "MultiCube-RAG for Multi-hop Question Answering",
+        "authors": [
+          "Jimeng Shi",
+          "Wei Hu",
+          "Runchu Tian",
+          "Bowen Jin",
+          "Wonbin Kweon",
+          "SeongKu Kang",
+          "Yunfan Kang",
+          "Dingqi Ye",
+          "Sizhe Zhou",
+          "Shaowen Wang"
+        ],
+        "year": 2026,
+        "venue": "arXiv",
+        "url": "http://arxiv.org/abs/2602.15898v1",
+        "role": "supporting_evidence",
+        "relevanceScore": 1.0,
+        "relevanceSignals": [
+          "rag",
+          "graph",
+          "multi",
+          "hop",
+          "question",
+          "answering",
+          "answer",
+          "evidence",
+          "retrieval"
+        ],
+        "relevanceReason": "Strong overlap with the selected idea topic anchors.",
+        "summary": "This paper proposes MultiCube-RAG, a training-free framework for multi-hop question answering that uses an ontology-based cube structure with multiple orthogonal dimensions to model subjects, attributes, and relations. The method decomposes complex queries into subqueries for step-by-step reasoning and retrieval, achieving an 8.9% accuracy improvement over baselines while offering greater efficiency and inherent explainability.",
+        "methods": [
+          {
+            "methodId": "mm_c322953f",
+            "paperId": "raw_31b604fedb7c",
+            "name": "MultiCube-RAG",
+            "description": "A training-free method consisting of multiple ontology-based cubes for multi-step reasoning and retrieval in multi-hop QA. Each cube specializes in modeling a class of subjects, allowing flexible selection for precise knowledge acquisition.",
+            "category": "framework"
+          },
+          {
+            "methodId": "mm_ba7444b1",
+            "paperId": "raw_31b604fedb7c",
+            "name": "Ontology-based cube structure",
+            "description": "A structure with multiple orthogonal dimensions to model structural subjects, attributes, and relations, serving as the foundation for MultiCube-RAG.",
+            "category": "technique"
+          },
+          {
+            "methodId": "mm_2d3d7c25",
+            "paperId": "raw_31b604fedb7c",
+            "name": "Subquery decomposition",
+            "description": "A technique that decomposes a complex multi-hop query into a set of simple subqueries along cube dimensions and conquers each sequentially.",
+            "category": "technique"
+          },
+          {
+            "methodId": "mm_6560798f",
+            "paperId": "raw_31b604fedb7c",
+            "name": "Four multi-hop QA datasets",
+            "description": "The datasets used for evaluation (not named in abstract).",
+            "category": "dataset"
+          }
+        ],
+        "findings": [
+          {
+            "findingId": "fn_57564b63",
+            "paperId": "raw_31b604fedb7c",
+            "description": "MultiCube-RAG achieves an 8.9% improvement in response accuracy over the average performance of various baselines on four multi-hop QA datasets.",
+            "category": "empirical",
+            "relatedClaims": []
+          },
+          {
+            "findingId": "fn_542f231b",
+            "paperId": "raw_31b604fedb7c",
+            "description": "The proposed method demonstrates greater efficiency and inherent explainability compared to baselines.",
+            "category": "empirical",
+            "relatedClaims": []
+          }
+        ],
+        "limitations": [],
+        "claims": [
+          {
+            "claimId": "cl_7dafed76",
+            "paperId": "raw_31b604fedb7c",
+            "text": "Existing graph-based RAG methods produce noisy and computationally expensive graphs.",
+            "claimType": "premise_conclusion",
+            "evidenceText": "",
+            "confidence": 0.9,
+            "evidenceSpan": "Graph-based RAGs structure such information in graphs, but the resulting graphs are often noisy and computationally expensive."
+          },
+          {
+            "claimId": "cl_2d1b74d4",
+            "paperId": "raw_31b604fedb7c",
+            "text": "Existing training-based approaches for multi-hop QA have unstable convergence and high computational overhead.",
+            "claimType": "premise_conclusion",
+            "evidenceText": "",
+            "confidence": 0.9,
+            "evidenceSpan": "Recent training-based approaches attempt to incentivize the large language models (LLMs) for iterative reasoning and retrieval, but their training processes are prone to unstable convergence and high computational overhead."
+          },
+          {
+            "claimId": "cl_81e5757d",
+            "paperId": "raw_31b604fedb7c",
+            "text": "MultiCube-RAG improves response accuracy by 8.9% over the average performance of various baselines on four multi-hop QA datasets.",
+            "claimType": "method_result",
+            "evidenceText": "",
+            "confidence": 0.95,
+            "evidenceSpan": "Experiments on four multi-hop QA datasets show that MultiCube-RAG improves response accuracy by 8.9% over the average performance of various baselines."
+          },
+          {
+            "claimId": "cl_d1a92965",
+            "paperId": "raw_31b604fedb7c",
+            "text": "MultiCube-RAG performs with greater efficiency and inherent explainability compared to baselines.",
+            "claimType": "method_result",
+            "evidenceText": "",
+            "confidence": 0.85,
+            "evidenceSpan": "Notably, we also demonstrate that our method performs with greater efficiency and inherent explainability."
+          },
+          {
+            "claimId": "cl_60b4bfd6",
+            "paperId": "raw_31b604fedb7c",
+            "text": "Most existing RAG methods rely on single-step retrieval, neglecting the need for multi-hop reasoning processes.",
+            "claimType": "comparison",
+            "evidenceText": "",
+            "confidence": 0.9,
+            "evidenceSpan": "Moreover, most methods rely on single-step retrieval, neglecting the need for multi-hop reasoning processes."
+          }
+        ],
+        "usedByStageIds": [],
+        "usedByStepIds": [],
+        "evidenceRefs": [
+          {
+            "type": "paper",
+            "id": "raw_31b604fedb7c",
+            "source": "structured",
+            "note": ""
+          }
+        ]
+      },
+      {
+        "paperId": "raw_86c5464baa34",
+        "structuredPaperId": "raw_86c5464baa34",
+        "source": "structured",
+        "title": "SentGraph: Hierarchical Sentence Graph for Multi-hop Retrieval-Augmented Question Answering",
+        "authors": [
+          "Junli Liang",
+          "Pengfei Zhou",
+          "Wangqiu Zhou",
+          "Wenjie Qing",
+          "Qi Zhao",
+          "Ziwen Wang",
+          "Qi Song",
+          "Xiangyang Li"
+        ],
+        "year": 2026,
+        "venue": "arXiv",
+        "url": "http://arxiv.org/abs/2601.03014v3",
+        "role": "supporting_evidence",
+        "relevanceScore": 1.0,
+        "relevanceSignals": [
+          "rag",
+          "graph",
+          "multi",
+          "hop",
+          "question",
+          "answering",
+          "answer",
+          "evidence",
+          "retrieval",
+          "between"
+        ],
+        "relevanceReason": "Strong overlap with the selected idea topic anchors.",
+        "summary": "SentGraph proposes a novel sentence-level graph-based RAG framework that addresses the limitations of traditional chunk-based retrieval in multi-hop question answering. It constructs a hierarchical sentence graph offline using an adapted Rhetorical Structure Theory to model nucleus-satellite relationships and cross-document entity bridges, then performs graph-guided evidence selection and path expansion during online retrieval. Extensive experiments on four multi-hop QA benchmarks demonstrate its effectiveness, validating the importance of explicitly modeling fine-grained sentence-level logical dependencies for complex reasoning tasks.",
+        "methods": [
+          {
+            "methodId": "mm_bc9ab3b3",
+            "paperId": "raw_86c5464baa34",
+            "name": "SentGraph Framework",
+            "description": "A sentence-level graph-based RAG framework that models fine-grained logical relationships between sentences for multi-hop QA.",
+            "category": "framework"
+          },
+          {
+            "methodId": "mm_d17f49a8",
+            "paperId": "raw_86c5464baa34",
+            "name": "Hierarchical Sentence Graph Construction",
+            "description": "Offline construction of a hierarchical sentence graph using Rhetorical Structure Theory to distinguish nucleus and satellite sentences, organized into topic-level subgraphs with cross-document entity bridges.",
+            "category": "algorithm"
+          },
+          {
+            "methodId": "mm_8545e7b0",
+            "paperId": "raw_86c5464baa34",
+            "name": "Graph-guided Evidence Selection and Path Expansion",
+            "description": "Online retrieval method that performs evidence selection and path expansion on the hierarchical sentence graph to retrieve fine-grained sentence-level evidence.",
+            "category": "technique"
+          },
+          {
+            "methodId": "mm_ef6f2ca4",
+            "paperId": "raw_86c5464baa34",
+            "name": "Rhetorical Structure Theory (RST) Adaptation",
+            "description": "Adaptation of Rhetorical Structure Theory to identify nucleus (core) and satellite (supporting) sentences within the graph.",
+            "category": "technique"
+          },
+          {
+            "methodId": "mm_7b377868",
+            "paperId": "raw_86c5464baa34",
+            "name": "Four Multi-hop QA Benchmarks",
+            "description": "Standard evaluation datasets used to test the effectiveness of SentGraph (e.g., HotpotQA, 2WikiMultihopQA, MuSiQue, IIRC).",
+            "category": "dataset"
+          }
+        ],
+        "findings": [
+          {
+            "findingId": "fn_03f3dc5c",
+            "paperId": "raw_86c5464baa34",
+            "description": "SentGraph outperforms traditional chunk-based RAG methods on multi-hop QA benchmarks by using sentence-level graph-based retrieval.",
+            "category": "empirical",
+            "relatedClaims": []
+          },
+          {
+            "findingId": "fn_d593a1a3",
+            "paperId": "raw_86c5464baa34",
+            "description": "Modeling sentence-level logical dependencies (nucleus/satellite relations and cross-document entity bridges) is crucial for improving multi-hop reasoning accuracy.",
+            "category": "theoretical",
+            "relatedClaims": []
+          },
+          {
+            "findingId": "fn_a6897e54",
+            "paperId": "raw_86c5464baa34",
+            "description": "Chunk-based retrieval provides irrelevant and logically incoherent context, leading to incomplete evidence chains.",
+            "category": "negative",
+            "relatedClaims": []
+          }
+        ],
+        "limitations": [],
+        "claims": [
+          {
+            "claimId": "cl_1b61f811",
+            "paperId": "raw_86c5464baa34",
+            "text": "Traditional RAG effectively supports single-hop QA but faces significant limitations in multi-hop QA tasks, which require combining evidence from multiple documents.",
+            "claimType": "premise_conclusion",
+            "evidenceText": "",
+            "confidence": 0.9,
+            "evidenceSpan": "Traditional Retrieval-Augmented Generation (RAG) effectively supports single-hop question answering with large language models but faces significant limitations in multi-hop question answering tasks, which require combining evidence from multiple documents."
+          },
+          {
+            "claimId": "cl_87a15743",
+            "paperId": "raw_86c5464baa34",
+            "text": "Existing chunk-based retrieval often provides irrelevant and logically incoherent context, leading to incomplete evidence chains and incorrect reasoning during answer generation.",
+            "claimType": "cause_effect",
+            "evidenceText": "",
+            "confidence": 0.9,
+            "evidenceSpan": "Existing chunk-based retrieval often provides irrelevant and logically incoherent context, leading to incomplete evidence chains and incorrect reasoning during answer generation."
+          },
+          {
+            "claimId": "cl_71350d11",
+            "paperId": "raw_86c5464baa34",
+            "text": "SentGraph, a sentence-level graph-based RAG framework, explicitly models fine-grained logical relationships between sentences for multi-hop question answering.",
+            "claimType": "method_result",
+            "evidenceText": "",
+            "confidence": 0.95,
+            "evidenceSpan": "To address these challenges, we propose SentGraph, a sentence-level graph-based RAG framework that explicitly models fine-grained logical relationships between sentences for multi-hop question answering."
+          },
+          {
+            "claimId": "cl_95d7e33a",
+            "paperId": "raw_86c5464baa34",
+            "text": "SentGraph constructs a hierarchical sentence graph offline by adapting Rhetorical Structure Theory to distinguish nucleus and satellite sentences, then organizing them into topic-level subgraphs with cross-document entity bridges.",
+            "claimType": "method_result",
+            "evidenceText": "",
+            "confidence": 0.95,
+            "evidenceSpan": "Specifically, we construct a hierarchical sentence graph offline by first adapting Rhetorical Structure Theory to distinguish nucleus and satellite sentences, and then organizing them into topic-level subgraphs with cross-document entity bridges."
+          },
+          {
+            "claimId": "cl_22b29531",
+            "paperId": "raw_86c5464baa34",
+            "text": "Extensive experiments on four multi-hop QA benchmarks demonstrate the effectiveness of SentGraph, validating the importance of explicitly modeling sentence-level logical dependencies for multi-hop reasoning.",
+            "claimType": "premise_conclusion",
+            "evidenceText": "",
+            "confidence": 0.95,
+            "evidenceSpan": "Extensive experiments on four multi-hop question answering benchmarks demonstrate the effectiveness of SentGraph, validating the importance of explicitly modeling sentence-level logical dependencies for multi-hop reasoning."
+          }
+        ],
+        "usedByStageIds": [],
+        "usedByStepIds": [],
+        "evidenceRefs": [
+          {
+            "type": "paper",
+            "id": "raw_86c5464baa34",
+            "source": "structured",
+            "note": ""
+          }
+        ]
+      },
+      {
+        "paperId": "raw_05e2254586dc",
+        "structuredPaperId": "raw_05e2254586dc",
+        "source": "structured",
+        "title": "Question-Adaptive Graph Learning for Multi-hop Retrieval Augmented Generation",
+        "authors": [
+          "Yuchen Yan",
+          "Peiyan Zhang",
+          "Zhihua Liu",
+          "Hao Wang",
+          "Yatao Bian",
+          "Weiming Li",
+          "Xiaoshuai Hao"
+        ],
+        "year": 2025,
+        "venue": "arXiv",
+        "url": "http://arxiv.org/abs/2510.11541v2",
+        "role": "supporting_evidence",
+        "relevanceScore": 1.0,
+        "relevanceSignals": [
+          "rag",
+          "graph",
+          "multi",
+          "hop",
+          "question",
+          "answer",
+          "evidence",
+          "retrieval",
+          "mechanism"
+        ],
+        "relevanceReason": "Strong overlap with the selected idea topic anchors.",
+        "summary": "This paper proposes a novel graph-based framework for multi-hop retrieval-augmented generation, consisting of a Multi-information Level Knowledge Graph (Multi-L KG) to capture different granularities of information, and a Question-Adaptive Graph Neural Network (Quest-GNN) that uses question-guided message passing to aggregate relevant information while reducing noise. The framework is pre-trained with synthesized data and demonstrates significant improvements (up to 33.8%) on high-hop questions, addressing key limitations of existing RAG systems in handling complex multi-hop queries.",
+        "methods": [
+          {
+            "methodId": "mm_b5f10609",
+            "paperId": "raw_05e2254586dc",
+            "name": "Multi-information Level Knowledge Graph (Multi-L KG)",
+            "description": "A graph structure that models various information levels (e.g., entity, sentence, document) for comprehensive multi-hop question understanding.",
+            "category": "framework"
+          },
+          {
+            "methodId": "mm_7d10785c",
+            "paperId": "raw_05e2254586dc",
+            "name": "Question-Adaptive Graph Neural Network (Quest-GNN)",
+            "description": "A GNN that performs intra/inter-level message passing on Multi-L KG, with information aggregation guided by the question to reduce noise.",
+            "category": "algorithm"
+          },
+          {
+            "methodId": "mm_078aef1b",
+            "paperId": "raw_05e2254586dc",
+            "name": "Synthesized data generation strategies for pre-training",
+            "description": "Two strategies to generate synthetic multi-hop question-answer data for pre-training Quest-GNN to learn robust representations.",
+            "category": "technique"
+          },
+          {
+            "methodId": "mm_802879ad",
+            "paperId": "raw_05e2254586dc",
+            "name": "Intra/inter-level message passing",
+            "description": "Mechanism within Quest-GNN that aggregates information within the same level and across different levels of the Multi-L KG.",
+            "category": "technique"
+          }
+        ],
+        "findings": [
+          {
+            "findingId": "fn_6f3ae41f",
+            "paperId": "raw_05e2254586dc",
+            "description": "The proposed Quest-GNN framework achieves a 33.8% improvement on high-hop questions compared to baselines.",
+            "category": "empirical",
+            "relatedClaims": []
+          },
+          {
+            "findingId": "fn_fb198aa3",
+            "paperId": "raw_05e2254586dc",
+            "description": "The Multi-information Level Knowledge Graph effectively captures different information granularities for multi-hop questions.",
+            "category": "methodological",
+            "relatedClaims": []
+          },
+          {
+            "findingId": "fn_100b1236",
+            "paperId": "raw_05e2254586dc",
+            "description": "Question-guided message passing in Quest-GNN reduces the impact of irrelevant noise during multi-hop retrieval.",
+            "category": "methodological",
+            "relatedClaims": []
+          }
+        ],
+        "limitations": [],
+        "claims": [
+          {
+            "claimId": "cl_2103487e",
+            "paperId": "raw_05e2254586dc",
+            "text": "Existing multi-hop RAG methods struggle to fully understand questions with complex semantic structures and are susceptible to irrelevant noise during retrieval.",
+            "claimType": "limitation",
+            "evidenceText": "",
+            "confidence": 0.9,
+            "evidenceSpan": "Under the multi-hop settings, existing methods often struggle to fully understand the questions with complex semantic structures and are susceptible to irrelevant noise during the retrieval of multiple information targets."
+          },
+          {
+            "claimId": "cl_7094c68b",
+            "paperId": "raw_05e2254586dc",
+            "text": "The proposed Multi-information Level Knowledge Graph (Multi-L KG) models various information levels for a more comprehensive understanding of multi-hop questions.",
+            "claimType": "method",
+            "evidenceText": "",
+            "confidence": 0.85,
+            "evidenceSpan": "We first introduce a Multi-information Level Knowledge Graph (Multi-L KG) to model various information levels for a more comprehensive understanding of multi-hop questions."
+          },
+          {
+            "claimId": "cl_522b1c11",
+            "paperId": "raw_05e2254586dc",
+            "text": "Quest-GNN employs intra/inter-level message passing guided by the question, which facilitates multi-granular information aggregation and reduces noise impact.",
+            "claimType": "method",
+            "evidenceText": "",
+            "confidence": 0.85,
+            "evidenceSpan": "Quest-GNN employs intra/inter-level message passing mechanisms, and in each message passing the information aggregation is guided by the question, which not only facilitates multi-granular information aggregation but also significantly reduces the impact of noise."
+          },
+          {
+            "claimId": "cl_81ac7d8d",
+            "paperId": "raw_05e2254586dc",
+            "text": "Two synthesized data generation strategies for pre-training Quest-GNN enhance its ability to learn robust representations.",
+            "claimType": "method",
+            "evidenceText": "",
+            "confidence": 0.8,
+            "evidenceSpan": "To enhance its ability to learn robust representations, we further propose two synthesized data generation strategies for pre-training the Quest-GNN."
+          },
+          {
+            "claimId": "cl_6e72adbb",
+            "paperId": "raw_05e2254586dc",
+            "text": "The proposed framework is effective in multi-hop scenarios, especially for high-hop questions where improvement can reach 33.8%.",
+            "claimType": "premise_conclusion (method→result)",
+            "evidenceText": "",
+            "confidence": 0.9,
+            "evidenceSpan": "Extensive experimental results demonstrate the effectiveness of our framework in multi-hop scenarios, especially in high-hop questions the improvement can reach 33.8%."
+          }
+        ],
+        "usedByStageIds": [],
+        "usedByStepIds": [],
+        "evidenceRefs": [
+          {
+            "type": "paper",
+            "id": "raw_05e2254586dc",
+            "source": "structured",
+            "note": ""
+          }
+        ]
+      },
+      {
+        "paperId": "raw_c3cb284c64a0",
+        "structuredPaperId": "raw_c3cb284c64a0",
+        "source": "structured",
+        "title": "S-Path-RAG: Semantic-Aware Shortest-Path Retrieval Augmented Generation for Multi-Hop Knowledge Graph Question Answering",
+        "authors": [
+          "Rong Fu",
+          "Yemin Wang",
+          "Tianxiang Xu",
+          "Yongtai Liu",
+          "Weizhi Tang",
+          "Wangyu Wu",
+          "Xiaowen Ma",
+          "Simon Fong"
+        ],
+        "year": 2026,
+        "venue": "arXiv",
+        "url": "http://arxiv.org/abs/2603.23512v1",
+        "role": "supporting_evidence",
+        "relevanceScore": 1.0,
+        "relevanceSignals": [
+          "rag",
+          "graph",
+          "multi",
+          "hop",
+          "question",
+          "answering",
+          "answer",
+          "evidence",
+          "hybrid",
+          "retrieval",
+          "mechanism",
+          "between"
+        ],
+        "relevanceReason": "Strong overlap with the selected idea topic anchors.",
+        "summary": "S-Path-RAG introduces a semantic-aware shortest-path retrieval framework for multi-hop knowledge graph question answering, combining hybrid path enumeration, differentiable scoring, and an iterative Neural-Socratic Graph Dialogue loop for adaptive retrieval. The method achieves consistent improvements in accuracy, evidence coverage, and efficiency over strong baselines, while providing interpretable path-level traces for diagnostics. The paper also offers practical deployment recommendations based on trade-off analysis of key components.",
+        "methods": [
+          {
+            "methodId": "mm_75e1fec8",
+            "paperId": "raw_c3cb284c64a0",
+            "name": "S-Path-RAG Framework",
+            "description": "Semantic-Aware Shortest-Path Retrieval Augmented Generation framework for multi-hop KGQA, combining hybrid path enumeration, differentiable path scorer, contrastive path encoder, lightweight verifier, and cross-attention injection into LLM.",
+            "category": "framework"
+          },
+          {
+            "methodId": "mm_075312fa",
+            "paperId": "raw_c3cb284c64a0",
+            "name": "Hybrid Weighted k-Shortest, Beam, and Constrained Random-Walk Strategy",
+            "description": "A path enumeration strategy that combines k-shortest paths, beam search, and constrained random walks to generate bounded-length, semantically weighted candidate paths.",
+            "category": "algorithm"
+          },
+          {
+            "methodId": "mm_f80089ab",
+            "paperId": "raw_c3cb284c64a0",
+            "name": "Neural-Socratic Graph Dialogue Loop",
+            "description": "An iterative loop where LLM-generated diagnostic messages are mapped to targeted graph edits or seed expansions, enabling adaptive retrieval when the model expresses uncertainty.",
+            "category": "technique"
+          },
+          {
+            "methodId": "mm_3d9de520",
+            "paperId": "raw_c3cb284c64a0",
+            "name": "Differentiable Path Scorer and Contrastive Path Encoder",
+            "description": "Components that learn to score and encode candidate paths in a differentiable manner, likely using contrastive learning objectives.",
+            "category": "technique"
+          },
+          {
+            "methodId": "mm_ae1a1c25",
+            "paperId": "raw_c3cb284c64a0",
+            "name": "Standard Multi-Hop KGQA Benchmarks",
+            "description": "Evaluation datasets used to validate S-Path-RAG, though specific names (e.g., WebQSP, CWQ, MetaQA) are not mentioned in the abstract.",
+            "category": "dataset"
+          }
+        ],
+        "findings": [
+          {
+            "findingId": "fn_09cc7933",
+            "paperId": "raw_c3cb284c64a0",
+            "description": "S-Path-RAG improves answer accuracy, evidence coverage, and end-to-end efficiency on standard multi-hop KGQA benchmarks compared to strong graph- and LLM-based baselines.",
+            "category": "empirical",
+            "relatedClaims": []
+          },
+          {
+            "findingId": "fn_91af2b48",
+            "paperId": "raw_c3cb284c64a0",
+            "description": "The hybrid path enumeration strategy (k-shortest, beam, constrained random-walk) combined with a differentiable path scorer, contrastive path encoder, and lightweight verifier is effective for semantic-aware retrieval.",
+            "category": "methodological",
+            "relatedClaims": []
+          },
+          {
+            "findingId": "fn_5ed290ab",
+            "paperId": "raw_c3cb284c64a0",
+            "description": "The Neural-Socratic Graph Dialogue loop enables effective adaptive retrieval by using language model diagnostic messages to guide graph edits and seed expansions.",
+            "category": "methodological",
+            "relatedClaims": []
+          }
+        ],
+        "limitations": [],
+        "claims": [
+          {
+            "claimId": "cl_2459b5a8",
+            "paperId": "raw_c3cb284c64a0",
+            "text": "S-Path-RAG improves multi-hop question answering over large knowledge graphs by enumerating semantically weighted candidate paths using a hybrid weighted k-shortest, beam, and constrained random-walk strategy.",
+            "claimType": "method_result",
+            "evidenceText": "",
+            "confidence": 0.9,
+            "evidenceSpan": "S-Path-RAG departs from one-shot, text-heavy retrieval by enumerating bounded-length, semantically weighted candidate paths using a hybrid weighted $k$-shortest, beam, and constrained random-walk strategy"
+          },
+          {
+            "claimId": "cl_0aa88a4d",
+            "paperId": "raw_c3cb284c64a0",
+            "text": "The system's Neural-Socratic Graph Dialogue loop enables adaptive retrieval when the model expresses uncertainty, by mapping concise diagnostic messages from the language model to targeted graph edits or seed expansions.",
+            "claimType": "method_result",
+            "evidenceText": "",
+            "confidence": 0.85,
+            "evidenceSpan": "The system runs inside an iterative Neural-Socratic Graph Dialogue loop in which concise diagnostic messages produced by the language model are mapped to targeted graph edits or seed expansions, enabling adaptive retrieval when the model expresses uncertainty."
+          },
+          {
+            "claimId": "cl_769ec0a9",
+            "paperId": "raw_c3cb284c64a0",
+            "text": "S-Path-RAG's retrieval mechanism is token-efficient and topology-aware while preserving interpretable path-level traces for diagnostics and intervention.",
+            "claimType": "method_result",
+            "evidenceText": "",
+            "confidence": 0.8,
+            "evidenceSpan": "This combination yields a retrieval mechanism that is both token-efficient and topology-aware while preserving interpretable path-level traces for diagnostics and intervention."
+          },
+          {
+            "claimId": "cl_22b4eca8",
+            "paperId": "raw_c3cb284c64a0",
+            "text": "S-Path-RAG demonstrates consistent improvements in answer accuracy, evidence coverage, and end-to-end efficiency compared to strong graph- and LLM-based baselines.",
+            "claimType": "premise_conclusion",
+            "evidenceText": "",
+            "confidence": 0.9,
+            "evidenceSpan": "The results demonstrate consistent improvements in answer accuracy, evidence coverage, and end-to-end efficiency compared to strong graph- and LLM-based baselines."
+          },
+          {
+            "claimId": "cl_3ead464d",
+            "paperId": "raw_c3cb284c64a0",
+            "text": "The paper reports practical recommendations for deployment under constrained compute and token budgets based on trade-off analysis between semantic weighting, verifier filtering, and iterative updates.",
+            "claimType": "simple_finding",
+            "evidenceText": "",
+            "confidence": 0.75,
+            "evidenceSpan": "We further analyze trade-offs between semantic weighting, verifier filtering, and iterative updates, and report practical recommendations for deployment under constrained compute and token budgets."
+          }
+        ],
+        "usedByStageIds": [],
+        "usedByStepIds": [],
+        "evidenceRefs": [
+          {
+            "type": "paper",
+            "id": "raw_c3cb284c64a0",
+            "source": "structured",
+            "note": ""
+          }
+        ]
+      }
+    ]
+  },
+  "gap": {
+    "summary": "Current multi-hop RAG methods provide graph retrieval, hybrid retrieval, or adaptive graph refinement, but lack a validated query-level policy that reliably decides when to use dense retrieval versus graph traversal while keeping the resulting evidence path verifiable and computationally efficient. This work addresses the gap through the following entry point: We propose a novel algorithm, DyHART (Dynamic Hybrid Adaptive Retrieval and Traversal), for multi-hop question answering. DyHART integrates a hybrid retrieval mechanism that adaptively selects between dense passage retrieval and graph-based traversal based on real-time uncertainty estimates from a lightweight probe. Validation is scoped to F1 score, Exact Match, average retrieval steps, total inference time.",
+    "items": [
+      {
+        "id": "gap-1",
+        "kind": "selected",
+        "statement": "Current multi-hop RAG methods provide graph retrieval, hybrid retrieval, or adaptive graph refinement, but lack a validated query-level policy that reliably decides when to use dense retrieval versus graph traversal while keeping the resulting evidence path verifiable and computationally efficient.",
+        "severity": "high",
+        "existingCoverage": "Investigated work already covers BifrostRAG, MultiCube-RAG, SentGraph Framework, Multi-information Level Knowledge Graph (Multi-L KG), S-Path-RAG Framework.",
+        "unresolvedIssue": "Existing approaches do not yet jointly establish whether a hybrid retrieval mechanism that dynamically switches between dense retrieval and graph traversal based on query complexity and uncertainty can improve both accuracy and efficiency in multi-hop QA while preserving inspectable evidence paths, robustness to graph noise, and a favorable accuracy-efficiency trade-off.",
+        "proposedEntry": "We propose a novel algorithm, DyHART (Dynamic Hybrid Adaptive Retrieval and Traversal), for multi-hop question answering. DyHART integrates a hybrid retrieval mechanism that adaptively selects between dense passage retrieval and graph-based traversal based on real-time uncertainty estimates from a lightweight probe.",
+        "boundary": "The study is bounded to HotpotQA, MuSiQue, 2WikiMultihop and compares the proposed mechanism with dense-only, graph-only, and related hybrid retrieval baselines. It does not claim cross-domain generalization or completed experimental gains without downstream evidence.",
+        "validationNeeds": [
+          "F1 score",
+          "Exact Match",
+          "average retrieval steps",
+          "total inference time",
+          "variance in steps",
+          "F1 score drop",
+          "retrieval steps increase"
+        ],
+        "whyUnsolved": "DyHART proposes dynamic switching between dense retrieval and graph traversal based on uncertainty estimates, whereas [1] uses a static dual-graph structure (linguistic + document) without adaptive retrieval mode selection. Unlike [2] which focuses on reducing graph noise and training instability, DyHART addresses query-level adaptation rather than graph construction or training optimization. DyHART's real-time uncertainty estimation contrasts with [3]'s hierarchical sentence graph that pre-structures evidence without query-aware retrieval mode switching. No explicit handling of graph noise or evidence coherence issues raised in [2] and [3]. Lack of evaluation plan or baselines for comparison with existing methods like [5]'s adaptive loop.",
+        "supportedByPaperIds": [
+          "raw_b74f66777a8d",
+          "raw_31b604fedb7c",
+          "raw_86c5464baa34",
+          "raw_05e2254586dc",
+          "raw_c3cb284c64a0"
+        ],
+        "supportedByClaimIds": [
+          "cl_2d00ccf0",
+          "cl_7dafed76",
+          "cl_2d1b74d4",
+          "cl_1b61f811",
+          "cl_87a15743",
+          "cl_22b29531",
+          "cl_2103487e",
+          "cl_22b4eca8"
+        ],
+        "linkedGraphSignalIds": []
+      },
+      {
+        "id": "gap-2",
+        "kind": "supporting_signal",
+        "statement": "Supporting literature signal: Semantic-aware shortest-path retrieval for multi-hop KGQA that departs from one-shot, text-heavy retrieval.",
+        "severity": "medium",
+        "existingCoverage": "The paper explicitly claims departure from one-shot, text-heavy retrieval by introducing a hybrid path enumeration strategy with semantic weighting, which is a novel approach compared to traditional KGQA methods that rely on full-text retrieval or single-hop reasoning.",
+        "unresolvedIssue": "This signal motivates the selected GAP but is not itself the paper's primary unresolved problem.",
+        "proposedEntry": "",
+        "boundary": "",
+        "validationNeeds": [],
+        "whyUnsolved": "The paper explicitly claims departure from one-shot, text-heavy retrieval by introducing a hybrid path enumeration strategy with semantic weighting, which is a novel approach compared to traditional KGQA methods that rely on full-text retrieval or single-hop reasoning.",
+        "supportedByPaperIds": [
+          "raw_c3cb284c64a0"
+        ],
+        "supportedByClaimIds": [],
+        "linkedGraphSignalIds": []
+      },
+      {
+        "id": "gap-3",
+        "kind": "supporting_signal",
+        "statement": "Supporting literature signal: Neural-Socratic Graph Dialogue loop enabling adaptive retrieval via LLM diagnostic messages.",
+        "severity": "medium",
+        "existingCoverage": "The iterative loop that maps LLM uncertainty to graph edits is presented as a novel mechanism. The evidence from ablations and diagnostic analyses supports its effectiveness, though the concept of dialogue-based retrieval may overlap with some interactive QA systems.",
+        "unresolvedIssue": "This signal motivates the selected GAP but is not itself the paper's primary unresolved problem.",
+        "proposedEntry": "",
+        "boundary": "",
+        "validationNeeds": [],
+        "whyUnsolved": "The iterative loop that maps LLM uncertainty to graph edits is presented as a novel mechanism. The evidence from ablations and diagnostic analyses supports its effectiveness, though the concept of dialogue-based retrieval may overlap with some interactive QA systems.",
+        "supportedByPaperIds": [
+          "raw_c3cb284c64a0"
+        ],
+        "supportedByClaimIds": [],
+        "linkedGraphSignalIds": []
+      },
+      {
+        "id": "gap-4",
+        "kind": "supporting_signal",
+        "statement": "Supporting literature signal: Token-efficient and topology-aware retrieval with interpretable path-level traces.",
+        "severity": "medium",
+        "existingCoverage": "The paper claims both efficiency and interpretability, which are often trade-offs in RAG systems. The evidence of consistent improvements in end-to-end efficiency and the design for diagnostics supports this novelty claim, though interpretable path methods exist in prior work (e.g., in Graph RAG).",
+        "unresolvedIssue": "This signal motivates the selected GAP but is not itself the paper's primary unresolved problem.",
+        "proposedEntry": "",
+        "boundary": "",
+        "validationNeeds": [],
+        "whyUnsolved": "The paper claims both efficiency and interpretability, which are often trade-offs in RAG systems. The evidence of consistent improvements in end-to-end efficiency and the design for diagnostics supports this novelty claim, though interpretable path methods exist in prior work (e.g., in Graph RAG).",
+        "supportedByPaperIds": [
+          "raw_c3cb284c64a0"
+        ],
+        "supportedByClaimIds": [],
+        "linkedGraphSignalIds": []
+      },
+      {
+        "id": "gap-5",
+        "kind": "supporting_signal",
+        "statement": "Supporting literature signal: Multi-level knowledge graph for multi-hop RAG.",
+        "severity": "medium",
+        "existingCoverage": "The paper explicitly claims novelty by introducing Multi-L KG to model multiple information levels, which addresses a gap in existing RAG methods that treat knowledge as flat or single-level.",
+        "unresolvedIssue": "This signal motivates the selected GAP but is not itself the paper's primary unresolved problem.",
+        "proposedEntry": "",
+        "boundary": "",
+        "validationNeeds": [],
+        "whyUnsolved": "The paper explicitly claims novelty by introducing Multi-L KG to model multiple information levels, which addresses a gap in existing RAG methods that treat knowledge as flat or single-level.",
+        "supportedByPaperIds": [
+          "raw_05e2254586dc"
+        ],
+        "supportedByClaimIds": [],
+        "linkedGraphSignalIds": []
+      }
+    ],
+    "selectedGapId": "gap-1"
+  },
+  "principle": {
+    "summary": "We propose a novel algorithm, DyHART (Dynamic Hybrid Adaptive Retrieval and Traversal), for multi-hop question answering. DyHART integrates a hybrid retrieval mechanism that adaptively selects between dense passage retrieval and graph-based traversal based on real-time uncertainty estimates from a lightweight probe. The system constructs a dual-graph representation from the corpus, combining semantic similarity edges and structural document relationships. During inference, it iteratively expands evidence chains by either retrieving semantically relevant nodes or traversing graph edges, guided by a learned policy that minimizes noise and computation. Planned experiments on multi-hop QA benchmarks (HotpotQA, MuSiQue, 2WikiMultihop) should test whether DyHART outperforms existing graph-based RAG methods (e.g., BifrostRAG, S-Path-RAG) in accuracy while reducing retrieval cost by 30%. The approach is feasible with standard academic compute resources and open-source models.",
+    "mechanism": "We propose a novel algorithm, DyHART (Dynamic Hybrid Adaptive Retrieval and Traversal), for multi-hop question answering. DyHART integrates a hybrid retrieval mechanism that adaptively selects between dense passage retrieval and graph-based traversal based on real-time uncertainty estimates from a lightweight probe. The system constructs a dual-graph representation from the corpus, combining semantic similarity edges and structural document relationships. During inference, it iteratively expands evidence chains by either retrieving semantically relevant nodes or traversing graph edges, guided by a learned policy that minimizes noise and computation. Planned experiments on multi-hop QA benchmarks (HotpotQA, MuSiQue, 2WikiMultihop) should test whether DyHART outperforms existing graph-based RAG methods (e.g., BifrostRAG, S-Path-RAG) in accuracy while reducing retrieval cost by 30%. The approach is feasible with standard academic compute resources and open-source models.",
+    "noveltyClaim": "DyHART proposes dynamic switching between dense retrieval and graph traversal based on uncertainty estimates, whereas [1] uses a static dual-graph structure (linguistic + document) without adaptive retrieval mode selection. Unlike [2] which focuses on reducing graph noise and training instability, DyHART addresses query-level adaptation rather than graph construction or training optimization.",
+    "assumptions": [
+      "Assumes uncertainty estimates reliably indicate when dense retrieval is insufficient.",
+      "Assumes graph traversal is always more accurate for complex queries, which may not hold for noisy graphs.",
+      "Implicitly assumes query complexity can be accurately categorized in real-time with low overhead."
+    ],
+    "risks": [
+      "Policy network may overfit to specific graph structures, reducing generalization to new domains.",
+      "Dual graph construction may be computationally expensive for large corpora.",
+      "Adaptive decisions may increase latency due to policy inference.",
+      "Uncertainty estimator may be inaccurate, causing frequent false switches and harming performance.",
+      "Graph traversal may be too slow for real-time adaptation, negating efficiency benefits.",
+      "The hybrid mechanism could underperform both pure dense and pure graph methods if switching logic is poorly calibrated.",
+      "On datasets with uniformly complex queries, dynamic switching adds complexity without benefit."
+    ],
+    "reasoningPath": [
+      {
+        "step": "IdeaCandidate",
+        "id": "cand_e220b63f884c"
+      },
+      {
+        "step": "IdeaSearchNode",
+        "id": "in_26e50a9e9066"
+      },
+      {
+        "step": "ReasoningPathSeed",
+        "id": "rps_0cba362e4198"
+      },
+      {
+        "step": "observation",
+        "id": "ke_839365cc",
+        "text": "Hybrid retrieval mechanism",
+        "pathSeedId": "rps_0cba362e4198"
+      },
+      {
+        "step": "validation",
+        "id": "ke_8af474ed",
+        "text": "supports: Graph traversal",
+        "pathSeedId": "rps_0cba362e4198"
+      },
+      {
+        "step": "observation",
+        "id": "ke_8af474ed",
+        "text": "Graph traversal",
+        "pathSeedId": "rps_0dedc5a2fa31"
+      },
+      {
+        "step": "validation",
+        "id": "ke_14442339",
+        "text": "supports: Multi-hop QA dataset (construction safety)",
+        "pathSeedId": "rps_0dedc5a2fa31"
+      },
+      {
+        "step": "observation",
+        "id": "ke_839365cc",
+        "text": "Hybrid retrieval mechanism",
+        "pathSeedId": "rps_49972c57dd0c"
+      },
+      {
+        "step": "validation",
+        "id": "ke_14442339",
+        "text": "supports: Multi-hop QA dataset (construction safety)",
+        "pathSeedId": "rps_49972c57dd0c"
+      },
+      {
+        "step": "observation",
+        "id": "ke_14442339",
+        "text": "Multi-hop QA dataset (construction safety)",
+        "pathSeedId": "rps_7a560be240d0"
+      },
+      {
+        "step": "validation",
+        "id": "ke_8af474ed",
+        "text": "supports: Graph traversal",
+        "pathSeedId": "rps_7a560be240d0"
+      },
+      {
+        "step": "observation",
+        "id": "ke_8af474ed",
+        "text": "Graph traversal",
+        "pathSeedId": "rps_99f7c9f16b60"
+      },
+      {
+        "step": "validation",
+        "id": "ke_839365cc",
+        "text": "supports: Hybrid retrieval mechanism",
+        "pathSeedId": "rps_99f7c9f16b60"
+      },
+      {
+        "step": "observation",
+        "id": "ke_14442339",
+        "text": "Multi-hop QA dataset (construction safety)",
+        "pathSeedId": "rps_a47936185851"
+      },
+      {
+        "step": "validation",
+        "id": "ke_839365cc",
+        "text": "supports: Hybrid retrieval mechanism",
+        "pathSeedId": "rps_a47936185851"
+      },
+      {
+        "step": "observation",
+        "id": "ke_b6111eb7",
+        "text": "BifrostRAG",
+        "pathSeedId": "rps_3a5ea831f6b5"
+      },
+      {
+        "step": "validation",
+        "id": "ke_839365cc",
+        "text": "supports: Hybrid retrieval mechanism",
+        "pathSeedId": "rps_3a5ea831f6b5"
+      },
+      {
+        "step": "observation",
+        "id": "ke_b6111eb7",
+        "text": "BifrostRAG",
+        "pathSeedId": "rps_4c2e505566e2"
+      },
+      {
+        "step": "validation",
+        "id": "ke_14442339",
+        "text": "supports: Multi-hop QA dataset (construction safety)",
+        "pathSeedId": "rps_4c2e505566e2"
+      },
+      {
+        "step": "observation",
+        "id": "ke_b6111eb7",
+        "text": "BifrostRAG",
+        "pathSeedId": "rps_6151194dfdcc"
+      },
+      {
+        "step": "validation",
+        "id": "ke_8af474ed",
+        "text": "supports: Graph traversal",
+        "pathSeedId": "rps_6151194dfdcc"
+      },
+      {
+        "step": "observation",
+        "id": "ke_839365cc",
+        "text": "Hybrid retrieval mechanism",
+        "pathSeedId": "rps_ea30f9b4434c"
+      },
+      {
+        "step": "validation",
+        "id": "ke_b6111eb7",
+        "text": "supports: BifrostRAG",
+        "pathSeedId": "rps_ea30f9b4434c"
+      }
+    ],
+    "graphGrounding": {
+      "entityIds": [
+        "ke_839365cc",
+        "ke_8af474ed",
+        "ke_f936919f",
+        "ke_14442339",
+        "ke_de5c1509",
+        "ke_029ce450",
+        "ke_6be1185d",
+        "ke_fe97eef3",
+        "ke_a5badc4f",
+        "ke_43fc52a7",
+        "ke_bca40856",
+        "ke_8977c1d5",
+        "ke_baa50c69",
+        "ke_310e88e7",
+        "ke_037d8199",
+        "ke_04915e2d",
+        "ke_e8b26eaf"
+      ],
+      "relationIds": [
+        "kr_448e667c",
+        "kr_9aa968ed",
+        "kr_17871ee4",
+        "kr_d109b0fc",
+        "kr_a26b47d1",
+        "kr_67c02a30",
+        "kr_1eb4aa43",
+        "kr_a23329f7"
+      ],
+      "pathSeedIds": [
+        "rps_0cba362e4198",
+        "rps_0dedc5a2fa31",
+        "rps_49972c57dd0c",
+        "rps_7a560be240d0",
+        "rps_99f7c9f16b60",
+        "rps_a47936185851",
+        "rps_3a5ea831f6b5",
+        "rps_4c2e505566e2",
+        "rps_6151194dfdcc",
+        "rps_ea30f9b4434c"
+      ],
+      "searchNodeIds": [
+        "in_26e50a9e9066"
+      ]
+    },
+    "probeGrounding": {
+      "probeResultIds": [],
+      "graphPatchIds": [],
+      "probePaperIds": []
+    }
+  },
+  "contributionStatement": [
+    {
+      "id": "contribution-1",
+      "type": "method",
+      "statement": "A method contribution centered on Dynamic Hybrid Retrieval with Adaptive Graph Traversal for Multi-Hop Question Answering: We propose a novel algorithm, DyHART (Dynamic Hybrid Adaptive Retrieval and Traversal), for multi-hop question answering. It targets the selected gap: Current multi-hop RAG methods provide graph retrieval, hybrid retrieval, or adaptive graph refinement, but lack a validated query-level policy that reliably decides when to use dense retrieval versus graph traversal while keeping the resulting evidence path verifiable and computationally efficient.",
+      "noveltyBasis": "DyHART proposes dynamic switching between dense retrieval and graph traversal based on uncertainty estimates, whereas [1] uses a static dual-graph structure (linguistic + document) without adaptive retrieval mode selection. Unlike [2] which focuses on reducing graph noise and training instability, DyHART addresses query-level adaptation rather than graph construction or training optimization.",
+      "validationStageIds": [
+        "stage-1",
+        "stage-2"
+      ],
+      "validationStepIds": [
+        "step-1-1",
+        "step-1-2",
+        "step-2-1",
+        "step-2-2"
+      ],
+      "evidenceRefs": [
+        {
+          "type": "gap",
+          "id": "gap-1",
+          "source": "",
+          "note": ""
+        },
+        {
+          "type": "paper",
+          "id": "raw_b74f66777a8d",
+          "source": "",
+          "note": ""
+        },
+        {
+          "type": "gap",
+          "id": "gap-2",
+          "source": "",
+          "note": ""
+        },
+        {
+          "type": "paper",
+          "id": "raw_c3cb284c64a0",
+          "source": "",
+          "note": ""
+        },
+        {
+          "type": "candidate",
+          "id": "cand_e220b63f884c",
+          "source": "",
+          "note": ""
+        },
+        {
+          "type": "paper",
+          "id": "raw_31b604fedb7c",
+          "source": "",
+          "note": ""
+        },
+        {
+          "type": "paper",
+          "id": "raw_86c5464baa34",
+          "source": "",
+          "note": ""
+        },
+        {
+          "type": "paper",
+          "id": "raw_05e2254586dc",
+          "source": "",
+          "note": ""
+        },
+        {
+          "type": "principle",
+          "id": "principle",
+          "source": "idea_principle",
+          "note": ""
+        }
+      ]
+    },
+    {
+      "id": "contribution-2",
+      "type": "system",
+      "statement": "A reproducible implementation contribution that decomposes the proposed method into Dual-Graph Construction and Uncertainty Probe Design, DyHART Implementation and Main Benchmark Evaluation, producing artifacts such as dual_graph.json, uncertainty_probe.pkl, dyhart.py, main_results.md, accuracy_comparison.png.",
+      "noveltyBasis": "Operationalizes the proposed mechanism as explicit, traceable downstream artifacts.",
+      "validationStageIds": [
+        "stage-1",
+        "stage-2"
+      ],
+      "validationStepIds": [
+        "step-1-1",
+        "step-1-2",
+        "step-2-1",
+        "step-2-2"
+      ],
+      "evidenceRefs": [
+        {
+          "type": "gap",
+          "id": "gap-1",
+          "source": "",
+          "note": ""
+        },
+        {
+          "type": "paper",
+          "id": "raw_b74f66777a8d",
+          "source": "",
+          "note": ""
+        },
+        {
+          "type": "gap",
+          "id": "gap-2",
+          "source": "",
+          "note": ""
+        },
+        {
+          "type": "paper",
+          "id": "raw_c3cb284c64a0",
+          "source": "",
+          "note": ""
+        },
+        {
+          "type": "candidate",
+          "id": "cand_e220b63f884c",
+          "source": "",
+          "note": ""
+        },
+        {
+          "type": "paper",
+          "id": "raw_31b604fedb7c",
+          "source": "",
+          "note": ""
+        },
+        {
+          "type": "paper",
+          "id": "raw_86c5464baa34",
+          "source": "",
+          "note": ""
+        },
+        {
+          "type": "paper",
+          "id": "raw_05e2254586dc",
+          "source": "",
+          "note": ""
+        },
+        {
+          "type": "principle",
+          "id": "principle",
+          "source": "idea_principle",
+          "note": ""
+        }
+      ]
+    },
+    {
+      "id": "contribution-3",
+      "type": "evaluation",
+      "statement": "An evaluation contribution that tests the central hypothesis through DyHART Implementation and Main Benchmark Evaluation, Ablation and Robustness Analysis, using planned metrics including implementation_complete, F1_score, retrieval_steps, F1_drop, steps_reduction, F1_drop_at_20%.",
+      "noveltyBasis": "Connects each claimed improvement to planned benchmark, ablation, or robustness evidence.",
+      "validationStageIds": [
+        "stage-2",
+        "stage-3"
+      ],
+      "validationStepIds": [
+        "step-2-1",
+        "step-2-2",
+        "step-3-1",
+        "step-3-2"
+      ],
+      "evidenceRefs": [
+        {
+          "type": "candidate",
+          "id": "cand_e220b63f884c",
+          "source": "",
+          "note": ""
+        },
+        {
+          "type": "gap",
+          "id": "gap-1",
+          "source": "",
+          "note": ""
+        },
+        {
+          "type": "paper",
+          "id": "raw_b74f66777a8d",
+          "source": "",
+          "note": ""
+        },
+        {
+          "type": "paper",
+          "id": "raw_31b604fedb7c",
+          "source": "",
+          "note": ""
+        },
+        {
+          "type": "paper",
+          "id": "raw_86c5464baa34",
+          "source": "",
+          "note": ""
+        },
+        {
+          "type": "paper",
+          "id": "raw_05e2254586dc",
+          "source": "",
+          "note": ""
+        },
+        {
+          "type": "paper",
+          "id": "raw_c3cb284c64a0",
+          "source": "",
+          "note": ""
+        },
+        {
+          "type": "principle",
+          "id": "principle",
+          "source": "idea_principle",
+          "note": ""
+        },
+        {
+          "type": "gap",
+          "id": "gap-2",
+          "source": "",
+          "note": ""
+        }
+      ]
+    }
+  ],
+  "researchQuestion": "How does a dynamic hybrid retrieval mechanism that switches between dense retrieval and graph traversal based on uncertainty estimates affect answer verifiability and retrieval efficiency in multi-hop RAG?",
+  "hypothesis": "A hybrid retrieval mechanism that dynamically switches between dense retrieval and graph traversal based on query complexity and uncertainty can improve both accuracy and efficiency in multi-hop QA.",
+  "constants": {
+    "ideaSessionId": "idea_9ca98c4feca3",
+    "ideaCandidateId": "cand_e220b63f884c",
+    "planStage": "idea_implementation_plan",
+    "userNotes": "Reference sample run for downstream module handoff quality review.",
+    "seedQuery": "多跳 RAG 中基于图证据路径的答案可验证性评估",
+    "domain": "graph RAG, multi-hop question answering, answer verification, evidence provenance, citation faithfulness",
+    "paperType": "algorithm",
+    "datasets": [
+      "HotpotQA",
+      "MuSiQue",
+      "2WikiMultihop"
+    ],
+    "models": [
+      "DyHART",
+      "BifrostRAG",
+      "S-Path-RAG",
+      "MultiCube-RAG",
+      "SentGraph"
+    ]
+  },
+  "stages": [
+    {
+      "id": "stage-1",
+      "order": 1,
+      "title": "Dual-Graph Construction and Uncertainty Probe Design",
+      "goal": "Construct the dual-graph representation and implement the lightweight uncertainty probe for adaptive switching.",
+      "method": "Build a dual graph from the corpus: semantic similarity edges (via sentence embeddings) and structural document relationships (e.g., citation, section hierarchy). Train a small probe (e.g., logistic regression on query features) to estimate uncertainty of dense retrieval.",
+      "dependsOn": [],
+      "steps": [
+        {
+          "id": "step-1-1",
+          "order": 1,
+          "title": "Dual-Graph Construction",
+          "desc": "Construct a dual graph from the corpus: nodes represent passages/sentences; edges include semantic similarity (cosine > 0.8) and structural relations (document hierarchy, cross-references).",
+          "method": "Use sentence embeddings (e.g., all-MiniLM-L6-v2) for semantic edges; parse document structure for structural edges.",
+          "inputFrom": [],
+          "outputs": [
+            {
+              "type": "checkpoint",
+              "name": "dual_graph.json",
+              "desc": "Serialized dual graph with nodes and edges.",
+              "requiredFor": []
+            }
+          ],
+          "expected": [
+            {
+              "metric": "graph_size",
+              "target": "TBD",
+              "desc": "Number of nodes and edges in the dual graph."
+            }
+          ],
+          "evidenceRefs": [
+            {
+              "type": "gap",
+              "id": "gap-1",
+              "source": "",
+              "note": ""
+            },
+            {
+              "type": "paper",
+              "id": "raw_b74f66777a8d",
+              "source": "",
+              "note": ""
+            }
+          ],
+          "codeHints": {}
+        },
+        {
+          "id": "step-1-2",
+          "order": 2,
+          "title": "Uncertainty Probe Training",
+          "desc": "Train a lightweight probe (e.g., logistic regression) to predict whether dense retrieval will yield sufficient evidence for a query, using features like query length, entity overlap, and initial dense retrieval score distribution.",
+          "method": "Collect training data by running dense retrieval on a subset of queries and labeling success based on whether the top-k passages contain answer. Train probe to output uncertainty score.",
+          "inputFrom": [
+            "step-1-1"
+          ],
+          "outputs": [
+            {
+              "type": "checkpoint",
+              "name": "uncertainty_probe.pkl",
+              "desc": "Trained uncertainty probe model.",
+              "requiredFor": []
+            }
+          ],
+          "expected": [
+            {
+              "metric": "probe_accuracy",
+              "target": ">80%",
+              "desc": "Accuracy of probe in predicting retrieval success."
+            }
+          ],
+          "evidenceRefs": [
+            {
+              "type": "gap",
+              "id": "gap-2",
+              "source": "",
+              "note": ""
+            },
+            {
+              "type": "paper",
+              "id": "raw_c3cb284c64a0",
+              "source": "",
+              "note": ""
+            }
+          ],
+          "codeHints": {}
+        }
+      ]
+    },
+    {
+      "id": "stage-2",
+      "order": 2,
+      "title": "DyHART Implementation and Main Benchmark Evaluation",
+      "goal": "Implement the DyHART algorithm and evaluate its accuracy and efficiency on multi-hop QA benchmarks.",
+      "method": "Implement DyHART: at each retrieval step, compute uncertainty via probe; if uncertainty > threshold, use graph traversal (e.g., BFS on dual graph), else use dense retrieval. Iteratively expand evidence chain until answer is generated. Evaluate on HotpotQA, MuSiQue, 2WikiMultihop.",
+      "dependsOn": [
+        "stage-1"
+      ],
+      "steps": [
+        {
+          "id": "step-2-1",
+          "order": 1,
+          "title": "DyHART Algorithm Implementation",
+          "desc": "Implement the DyHART algorithm: given a query, initialize evidence set; at each step, compute uncertainty via probe; if high, perform graph traversal (expand neighbors in dual graph), else perform dense retrieval; update evidence set; repeat until answer generation or max steps.",
+          "method": "Use Python with networkx for graph traversal and sentence-transformers for dense retrieval. Integrate with LLM (e.g., Llama-2-7B) for answer generation.",
+          "inputFrom": [
+            "step-1-1",
+            "step-1-2"
+          ],
+          "outputs": [
+            {
+              "type": "code",
+              "name": "dyhart.py",
+              "desc": "Implementation of DyHART algorithm.",
+              "requiredFor": []
+            }
+          ],
+          "expected": [
+            {
+              "metric": "implementation_complete",
+              "target": "True",
+              "desc": "Code is functional and passes unit tests."
+            }
+          ],
+          "evidenceRefs": [
+            {
+              "type": "candidate",
+              "id": "cand_e220b63f884c",
+              "source": "",
+              "note": ""
+            },
+            {
+              "type": "gap",
+              "id": "gap-1",
+              "source": "",
+              "note": ""
+            }
+          ],
+          "codeHints": {}
+        },
+        {
+          "id": "step-2-2",
+          "order": 2,
+          "title": "Main Benchmark Evaluation",
+          "desc": "Run DyHART and baselines (BifrostRAG, S-Path-RAG, MultiCube-RAG, SentGraph) on HotpotQA, MuSiQue, 2WikiMultihop. Report F1, Exact Match, average retrieval steps, total inference time.",
+          "method": "Use standard evaluation scripts for each dataset. Ensure fair comparison by using same LLM and compute resources.",
+          "inputFrom": [
+            "step-2-1"
+          ],
+          "outputs": [
+            {
+              "type": "report",
+              "name": "main_results.md",
+              "desc": "Table of F1, EM, retrieval steps, time for all methods.",
+              "requiredFor": []
+            },
+            {
+              "type": "chart",
+              "name": "accuracy_comparison.png",
+              "desc": "Bar chart comparing F1 across methods and datasets.",
+              "requiredFor": []
+            }
+          ],
+          "expected": [
+            {
+              "metric": "F1_score",
+              "target": ">baseline average",
+              "desc": "DyHART should outperform average baseline F1."
+            },
+            {
+              "metric": "retrieval_steps",
+              "target": "<baseline average",
+              "desc": "DyHART should use fewer retrieval steps on average."
+            }
+          ],
+          "evidenceRefs": [
+            {
+              "type": "paper",
+              "id": "raw_b74f66777a8d",
+              "source": "",
+              "note": ""
+            },
+            {
+              "type": "paper",
+              "id": "raw_31b604fedb7c",
+              "source": "",
+              "note": ""
+            },
+            {
+              "type": "paper",
+              "id": "raw_86c5464baa34",
+              "source": "",
+              "note": ""
+            },
+            {
+              "type": "paper",
+              "id": "raw_05e2254586dc",
+              "source": "",
+              "note": ""
+            },
+            {
+              "type": "paper",
+              "id": "raw_c3cb284c64a0",
+              "source": "",
+              "note": ""
+            },
+            {
+              "type": "candidate",
+              "id": "cand_e220b63f884c",
+              "source": "idea",
+              "note": ""
+            },
+            {
+              "type": "principle",
+              "id": "principle",
+              "source": "idea_principle",
+              "note": ""
+            }
+          ],
+          "codeHints": {}
+        }
+      ]
+    },
+    {
+      "id": "stage-3",
+      "order": 3,
+      "title": "Ablation and Robustness Analysis",
+      "goal": "Ablate the adaptive policy and test robustness to graph noise to understand DyHART's components.",
+      "method": "Replace adaptive policy with fixed dense-only, graph-only, and random-policy variants; measure impact on F1 and retrieval steps. Inject random edges (10%, 20% noise) into dual graph and measure performance degradation.",
+      "dependsOn": [
+        "stage-2"
+      ],
+      "steps": [
+        {
+          "id": "step-3-1",
+          "order": 1,
+          "title": "Ablation Study on Adaptive Policy",
+          "desc": "Create three variants: dense-only (always dense retrieval), graph-only (always graph traversal), random-policy (random switch). Evaluate on HotpotQA and compare F1 and retrieval steps.",
+          "method": "Modify DyHART code to disable adaptive switching. Run evaluation on same test set.",
+          "inputFrom": [
+            "step-2-1"
+          ],
+          "outputs": [
+            {
+              "type": "report",
+              "name": "ablation_results.md",
+              "desc": "Table comparing F1 and retrieval steps for each variant.",
+              "requiredFor": []
+            },
+            {
+              "type": "chart",
+              "name": "ablation_comparison.png",
+              "desc": "Bar chart of F1 and steps for each policy.",
+              "requiredFor": []
+            }
+          ],
+          "expected": [
+            {
+              "metric": "F1_drop",
+              "target": "<5%",
+              "desc": "Adaptive policy should not significantly underperform best fixed policy."
+            },
+            {
+              "metric": "steps_reduction",
+              "target": ">20%",
+              "desc": "Adaptive policy should reduce steps compared to graph-only."
+            }
+          ],
+          "evidenceRefs": [
+            {
+              "type": "gap",
+              "id": "gap-2",
+              "source": "",
+              "note": ""
+            },
+            {
+              "type": "candidate",
+              "id": "cand_e220b63f884c",
+              "source": "",
+              "note": ""
+            }
+          ],
+          "codeHints": {}
+        },
+        {
+          "id": "step-3-2",
+          "order": 2,
+          "title": "Noise Robustness Test",
+          "desc": "Inject 10% and 20% random edges into the dual graph (add spurious connections). Measure DyHART's F1 and retrieval steps compared to static graph methods (e.g., SentGraph).",
+          "method": "Randomly add edges to the dual graph. Run DyHART and SentGraph on noisy graphs. Compare performance drop.",
+          "inputFrom": [
+            "step-2-1"
+          ],
+          "outputs": [
+            {
+              "type": "report",
+              "name": "noise_robustness.md",
+              "desc": "Table of F1 and steps for each noise level.",
+              "requiredFor": []
+            },
+            {
+              "type": "chart",
+              "name": "noise_impact.png",
+              "desc": "Line chart showing F1 vs noise level.",
+              "requiredFor": []
+            }
+          ],
+          "expected": [
+            {
+              "metric": "F1_drop_at_20%",
+              "target": "<10%",
+              "desc": "DyHART should degrade gracefully with noise."
+            }
+          ],
+          "evidenceRefs": [
+            {
+              "type": "gap",
+              "id": "gap-1",
+              "source": "",
+              "note": ""
+            },
+            {
+              "type": "paper",
+              "id": "raw_86c5464baa34",
+              "source": "",
+              "note": ""
+            }
+          ],
+          "codeHints": {}
+        }
+      ]
+    }
+  ],
+  "evidenceTrace": {
+    "ideaCandidateId": "cand_e220b63f884c",
+    "searchNodeId": "in_26e50a9e9066",
+    "pathSeedId": "rps_0cba362e4198",
+    "reasoningKgId": "rkg_b9b64a3f87f1",
+    "literatureMapId": "lm_2c431023198a",
+    "selectedPaperIds": [
+      "raw_05e2254586dc",
+      "raw_86c5464baa34",
+      "raw_c3cb284c64a0",
+      "raw_31b604fedb7c",
+      "raw_b74f66777a8d"
+    ],
+    "structuredPaperIds": [
+      "raw_b74f66777a8d",
+      "raw_31b604fedb7c",
+      "raw_86c5464baa34",
+      "raw_05e2254586dc",
+      "raw_c3cb284c64a0"
+    ],
+    "probeResultIds": [],
+    "graphPatchIds": [],
+    "probePaperIds": [],
+    "candidateGraphEvidence": {
+      "candidateId": "cand_e220b63f884c",
+      "supportingPaperIds": [
+        "raw_b74f66777a8d",
+        "raw_31b604fedb7c",
+        "raw_86c5464baa34",
+        "raw_05e2254586dc",
+        "raw_c3cb284c64a0"
+      ],
+      "supportingClaimIds": [
+        "cl_2d00ccf0",
+        "cl_6d8701f7",
+        "cl_8779af48",
+        "cl_ad86b9bd",
+        "cl_6d4f722d",
+        "cl_7dafed76",
+        "cl_2d1b74d4",
+        "cl_81e5757d",
+        "cl_d1a92965",
+        "cl_60b4bfd6",
+        "cl_1b61f811",
+        "cl_87a15743",
+        "cl_71350d11",
+        "cl_95d7e33a",
+        "cl_22b29531",
+        "cl_2103487e",
+        "cl_7094c68b",
+        "cl_522b1c11",
+        "cl_6e72adbb",
+        "cl_2459b5a8",
+        "cl_0aa88a4d",
+        "cl_769ec0a9",
+        "cl_22b4eca8",
+        "cl_3ead464d"
+      ],
+      "supportingEntityIds": [
+        "ke_839365cc",
+        "ke_8af474ed",
+        "ke_f936919f",
+        "ke_14442339",
+        "ke_de5c1509",
+        "ke_029ce450",
+        "ke_6be1185d",
+        "ke_fe97eef3",
+        "ke_a5badc4f",
+        "ke_43fc52a7",
+        "ke_bca40856",
+        "ke_8977c1d5",
+        "ke_baa50c69",
+        "ke_310e88e7",
+        "ke_037d8199",
+        "ke_04915e2d",
+        "ke_e8b26eaf"
+      ],
+      "supportingPathSeedIds": [
+        "rps_0cba362e4198",
+        "rps_0dedc5a2fa31",
+        "rps_49972c57dd0c",
+        "rps_7a560be240d0",
+        "rps_99f7c9f16b60",
+        "rps_a47936185851",
+        "rps_3a5ea831f6b5",
+        "rps_4c2e505566e2",
+        "rps_6151194dfdcc",
+        "rps_ea30f9b4434c"
+      ],
+      "evidenceLinkIds": [
+        "gel_88f20a50",
+        "gel_68e5481a",
+        "gel_21a1ad79",
+        "gel_241e793b",
+        "gel_5ada735e"
+      ],
+      "probePaperIds": [],
+      "reasoningTrace": [
+        {
+          "step": "IdeaCandidate",
+          "id": "cand_e220b63f884c"
+        },
+        {
+          "step": "IdeaSearchNode",
+          "id": "in_26e50a9e9066"
+        },
+        {
+          "step": "ReasoningPathSeed",
+          "id": "rps_0cba362e4198"
+        }
+      ],
+      "evidenceSummary": "Supported by 5 papers. Linked to 17 KG entities. Derived from 10 path seeds"
+    },
+    "reasoningTrace": [
+      {
+        "step": "IdeaCandidate",
+        "id": "cand_e220b63f884c"
+      },
+      {
+        "step": "IdeaSearchNode",
+        "id": "in_26e50a9e9066"
+      },
+      {
+        "step": "ReasoningPathSeed",
+        "id": "rps_0cba362e4198"
+      }
+    ]
+  },
+  "downstreamContract": {
+    "implementation": {
+      "consume": [
+        "researchQuestion",
+        "hypothesis",
+        "constants",
+        "stages"
+      ],
+      "requiredOutputs": [
+        "metrics",
+        "table",
+        "chart",
+        "log"
+      ]
+    },
+    "code": {
+      "consume": [
+        "stages.steps",
+        "steps.outputs",
+        "constants",
+        "principle"
+      ],
+      "requiredOutputs": [
+        "code",
+        "checkpoint",
+        "log",
+        "metrics"
+      ]
+    },
+    "paper": {
+      "consume": [
+        "background",
+        "literatureSurvey",
+        "gap",
+        "principle",
+        "stages",
+        "evidenceTrace",
+        "contributionStatement"
+      ],
+      "requiredOutputs": [
+        "table",
+        "chart",
+        "report"
+      ]
+    },
+    "review": {
+      "consume": [
+        "idea",
+        "gap",
+        "principle",
+        "qualityGate",
+        "evidenceTrace",
+        "contributionStatement"
+      ],
+      "requiredOutputs": [
+        "report"
+      ]
+    }
+  },
+  "qualityGate": {
+    "schemaValid": true,
+    "evidenceValid": true,
+    "topicRelevant": true,
+    "citationFaithful": true,
+    "planSpecific": true,
+    "agentApproved": true,
+    "humanApproved": true,
+    "implementationReady": true,
+    "overallScore": 0.968,
+    "reviewDecision": "approved",
+    "warnings": [],
+    "errors": []
+  },
+  "generation": {
+    "mode": "hybrid",
+    "providerName": "deepseek",
+    "model": "deepseek-chat",
+    "promptVersion": "plan-package-implementation-planner-v1",
+    "llmUsedSections": [
+      "implementationPlan"
+    ],
+    "reviewerMode": "deterministic",
+    "llmReviewerUsed": false,
+    "repairRounds": 0,
+    "fallbackUsed": false,
+    "warnings": []
+  },
+  "humanFeedback": [],
+  "revisions": [],
+  "reviewReports": [
+    {
+      "reviewer": "RelevanceReviewer",
+      "score": 1.0,
+      "passed": true,
+      "blockingIssues": [],
+      "warnings": [],
+      "repairSuggestions": [],
+      "evidenceRefs": [],
+      "createdAt": "2026-06-23T06:11:04.672088Z"
+    },
+    {
+      "reviewer": "EvidenceReviewer",
+      "score": 1.0,
+      "passed": true,
+      "blockingIssues": [],
+      "warnings": [],
+      "repairSuggestions": [],
+      "evidenceRefs": [],
+      "createdAt": "2026-06-23T06:11:04.672088Z"
+    },
+    {
+      "reviewer": "FeasibilityReviewer",
+      "score": 1.0,
+      "passed": true,
+      "blockingIssues": [],
+      "warnings": [],
+      "repairSuggestions": [],
+      "evidenceRefs": [],
+      "createdAt": "2026-06-23T06:11:04.672088Z"
+    },
+    {
+      "reviewer": "MetricReviewer",
+      "score": 0.838,
+      "passed": true,
+      "blockingIssues": [],
+      "warnings": [],
+      "repairSuggestions": [],
+      "evidenceRefs": [],
+      "createdAt": "2026-06-23T06:11:04.672088Z"
+    },
+    {
+      "reviewer": "NoveltyReviewer",
+      "score": 1.0,
+      "passed": true,
+      "blockingIssues": [],
+      "warnings": [],
+      "repairSuggestions": [],
+      "evidenceRefs": [],
+      "createdAt": "2026-06-23T06:11:04.672088Z"
+    }
+  ],
+  "metaReview": {
+    "overallScore": 0.968,
+    "decision": "approve",
+    "confidence": 0.986,
+    "blockingIssues": [],
+    "warnings": [],
+    "requiredRepairs": [],
+    "reviewerScores": {
+      "RelevanceReviewer": 1.0,
+      "EvidenceReviewer": 1.0,
+      "FeasibilityReviewer": 1.0,
+      "MetricReviewer": 0.838,
+      "NoveltyReviewer": 1.0
+    },
+    "createdAt": "2026-06-23T06:11:04.672088Z"
+  },
+  "sourceFields": {
+    "idea": [
+      "IdeaCandidate.title",
+      "IdeaCandidate.problem",
+      "IdeaCandidate.hypothesisStatement",
+      "IdeaCandidate.keyInsight",
+      "IdeaCandidate.proposedMethod",
+      "IdeaCandidate.expectedOutcome",
+      "IdeaCandidate.scores",
+      "RankedIdeaOutput.priorWorkComparisons",
+      "RankedIdeaOutput.critiques"
+    ],
+    "background": [
+      "StructuredPaper.summary",
+      "StructuredPaper.findings",
+      "StructuredPaper.limitations",
+      "LiteratureMap.clusters",
+      "LiteratureMap.selectionReport",
+      "IdeaCritique.weaknesses"
+    ],
+    "literatureSurvey": [
+      "StructuredPaper[]",
+      "RawPaper[]",
+      "LiteratureProbeResult[].papers",
+      "LiteratureMap.clusters"
+    ],
+    "gap": [
+      "LiteratureMap.gaps",
+      "StructuredPaper.limitations",
+      "IdeaCritique.weaknesses",
+      "GraphPatch.patchType=contradiction",
+      "CandidateGraphEvidence.supportingPaperIds"
+    ],
+    "principle": [
+      "IdeaCandidate.proposedMethod",
+      "IdeaCandidate.keyInsight",
+      "IdeaCandidate.hypothesisStatement",
+      "IdeaCandidate.expectedOutcome",
+      "CandidateGraphEvidence.reasoningTrace",
+      "ReasoningPathSeed[]",
+      "ReasoningKG.entities",
+      "ReasoningKG.relations",
+      "RankedIdeaOutput.priorWorkComparisons"
+    ],
+    "contributionStatement": [
+      "IdeaCandidate.title",
+      "IdeaCandidate.proposedMethod",
+      "PlanPackage.gap.selectedGapId",
+      "PlanPackage.principle.noveltyClaim",
+      "PlanPackage.stages[].steps[].outputs",
+      "PlanPackage.stages[].steps[].expected",
+      "PlanPackage.stages[].steps[].evidenceRefs"
+    ],
+    "evidenceTrace": [
+      "IdeaCandidate.searchNodeId",
+      "IdeaCandidate.pathSeedId",
+      "CandidateGraphEvidence",
+      "IdeaSearchTree.id",
+      "LiteratureMap.id",
+      "ReasoningKG.id",
+      "LiteratureProbeResult[].id",
+      "GraphPatch[].id"
+    ],
+    "implementationPlan": [
+      "LLM implementation planner",
+      "PlanPackage.idea",
+      "PlanPackage.background",
+      "PlanPackage.gap",
+      "PlanPackage.principle",
+      "PlanPackage.literatureSurvey"
+    ]
+  },
+  "rawIdeaOutputs": {
+    "ideaCandidate": {
+      "id": "cand_e220b63f884c",
+      "title": "Dynamic Hybrid Retrieval with Adaptive Graph Traversal for Multi-Hop Question Answering",
+      "problem": "A hybrid retrieval mechanism that dynamically switches between dense retrieval and graph traversal based on query complexity and uncertainty can improve both accuracy and efficiency in multi-hop QA.",
+      "hypothesisStatement": "A hybrid retrieval mechanism that dynamically switches between dense retrieval and graph traversal based on query complexity and uncertainty can improve both accuracy and efficiency in multi-hop QA.",
+      "keyInsight": "A hybrid retrieval mechanism that dynamically switches between dense retrieval and graph traversal based on query complexity and uncertainty can improve both accuracy and efficiency in multi-hop QA.",
+      "proposedMethod": "We propose a novel algorithm, DyHART (Dynamic Hybrid Adaptive Retrieval and Traversal), for multi-hop question answering. DyHART integrates a hybrid retrieval mechanism that adaptively selects between dense passage retrieval and graph-based traversal based on real-time uncertainty estimates from a lightweight probe. The system constructs a dual-graph representation from the corpus, combining semantic similarity edges and structural document relationships. During inference, it iteratively expands evidence chains by either retrieving semantically relevant nodes or traversing graph edges, guided by a learned policy that minimizes noise and computation. Planned experiments on multi-hop QA benchmarks (HotpotQA, MuSiQue, 2WikiMultihop) should test whether DyHART outperforms existing graph-based RAG methods (e.g., BifrostRAG, S-Path-RAG) in accuracy while reducing retrieval cost by 30%. The approach is feasible with standard academic compute resources and open-source models.",
+      "expectedOutcome": "Planned validation should show whether: A hybrid retrieval mechanism that dynamically switches between dense retrieval and graph traversal based on query complexity and uncertainty can improve both accuracy and efficiency in multi-hop QA. Key planned checks: Main Benchmark Evaluation - Evaluate DyHART on HotpotQA, MuSiQue, and 2WikiMultihop datasets. Compare against baselines: BifrostRAG, MultiCube-RAG, SentGraph, and S-Path-RAG. Report F1, Exact Match, and retrieval efficiency (steps, time). - metrics: F1 score, Exact Match, average retrieval steps, total inference time; Ablation Study on Policy - Ablate the adaptive policy by replacing it with fixed dense-only, graph-only, and random-policy variants. Measure impact on accuracy and efficiency. - metrics: F1 score, average retrieval steps, variance in steps; Noise Robustness Test - Inject random edges (10%, 20% noise) into the dual graph and measure DyHART's performance degradation compared to static graph methods. - metrics: F1 score drop, retrieval steps increase",
+      "searchNodeId": "in_26e50a9e9066",
+      "pathSeedId": "rps_0cba362e4198",
+      "reasoningPathId": "",
+      "expectedMetrics": []
+    },
+    "candidateGraphEvidence": {
+      "candidateId": "cand_e220b63f884c",
+      "supportingPaperIds": [
+        "raw_b74f66777a8d",
+        "raw_31b604fedb7c",
+        "raw_86c5464baa34",
+        "raw_05e2254586dc",
+        "raw_c3cb284c64a0"
+      ],
+      "supportingClaimIds": [
+        "cl_2d00ccf0",
+        "cl_6d8701f7",
+        "cl_8779af48",
+        "cl_ad86b9bd",
+        "cl_6d4f722d",
+        "cl_7dafed76",
+        "cl_2d1b74d4",
+        "cl_81e5757d",
+        "cl_d1a92965",
+        "cl_60b4bfd6",
+        "cl_1b61f811",
+        "cl_87a15743",
+        "cl_71350d11",
+        "cl_95d7e33a",
+        "cl_22b29531",
+        "cl_2103487e",
+        "cl_7094c68b",
+        "cl_522b1c11",
+        "cl_6e72adbb",
+        "cl_2459b5a8",
+        "cl_0aa88a4d",
+        "cl_769ec0a9",
+        "cl_22b4eca8",
+        "cl_3ead464d"
+      ],
+      "supportingEntityIds": [
+        "ke_839365cc",
+        "ke_8af474ed",
+        "ke_f936919f",
+        "ke_14442339",
+        "ke_de5c1509",
+        "ke_029ce450",
+        "ke_6be1185d",
+        "ke_fe97eef3",
+        "ke_a5badc4f",
+        "ke_43fc52a7",
+        "ke_bca40856",
+        "ke_8977c1d5",
+        "ke_baa50c69",
+        "ke_310e88e7",
+        "ke_037d8199",
+        "ke_04915e2d",
+        "ke_e8b26eaf"
+      ],
+      "supportingPathSeedIds": [
+        "rps_0cba362e4198",
+        "rps_0dedc5a2fa31",
+        "rps_49972c57dd0c",
+        "rps_7a560be240d0",
+        "rps_99f7c9f16b60",
+        "rps_a47936185851",
+        "rps_3a5ea831f6b5",
+        "rps_4c2e505566e2",
+        "rps_6151194dfdcc",
+        "rps_ea30f9b4434c"
+      ],
+      "evidenceLinkIds": [
+        "gel_88f20a50",
+        "gel_68e5481a",
+        "gel_21a1ad79",
+        "gel_241e793b",
+        "gel_5ada735e"
+      ],
+      "probePaperIds": [],
+      "reasoningTrace": [
+        {
+          "step": "IdeaCandidate",
+          "id": "cand_e220b63f884c"
+        },
+        {
+          "step": "IdeaSearchNode",
+          "id": "in_26e50a9e9066"
+        },
+        {
+          "step": "ReasoningPathSeed",
+          "id": "rps_0cba362e4198"
+        }
+      ],
+      "evidenceSummary": "Supported by 5 papers. Linked to 17 KG entities. Derived from 10 path seeds"
+    },
+    "rankedOutput": {
+      "id": "rio_eddddc8f0130",
+      "topCandidateId": "cand_e220b63f884c",
+      "priorWorkComparisons": [
+        {
+          "candidateId": "cand_e220b63f884c",
+          "comparedPaperIds": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5"
+          ],
+          "differences": [
+            "DyHART proposes dynamic switching between dense retrieval and graph traversal based on uncertainty estimates, whereas [1] uses a static dual-graph structure (linguistic + document) without adaptive retrieval mode selection.",
+            "Unlike [2] which focuses on reducing graph noise and training instability, DyHART addresses query-level adaptation rather than graph construction or training optimization.",
+            "DyHART's real-time uncertainty estimation contrasts with [3]'s hierarchical sentence graph that pre-structures evidence without query-aware retrieval mode switching.",
+            "While [4] uses a multi-information level KG to model question semantics, DyHART adapts retrieval strategy per query rather than enriching the graph itself.",
+            "[5] employs a Neural-Socratic loop for adaptive retrieval triggered by model uncertainty, which is conceptually similar but DyHART extends this to hybrid dense-graph switching rather than just graph traversal refinement."
+          ],
+          "advantages": [
+            "Dynamic mode selection can reduce computational cost by avoiding full graph traversal on simple queries, improving efficiency over static hybrid methods.",
+            "Uncertainty-aware switching may reduce hallucination by triggering graph traversal when dense retrieval is insufficient, enhancing answer reliability.",
+            "Adaptability to query complexity offers a more scalable solution for diverse multi-hop QA datasets compared to fixed retrieval strategies.",
+            "Potential to combine strengths of dense retrieval (speed, broad coverage) and graph traversal (precision, multi-hop reasoning) in a principled way."
+          ],
+          "risks": [
+            "Uncertainty estimation may itself be noisy or unreliable, leading to suboptimal retrieval mode switches and degraded performance.",
+            "Dynamic switching introduces additional complexity and latency, which could offset efficiency gains on simple queries.",
+            "Over-reliance on graph traversal for complex queries might still suffer from graph noise issues noted in [2], unless graph quality is explicitly addressed.",
+            "Compared to [5]'s iterative refinement loop, DyHART's one-shot switching may miss opportunities for gradual evidence gathering."
+          ],
+          "overallAssessment": "DyHART presents a novel adaptive hybrid retrieval idea that addresses efficiency and accuracy trade-offs in multi-hop QA, distinguishing itself from static graph-based methods ([1], [3], [4]) and training-heavy approaches ([2]). Its closest relative is [5], but DyHART's focus on mode switching rather than iterative refinement offers a complementary perspective. The main risk is the reliability of uncertainty estimates and the potential for added overhead.",
+          "comparisonConfidence": 0.8
+        }
+      ],
+      "critique": {
+        "candidateId": "cand_e220b63f884c",
+        "strengths": [
+          "Clear motivation for dynamic adaptation based on query complexity.",
+          "Addresses a practical trade-off between retrieval speed and reasoning depth.",
+          "Novel integration of uncertainty estimation into retrieval strategy selection."
+        ],
+        "weaknesses": [
+          "The proposed approach description is truncated; key details (e.g., how uncertainty is estimated, switching threshold, traversal algorithm) are missing.",
+          "No explicit handling of graph noise or evidence coherence issues raised in [2] and [3].",
+          "Lack of evaluation plan or baselines for comparison with existing methods like [5]'s adaptive loop."
+        ],
+        "assumptions": [
+          "Assumes uncertainty estimates reliably indicate when dense retrieval is insufficient.",
+          "Assumes graph traversal is always more accurate for complex queries, which may not hold for noisy graphs.",
+          "Implicitly assumes query complexity can be accurately categorized in real-time with low overhead."
+        ],
+        "failureModes": [
+          "Uncertainty estimator may be inaccurate, causing frequent false switches and harming performance.",
+          "Graph traversal may be too slow for real-time adaptation, negating efficiency benefits.",
+          "The hybrid mechanism could underperform both pure dense and pure graph methods if switching logic is poorly calibrated.",
+          "On datasets with uniformly complex queries, dynamic switching adds complexity without benefit."
+        ],
+        "suggestedImprovements": [
+          "Provide concrete details on uncertainty estimation (e.g., using model confidence, entropy, or a learned classifier).",
+          "Incorporate graph pruning or noise reduction techniques from [2] to improve traversal reliability.",
+          "Evaluate against [5]'s adaptive loop baseline on standard multi-hop QA benchmarks (e.g., HotpotQA, 2WikiMultihop).",
+          "Consider a hybrid approach that combines both retrieval modes (e.g., dense retrieval seeds graph traversal) rather than strict switching.",
+          "Include ablation studies to analyze when switching occurs and its impact on accuracy vs. latency."
+        ],
+        "overallCritique": "DyHART is a promising idea with clear practical motivation, but its current description lacks sufficient algorithmic detail and does not address known pitfalls (graph noise, uncertainty reliability). Strengthening the uncertainty estimation mechanism and comparing with iterative methods like [5] would substantially improve the proposal. The core concept of adaptive retrieval mode selection is novel and worth pursuing.",
+        "critiqueConfidence": 0.85
+      }
+    },
+    "literatureMap": {
+      "id": "lm_2c431023198a",
+      "selectedPaperIds": [
+        "raw_05e2254586dc",
+        "raw_86c5464baa34",
+        "raw_c3cb284c64a0",
+        "raw_31b604fedb7c",
+        "raw_b74f66777a8d"
+      ],
+      "gaps": [
+        {
+          "direction": "Semantic-aware shortest-path retrieval for multi-hop KGQA that departs from one-shot, text-heavy retrieval.",
+          "evidence": "The paper explicitly claims departure from one-shot, text-heavy retrieval by introducing a hybrid path enumeration strategy with semantic weighting, which is a novel approach compared to traditional KGQA methods that rely on full-text retrieval or single-hop reasoning.",
+          "paperIds": [
+            "raw_c3cb284c64a0"
+          ],
+          "clusterIds": [],
+          "entityHints": [],
+          "confidence": 0.5
+        },
+        {
+          "direction": "Neural-Socratic Graph Dialogue loop enabling adaptive retrieval via LLM diagnostic messages.",
+          "evidence": "The iterative loop that maps LLM uncertainty to graph edits is presented as a novel mechanism. The evidence from ablations and diagnostic analyses supports its effectiveness, though the concept of dialogue-based retrieval may overlap with some interactive QA systems.",
+          "paperIds": [
+            "raw_c3cb284c64a0"
+          ],
+          "clusterIds": [],
+          "entityHints": [],
+          "confidence": 0.5
+        },
+        {
+          "direction": "Token-efficient and topology-aware retrieval with interpretable path-level traces.",
+          "evidence": "The paper claims both efficiency and interpretability, which are often trade-offs in RAG systems. The evidence of consistent improvements in end-to-end efficiency and the design for diagnostics supports this novelty claim, though interpretable path methods exist in prior work (e.g., in Graph RAG).",
+          "paperIds": [
+            "raw_c3cb284c64a0"
+          ],
+          "clusterIds": [],
+          "entityHints": [],
+          "confidence": 0.5
+        },
+        {
+          "direction": "Multi-level knowledge graph for multi-hop RAG",
+          "evidence": "The paper explicitly claims novelty by introducing Multi-L KG to model multiple information levels, which addresses a gap in existing RAG methods that treat knowledge as flat or single-level.",
+          "paperIds": [
+            "raw_05e2254586dc"
+          ],
+          "clusterIds": [],
+          "entityHints": [],
+          "confidence": 0.5
+        },
+        {
+          "direction": "Question-adaptive graph neural network with guided message passing",
+          "evidence": "The Quest-GNN's question-guided aggregation is presented as a novel mechanism to filter noise, which is a known limitation in multi-hop RAG. The evidence shows it outperforms baselines.",
+          "paperIds": [
+            "raw_05e2254586dc"
+          ],
+          "clusterIds": [],
+          "entityHints": [],
+          "confidence": 0.5
+        },
+        {
+          "direction": "Synthesized pre-training data for multi-hop RAG",
+          "evidence": "While synthesized data generation is common in RAG (e.g., for training retrievers), the paper adapts it specifically for pre-training a GNN on multi-hop questions, which may overlap with existing data augmentation techniques but is tailored to this context.",
+          "paperIds": [
+            "raw_05e2254586dc"
+          ],
+          "clusterIds": [],
+          "entityHints": [],
+          "confidence": 0.5
+        },
+        {
+          "direction": "Novel sentence-level graph-based RAG framework that explicitly models fine-grained logical relationships (nucleus/satellite) and cross-document entity bridges for multi-hop QA.",
+          "evidence": "The paper explicitly states this is a novel approach to address limitations of chunk-based retrieval. The offline construction and online path expansion are clearly described as new contributions. The evidence span 'To address these challenges, we propose SentGraph, a sentence-level graph-based RAG framework that explicitly models fine-grained logical relationships between sentences' supports the novelty claim.",
+          "paperIds": [
+            "raw_86c5464baa34"
+          ],
+          "clusterIds": [],
+          "entityHints": [],
+          "confidence": 0.5
+        },
+        {
+          "direction": "Adaptation of Rhetorical Structure Theory for sentence-level graph construction in RAG.",
+          "evidence": "RST is a known linguistic theory, but its adaptation for constructing hierarchical sentence graphs in RAG is novel. The claim overlaps with prior work on RST for text summarization but is applied in a new context (multi-hop QA retrieval).",
+          "paperIds": [
+            "raw_86c5464baa34"
+          ],
+          "clusterIds": [],
+          "entityHints": [],
+          "confidence": 0.5
+        },
+        {
+          "direction": "Demonstration that sentence-level logical dependencies are crucial for multi-hop reasoning, validated on four benchmarks.",
+          "evidence": "The empirical results on four benchmarks provide strong evidence supporting the novelty claim that modeling sentence-level dependencies improves multi-hop QA. The evidence span 'validating the importance of explicitly modeling sentence-level logical dependencies for multi-hop reasoning' directly supports this.",
+          "paperIds": [
+            "raw_86c5464baa34"
+          ],
+          "clusterIds": [],
+          "entityHints": [],
+          "confidence": 0.5
+        },
+        {
+          "direction": "Using an ontology-based cube structure with multiple orthogonal dimensions to model structural subjects, attributes, and relations for multi-hop QA.",
+          "evidence": "The abstract explicitly positions this as a novel approach to address limitations of existing graph-based RAGs (noisy, computationally expensive) and training-based methods (unstable convergence, high overhead). The cube structure is presented as a new way to capture structural semantics, with evidence of 8.9% accuracy improvement supporting its effectiveness.",
+          "paperIds": [
+            "raw_31b604fedb7c"
+          ],
+          "clusterIds": [],
+          "entityHints": [],
+          "confidence": 0.5
+        },
+        {
+          "direction": "A training-free method (MultiCube-RAG) that uses multiple specialized cubes for multi-step reasoning and retrieval, combined with subquery decomposition.",
+          "evidence": "The paper highlights that existing methods either rely on single-step retrieval or require costly training. MultiCube-RAG is explicitly described as 'training-free' and uses a novel decomposition strategy, with empirical results showing improved accuracy, efficiency, and explainability, supporting its novelty.",
+          "paperIds": [
+            "raw_31b604fedb7c"
+          ],
+          "clusterIds": [],
+          "entityHints": [],
+          "confidence": 0.5
+        },
+        {
+          "direction": "Inherent explainability in multi-hop RAG through cube-based retrieval.",
+          "evidence": "The paper claims inherent explainability as a key advantage of MultiCube-RAG, likely stemming from the interpretable cube structure and sequential subquery decomposition. This is contrasted with the black-box nature of many existing methods, and the claim is supported by empirical demonstration.",
+          "paperIds": [
+            "raw_31b604fedb7c"
+          ],
+          "clusterIds": [],
+          "entityHints": [],
+          "confidence": 0.5
+        },
+        {
+          "direction": "Dual-graph RAG system for multi-hop QA in construction safety",
+          "evidence": "The paper explicitly introduces BifrostRAG as a novel system that models both linguistic and structural relationships, which is a known gap in existing RAG systems that typically use only vector search or single-graph approaches. The empirical results showing significant outperformance over baselines support the novelty claim.",
+          "paperIds": [
+            "raw_b74f66777a8d"
+          ],
+          "clusterIds": [],
+          "entityHints": [],
+          "confidence": 0.5
+        },
+        {
+          "direction": "Hybrid retrieval mechanism combining graph traversal and vector search",
+          "evidence": "The paper claims the hybrid mechanism as a novel contribution. The evidence shows it enables LLMs to reason over both content and structure, and the performance gains support its effectiveness over simpler baselines.",
+          "paperIds": [
+            "raw_b74f66777a8d"
+          ],
+          "clusterIds": [],
+          "entityHints": [],
+          "confidence": 0.5
+        },
+        {
+          "direction": "Transferable blueprint for navigating complex technical documents",
+          "evidence": "While the paper asserts transferability to other engineering domains, no experimental evidence is provided for cross-domain generalization. This claim overlaps with general transfer learning concepts but is not empirically supported in the abstract.",
+          "paperIds": [
+            "raw_b74f66777a8d"
+          ],
+          "clusterIds": [],
+          "entityHints": [],
+          "confidence": 0.5
+        }
+      ],
+      "frontiers": [
+        {
+          "paperId": "raw_c3cb284c64a0",
+          "direction": "Frontier research from S-Path-RAG: Semantic-Aware Shortest-Path Retrieval Augmented",
+          "entityHints": [],
+          "confidence": 0.7
+        }
+      ],
+      "clusters": [
+        {
+          "clusterId": "cl_89090252",
+          "label": "Cluster: question, graph, multi",
+          "paperIds": [
+            "raw_05e2254586dc",
+            "raw_31b604fedb7c",
+            "raw_86c5464baa34",
+            "raw_b74f66777a8d",
+            "raw_c3cb284c64a0"
+          ],
+          "centroidPaperId": "raw_86c5464baa34",
+          "themeTokens": [
+            "question",
+            "graph",
+            "multi",
+            "adaptive",
+            "augmented",
+            "hop",
+            "retrieval",
+            "learning",
+            "generation",
+            "rag"
+          ]
+        }
+      ],
+      "selectionReport": {
+        "totalSelected": 5
+      }
+    },
+    "reasoningKg": {
+      "id": "rkg_b9b64a3f87f1",
+      "entityIds": [
+        "ke_b6111eb7",
+        "ke_839365cc",
+        "ke_8af474ed",
+        "ke_f936919f",
+        "ke_14442339",
+        "ke_de5c1509",
+        "ke_029ce450",
+        "ke_6be1185d",
+        "ke_702b4dc5",
+        "ke_fe97eef3",
+        "ke_a5badc4f",
+        "ke_43fc52a7",
+        "ke_92e6169f",
+        "ke_36cb01a7",
+        "ke_61e9d19c",
+        "ke_bca40856",
+        "ke_8977c1d5",
+        "ke_f68675da",
+        "ke_baa50c69",
+        "ke_310e88e7",
+        "ke_ee5becd1",
+        "ke_037d8199",
+        "ke_04915e2d",
+        "ke_e8b26eaf"
+      ],
+      "relationIds": [
+        "kr_448e667c",
+        "kr_9aa968ed",
+        "kr_17871ee4",
+        "kr_d109b0fc",
+        "kr_a26b47d1",
+        "kr_67c02a30",
+        "kr_1eb4aa43",
+        "kr_a23329f7",
+        "kr_7b92a3a3",
+        "kr_05a34804",
+        "kr_0b64cfc1",
+        "kr_33070ca5",
+        "kr_57fead73",
+        "kr_fadf09b2",
+        "kr_68bbbf2b",
+        "kr_741859bf",
+        "kr_792a29c1",
+        "kr_a0ff9333",
+        "kr_28dc0eab",
+        "kr_a32fdab0",
+        "kr_3a2a5a27",
+        "kr_aa255ed5",
+        "kr_5f8ef0e8",
+        "kr_6d5d70f7",
+        "kr_d0c18543",
+        "kr_b3bfc875",
+        "kr_958bc872",
+        "kr_0db1489a",
+        "kr_9d2de8fc",
+        "kr_ea3fa1b7",
+        "kr_ec988d10",
+        "kr_e76d0387",
+        "kr_d6d80cf0",
+        "kr_293fe44c",
+        "kr_888f20fa",
+        "kr_604f5ab1",
+        "kr_8ca092b9",
+        "kr_b44984ac",
+        "kr_e605c0d9",
+        "kr_3ab8672a",
+        "kr_f6ec81c7",
+        "kr_eb6d82f2",
+        "kr_030f78ca",
+        "kr_892beccf",
+        "kr_40651c35",
+        "kr_0b014252"
+      ]
+    },
+    "reasoningPathSeeds": [
+      {
+        "seedId": "rps_0cba362e4198",
+        "sourcePaperIds": [
+          "raw_b74f66777a8d"
+        ],
+        "sourceClaimIds": [
+          "mm_8a83add0",
+          "mm_800e0b7f"
+        ],
+        "linkedGapIds": [
+          "Semantic-aware shortest-path retrieval for multi-hop KGQA that departs from one-shot, text-heavy retrieval.",
+          "Neural-Socratic Graph Dialogue loop enabling adaptive retrieval via LLM diagnostic messages.",
+          "Token-efficient and topology-aware retrieval with interpretable path-level traces.",
+          "Multi-level knowledge graph for multi-hop RAG",
+          "Question-adaptive graph neural network with guided message passing"
+        ],
+        "rationale": "Path from hybrid retrieval mechanism via 1 relations"
+      },
+      {
+        "seedId": "rps_0dedc5a2fa31",
+        "sourcePaperIds": [
+          "raw_b74f66777a8d"
+        ],
+        "sourceClaimIds": [
+          "mm_800e0b7f",
+          "mm_a253df33"
+        ],
+        "linkedGapIds": [
+          "Semantic-aware shortest-path retrieval for multi-hop KGQA that departs from one-shot, text-heavy retrieval.",
+          "Neural-Socratic Graph Dialogue loop enabling adaptive retrieval via LLM diagnostic messages.",
+          "Token-efficient and topology-aware retrieval with interpretable path-level traces.",
+          "Multi-level knowledge graph for multi-hop RAG",
+          "Question-adaptive graph neural network with guided message passing"
+        ],
+        "rationale": "Path from graph traversal via 1 relations"
+      },
+      {
+        "seedId": "rps_49972c57dd0c",
+        "sourcePaperIds": [
+          "raw_b74f66777a8d"
+        ],
+        "sourceClaimIds": [
+          "mm_8a83add0",
+          "mm_a253df33"
+        ],
+        "linkedGapIds": [
+          "Semantic-aware shortest-path retrieval for multi-hop KGQA that departs from one-shot, text-heavy retrieval.",
+          "Neural-Socratic Graph Dialogue loop enabling adaptive retrieval via LLM diagnostic messages.",
+          "Token-efficient and topology-aware retrieval with interpretable path-level traces.",
+          "Multi-level knowledge graph for multi-hop RAG",
+          "Question-adaptive graph neural network with guided message passing"
+        ],
+        "rationale": "Path from hybrid retrieval mechanism via 1 relations"
+      },
+      {
+        "seedId": "rps_7a560be240d0",
+        "sourcePaperIds": [
+          "raw_b74f66777a8d"
+        ],
+        "sourceClaimIds": [
+          "mm_a253df33",
+          "mm_800e0b7f"
+        ],
+        "linkedGapIds": [
+          "Semantic-aware shortest-path retrieval for multi-hop KGQA that departs from one-shot, text-heavy retrieval.",
+          "Neural-Socratic Graph Dialogue loop enabling adaptive retrieval via LLM diagnostic messages.",
+          "Token-efficient and topology-aware retrieval with interpretable path-level traces.",
+          "Multi-level knowledge graph for multi-hop RAG",
+          "Question-adaptive graph neural network with guided message passing"
+        ],
+        "rationale": "Path from multi-hop qa dataset (construction safety) via 1 relations"
+      },
+      {
+        "seedId": "rps_99f7c9f16b60",
+        "sourcePaperIds": [
+          "raw_b74f66777a8d"
+        ],
+        "sourceClaimIds": [
+          "mm_800e0b7f",
+          "mm_8a83add0"
+        ],
+        "linkedGapIds": [
+          "Semantic-aware shortest-path retrieval for multi-hop KGQA that departs from one-shot, text-heavy retrieval.",
+          "Neural-Socratic Graph Dialogue loop enabling adaptive retrieval via LLM diagnostic messages.",
+          "Token-efficient and topology-aware retrieval with interpretable path-level traces.",
+          "Multi-level knowledge graph for multi-hop RAG",
+          "Question-adaptive graph neural network with guided message passing"
+        ],
+        "rationale": "Path from graph traversal via 1 relations"
+      },
+      {
+        "seedId": "rps_a47936185851",
+        "sourcePaperIds": [
+          "raw_b74f66777a8d"
+        ],
+        "sourceClaimIds": [
+          "mm_a253df33",
+          "mm_8a83add0"
+        ],
+        "linkedGapIds": [
+          "Semantic-aware shortest-path retrieval for multi-hop KGQA that departs from one-shot, text-heavy retrieval.",
+          "Neural-Socratic Graph Dialogue loop enabling adaptive retrieval via LLM diagnostic messages.",
+          "Token-efficient and topology-aware retrieval with interpretable path-level traces.",
+          "Multi-level knowledge graph for multi-hop RAG",
+          "Question-adaptive graph neural network with guided message passing"
+        ],
+        "rationale": "Path from multi-hop qa dataset (construction safety) via 1 relations"
+      },
+      {
+        "seedId": "rps_3a5ea831f6b5",
+        "sourcePaperIds": [
+          "raw_b74f66777a8d"
+        ],
+        "sourceClaimIds": [
+          "mm_2a2c1c53",
+          "mm_8a83add0"
+        ],
+        "linkedGapIds": [
+          "Semantic-aware shortest-path retrieval for multi-hop KGQA that departs from one-shot, text-heavy retrieval.",
+          "Neural-Socratic Graph Dialogue loop enabling adaptive retrieval via LLM diagnostic messages.",
+          "Token-efficient and topology-aware retrieval with interpretable path-level traces.",
+          "Multi-level knowledge graph for multi-hop RAG",
+          "Question-adaptive graph neural network with guided message passing"
+        ],
+        "rationale": "Path from bifrostrag via 1 relations"
+      },
+      {
+        "seedId": "rps_4c2e505566e2",
+        "sourcePaperIds": [
+          "raw_b74f66777a8d"
+        ],
+        "sourceClaimIds": [
+          "mm_2a2c1c53",
+          "mm_a253df33"
+        ],
+        "linkedGapIds": [
+          "Semantic-aware shortest-path retrieval for multi-hop KGQA that departs from one-shot, text-heavy retrieval.",
+          "Neural-Socratic Graph Dialogue loop enabling adaptive retrieval via LLM diagnostic messages.",
+          "Token-efficient and topology-aware retrieval with interpretable path-level traces.",
+          "Multi-level knowledge graph for multi-hop RAG",
+          "Question-adaptive graph neural network with guided message passing"
+        ],
+        "rationale": "Path from bifrostrag via 1 relations"
+      },
+      {
+        "seedId": "rps_6151194dfdcc",
+        "sourcePaperIds": [
+          "raw_b74f66777a8d"
+        ],
+        "sourceClaimIds": [
+          "mm_2a2c1c53",
+          "mm_800e0b7f"
+        ],
+        "linkedGapIds": [
+          "Semantic-aware shortest-path retrieval for multi-hop KGQA that departs from one-shot, text-heavy retrieval.",
+          "Neural-Socratic Graph Dialogue loop enabling adaptive retrieval via LLM diagnostic messages.",
+          "Token-efficient and topology-aware retrieval with interpretable path-level traces.",
+          "Multi-level knowledge graph for multi-hop RAG",
+          "Question-adaptive graph neural network with guided message passing"
+        ],
+        "rationale": "Path from bifrostrag via 1 relations"
+      },
+      {
+        "seedId": "rps_ea30f9b4434c",
+        "sourcePaperIds": [
+          "raw_b74f66777a8d"
+        ],
+        "sourceClaimIds": [
+          "mm_8a83add0",
+          "mm_2a2c1c53"
+        ],
+        "linkedGapIds": [
+          "Semantic-aware shortest-path retrieval for multi-hop KGQA that departs from one-shot, text-heavy retrieval.",
+          "Neural-Socratic Graph Dialogue loop enabling adaptive retrieval via LLM diagnostic messages.",
+          "Token-efficient and topology-aware retrieval with interpretable path-level traces.",
+          "Multi-level knowledge graph for multi-hop RAG",
+          "Question-adaptive graph neural network with guided message passing"
+        ],
+        "rationale": "Path from hybrid retrieval mechanism via 1 relations"
+      }
+    ],
+    "structuredPaperIds": [
+      "raw_b74f66777a8d",
+      "raw_31b604fedb7c",
+      "raw_86c5464baa34",
+      "raw_05e2254586dc",
+      "raw_c3cb284c64a0"
+    ],
+    "probeResultIds": [],
+    "graphPatchIds": []
+  }
+}

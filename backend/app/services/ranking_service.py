@@ -482,13 +482,22 @@ class RankingService:
             def _cs(name: str) -> CriterionScore:
                 return result.criteria.get(name, CriterionScore(5.0, "", 0.5))
             
-            # Create updated candidate with all 8 criteria scores
+            # Create updated candidate with all 8 criteria scores + preserve v5 fields
             new_candidate = IdeaCandidate(
                 id=candidate.id,
                 sessionId=candidate.sessionId,
                 title=candidate.title,
+                # PDF v5 traceability (preserved from BFTS)
+                searchNodeId=getattr(candidate, 'searchNodeId', None),
+                pathSeedId=getattr(candidate, 'pathSeedId', None),
+                reasoningPathId=getattr(candidate, 'reasoningPathId', None),
+                # Core content
                 problem=candidate.problem,
+                hypothesisStatement=getattr(candidate, 'hypothesisStatement', '') or '',
                 keyInsight=candidate.keyInsight,
+                proposedMethod=getattr(candidate, 'proposedMethod', ''),
+                expectedOutcome=getattr(candidate, 'expectedOutcome', ''),
+                # Scoring (updated)
                 novelty=_cs("novelty").value,
                 noveltyRationale=_cs("novelty").rationale,
                 feasibility=_cs("feasibility").value,
@@ -508,11 +517,17 @@ class RankingService:
                 overallRationale=result.overallRationale,
                 scoringConfidence=result.confidence,
                 scoringMethod="llm" if result.confidence > 0.65 else "heuristic",
+                # Details
                 risks=candidate.risks,
                 requiredExperiments=candidate.requiredExperiments,
+                experimentSpecs=getattr(candidate, 'experimentSpecs', []) or [],
                 expectedMetrics=candidate.expectedMetrics,
                 draftPlan=candidate.draftPlan,
                 references=candidate.references,
+                # PDF v5: preserve embedded evidence/critique
+                graphEvidence=getattr(candidate, 'graphEvidence', None),
+                closestPriorWork=getattr(candidate, 'closestPriorWork', []) or [],
+                critique=getattr(candidate, 'critique', None),
                 createdAt=candidate.createdAt,
             )
             

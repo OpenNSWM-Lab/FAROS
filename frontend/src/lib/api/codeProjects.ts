@@ -179,3 +179,175 @@ export async function generateSampleProject(title: string, language: string = 'p
     body: JSON.stringify({ title, language, description }),
   });
 }
+
+// ---- Run / Job types and API ----
+
+export interface RunProjectRequest {
+  command?: string;
+  mode?: string;
+  envVars?: Record<string, string>;
+  timeoutSec?: number;
+}
+
+export interface RunProjectResponse {
+  jobId: string;
+  projectId: string;
+  status: string;
+  command: string;
+  workspacePath: string;
+  createdAt: string;
+}
+
+export interface JobInfo {
+  id: string;
+  sessionId?: string;
+  projectId?: string;
+  candidateId?: string;
+  status: 'pending' | 'running' | 'succeeded' | 'failed' | 'cancelled';
+  mode: string;
+  command: string;
+  envVars?: Record<string, string>;
+  cwdRel?: string;
+  timeoutSec: number;
+  workspacePath?: string;
+  pid?: number;
+  exitCode?: number;
+  stdoutPath?: string;
+  stderrPath?: string;
+  createdAt: string;
+  startedAt?: string;
+  endedAt?: string;
+  durationSec?: number;
+}
+
+export interface JobLogResponse {
+  jobId: string;
+  logType: string;
+  lines: string[];
+  totalLines: number;
+}
+
+export interface ProjectJobsResponse {
+  projectId: string;
+  jobs: JobInfo[];
+  total: number;
+}
+
+export async function runProject(projectId: string, request: RunProjectRequest = {}): Promise<RunProjectResponse> {
+  return fetchJSON(`${API_BASE}/api/v1/code/projects/${projectId}/run`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+}
+
+// ---- Pipeline Run (step-by-step) ----
+
+export interface PipelineStepResult {
+  name: string;
+  purpose: string;
+  status: 'pending' | 'running' | 'succeeded' | 'failed' | 'skipped';
+  durationMs: number;
+  stdout: string;
+  stderr: string;
+  exitCode?: number;
+  error?: string;
+}
+
+export interface PipelineRunResponse {
+  jobId: string;
+  projectId: string;
+  status: string;  // running | succeeded | failed | partial
+  steps: PipelineStepResult[];
+  totalDurationMs: number;
+  summary: string;
+}
+
+export async function runProjectPipeline(projectId: string): Promise<PipelineRunResponse> {
+  return fetchJSON(`${API_BASE}/api/v1/code/projects/${projectId}/pipeline-run`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
+export async function getPipelineResults(projectId: string, jobId?: string): Promise<PipelineRunResponse> {
+  const qs = jobId ? `?jobId=${jobId}` : '';
+  return fetchJSON(`${API_BASE}/api/v1/code/projects/${projectId}/pipeline-results${qs}`);
+}
+
+export async function getProjectJobs(projectId: string): Promise<ProjectJobsResponse> {
+  return fetchJSON(`${API_BASE}/api/v1/code/projects/${projectId}/jobs`);
+}
+
+export async function getJob(jobId: string): Promise<JobInfo> {
+  return fetchJSON(`${API_BASE}/api/v1/code/jobs/${jobId}`);
+}
+
+export async function getJobLogs(jobId: string, logType: 'stdout' | 'stderr' = 'stdout', lines: number = 100): Promise<JobLogResponse> {
+  return fetchJSON(`${API_BASE}/api/v1/code/jobs/${jobId}/logs?logType=${logType}&lines=${lines}`);
+}
+
+export async function deleteJob(jobId: string): Promise<void> {
+  await fetch(`${API_BASE}/api/v1/code/jobs/${jobId}`, { method: 'DELETE' });
+}
+
+export interface FixApplied {
+  stepName: string;
+  filePath: string;
+  description: string;
+  applied: boolean;
+  method: 'deterministic' | 'llm' | 'none';
+  diffLines: string[];
+  originalContent: string;
+  newContent: string;
+}
+
+export interface AutoFixResponse {
+  jobId: string;
+  projectId: string;
+  status: string;
+  iterations: number;
+  fixesApplied: FixApplied[];
+  summary: string;
+  pipeline?: PipelineRunResponse;
+}
+
+export async function autoFixProject(projectId: string): Promise<AutoFixResponse> {
+  return fetchJSON(`${API_BASE}/api/v1/code/projects/${projectId}/auto-fix`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
+// ---- Blueprint ----
+
+export interface BlueprintNode {
+  id: string; label: string; stage: string; status: string;
+  description: string; method: string;
+  inputs: string[]; outputs: string[];
+  result: Record<string, unknown> | null;
+  startedAt: string | null; finishedAt: string | null; duration: number | null;
+}
+
+export interface BlueprintEdge { id: string; source: string; target: string }
+
+export interface BlueprintResponse {
+  projectId: string; projectTitle: string; source: string;
+  id: string; title: string; description: string;
+  nodes: BlueprintNode[]; edges: BlueprintEdge[];
+}
+
+export interface BlueprintSummary {
+  id: string; title: string; source: string;
+  nodeCount: number; createdAt?: string;
+}
+
+/** Get the experiment blueprint DAG for a project. */
+export async function getProjectBlueprint(projectId: string): Promise<BlueprintResponse> {
+  return fetchJSON(`${API_BASE}/api/v1/code/blueprints/${projectId}`);
+}
+
+/** List all blueprint sessions for a project. */
+export async function listProjectBlueprints(projectId: string): Promise<BlueprintSummary[]> {
+  return fetchJSON(`${API_BASE}/api/v1/code/blueprints/${projectId}/list`);
+}

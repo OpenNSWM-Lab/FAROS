@@ -6,9 +6,8 @@ import { PublicLayout } from '@/components/layout/PublicLayout'
 import { Homepage } from '@/pages/Homepage'
 
 // Lazy load route components for code splitting
-const ResearchPlanning = lazy(() => import('@/pages/Research/Planning').then(m => ({ default: m.ResearchPlanning })))
+const ResearchPipeline = lazy(() => import('@/pages/Research/Pipeline').then(m => ({ default: m.ResearchPipeline })))
 const ResearchWorkflows = lazy(() => import('@/pages/Research/Workflows').then(m => ({ default: m.ResearchWorkflows })))
-const ResearchIdeas = lazy(() => import('@/pages/Research/Ideas').then(m => ({ default: m.ResearchIdeas })))
 const RunsList = lazy(() => import('@/pages/Runs/RunsList').then(m => ({ default: m.RunsList })))
 const RunDetail = lazy(() => import('@/pages/Runs/RunDetail').then(m => ({ default: m.RunDetail })))
 const ExperimentsDashboard = lazy(() => import('@/pages/Experiments/ExperimentsDashboard').then(m => ({ default: m.ExperimentsDashboard })))
@@ -26,6 +25,8 @@ const CodeDashboard = lazy(() => import('@/pages/Code/CodeDashboard').then(m => 
 const CodeSessionPage = lazy(() => import('@/pages/Code/CodeSession').then(m => ({ default: m.CodeSessionPage })))
 const NewCodeSession = lazy(() => import('@/pages/Code/NewCodeSession').then(m => ({ default: m.NewCodeSession })))
 const CodeSessionDebug = lazy(() => import('@/pages/Code/CodeSessionDebug').then(m => ({ default: m.CodeSessionDebug })))
+const CodeBlueprint = lazy(() => import('@/pages/Code/CodeBlueprint').then(m => ({ default: m.CodeBlueprint })))
+const CodeStepDetail = lazy(() => import('@/pages/Code/CodeStepDetail').then(m => ({ default: m.CodeStepDetail })))
 const CodeProjects = lazy(() => import('@/pages/Code/CodeProjects').then(m => ({ default: m.CodeProjects })))
 const CodeProjectBrowser = lazy(() => import('@/pages/Code/CodeProjectBrowser').then(m => ({ default: m.CodeProjectBrowser })))
 const CodeProjectWorkspace = lazy(() => import('@/pages/Code/CodeProjectWorkspace').then(m => ({ default: m.CodeProjectWorkspace })))
@@ -57,9 +58,10 @@ function App() {
             <Route element={<AppShell />}>
 
               {/* Research */}
-              <Route path="/research/planning" element={<ResearchPlanning />} />
+              <Route path="/research/pipeline" element={<ResearchPipeline />} />
+              <Route path="/research/planning" element={<Navigate to="/research/pipeline" replace />} />
               <Route path="/research/workflows" element={<ResearchWorkflows />} />
-              <Route path="/research/ideas" element={<ResearchIdeas />} />
+              <Route path="/research/ideas" element={<Navigate to="/research/pipeline" replace />} />
 
               {/* Runs */}
               <Route path="/runs" element={<RunsList />} />
@@ -89,8 +91,11 @@ function App() {
               <Route path="/system/logs" element={<SystemLogs />} />
               <Route path="/system/metrics" element={<SystemMetrics />} />
 
-              {/* Code Generation */}
-              <Route path="/code" element={<CodeProjectWorkspace />} />
+              {/* Code Generation & Projects */}
+              <Route path="/code" element={<Navigate to="/code/projects" replace />} />
+              <Route path="/code/workspace" element={<CodeProjectWorkspace />} />
+              <Route path="/code/blueprint" element={<CodeBlueprint />} />
+              <Route path="/code/blueprint/step/:stepId" element={<CodeStepDetail />} />
               <Route path="/code/projects" element={<CodeProjects />} />
               <Route path="/code/projects/:projectId" element={<CodeProjectBrowser />} />
               <Route path="/code/sessions" element={<CodeDashboard />} />
