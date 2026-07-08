@@ -135,6 +135,8 @@ export interface ReviewFindingDTO {
   evidenceIds?: string[]
   targetModule?: string
   confidence?: number
+  supportStatus?: string
+  verifierIds?: string[]
   location?: {
     section: string
     line?: number

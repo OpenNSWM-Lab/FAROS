@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import re
 from collections import Counter
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
-from app.modules.review.reviewx_models import Claim, Evidence, Finding, RiskNode
+from app.modules.review.reviewx_models import Claim, Evidence, EvidenceVerification, Finding, RiskNode
 
 
 _NUMERIC_RE = re.compile(r"\b\d+(\.\d+)?\s*(%|percent|x|times|k|ms|s|tokens?|accuracy|f1|auc)\b", re.IGNORECASE)
@@ -56,8 +56,12 @@ def analyze_reviewx_risks(
     claims: List[Claim],
     evidence: List[Evidence],
     links: Dict[str, List[str]],
+    verifications: List[EvidenceVerification] | None = None,
 ) -> tuple[List[Finding], List[RiskNode]]:
     evidence_by_id = {ev.id: ev for ev in evidence}
+    verifications_by_claim: Dict[str, List[EvidenceVerification]] = {}
+    for verification in verifications or []:
+        verifications_by_claim.setdefault(verification.claimId, []).append(verification)
     brief = paper.get("briefJson") or {}
     avoid_claims = brief.get("avoid_claims", []) if isinstance(brief, dict) else []
     findings: List[Finding] = []
@@ -86,6 +90,22 @@ def analyze_reviewx_risks(
         if _OVERCLAIM_RE.search(claim.text):
             score += 0.12
             reasons.append("The wording is strong and should be backed by explicit evidence or softened.")
+
+        claim_verifications = verifications_by_claim.get(claim.id, [])
+        support_status = _claim_support_status(claim_verifications)
+        verifier_ids = [verification.id for verification in claim_verifications]
+        for verification in claim_verifications:
+            if verification.supportStatus == "contradicted":
+                score += 0.30
+                reasons.append(f"Verifier contradiction ({verification.verifierType}): {verification.verdict}")
+            elif verification.supportStatus == "unsupported":
+                score += 0.20
+                reasons.append(f"Verifier unsupported ({verification.verifierType}): {verification.verdict}")
+            elif verification.supportStatus == "weakly_supported":
+                score += 0.08
+                reasons.append(f"Verifier weak support ({verification.verifierType}): {verification.verdict}")
+            elif verification.supportStatus == "supported":
+                score -= 0.08
 
         avoid_hits = _avoid_claim_hits(claim, avoid_claims)
         if avoid_hits:
@@ -119,19 +139,191 @@ def analyze_reviewx_risks(
                 suggestedFix=_suggest_fix(claim, reasons, target),
                 confidence=round(score, 2),
                 location=location,
+                supportStatus=support_status,
+                verifierIds=verifier_ids,
             ))
 
+            finding = findings[-1]
             risk_nodes.append(RiskNode(
-                id=f"risk_{len(risk_nodes) + 1:03d}",
+                id=f"risk_leaf_{len(risk_nodes) + 1:03d}",
                 question=_risk_question(claim),
                 claimIds=[claim.id],
                 riskScore=round(score, 2),
                 status="needs_deep_review" if score >= 0.62 else "needs_traceability",
                 assignedModel="qwen-max" if score >= 0.8 else "qwen-plus" if score >= 0.5 else "rules",
+                level=2,
+                category=_finding_category(finding),
+                findingIds=[finding.id],
+                evidenceIds=claim_links,
+                supportCounts=_support_counts(claim_verifications),
             ))
 
-    findings.extend(_global_findings(paper, claims, evidence, findings))
-    return findings[:60], risk_nodes[:60]
+    global_findings = _global_findings(paper, claims, evidence, findings)
+    findings.extend(global_findings)
+    risk_nodes.extend(_global_risk_nodes(global_findings, len(risk_nodes)))
+    risk_tree = _build_question_tree(claims, evidence, findings, risk_nodes)
+    return findings[:60], risk_tree[:80]
+
+
+def _claim_support_status(verifications: List[EvidenceVerification]) -> str | None:
+    if not verifications:
+        return None
+    priority = {
+        "contradicted": 0,
+        "unsupported": 1,
+        "weakly_supported": 2,
+        "supported": 3,
+        "not_applicable": 4,
+    }
+    return min(verifications, key=lambda v: priority.get(v.supportStatus, 9)).supportStatus
+
+
+def _support_counts(verifications: List[EvidenceVerification]) -> Dict[str, int]:
+    counts: Counter[str] = Counter()
+    for verification in verifications:
+        counts[verification.supportStatus] += 1
+    return dict(counts)
+
+
+def _finding_category(finding: Finding) -> str:
+    if finding.riskType in {"missing_metrics"}:
+        return "experimental_validity"
+    if finding.riskType in {"missing_citations"}:
+        return "writing_citations"
+    if finding.riskType in {"missing_code_artifact"} or finding.targetModule == "code":
+        return "method_reproducibility"
+    if finding.targetModule == "experiments":
+        return "experimental_validity"
+    if finding.riskType in {"unsupported_claim", "traceability_gap"}:
+        return "evidence_support"
+    return "workflow_feedback"
+
+
+def _status_from_score(score: float) -> str:
+    if score >= 0.88:
+        return "blocking"
+    if score >= 0.62:
+        return "needs_deep_review"
+    if score >= 0.35:
+        return "needs_traceability"
+    return "passed"
+
+
+def _assigned_model_from_score(score: float) -> str:
+    if score >= 0.8:
+        return "qwen-max"
+    if score >= 0.5:
+        return "qwen-plus"
+    return "rules"
+
+
+def _merge_support_counts(nodes: List[RiskNode]) -> Dict[str, int]:
+    counts: Counter[str] = Counter()
+    for node in nodes:
+        counts.update(node.supportCounts)
+    return dict(counts)
+
+
+def _max_score(nodes: List[RiskNode], default: float = 0.0) -> float:
+    return max((node.riskScore for node in nodes), default=default)
+
+
+def _unique(values: List[Optional[str]]) -> List[str]:
+    seen = set()
+    results = []
+    for value in values:
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        results.append(value)
+    return results
+
+
+def _global_risk_nodes(findings: List[Finding], offset: int) -> List[RiskNode]:
+    nodes: List[RiskNode] = []
+    for index, finding in enumerate(findings, start=offset + 1):
+        nodes.append(RiskNode(
+            id=f"risk_leaf_{index:03d}",
+            question=_global_risk_question(finding),
+            claimIds=[],
+            riskScore=round(finding.confidence, 2),
+            status=_status_from_score(finding.confidence),
+            assignedModel=_assigned_model_from_score(finding.confidence),
+            level=2,
+            category=_finding_category(finding),
+            findingIds=[finding.id],
+            evidenceIds=finding.evidenceIds,
+            supportCounts={finding.supportStatus: 1} if finding.supportStatus else {},
+        ))
+    return nodes
+
+
+def _global_risk_question(finding: Finding) -> str:
+    if finding.riskType == "missing_metrics":
+        return "Are experiment metrics available before performance claims are accepted?"
+    if finding.riskType == "missing_citations":
+        return "Does the paper cite related work near its major research claims?"
+    if finding.riskType == "missing_code_artifact":
+        return "Can the method be reproduced from exported code artifacts?"
+    return "Can this global review finding be converted into a concrete FAROS revision task?"
+
+
+def _build_question_tree(
+    claims: List[Claim],
+    evidence: List[Evidence],
+    findings: List[Finding],
+    leaves: List[RiskNode],
+) -> List[RiskNode]:
+    category_questions = {
+        "evidence_support": "Q1: Are the main paper claims grounded in explicit FAROS artifacts?",
+        "experimental_validity": "Q2: Do experiments and metrics justify the reported performance claims?",
+        "method_reproducibility": "Q3: Is the proposed method backed by implementation and reproducibility artifacts?",
+        "writing_citations": "Q4: Are citations, related work, and paper text aligned with the claims?",
+        "workflow_feedback": "Q5: Can review findings become actionable FAROS revision tasks?",
+    }
+    ordered_categories = list(category_questions.keys())
+    leaves_by_category: Dict[str, List[RiskNode]] = {category: [] for category in ordered_categories}
+    for leaf in leaves:
+        leaves_by_category.setdefault(leaf.category, []).append(leaf)
+
+    category_nodes: List[RiskNode] = []
+    for index, category in enumerate(ordered_categories, start=1):
+        category_leaves = leaves_by_category.get(category, [])
+        score = round(_max_score(category_leaves), 2)
+        category_nodes.append(RiskNode(
+            id=f"risk_q{index}",
+            question=category_questions[category],
+            claimIds=_unique([claim_id for node in category_leaves for claim_id in node.claimIds]),
+            riskScore=score,
+            status=_status_from_score(score),
+            assignedModel=_assigned_model_from_score(score),
+            children=[node.id for node in category_leaves],
+            parentId="risk_root",
+            level=1,
+            category=category,
+            findingIds=_unique([finding_id for node in category_leaves for finding_id in node.findingIds]),
+            evidenceIds=_unique([evidence_id for node in category_leaves for evidence_id in node.evidenceIds]),
+            supportCounts=_merge_support_counts(category_leaves),
+        ))
+        for leaf in category_leaves:
+            leaf.parentId = f"risk_q{index}"
+
+    root_score = round(_max_score(category_nodes), 2)
+    root = RiskNode(
+        id="risk_root",
+        question="Q0: Is this paper trustworthy enough to feed back into the FAROS research loop?",
+        claimIds=[claim.id for claim in claims],
+        riskScore=root_score,
+        status=_status_from_score(root_score),
+        assignedModel=_assigned_model_from_score(root_score),
+        children=[node.id for node in category_nodes],
+        level=0,
+        category="root",
+        findingIds=[finding.id for finding in findings],
+        evidenceIds=[ev.id for ev in evidence],
+        supportCounts=_merge_support_counts(category_nodes),
+    )
+    return [root, *category_nodes, *leaves]
 
 
 def _suggest_fix(claim: Claim, reasons: List[str], target: str) -> str:

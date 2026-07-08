@@ -221,6 +221,8 @@ export function mapReviewFindingDTOToFinding(dto: ReviewFindingDTO): ReviewFindi
     evidenceIds: dto.evidenceIds,
     targetModule: dto.targetModule,
     confidence: dto.confidence,
+    supportStatus: dto.supportStatus,
+    verifierIds: dto.verifierIds,
     location: dto.location,
     suggestedFix: dto.suggestedFix,
   }

@@ -17,7 +17,9 @@ from app.llm.provider_client import get_provider_client, ChatMessage
 from app.modules.review.artifact_collector import collect_reviewx_artifacts
 from app.modules.review.claim_extractor import extract_claims
 from app.modules.review.evidence_graph import build_evidence, link_claims_to_evidence
+from app.modules.review.evidence_verifier import verify_claim_evidence
 from app.modules.review.model_router import refine_findings_with_budget
+from app.modules.review.mismatch_scorer import build_mismatch_report
 from app.modules.review.risk_analyzer import analyze_reviewx_risks
 from app.modules.review.revision_planner import findings_to_action_items
 from app.modules.review.reviewx_models import ReviewXReport
@@ -241,7 +243,8 @@ def generate_reviewx(review_id: str) -> Dict[str, Any]:
         claims = extract_claims(artifacts)
         evidence = build_evidence(artifacts)
         links = link_claims_to_evidence(claims, evidence)
-        findings, risk_tree = analyze_reviewx_risks(paper, claims, evidence, links)
+        verifications = verify_claim_evidence(paper, claims, evidence, links)
+        findings, risk_tree = analyze_reviewx_risks(paper, claims, evidence, links, verifications)
         settings = get_settings()
         provider_name = review.get("providerName") or settings.get_active_provider()
         model = review.get("model") or settings.get_active_model(provider_name)
@@ -256,21 +259,30 @@ def generate_reviewx(review_id: str) -> Dict[str, Any]:
             budget_mode=budget_mode,
         )
         action_items = findings_to_action_items(findings)
+        mismatch_report = build_mismatch_report(claims, evidence, links, verifications, findings)
+        evidence_graph = mismatch_report.get("graph", {})
 
         severity_counts: Dict[str, int] = {"blocker": 0, "major": 0, "minor": 0, "info": 0}
         for finding in findings:
             severity_counts[finding.severity] = severity_counts.get(finding.severity, 0) + 1
 
         valid_evidence_links = sum(1 for ids in links.values() if ids)
+        support_counts: Dict[str, int] = {}
+        for verification in verifications:
+            support_counts[verification.supportStatus] = support_counts.get(verification.supportStatus, 0) + 1
         summary = {
             "mode": "reviewx_local_mvp",
             "paperTitle": paper.get("title", "Untitled"),
             "claimCount": len(claims),
             "evidenceCount": len(evidence),
+            "verificationCount": len(verifications),
             "findingCount": len(findings),
+            "riskQuestionCount": len(risk_tree),
             "evidenceLinkedClaimCount": valid_evidence_links,
             "severityCounts": severity_counts,
+            "supportCounts": support_counts,
             "coverage": round(valid_evidence_links / len(claims), 3) if claims else 0,
+            "mismatch": mismatch_report.get("aggregate", {}),
         }
         model_trace = {
             "routingMode": budget_mode,
@@ -278,7 +290,9 @@ def generate_reviewx(review_id: str) -> Dict[str, Any]:
                 "artifact_collection",
                 "claim_extraction",
                 "evidence_linking",
+                "evidence_verification",
                 "risk_analysis",
+                "risk_question_tree",
                 "revision_planning",
             ],
             "llmRouting": routing_trace,
@@ -292,11 +306,14 @@ def generate_reviewx(review_id: str) -> Dict[str, Any]:
             paperId=paper_id,
             claims=claims,
             evidence=evidence,
+            verifications=verifications,
             findings=findings,
             riskTree=risk_tree,
             actionItems=action_items,
             summary=summary,
             modelTrace=model_trace,
+            mismatchReport=mismatch_report,
+            evidenceGraph=evidence_graph,
         ).to_dict()
 
         markdown_report = _build_reviewx_markdown(paper, report)
@@ -310,9 +327,12 @@ def generate_reviewx(review_id: str) -> Dict[str, Any]:
             "actionItems": action_items,
             "claims": report["claims"],
             "evidence": report["evidence"],
+            "verifications": report["verifications"],
             "findings": report["findings"],
             "riskTree": report["riskTree"],
             "modelTrace": model_trace,
+            "mismatchReport": report["mismatchReport"],
+            "evidenceGraph": report["evidenceGraph"],
         })
     except Exception as e:
         logger.error(f"ReviewX generation failed: {e}", exc_info=True)
@@ -335,18 +355,34 @@ def _build_reviewx_markdown(paper: Dict[str, Any], report: Dict[str, Any]) -> st
     findings = report.get("findings", [])
     claims = report.get("claims", [])
     evidence = report.get("evidence", [])
+    risk_tree = report.get("riskTree", [])
     md = [
         f"# ReviewX Evidence Audit: {paper.get('title', 'Untitled')}",
         "",
         "## Summary",
         f"- Claims extracted: {summary.get('claimCount', 0)}",
         f"- Evidence artifacts: {summary.get('evidenceCount', 0)}",
+        f"- Evidence verifications: {summary.get('verificationCount', 0)}",
+        f"- Risk questions: {summary.get('riskQuestionCount', 0)}",
         f"- Findings: {summary.get('findingCount', 0)}",
         f"- Claim evidence coverage: {summary.get('coverage', 0)}",
         f"- Severity counts: {json.dumps(summary.get('severityCounts', {}), ensure_ascii=False)}",
+        f"- Support counts: {json.dumps(summary.get('supportCounts', {}), ensure_ascii=False)}",
+        f"- Mismatch: {json.dumps(summary.get('mismatch', {}), ensure_ascii=False)}",
+        "",
+        "## Risk Question Tree",
+        "",
+    ]
+    for node in risk_tree[:20]:
+        indent = "  " * int(node.get("level", 0))
+        md.append(
+            f"{indent}- `{node.get('id')}` {node.get('question')} "
+            f"(risk={node.get('riskScore')}, status={node.get('status')}, model={node.get('assignedModel')})"
+        )
+    md.extend([
         "",
         "## Highest-Risk Findings",
-    ]
+    ])
     for finding in findings[:12]:
         ev = ", ".join(finding.get("evidenceIds", [])) or "missing evidence"
         md.extend([

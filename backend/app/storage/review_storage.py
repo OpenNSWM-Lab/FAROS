@@ -44,9 +44,12 @@ def create_review(data: Dict[str, Any]) -> Dict[str, Any]:
         "actionItems": [],
         "claims": [],
         "evidence": [],
+        "verifications": [],
         "findings": [],
         "riskTree": [],
         "modelTrace": None,
+        "mismatchReport": None,
+        "evidenceGraph": None,
         "createdAt": now,
         "updatedAt": now,
     }
@@ -119,6 +122,8 @@ def create_improvement_request(data: Dict[str, Any]) -> Dict[str, Any]:
         "evidenceIds": data.get("evidenceIds", []),
         "riskType": data.get("riskType"),
         "confidence": data.get("confidence"),
+        "supportStatus": data.get("supportStatus"),
+        "verifierIds": data.get("verifierIds", []),
         "acceptanceCriteria": data.get("acceptanceCriteria", []),
         "status": "pending",  # pending | in_progress | completed | dismissed
         "createdAt": now,

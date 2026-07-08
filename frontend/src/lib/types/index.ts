@@ -174,6 +174,8 @@ export interface ReviewFinding {
   evidenceIds?: string[];
   targetModule?: string;
   confidence?: number;
+  supportStatus?: string;
+  verifierIds?: string[];
   relatedRunId?: string;
   relatedArtifactId?: string;
   location?: {
