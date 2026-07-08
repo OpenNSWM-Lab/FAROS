@@ -87,6 +87,20 @@ interface ReviewXRunDetail {
       routingMode?: string
       providerName?: string
       requestedModel?: string
+      budgetPolicy?: string
+      budgetFormula?: string
+      budgetThresholds?: Record<string, number>
+      budgetAllocations?: Array<{
+        findingId: string
+        claimId?: string
+        priority?: number
+        mismatchScore?: number
+        severity?: string
+        supportStatus?: string
+        recommendedModel?: string
+        selected?: boolean
+        drivers?: string[]
+      }>
       selectedFindingIds?: string[]
       skipped?: boolean
       skipReason?: string
@@ -107,6 +121,12 @@ interface ReviewXRunDetail {
 }
 
 interface ReviewXMismatchReport {
+  method?: {
+    name?: string
+    metric?: string
+    formula?: string
+    thresholds?: Record<string, number>
+  }
   aggregate?: {
     meanMismatch?: number
     maxMismatch?: number
@@ -120,11 +140,18 @@ interface ReviewXMismatchReport {
     claimType?: string
     importance?: string
     mismatchScore?: number
+    rawMismatchScore?: number
     supportStatus?: string
     linkedEvidenceCount?: number
     findingIds?: string[]
     verificationIds?: string[]
     dimensions?: Record<string, number>
+    calibration?: {
+      llmDecision?: string
+      llmFactor?: number
+      revisionAdjustment?: number
+      revisionStatuses?: string[]
+    }
     reasons?: string[]
     text?: string
   }>
@@ -237,6 +264,9 @@ interface ReviewXRiskNode {
   findingIds?: string[]
   evidenceIds?: string[]
   supportCounts?: Record<string, number>
+  mismatchScore?: number
+  expansionPolicy?: string
+  mismatchDrivers?: string[]
 }
 
 const formatDateTime = (value?: string) => {
@@ -576,6 +606,7 @@ export function ConsistencyChecker() {
 
   const renderRiskNode = (node: ReviewXRiskNode, depth = 0) => {
     const score = Math.round((node.riskScore || 0) * 100)
+    const mismatch = node.mismatchScore !== undefined ? Math.round(node.mismatchScore * 100) : null
     const childNodes = (node.children || [])
       .map((childId) => riskNodeById[childId])
       .filter(Boolean)
@@ -590,14 +621,29 @@ export function ConsistencyChecker() {
                 {node.category && ` · ${node.category}`}
               </div>
             </div>
-            <Badge variant={score >= 88 ? 'destructive' : score >= 62 ? 'default' : 'outline'}>{score}%</Badge>
+            <div className="flex flex-col items-end gap-1">
+              <Badge variant={score >= 88 ? 'destructive' : score >= 62 ? 'default' : 'outline'}>{score}% risk</Badge>
+              {mismatch !== null && (
+                <Badge variant={mismatch >= 72 ? 'destructive' : mismatch >= 30 ? 'default' : 'outline'}>
+                  {mismatch}% CEM
+                </Badge>
+              )}
+            </div>
           </div>
           <div className="mt-2 flex flex-wrap gap-2 text-xs">
             {node.status && <Badge variant="outline">{node.status}</Badge>}
             {node.assignedModel && <Badge variant="outline">{node.assignedModel}</Badge>}
+            {node.expansionPolicy && <Badge variant="secondary">{node.expansionPolicy}</Badge>}
             {node.claimIds && node.claimIds.length > 0 && <Badge variant="secondary">{node.claimIds.length} claims</Badge>}
             {node.findingIds && node.findingIds.length > 0 && <Badge variant="secondary">{node.findingIds.length} findings</Badge>}
           </div>
+          {node.mismatchDrivers && node.mismatchDrivers.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-1 text-xs">
+              {node.mismatchDrivers.map((driver) => (
+                <Badge key={driver} variant="outline">Driver: {driver}</Badge>
+              ))}
+            </div>
+          )}
           {node.supportCounts && Object.keys(node.supportCounts).length > 0 && (
             <div className="mt-2 text-xs text-muted-foreground">
               Support: {supportText(node.supportCounts)}
@@ -846,12 +892,21 @@ export function ConsistencyChecker() {
                     </div>
 
                     <div className="flex flex-wrap gap-2 text-xs">
+                      {runDetail.mismatchReport?.method?.name && (
+                        <Badge variant="secondary">{runDetail.mismatchReport.method.name}</Badge>
+                      )}
                       <Badge variant="outline">{runDetail.evidenceGraph?.nodeCount || 0} graph nodes</Badge>
                       <Badge variant="outline">{runDetail.evidenceGraph?.edgeCount || 0} graph edges</Badge>
                       {Object.entries(mismatchAggregate.dimensionMax || {}).map(([name, value]) => (
                         <Badge key={name} variant="outline">{name}: {formatMetricValue(value)}</Badge>
                       ))}
                     </div>
+
+                    {runDetail.mismatchReport?.method?.formula && (
+                      <div className="rounded-md border border-slate-200 bg-slate-50 p-3 text-xs leading-relaxed text-slate-700">
+                        {runDetail.mismatchReport.method.formula}
+                      </div>
+                    )}
 
                     {topMismatchClaims.length > 0 && (
                       <div className="rounded-md border border-slate-200 bg-white p-3">
@@ -868,6 +923,15 @@ export function ConsistencyChecker() {
                               <div className="mt-1 line-clamp-2 text-xs text-slate-700">{claim.text}</div>
                               <div className="mt-1 flex flex-wrap gap-1">
                                 {claim.supportStatus && <Badge variant="outline">Support: {claim.supportStatus}</Badge>}
+                                {claim.rawMismatchScore !== undefined && claim.rawMismatchScore !== claim.mismatchScore && (
+                                  <Badge variant="outline">Raw: {formatMetricValue(claim.rawMismatchScore)}</Badge>
+                                )}
+                                {claim.calibration?.llmDecision && (
+                                  <Badge variant="outline">LLM: {claim.calibration.llmDecision}</Badge>
+                                )}
+                                {(claim.calibration?.revisionAdjustment || 0) > 0 && (
+                                  <Badge variant="secondary">Revision -{formatMetricValue(claim.calibration?.revisionAdjustment)}</Badge>
+                                )}
                                 <Badge variant="outline">{claim.linkedEvidenceCount || 0} evidence links</Badge>
                               </div>
                             </div>
@@ -1236,7 +1300,16 @@ export function ConsistencyChecker() {
                       <Badge variant="outline">Provider: {runDetail.modelTrace.llmRouting?.providerName || runDetail.providerName || 'unknown'}</Badge>
                       <Badge variant="outline">Model: {runDetail.modelTrace.llmRouting?.requestedModel || runDetail.model || 'unknown'}</Badge>
                       <Badge variant="outline">Tokens: {runDetail.modelTrace.estimatedTokenCost || 0}</Badge>
+                      {runDetail.modelTrace.llmRouting?.budgetPolicy && (
+                        <Badge variant="secondary">Policy: {runDetail.modelTrace.llmRouting.budgetPolicy}</Badge>
+                      )}
                     </div>
+
+                    {runDetail.modelTrace.llmRouting?.budgetFormula && (
+                      <div className="rounded-md border border-slate-200 bg-slate-50 p-3 text-xs leading-relaxed text-slate-700">
+                        {runDetail.modelTrace.llmRouting.budgetFormula}
+                      </div>
+                    )}
 
                     {runDetail.modelTrace.llmRouting?.selectedFindingIds && runDetail.modelTrace.llmRouting.selectedFindingIds.length > 0 && (
                       <div className="rounded-md border border-slate-200 bg-white p-3">
@@ -1244,6 +1317,37 @@ export function ConsistencyChecker() {
                         <div className="mt-2 flex flex-wrap gap-2">
                           {runDetail.modelTrace.llmRouting.selectedFindingIds.map((id) => (
                             <Badge key={id} variant="secondary">{id}</Badge>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {runDetail.modelTrace.llmRouting?.budgetAllocations && runDetail.modelTrace.llmRouting.budgetAllocations.length > 0 && (
+                      <div className="rounded-md border border-slate-200 bg-white p-3">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="text-xs font-semibold uppercase text-slate-600">CEM Budget Allocation</div>
+                          <Badge variant="outline">{runDetail.modelTrace.llmRouting.budgetAllocations.length} findings</Badge>
+                        </div>
+                        <div className="mt-2 space-y-2 max-h-[280px] overflow-y-auto pr-1">
+                          {runDetail.modelTrace.llmRouting.budgetAllocations.slice(0, 10).map((item) => (
+                            <div key={item.findingId} className="rounded border border-slate-100 bg-slate-50 p-2 text-xs">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <Badge variant={item.selected ? 'secondary' : 'outline'}>{item.findingId}</Badge>
+                                <Badge variant="outline">Priority: {formatMetricValue(item.priority)}</Badge>
+                                <Badge variant={(item.mismatchScore || 0) >= 0.72 ? 'destructive' : 'outline'}>
+                                  CEM: {formatMetricValue(item.mismatchScore)}
+                                </Badge>
+                                <Badge variant="outline">{item.recommendedModel || 'rules'}</Badge>
+                              </div>
+                              <div className="mt-1 flex flex-wrap gap-1">
+                                {item.claimId && <Badge variant="outline">Claim: {item.claimId}</Badge>}
+                                {item.severity && <Badge variant="outline">{item.severity}</Badge>}
+                                {item.supportStatus && <Badge variant="outline">Support: {item.supportStatus}</Badge>}
+                                {(item.drivers || []).map((driver) => (
+                                  <Badge key={`${item.findingId}-${driver}`} variant="outline">{driver}</Badge>
+                                ))}
+                              </div>
+                            </div>
                           ))}
                         </div>
                       </div>
@@ -1433,9 +1537,19 @@ export function ConsistencyChecker() {
                                       variant={findingHasLlmRefinement(finding) ? 'secondary' : 'outline'}
                                       className="text-xs"
                                     >
-                                      {findingHasLlmRefinement(finding) ? 'LLM Refined' : 'Local Rule'}
+                                    {findingHasLlmRefinement(finding) ? 'LLM Refined' : 'Local Rule'}
+                                  </Badge>
+                                  {finding.reviewerDecision && (
+                                    <Badge variant="outline" className="text-xs">
+                                      Decision: {finding.reviewerDecision}
                                     </Badge>
-                                  </div>
+                                  )}
+                                  {finding.revisionStatus && (
+                                    <Badge variant="secondary" className="text-xs">
+                                      Revision: {finding.revisionStatus}
+                                    </Badge>
+                                  )}
+                                </div>
                                   <CardDescription className="text-sm leading-relaxed">
                                     {finding.description}
                                   </CardDescription>
@@ -1458,6 +1572,12 @@ export function ConsistencyChecker() {
                                 )}
                                 {finding.verifierIds && finding.verifierIds.length > 0 && (
                                   <Badge variant="outline">Verifier: {finding.verifierIds.join(', ')}</Badge>
+                                )}
+                                {finding.reviewerModel && (
+                                  <Badge variant="outline">Reviewer: {finding.reviewerModel}</Badge>
+                                )}
+                                {finding.revisionRequestIds && finding.revisionRequestIds.length > 0 && (
+                                  <Badge variant="outline">Requests: {finding.revisionRequestIds.length}</Badge>
                                 )}
                                 {finding.evidenceIds && finding.evidenceIds.length > 0 && (
                                   <Badge variant="outline">Evidence: {finding.evidenceIds.join(', ')}</Badge>

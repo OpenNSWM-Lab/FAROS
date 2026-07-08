@@ -25,6 +25,12 @@ def findings_to_action_items(findings: List[Finding]) -> List[Dict[str, Any]]:
             "confidence": finding.confidence,
             "supportStatus": finding.supportStatus,
             "verifierIds": finding.verifierIds,
+            "reviewerDecision": finding.reviewerDecision,
+            "reviewerAssessment": finding.reviewerAssessment,
+            "reviewerModel": finding.reviewerModel,
+            "cemCalibration": finding.cemCalibration,
+            "revisionRequestIds": finding.revisionRequestIds,
+            "revisionStatus": finding.revisionStatus,
             "acceptanceCriteria": _acceptance_criteria(finding),
         })
     return items

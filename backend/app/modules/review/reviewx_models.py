@@ -76,6 +76,12 @@ class Finding:
     location: Optional[Dict[str, Any]] = None
     supportStatus: Optional[str] = None
     verifierIds: List[str] = field(default_factory=list)
+    reviewerDecision: Optional[str] = None
+    reviewerAssessment: Optional[str] = None
+    reviewerModel: Optional[str] = None
+    cemCalibration: Dict[str, Any] = field(default_factory=dict)
+    revisionRequestIds: List[str] = field(default_factory=list)
+    revisionStatus: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -96,6 +102,9 @@ class RiskNode:
     findingIds: List[str] = field(default_factory=list)
     evidenceIds: List[str] = field(default_factory=list)
     supportCounts: Dict[str, int] = field(default_factory=dict)
+    mismatchScore: Optional[float] = None
+    expansionPolicy: str = "shallow_traceability"
+    mismatchDrivers: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

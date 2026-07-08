@@ -15,6 +15,7 @@ from typing import Optional, Dict, Any, List
 from app.core.settings import get_settings
 from app.llm.provider_client import get_provider_client, ChatMessage
 from app.modules.review.artifact_collector import collect_reviewx_artifacts
+from app.modules.review.cem_guidance import annotate_risk_tree_with_mismatch
 from app.modules.review.claim_extractor import extract_claims
 from app.modules.review.evidence_graph import build_evidence, link_claims_to_evidence
 from app.modules.review.evidence_verifier import verify_claim_evidence
@@ -22,6 +23,7 @@ from app.modules.review.model_router import refine_findings_with_budget
 from app.modules.review.mismatch_scorer import build_mismatch_report
 from app.modules.review.risk_analyzer import analyze_reviewx_risks
 from app.modules.review.revision_planner import findings_to_action_items
+from app.modules.review.revision_feedback import attach_revision_feedback
 from app.modules.review.reviewx_models import ReviewXReport
 from app.modules.review.storage import get_paper, read_paper_file, list_paper_files
 from app.modules.review.storage import get_review, update_review
@@ -245,6 +247,8 @@ def generate_reviewx(review_id: str) -> Dict[str, Any]:
         links = link_claims_to_evidence(claims, evidence)
         verifications = verify_claim_evidence(paper, claims, evidence, links)
         findings, risk_tree = analyze_reviewx_risks(paper, claims, evidence, links, verifications)
+        preliminary_mismatch = build_mismatch_report(claims, evidence, links, verifications, findings)
+        risk_tree = annotate_risk_tree_with_mismatch(risk_tree, preliminary_mismatch)
         settings = get_settings()
         provider_name = review.get("providerName") or settings.get_active_provider()
         model = review.get("model") or settings.get_active_model(provider_name)
@@ -257,9 +261,12 @@ def generate_reviewx(review_id: str) -> Dict[str, Any]:
             provider_name=provider_name,
             model=model,
             budget_mode=budget_mode,
+            mismatch_report=preliminary_mismatch,
         )
+        revision_feedback = attach_revision_feedback(paper_id, findings)
         action_items = findings_to_action_items(findings)
         mismatch_report = build_mismatch_report(claims, evidence, links, verifications, findings)
+        risk_tree = annotate_risk_tree_with_mismatch(risk_tree, mismatch_report)
         evidence_graph = mismatch_report.get("graph", {})
 
         severity_counts: Dict[str, int] = {"blocker": 0, "major": 0, "minor": 0, "info": 0}
@@ -283,6 +290,9 @@ def generate_reviewx(review_id: str) -> Dict[str, Any]:
             "supportCounts": support_counts,
             "coverage": round(valid_evidence_links / len(claims), 3) if claims else 0,
             "mismatch": mismatch_report.get("aggregate", {}),
+            "cemMethod": mismatch_report.get("method", {}),
+            "cemBudgetPolicy": routing_trace.get("budgetPolicy"),
+            "revisionFeedback": revision_feedback,
         }
         model_trace = {
             "routingMode": budget_mode,
@@ -291,8 +301,10 @@ def generate_reviewx(review_id: str) -> Dict[str, Any]:
                 "claim_extraction",
                 "evidence_linking",
                 "evidence_verification",
+                "cem_mismatch_scoring",
                 "risk_analysis",
-                "risk_question_tree",
+                "cem_guided_risk_question_tree",
+                "revision_feedback_calibration",
                 "revision_planning",
             ],
             "llmRouting": routing_trace,
@@ -377,7 +389,9 @@ def _build_reviewx_markdown(paper: Dict[str, Any], report: Dict[str, Any]) -> st
         indent = "  " * int(node.get("level", 0))
         md.append(
             f"{indent}- `{node.get('id')}` {node.get('question')} "
-            f"(risk={node.get('riskScore')}, status={node.get('status')}, model={node.get('assignedModel')})"
+            f"(risk={node.get('riskScore')}, mismatch={node.get('mismatchScore')}, "
+            f"policy={node.get('expansionPolicy')}, status={node.get('status')}, "
+            f"model={node.get('assignedModel')})"
         )
     md.extend([
         "",
