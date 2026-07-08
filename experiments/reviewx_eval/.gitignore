@@ -1,3 +1,6 @@
-*.jsonl
-*.json
 outputs/
+reviewx_eval.jsonl
+*_runs.jsonl
+scores.json
+scores.csv
+!gold_schema.json
