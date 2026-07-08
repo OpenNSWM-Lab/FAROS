@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Tuple
 
 from app.core.settings import get_settings
 from app.llm.provider_client import ChatMessage, ProviderError, get_provider_client
+from app.modules.review.cem_guidance import build_cem_budget_plan
 from app.modules.review.reviewx_models import Claim, Evidence, Finding
 
 
@@ -30,12 +31,18 @@ def refine_findings_with_budget(
     provider_name: str,
     model: str,
     budget_mode: str,
+    mismatch_report: Dict[str, Any] | None = None,
 ) -> Tuple[List[Finding], Dict[str, Any]]:
     mode = (budget_mode or "balanced").lower()
+    budget_plan = build_cem_budget_plan(findings, mismatch_report, mode)
     trace: Dict[str, Any] = {
         "routingMode": mode,
         "providerName": provider_name,
         "requestedModel": model,
+        "budgetPolicy": budget_plan["policy"],
+        "budgetFormula": budget_plan["formula"],
+        "budgetThresholds": budget_plan["thresholds"],
+        "budgetAllocations": budget_plan["allocations"],
         "selectedFindingIds": [],
         "llmCalls": [],
         "estimatedTokenCost": 0,
@@ -43,7 +50,7 @@ def refine_findings_with_budget(
         "skipReason": None,
     }
 
-    selected = _select_findings(findings, mode)
+    selected = _select_findings(findings, budget_plan)
     trace["selectedFindingIds"] = [f.id for f in selected]
 
     if mode == "local_only":
@@ -62,7 +69,7 @@ def refine_findings_with_budget(
         trace["skipReason"] = f"provider '{provider_name}' has no configured API key"
         return findings, trace
 
-    prompt = _build_refinement_prompt(paper, claims, evidence, selected)
+    prompt = _build_refinement_prompt(paper, claims, evidence, selected, mismatch_report)
     max_tokens = 2200 if mode == "balanced" else 4200
     try:
         client = get_provider_client(provider_name)
@@ -83,6 +90,7 @@ def refine_findings_with_budget(
         })
         trace["estimatedTokenCost"] = response.usage.get("total_tokens", 0)
         assessments = _extract_assessments(response.text)
+        trace["llmAssessments"] = assessments
         _apply_assessments(findings, assessments, response.model)
     except ProviderError as exc:
         logger.warning("ReviewX LLM escalation skipped after provider error: %s", exc)
@@ -96,18 +104,12 @@ def refine_findings_with_budget(
     return findings, trace
 
 
-def _select_findings(findings: List[Finding], mode: str) -> List[Finding]:
-    if mode == "local_only":
+def _select_findings(findings: List[Finding], budget_plan: Dict[str, Any]) -> List[Finding]:
+    selected_ids = set(budget_plan.get("selectedFindingIds", []))
+    if not selected_ids:
         return []
-    severity_rank = {"blocker": 0, "major": 1, "minor": 2, "info": 3}
-    threshold = 0.5 if mode == "deep" else 0.72
-    limit = 8 if mode == "deep" else 3
-    candidates = [
-        f for f in findings
-        if f.severity in {"blocker", "major"} or f.confidence >= threshold
-    ]
-    candidates.sort(key=lambda f: (severity_rank.get(f.severity, 9), -f.confidence))
-    return candidates[:limit]
+    by_id = {finding.id: finding for finding in findings}
+    return [by_id[finding_id] for finding_id in budget_plan["selectedFindingIds"] if finding_id in by_id]
 
 
 def _build_refinement_prompt(
@@ -115,18 +117,28 @@ def _build_refinement_prompt(
     claims: List[Claim],
     evidence: List[Evidence],
     selected: List[Finding],
+    mismatch_report: Dict[str, Any] | None = None,
 ) -> str:
     claims_by_id = {c.id: c for c in claims}
     evidence_by_id = {e.id: e for e in evidence}
+    claim_scores = {
+        item.get("claimId"): item
+        for item in (mismatch_report or {}).get("claimScores", [])
+        if isinstance(item, dict)
+    }
     finding_payload = []
     for finding in selected:
         claim = claims_by_id.get(finding.claimId or "")
         evs = [evidence_by_id[eid] for eid in finding.evidenceIds if eid in evidence_by_id]
+        score = claim_scores.get(finding.claimId or "", {})
         finding_payload.append({
             "findingId": finding.id,
             "severity": finding.severity,
             "riskType": finding.riskType,
             "claim": claim.text if claim else None,
+            "cemMismatchScore": score.get("mismatchScore"),
+            "cemMismatchDrivers": score.get("dimensions", {}),
+            "cemMismatchReasons": score.get("reasons", []),
             "localDescription": finding.description,
             "localSuggestedFix": finding.suggestedFix,
             "evidence": [
@@ -143,6 +155,7 @@ def _build_refinement_prompt(
 
     return f"""You are ReviewX, an evidence-grounded research review agent inside FAROS.
 Your task is NOT to write a full peer review. Refine only the selected high-risk findings.
+The selected findings were chosen by CEM-Review: claim-evidence mismatch guided budget routing.
 
 Paper title: {paper.get("title", "Untitled")}
 Paper type: {paper.get("paperType", "unknown")}
@@ -201,7 +214,16 @@ def _apply_assessments(findings: List[Finding], assessments: List[Dict[str, Any]
             continue
         reviewer_assessment = str(assessment.get("reviewerAssessment") or "").strip()
         revised_fix = str(assessment.get("revisedSuggestedFix") or "").strip()
-        decision = str(assessment.get("decision") or "valid").strip()
+        decision = _normalize_decision(assessment.get("decision"))
+        finding.reviewerDecision = decision
+        finding.reviewerAssessment = reviewer_assessment or None
+        finding.reviewerModel = model
+        finding.cemCalibration = {
+            **finding.cemCalibration,
+            "llmDecision": decision,
+            "llmModel": model,
+            "llmFactor": _decision_factor(decision),
+        }
         if reviewer_assessment:
             finding.description = (
                 f"{finding.description}\n\n"
@@ -212,5 +234,32 @@ def _apply_assessments(findings: List[Finding], assessments: List[Dict[str, Any]
         try:
             delta = float(assessment.get("confidenceDelta", 0.0))
         except (TypeError, ValueError):
-            delta = 0.0
+            delta = _default_confidence_delta(decision)
+        if delta == 0.0:
+            delta = _default_confidence_delta(decision)
         finding.confidence = round(max(0.0, min(1.0, finding.confidence + delta)), 2)
+
+
+def _normalize_decision(value: Any) -> str:
+    decision = str(value or "valid").strip().lower().replace(" ", "_")
+    if "over" in decision:
+        return "overestimated"
+    if "partial" in decision:
+        return "partially_valid"
+    return "valid"
+
+
+def _decision_factor(decision: str) -> float:
+    return {
+        "valid": 1.0,
+        "partially_valid": 0.9,
+        "overestimated": 0.65,
+    }.get(decision, 1.0)
+
+
+def _default_confidence_delta(decision: str) -> float:
+    return {
+        "valid": 0.03,
+        "partially_valid": -0.06,
+        "overestimated": -0.22,
+    }.get(decision, 0.0)

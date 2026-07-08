@@ -51,18 +51,22 @@ def build_mismatch_report(
         claim_verifications = verifications_by_claim.get(claim.id, [])
         claim_findings = findings_by_claim.get(claim.id, [])
         linked_ids = [eid for eid in links.get(claim.id, []) if eid in evidence_by_id]
-        score, dimensions, reasons = _score_claim(claim, linked_ids, claim_verifications, claim_findings)
+        score, raw_score, dimensions, reasons, calibration = _score_claim(
+            claim, linked_ids, claim_verifications, claim_findings
+        )
         claim_scores.append({
             "claimId": claim.id,
             "claimType": claim.claimType,
             "importance": claim.importance,
             "requiresEvidence": claim.requiresEvidence,
             "mismatchScore": score,
+            "rawMismatchScore": raw_score,
             "supportStatus": _worst_support_status(claim_verifications),
             "linkedEvidenceCount": len(linked_ids),
             "findingIds": [finding.id for finding in claim_findings],
             "verificationIds": [verification.id for verification in claim_verifications],
             "dimensions": dimensions,
+            "calibration": calibration,
             "reasons": reasons,
             "text": claim.text,
             "sourceSpan": claim.sourceSpan.to_dict() if hasattr(claim.sourceSpan, "to_dict") else {
@@ -75,6 +79,15 @@ def build_mismatch_report(
     aggregate = _aggregate_scores(claim_scores)
     graph = _build_graph(claims, evidence, links, verifications, findings, claim_scores)
     return {
+        "method": {
+            "name": "CEM-Review",
+            "metric": "Claim-Evidence Mismatch",
+            "formula": "M(c,E)=max(coverage_gap,numeric_contradiction,baseline_gap,citation_gap,guardrail_violation,review_risk,importance)",
+            "thresholds": {
+                "shallowTraceability": 0.3,
+                "deepContradictionRevision": 0.72,
+            },
+        },
         "aggregate": aggregate,
         "claimScores": claim_scores,
         "graph": graph,
@@ -86,7 +99,7 @@ def _score_claim(
     linked_ids: List[str],
     verifications: List[EvidenceVerification],
     findings: List[Finding],
-) -> tuple[float, Dict[str, float], List[str]]:
+) -> tuple[float, float, Dict[str, float], List[str], Dict[str, Any]]:
     dimensions: Dict[str, float] = {}
     reasons: List[str] = []
 
@@ -113,8 +126,49 @@ def _score_claim(
     if claim.importance == "high":
         dimensions["importance"] = max(dimensions.get("importance", 0.0), 0.18)
 
-    score = min(1.0, round(max(dimensions.values() or [0.0]), 3))
-    return score, dimensions, reasons[:8]
+    raw_score = min(1.0, round(max(dimensions.values() or [0.0]), 3))
+    score, calibration = _calibrate_score(raw_score, findings)
+    return score, raw_score, dimensions, reasons[:8], calibration
+
+
+def _calibrate_score(score: float, findings: List[Finding]) -> tuple[float, Dict[str, Any]]:
+    if not findings:
+        return score, {"llmFactor": 1.0, "revisionAdjustment": 0.0}
+
+    decisions = [finding.reviewerDecision for finding in findings if finding.reviewerDecision]
+    if "valid" in decisions:
+        llm_factor = 1.0
+        llm_decision = "valid"
+    elif "partially_valid" in decisions:
+        llm_factor = 0.9
+        llm_decision = "partially_valid"
+    elif "overestimated" in decisions:
+        llm_factor = 0.65
+        llm_decision = "overestimated"
+    else:
+        llm_factor = 1.0
+        llm_decision = None
+
+    revision_adjustment = max(
+        (
+            float(finding.cemCalibration.get("revisionAdjustment", 0.0))
+            for finding in findings
+            if finding.cemCalibration
+        ),
+        default=0.0,
+    )
+    revision_statuses = [
+        finding.revisionStatus
+        for finding in findings
+        if finding.revisionStatus
+    ]
+    calibrated = round(max(0.0, min(1.0, score * llm_factor - revision_adjustment)), 3)
+    return calibrated, {
+        "llmDecision": llm_decision,
+        "llmFactor": llm_factor,
+        "revisionAdjustment": round(revision_adjustment, 3),
+        "revisionStatuses": revision_statuses,
+    }
 
 
 def _finding_score(finding: Finding) -> float:
@@ -186,6 +240,7 @@ def _build_graph(
             "label": claim.text[:120],
             "claimType": claim.claimType,
             "mismatchScore": score.get("mismatchScore", 0),
+            "rawMismatchScore": score.get("rawMismatchScore", 0),
             "supportStatus": score.get("supportStatus"),
         })
         for evidence_id in links.get(claim.id, [])[:8]:

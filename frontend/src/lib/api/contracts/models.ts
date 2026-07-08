@@ -137,6 +137,12 @@ export interface ReviewFindingDTO {
   confidence?: number
   supportStatus?: string
   verifierIds?: string[]
+  reviewerDecision?: string
+  reviewerAssessment?: string
+  reviewerModel?: string
+  cemCalibration?: Record<string, unknown>
+  revisionRequestIds?: string[]
+  revisionStatus?: string
   location?: {
     section: string
     line?: number

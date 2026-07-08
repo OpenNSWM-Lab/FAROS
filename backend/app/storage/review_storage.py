@@ -124,6 +124,12 @@ def create_improvement_request(data: Dict[str, Any]) -> Dict[str, Any]:
         "confidence": data.get("confidence"),
         "supportStatus": data.get("supportStatus"),
         "verifierIds": data.get("verifierIds", []),
+        "reviewerDecision": data.get("reviewerDecision"),
+        "reviewerAssessment": data.get("reviewerAssessment"),
+        "reviewerModel": data.get("reviewerModel"),
+        "cemCalibration": data.get("cemCalibration", {}),
+        "revisionRequestIds": data.get("revisionRequestIds", []),
+        "revisionStatus": data.get("revisionStatus"),
         "acceptanceCriteria": data.get("acceptanceCriteria", []),
         "status": "pending",  # pending | in_progress | completed | dismissed
         "createdAt": now,

@@ -77,6 +77,12 @@ def _reviewx_finding_to_dto(finding: Dict[str, Any], review: Dict[str, Any]) -> 
         "confidence": finding.get("confidence"),
         "supportStatus": finding.get("supportStatus"),
         "verifierIds": finding.get("verifierIds", []),
+        "reviewerDecision": finding.get("reviewerDecision"),
+        "reviewerAssessment": finding.get("reviewerAssessment"),
+        "reviewerModel": finding.get("reviewerModel"),
+        "cemCalibration": finding.get("cemCalibration", {}),
+        "revisionRequestIds": finding.get("revisionRequestIds", []),
+        "revisionStatus": finding.get("revisionStatus"),
     }
 
 
@@ -496,6 +502,12 @@ async def apply_feedback_endpoint(review_id: str, req: ApplyFeedbackRequest):
             "confidence": item.get("confidence"),
             "supportStatus": item.get("supportStatus"),
             "verifierIds": item.get("verifierIds", []),
+            "reviewerDecision": item.get("reviewerDecision"),
+            "reviewerAssessment": item.get("reviewerAssessment"),
+            "reviewerModel": item.get("reviewerModel"),
+            "cemCalibration": item.get("cemCalibration", {}),
+            "revisionRequestIds": item.get("revisionRequestIds", []),
+            "revisionStatus": item.get("revisionStatus"),
             "acceptanceCriteria": item.get("acceptanceCriteria", []),
         })
         created.append(ir)
