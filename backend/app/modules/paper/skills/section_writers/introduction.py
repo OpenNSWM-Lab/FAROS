@@ -16,7 +16,6 @@ References available: {{refs_summary}}
 
 Write COMPLETE LaTeX content for the introduction.
 Mandatory requirements:
-- Start with \section{{{section_title}}}
 - Write at least {{min_words}} words.
 - Open with the research problem and why it matters; do not start with generic field history.
 - Establish the concrete gap that this paper addresses, then state the paper's core claim.
@@ -24,9 +23,6 @@ Mandatory requirements:
 - Briefly preview the evidence used later without over-claiming results.
 - Cite at least 3 relevant references using \cite{key}.
 {{fig_req}}
-- If Section-selected figures is not N/A, include every listed figure exactly once using its exact path, label, and caption.
 - Do not introduce unsupported datasets, baselines, or state-of-the-art claims.
 - Follow the venue style guide for contribution framing and reviewer expectations.
-
-Return ONLY the LaTeX content, with no markdown fences or explanations.
 """

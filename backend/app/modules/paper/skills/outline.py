@@ -28,13 +28,10 @@ Generate a DETAILED paper outline. You MUST include:
 - Use the Venue style guide as the authoritative structure contract. If it defines mandatory standardized fields, sections, or an ordered content structure, the sections array MUST preserve those exact fields in that order. Do not merge, rename, translate, omit, or replace them with a generic ML-paper structure.
 - If the Venue style guide does not define mandatory fields or sections, create a venue-appropriate academic structure with enough sections to cover motivation, method, evidence, evaluation, analysis, limitations, and conclusion.
 - If the Venue style guide says to combine multiple planning fields into a single overview section, do so. Do not expand compact planning fields into redundant top-level sections.
-- At least {min_refs} references — use REAL, well-known papers in the field. DO NOT invent DOIs. Use format: authors, title, venue, year. If uncertain about a reference, include it but add "note": "to verify".
-- If the Plan evidence package includes literature.keyPapers, the references array MUST contain only those evidence papers. Do not add adjacent, foundational, or "well-known" references outside the evidence package.
+- References: if the Plan evidence package includes literature.keyPapers, the references array MUST contain only those evidence papers. Otherwise include at least {min_refs} real, well-known papers in the field using authors, title, venue, and year; do not invent DOIs, and add "note": "to verify" if uncertain.
 - Mark which sections need: algorithms (at least {min_algos}), equations (at least {min_eqs}), tables (at least {min_tables}), figures (at least {min_figs})
 - If Available paper figures are listed, assign them to the most relevant sections using their exact path, label, and caption. Do not invent alternate filenames.
-- Follow the Paper writing brief. Preserve its research question, core claim, must-use evidence, and avoid-claims constraints.
-- If a Plan evidence package is present, keep the outline aligned to its research question, hypothesis, gap, principle, contribution statements, literature, and planned validation stages. Do not switch to another topic.
-- Follow the Venue style guide when choosing section order, contribution framing, evaluation emphasis, limitations, and appendix-worthy material.
+- Preserve the Paper writing brief's research question, core claim, must-use evidence, and avoid-claims constraints. If a Plan evidence package is present, keep the outline aligned to its research question, hypothesis, gap, principle, contribution statements, literature, and planned validation stages.
 - Do not invent author names. If explicit authors are not provided by the paper record or user notes, use ["Anonymous"].
 
 Return strict JSON:

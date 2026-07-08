@@ -18,7 +18,6 @@ Context from previous sections: {{prev_context}}
 
 Write COMPLETE LaTeX content for the analysis-oriented section.
 Mandatory requirements:
-- Start with \section{{{section_title}}}
 - Write at least {{min_words}} words.
 - Interpret evidence rather than repeating raw results; explain trends, trade-offs, error cases, sensitivity, or limitations.
 - Tie each interpretation back to linked metrics, run evidence, selected figures, or cited literature.
@@ -27,8 +26,5 @@ Mandatory requirements:
 {{eq_req}}
 {{table_req}}
 {{fig_req}}
-- If Section-selected figures is not N/A, include every listed figure exactly once using its exact path, label, and caption.
 - Follow the venue style guide for discussion depth and reviewer-facing caveats.
-
-Return ONLY the LaTeX content, with no markdown fences or explanations.
 """

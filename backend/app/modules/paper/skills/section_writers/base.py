@@ -63,6 +63,9 @@ COMMON_SECTION_INSTRUCTIONS = """Global requirements:
 {{language_instruction}}
 - Write ONLY the requested section: "\\section{{{section_title}}}". Do not generate any other top-level \\section headings, title, abstract, references, appendix, or full-paper outline.
 - Do not use bilingual section headings such as "Introduction / 引言"; use the exact requested section title.
+- Use only supported claims from the brief, outline, metrics, runs, figures, and references provided in the prompt.
+- If Section-selected figures is not N/A, include every listed figure exactly once using its exact path, label, and caption.
+- Return ONLY valid LaTeX content, with no markdown fences or explanations.
 """
 
 

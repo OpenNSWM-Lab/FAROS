@@ -18,7 +18,6 @@ Context from previous sections: {{prev_context}}
 
 Write COMPLETE LaTeX content for the method-oriented section.
 Mandatory requirements:
-- Start with \section{{{section_title}}}
 - Write at least {{min_words}} words.
 - Explain the proposed mechanism, architecture, algorithm, or system design in enough detail to be reproducible.
 - Separate assumptions, inputs/outputs, design choices, and complexity or failure modes where relevant.
@@ -28,9 +27,6 @@ Mandatory requirements:
 {{eq_req}}
 {{table_req}}
 {{fig_req}}
-- If Section-selected figures is not N/A, include every listed figure exactly once using its exact path, label, and caption.
 - Every algorithm, equation, table, and figure must be referenced in the surrounding prose.
 - Follow the venue style guide for method clarity and reviewer expectations.
-
-Return ONLY the LaTeX content, with no markdown fences or explanations.
 """

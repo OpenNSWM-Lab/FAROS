@@ -14,7 +14,6 @@ Context from previous sections: {{prev_context}}
 
 Write COMPLETE LaTeX content for this background/preliminaries section.
 Mandatory requirements:
-- Start with \section{{{section_title}}}
 - Write at least {{min_words}} words.
 - Define notation, assumptions, problem setup, and evaluation concepts needed before the method or experiments.
 - Use equations only when they clarify definitions or objectives; every equation must be introduced and referenced in text.
@@ -22,9 +21,6 @@ Mandatory requirements:
 {{eq_req}}
 {{table_req}}
 {{fig_req}}
-- If Section-selected figures is not N/A, include every listed figure exactly once using its exact path, label, and caption.
 - Avoid repeating the introduction or previewing unsupported results.
 - Follow the venue style guide for technical precision and compactness.
-
-Return ONLY the LaTeX content, with no markdown fences or explanations.
 """
