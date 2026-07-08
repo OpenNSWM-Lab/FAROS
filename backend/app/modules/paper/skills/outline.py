@@ -24,9 +24,12 @@ OUTLINE_PROMPT = """You are a senior ML researcher writing a {paper_type} paper 
 **User notes:** {user_notes}
 
 Generate a DETAILED paper outline. You MUST include:
-- At least 7 sections (Introduction, Related Work, Background/Preliminaries, Method, Experiments, Analysis/Discussion, Conclusion)
-- If the Venue style guide defines mandatory standardized fields or sections, use those fields as the required section list even when they differ from the default academic-paper sections above.
+- For the challenge_cup / 挑战杯 venue only, the title, abstract, section titles, key points, contribution text, and explanatory prose MUST be written in Chinese. Keep dataset/model/metric names in English only when they are proper nouns or standard technical terms. Do not use bilingual section titles such as "Introduction / 引言". For other venues, follow the venue style guide's normal language.
+- Use the Venue style guide as the authoritative structure contract. If it defines mandatory standardized fields, sections, or an ordered content structure, the sections array MUST preserve those exact fields in that order. Do not merge, rename, translate, omit, or replace them with a generic ML-paper structure.
+- If the Venue style guide does not define mandatory fields or sections, create a venue-appropriate academic structure with enough sections to cover motivation, method, evidence, evaluation, analysis, limitations, and conclusion.
+- If the Venue style guide says to combine multiple planning fields into a single overview section, do so. Do not expand compact planning fields into redundant top-level sections.
 - At least {min_refs} references — use REAL, well-known papers in the field. DO NOT invent DOIs. Use format: authors, title, venue, year. If uncertain about a reference, include it but add "note": "to verify".
+- If the Plan evidence package includes literature.keyPapers, the references array MUST contain only those evidence papers. Do not add adjacent, foundational, or "well-known" references outside the evidence package.
 - Mark which sections need: algorithms (at least {min_algos}), equations (at least {min_eqs}), tables (at least {min_tables}), figures (at least {min_figs})
 - If Available paper figures are listed, assign them to the most relevant sections using their exact path, label, and caption. Do not invent alternate filenames.
 - Follow the Paper writing brief. Preserve its research question, core claim, must-use evidence, and avoid-claims constraints.
@@ -41,9 +44,9 @@ Return strict JSON:
   "abstract": "200-300 word abstract covering motivation, method, results, and significance",
   "sections": [
     {{
-      "id": "intro",
-      "title": "Introduction",
-      "keyPoints": ["Motivation and problem statement", "Key contributions (3+)", "Paper organization"],
+      "id": "venue_required_field_1",
+      "title": "Exact required field or section title from the venue style guide",
+      "keyPoints": ["Field-specific content requirements grounded in the brief, evidence, and venue structure"],
       "minWords": 600,
       "hasAlgorithm": false,
       "hasEquations": true,
@@ -137,10 +140,55 @@ def _parse_plan_evidence(context: Dict[str, str]) -> Dict[str, Any]:
     return parsed if isinstance(parsed, dict) and parsed.get("status") == "collected" else {}
 
 
+def _resolve_plan_evidence(context: Dict[str, str], paper: Dict[str, Any]) -> Dict[str, Any]:
+    evidence = _parse_plan_evidence(context)
+    if evidence:
+        return evidence
+    stored = paper.get("evidenceJson")
+    return stored if isinstance(stored, dict) and stored.get("status") == "collected" else {}
+
+
 def _evidence_package_id(context: Dict[str, str]) -> str:
     evidence = _parse_plan_evidence(context)
     package = evidence.get("package") if isinstance(evidence.get("package"), dict) else {}
     return str(package.get("packageId") or "")
+
+
+def _reference_key_from_paper(paper: Dict[str, Any], index: int) -> str:
+    paper_id = str(paper.get("paperId") or paper.get("structuredPaperId") or "").strip()
+    if paper_id:
+        return re.sub(r"[^A-Za-z0-9_:-]+", "_", paper_id).strip("_") or f"evidence_ref_{index}"
+    title = str(paper.get("title") or "").lower()
+    slug = re.sub(r"[^a-z0-9]+", "_", title).strip("_")[:40]
+    return slug or f"evidence_ref_{index}"
+
+
+def _references_from_plan_evidence(evidence: Dict[str, Any]) -> List[Dict[str, Any]]:
+    literature = evidence.get("literature") if isinstance(evidence.get("literature"), dict) else {}
+    key_papers = literature.get("keyPapers") if isinstance(literature.get("keyPapers"), list) else []
+    references: List[Dict[str, Any]] = []
+    seen_keys: set[str] = set()
+    for index, paper in enumerate(key_papers, start=1):
+        if not isinstance(paper, dict):
+            continue
+        title = str(paper.get("title") or "").strip()
+        if not title:
+            continue
+        key = _reference_key_from_paper(paper, index)
+        if key in seen_keys:
+            key = f"{key}_{index}"
+        seen_keys.add(key)
+        references.append({
+            "key": key,
+            "authors": paper.get("authors") or "Unknown",
+            "title": title,
+            "venue": paper.get("venue") or "arXiv preprint",
+            "year": paper.get("year") or 2024,
+            "url": paper.get("url") or "",
+            "source": "plan_evidence",
+            "paperId": paper.get("paperId") or paper.get("structuredPaperId") or "",
+        })
+    return references
 
 
 def _existing_matches_evidence(existing: Any, evidence_package_id: str) -> bool:
@@ -155,7 +203,10 @@ def build_outline(ctx: PaperSkillContext, force: bool = False) -> PaperSkillResu
     context = ctx.get("context", {})
     paper_brief = ctx.get("paper_brief", {})
     existing = ctx.paper.get("outlineJson")
-    evidence_package_id = _evidence_package_id(context)
+    evidence = _resolve_plan_evidence(context, ctx.paper)
+    evidence_package = evidence.get("package") if isinstance(evidence.get("package"), dict) else {}
+    evidence_package_id = str(evidence_package.get("packageId") or _evidence_package_id(context))
+    evidence_references = _references_from_plan_evidence(evidence)
     source = "existing"
 
     if existing and not force and _existing_matches_evidence(existing, evidence_package_id):
@@ -192,6 +243,10 @@ def build_outline(ctx: PaperSkillContext, force: bool = False) -> PaperSkillResu
         outline = _normalize_outline(parsed, ctx)
         if evidence_package_id:
             outline["_evidencePackageId"] = evidence_package_id
+
+    if evidence_references:
+        outline["references"] = evidence_references
+    if source == "generated" or evidence_references:
         update_paper(ctx.paper_id, {"outlineJson": outline, "outlineStatus": source})
 
     summary_lines = [

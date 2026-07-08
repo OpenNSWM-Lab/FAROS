@@ -11,6 +11,7 @@ from .utils import (
     sanitize_latex_text_specials,
     normalize_section_citations,
     normalize_section_figure_references,
+    normalize_tabular_column_specs,
     write_artifact,
 )
 
@@ -29,6 +30,7 @@ def run(ctx: PaperSkillContext) -> PaperSkillResult:
     copy_template_assets(ctx.venue, ctx.paper_id)
     figure_rewrites = []
     citation_rewrites = []
+    tabular_rewrites = []
     label_rewrites = []
     for section in sections:
         section_id = section.get("id")
@@ -38,6 +40,14 @@ def run(ctx: PaperSkillContext) -> PaperSkillResult:
         if sanitized_content != sections_content[section_id]:
             write_paper_file(ctx.paper_id, f"sections/{section_id}.tex", sanitized_content)
             sections_content[section_id] = sanitized_content
+        normalized_content, rewrites = normalize_tabular_column_specs(sections_content[section_id])
+        if rewrites:
+            write_paper_file(ctx.paper_id, f"sections/{section_id}.tex", normalized_content)
+            sections_content[section_id] = normalized_content
+            tabular_rewrites.extend(
+                {"section": section_id, **r}
+                for r in rewrites
+            )
         normalized_content, rewrites = normalize_section_figure_references(
             sections_content[section_id],
             figure_entries,
@@ -97,6 +107,7 @@ def run(ctx: PaperSkillContext) -> PaperSkillResult:
         f"refs: {len(refs)}",
         f"figure reference rewrites: {len(figure_rewrites)}",
         f"citation rewrites: {len(citation_rewrites)}",
+        f"tabular column rewrites: {len(tabular_rewrites)}",
         f"label rewrites: {len(label_rewrites)}",
     ]
     artifacts = write_artifact(
@@ -107,6 +118,7 @@ def run(ctx: PaperSkillContext) -> PaperSkillResult:
             "references": len(refs),
             "figure_rewrites": figure_rewrites,
             "citation_rewrites": citation_rewrites,
+            "tabular_rewrites": tabular_rewrites,
             "label_rewrites": label_rewrites,
         },
         summary_lines,

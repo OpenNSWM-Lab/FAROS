@@ -473,6 +473,23 @@ def sanitize_latex_text_specials(content: str) -> str:
     if not content:
         return content
 
+    ampersand_alignment_envs = {
+        "align",
+        "align*",
+        "aligned",
+        "array",
+        "bmatrix",
+        "cases",
+        "longtable",
+        "matrix",
+        "pmatrix",
+        "smallmatrix",
+        "split",
+        "tabular",
+        "tabularx",
+        "vmatrix",
+        "Vmatrix",
+    }
     skip_arg_commands = {
         "bibliography",
         "bibliographystyle",
@@ -489,6 +506,7 @@ def sanitize_latex_text_specials(content: str) -> str:
     }
     specials = {"_": r"\_", "%": r"\%", "#": r"\#"}
     out: List[str] = []
+    alignment_env_stack: List[str] = []
     i = 0
     in_math = False
 
@@ -521,6 +539,23 @@ def sanitize_latex_text_specials(content: str) -> str:
                 command_text = match.group(0)
                 out.append(command_text)
                 i += len(command_text)
+                if command in {"begin", "end"}:
+                    while i < len(content) and content[i].isspace():
+                        out.append(content[i])
+                        i += 1
+                    env_match = re.match(r"\{([^}]+)\}", content[i:])
+                    if env_match:
+                        env_name = env_match.group(1)
+                        out.append(env_match.group(0))
+                        i += len(env_match.group(0))
+                        if command == "begin" and env_name in ampersand_alignment_envs:
+                            alignment_env_stack.append(env_name)
+                        elif command == "end" and env_name in alignment_env_stack:
+                            for idx in range(len(alignment_env_stack) - 1, -1, -1):
+                                if alignment_env_stack[idx] == env_name:
+                                    del alignment_env_stack[idx:]
+                                    break
+                    continue
                 if command in skip_arg_commands:
                     while i < len(content) and content[i].isspace():
                         out.append(content[i])
@@ -559,6 +594,11 @@ def sanitize_latex_text_specials(content: str) -> str:
             i += 1
             continue
 
+        if not in_math and ch == "&" and not alignment_env_stack:
+            out.append(r"\&")
+            i += 1
+            continue
+
         if not in_math and ch in specials:
             out.append(specials[ch])
         else:
@@ -566,6 +606,89 @@ def sanitize_latex_text_specials(content: str) -> str:
         i += 1
 
     return "".join(out)
+
+
+def _count_tabular_columns(spec: str) -> int:
+    """Return the declared number of columns in a simple LaTeX tabular spec."""
+    count = 0
+    i = 0
+    while i < len(spec):
+        ch = spec[i]
+        if ch in {"l", "c", "r", "X"}:
+            count += 1
+            i += 1
+            continue
+        if ch in {"p", "m", "b"} and i + 1 < len(spec) and spec[i + 1] == "{":
+            depth = 0
+            i += 1
+            while i < len(spec):
+                if spec[i] == "{":
+                    depth += 1
+                elif spec[i] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        i += 1
+                        break
+                i += 1
+            count += 1
+            continue
+        i += 1
+    return count
+
+
+def _count_row_columns(row: str) -> int:
+    stripped = row.strip()
+    if not stripped or stripped.startswith("\\"):
+        return 0
+    return len(re.findall(r"(?<!\\)&", row)) + 1
+
+
+def _max_tabular_body_columns(body: str) -> int:
+    rows = re.split(r"(?<!\\)\\\\", body)
+    return max((_count_row_columns(row) for row in rows), default=0)
+
+
+def normalize_tabular_column_specs(content: str) -> Tuple[str, List[Dict[str, Any]]]:
+    """Expand simple tabular column specs when LLM rows contain more columns."""
+    if not content:
+        return content, []
+
+    rewrites: List[Dict[str, Any]] = []
+
+    def normalize_simple_tabular(match: re.Match[str]) -> str:
+        begin, spec, body, end = match.group(1), match.group(2), match.group(4), match.group(5)
+        declared = _count_tabular_columns(spec)
+        observed = _max_tabular_body_columns(body)
+        if observed <= declared or declared <= 0:
+            return match.group(0)
+        replacement_spec = spec + ("c" * (observed - declared))
+        rewrites.append({"from": spec, "to": replacement_spec, "declared": declared, "observed": observed})
+        return f"{begin}{replacement_spec}}}{body}{end}"
+
+    normalized = re.sub(
+        r"(\\begin\{(?:tabular|longtable)\}\{)([^{}]+)(\})(.*?)(\\end\{(?:tabular|longtable)\})",
+        normalize_simple_tabular,
+        content,
+        flags=re.DOTALL,
+    )
+
+    def normalize_tabularx(match: re.Match[str]) -> str:
+        begin, spec, body, end = match.group(1), match.group(2), match.group(4), match.group(5)
+        declared = _count_tabular_columns(spec)
+        observed = _max_tabular_body_columns(body)
+        if observed <= declared or declared <= 0:
+            return match.group(0)
+        replacement_spec = spec + ("c" * (observed - declared))
+        rewrites.append({"from": spec, "to": replacement_spec, "declared": declared, "observed": observed})
+        return f"{begin}{replacement_spec}}}{body}{end}"
+
+    normalized = re.sub(
+        r"(\\begin\{tabularx\}\{[^{}]+\}\{)([^{}]+)(\})(.*?)(\\end\{tabularx\})",
+        normalize_tabularx,
+        normalized,
+        flags=re.DOTALL,
+    )
+    return normalized, rewrites
 
 
 def normalize_section_citations(
@@ -721,6 +844,7 @@ def build_bibtex(references: List[Dict[str, Any]]) -> str:
         venue = escape_bibtex_field(ref.get("venue", "arXiv preprint"))
         year = ref.get("year", 2024)
         note = escape_bibtex_field(ref.get("note", ""))
+        url = escape_bibtex_field(ref.get("url", ""))
 
         venue_lower = venue.lower()
         if any(kw in venue_lower for kw in [
@@ -740,12 +864,13 @@ def build_bibtex(references: List[Dict[str, Any]]) -> str:
             venue_field = f"  journal = {{{venue}}},"
 
         note_field = f"\n  note = {{{note}}}," if note else ""
+        url_field = f"\n  url = {{{url}}}," if url else ""
         entries.append(
             f"""@{entry_type}{{{key},
   author = {{{authors}}},
   title = {{{title}}},
 {venue_field}
-  year = {{{year}}},{note_field}
+  year = {{{year}}},{note_field}{url_field}
 }}"""
         )
     return "\n\n".join(entries) + "\n"

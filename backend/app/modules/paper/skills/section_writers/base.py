@@ -59,6 +59,13 @@ FIGURE_TEMPLATE = """- MUST reference figures using:
 Reference each figure in the text. If figures list concrete paths, labels, or captions, use those exact values instead of inventing filenames."""
 
 
+COMMON_SECTION_INSTRUCTIONS = """Global requirements:
+{{language_instruction}}
+- Write ONLY the requested section: "\\section{{{section_title}}}". Do not generate any other top-level \\section headings, title, abstract, references, appendix, or full-paper outline.
+- Do not use bilingual section headings such as "Introduction / 引言"; use the exact requested section title.
+"""
+
+
 @dataclass
 class SectionDraftRequest:
     ctx: PaperSkillContext
@@ -135,13 +142,15 @@ def strip_markdown_fences(content: str) -> str:
 def ensure_section_heading(content: str, section_title: str) -> str:
     content = strip_markdown_fences(content)
     if re.search(r"\\section\*?\{", content):
-        return re.sub(
+        content = re.sub(
             r"\\section\*?\{[^}]*\}",
             lambda _match: f"\\section{{{section_title}}}",
             content,
             count=1,
         )
-    return f"\\section{{{section_title}}}\n\n{content}"
+    else:
+        content = f"\\section{{{section_title}}}\n\n{content}"
+    return re.split(r"\n\s*\\section\*?\{", content, maxsplit=1)[0].rstrip()
 
 
 class SectionWriter:
@@ -151,7 +160,16 @@ class SectionWriter:
     max_tokens = 6000
 
     def build_prompt(self, request: SectionDraftRequest) -> str:
-        return render_prompt(self.prompt_template, request.prompt_values())
+        if request.ctx.venue == "challenge_cup":
+            language_instruction = "- Write in Chinese. Keep dataset/model/metric names in English only when they are proper nouns or standard technical terms."
+        else:
+            language_instruction = "- Follow the venue style guide's normal language; do not switch languages unless the user or venue explicitly asks."
+        common = (
+            COMMON_SECTION_INSTRUCTIONS
+            .replace("{{section_title}}", request.section_title)
+            .replace("{{language_instruction}}", language_instruction)
+        )
+        return common + "\n" + render_prompt(self.prompt_template, request.prompt_values())
 
     def write(self, request: SectionDraftRequest) -> str:
         prompt = self.build_prompt(request)
