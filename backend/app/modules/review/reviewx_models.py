@@ -44,6 +44,23 @@ class Evidence:
 
 
 @dataclass
+class EvidenceVerification:
+    id: str
+    paperId: str
+    claimId: str
+    verifierType: str
+    supportStatus: str
+    verdict: str
+    evidenceIds: List[str]
+    confidence: float
+    expectedEvidence: List[str] = field(default_factory=list)
+    observedEvidence: List[str] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
 class Finding:
     id: str
     paperId: str
@@ -57,6 +74,8 @@ class Finding:
     suggestedFix: str
     confidence: float
     location: Optional[Dict[str, Any]] = None
+    supportStatus: Optional[str] = None
+    verifierIds: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -71,6 +90,12 @@ class RiskNode:
     status: str
     assignedModel: str
     children: List[str] = field(default_factory=list)
+    parentId: Optional[str] = None
+    level: int = 0
+    category: str = "general"
+    findingIds: List[str] = field(default_factory=list)
+    evidenceIds: List[str] = field(default_factory=list)
+    supportCounts: Dict[str, int] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -82,11 +107,14 @@ class ReviewXReport:
     paperId: str
     claims: List[Claim]
     evidence: List[Evidence]
+    verifications: List[EvidenceVerification]
     findings: List[Finding]
     riskTree: List[RiskNode]
     actionItems: List[Dict[str, Any]]
     summary: Dict[str, Any]
     modelTrace: Dict[str, Any]
+    mismatchReport: Dict[str, Any] = field(default_factory=dict)
+    evidenceGraph: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -94,9 +122,12 @@ class ReviewXReport:
             "paperId": self.paperId,
             "claims": [c.to_dict() for c in self.claims],
             "evidence": [e.to_dict() for e in self.evidence],
+            "verifications": [v.to_dict() for v in self.verifications],
             "findings": [f.to_dict() for f in self.findings],
             "riskTree": [r.to_dict() for r in self.riskTree],
             "actionItems": self.actionItems,
             "summary": self.summary,
             "modelTrace": self.modelTrace,
+            "mismatchReport": self.mismatchReport,
+            "evidenceGraph": self.evidenceGraph,
         }
