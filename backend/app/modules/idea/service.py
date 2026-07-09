@@ -261,8 +261,12 @@ def _repair_result_priority(result: SearchResult, paper_type: str) -> tuple:
     return (-survey_penalty, method_hits, float(result.relevance_score or 0.0))
 
 
-def _topic_terms_from_seed(seed: str, domain: str = "", extra_terms: Optional[List[str]] = None) -> List[str]:
-    topic_text = " ".join([seed or "", domain or "", *(extra_terms or [])]).lower().replace("-", " ")
+def _topic_terms_from_seed(seed: Any, domain: Any = "", extra_terms: Optional[List[Any]] = None) -> List[str]:
+    topic_text = " ".join([
+        str(seed or ""),
+        str(domain or ""),
+        *(str(term) for term in (extra_terms or []) if term is not None),
+    ]).lower().replace("-", " ")
     stopwords = {
         "about", "against", "also", "among", "and", "are", "based", "between",
         "can", "could", "does", "for", "from", "how", "into", "large", "language",
@@ -649,6 +653,84 @@ def _as_string_list(value: Any, *, limit: int = 8) -> List[str]:
         if len(items) >= limit:
             break
     return items
+
+
+def _ensure_gap_outputs(
+    *,
+    gap_analysis: Any,
+    prioritized_gaps: Any,
+    opportunities: Any,
+    novelty_gaps: Any,
+    literature_map: Optional[LiteratureMap],
+    seed_query: str,
+) -> tuple[List[Any], List[str], List[str]]:
+    """Ensure Step 4 exposes non-empty gap fields when upstream evidence exists."""
+
+    clean_gap_analysis = gap_analysis if isinstance(gap_analysis, list) else []
+    clean_prioritized = _as_string_list(prioritized_gaps, limit=5)
+    clean_opportunities = _as_string_list(opportunities, limit=5)
+    novelty_gap_items = _as_string_list(novelty_gaps, limit=5)
+
+    focus_terms = _topic_terms_from_seed(
+        seed_query,
+        "",
+        novelty_gap_items,
+    )
+    all_map_gaps = list(getattr(literature_map, "gaps", []) or [])
+    map_gaps = sorted(
+        all_map_gaps,
+        key=lambda gap: _gap_relevance_score(gap, focus_terms),
+        reverse=True,
+    )[:5]
+    if not clean_gap_analysis and map_gaps:
+        clean_gap_analysis = [
+            {
+                "gap": str(getattr(gap, "direction", "") or "").strip(),
+                "evidence": str(getattr(gap, "evidence", "") or "").strip(),
+                "paperIds": list(getattr(gap, "paperIds", []) or []),
+                "confidence": float(getattr(gap, "confidence", 0.5) or 0.5),
+            }
+            for gap in map_gaps
+            if str(getattr(gap, "direction", "") or "").strip()
+        ]
+
+    if not clean_prioritized:
+        clean_prioritized = novelty_gap_items or [
+            str(getattr(gap, "direction", "") or "").strip()
+            for gap in map_gaps
+            if str(getattr(gap, "direction", "") or "").strip()
+        ][:5]
+
+    if not clean_opportunities and clean_prioritized:
+        clean_opportunities = [
+            f"Develop a method for {seed_query} that directly addresses: {gap}"
+            for gap in clean_prioritized[:3]
+        ]
+
+    return clean_gap_analysis[:5], clean_prioritized[:5], clean_opportunities[:5]
+
+
+def _gap_relevance_score(gap: Any, focus_terms: List[str]) -> float:
+    text = " ".join([
+        str(getattr(gap, "direction", "") or ""),
+        str(getattr(gap, "evidence", "") or ""),
+    ]).lower().replace("-", " ")
+    if not text:
+        return 0.0
+    score = sum(1.0 for term in focus_terms if term and term.lower() in text)
+    for phrase in [
+        "citation faithfulness",
+        "citation correctness",
+        "answer attribution",
+        "evidence traceability",
+        "provenance",
+        "refusal",
+        "abstention",
+        "hallucination",
+    ]:
+        if phrase in text:
+            score += 2.0
+    return score
 
 
 def _normalize_evidence_llm_review(data: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -1049,6 +1131,8 @@ class IdeaGenerationService:
                 "forcedRepairPaperIds": novelty_outputs.get("forcedRepairPaperIds", []),
                 "forcedRepairPaperCount": novelty_outputs.get("forcedRepairPaperCount", 0),
                 "structuredPaperCount": novelty_outputs.get("structuredPaperCount", 0),
+                "structuredCacheHitCount": novelty_outputs.get("structuredCacheHitCount", 0),
+                "deepReadRequestedCount": novelty_outputs.get("deepReadRequestedCount", 0),
                 "literatureMapId": novelty_outputs.get("literatureMapId"),
             },
             "gapOutputs": {
@@ -1905,18 +1989,43 @@ class IdeaGenerationService:
                 extra_terms=self._get_step_output(session, "expandQuery", "expandedTerms", []),
             )
 
-        # Step 3c: Deep-read selected papers
-        structured_papers = self.deep_reader.extract_structured_papers(
-            session=session,
-            selected_paper_ids=selected_paper_ids,
-            raw_papers=raw_papers,
-        )
-        for sp in structured_papers:
+        # Step 3c: Deep-read only papers that are not already structured.
+        cached_structured: Dict[str, StructuredPaper] = {}
+        missing_paper_ids: List[str] = []
+        for paper_id in selected_paper_ids:
+            cached = None
+            try:
+                cached = self.structured_storage.get(paper_id)
+            except Exception as e:
+                logger.warning("Structured paper cache lookup failed for %s: %s", paper_id, e)
+            if cached and cached.sessionId == session.id:
+                cached_structured[paper_id] = cached
+            else:
+                missing_paper_ids.append(paper_id)
+
+        new_structured_papers: List[StructuredPaper] = []
+        if missing_paper_ids:
+            new_structured_papers = self.deep_reader.extract_structured_papers(
+                session=session,
+                selected_paper_ids=missing_paper_ids,
+                raw_papers=raw_papers,
+            )
+        for sp in new_structured_papers:
             try:
                 if not self.structured_storage.get(sp.id):
                     self.structured_storage.create(sp)
             except Exception as e:
                 logger.warning(f"Failed to persist structured paper {sp.id}: {e}")
+        structured_by_id = {
+            **cached_structured,
+            **{sp.id: sp for sp in new_structured_papers},
+            **{sp.rawPaperId: sp for sp in new_structured_papers if sp.rawPaperId},
+        }
+        structured_papers = [
+            structured_by_id[paper_id]
+            for paper_id in selected_paper_ids
+            if paper_id in structured_by_id
+        ]
         structured_quality_gate = _evaluate_paper_quality_gate(
             seed=seed,
             domain=session.config.domain or "",
@@ -2025,6 +2134,8 @@ class IdeaGenerationService:
             "forcedRepairPaperIds": forced_selected_ids,
             "forcedRepairPaperCount": len(forced_selected_ids),
             "structuredPaperCount": len(structured_papers),
+            "structuredCacheHitCount": len(cached_structured),
+            "deepReadRequestedCount": len(missing_paper_ids),
             "selectedPaperQualityGate": selected_quality_gate,
             "structuredPaperQualityGate": structured_quality_gate,
             "literatureMapId": literature_map.id,
@@ -2111,8 +2222,8 @@ class IdeaGenerationService:
                 literature_map=literature_map,
                 seed_query=seed,
             )
-            for seed in path_seeds:
-                self.path_seed_storage.create(seed)
+            for path_seed in path_seeds:
+                self.path_seed_storage.create(path_seed)
 
             # Step 4d: Update BFTSHandoff with Phase 2 data
             existing_handoff = self.handoff_storage.get_by_session(session.id)
@@ -2179,6 +2290,15 @@ class IdeaGenerationService:
                             prioritized_gaps.append(content)
         except Exception as e:
             logger.warning(f"LLM gap analysis failed: {e}")
+
+        gap_analysis, prioritized_gaps, opportunities = _ensure_gap_outputs(
+            gap_analysis=gap_analysis,
+            prioritized_gaps=prioritized_gaps,
+            opportunities=opportunities,
+            novelty_gaps=gaps_from_novelty,
+            literature_map=literature_map,
+            seed_query=seed,
+        )
 
         inputs = {"topic": seed, "literatureCount": len(literature)}
         outputs = {
@@ -3366,6 +3486,8 @@ class IdeaGenerationService:
                 "forcedRepairPaperIds": novelty_outputs.get("forcedRepairPaperIds", []),
                 "forcedRepairPaperCount": novelty_outputs.get("forcedRepairPaperCount", 0),
                 "structuredPaperCount": novelty_outputs.get("structuredPaperCount", 0),
+                "structuredCacheHitCount": novelty_outputs.get("structuredCacheHitCount", 0),
+                "deepReadRequestedCount": novelty_outputs.get("deepReadRequestedCount", 0),
                 "literatureMapId": novelty_outputs.get("literatureMapId"),
             },
             "gapOutputs": {

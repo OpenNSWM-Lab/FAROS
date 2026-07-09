@@ -14,6 +14,8 @@ import logging
 import json
 import uuid
 import re as _re
+import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Any, Optional
 
 from app.models.idea import (
@@ -40,6 +42,28 @@ logger = logging.getLogger(__name__)
 class DeepReader:
     """Stateless deep reader for structured paper extraction."""
 
+    def _get_concurrency(self, paper_count: int) -> int:
+        """Return bounded DeepReader concurrency for LLM I/O."""
+        try:
+            configured = int(os.getenv("FAROS_DEEP_READER_CONCURRENCY", "2"))
+        except ValueError:
+            configured = 2
+        return max(1, min(8, configured, max(1, paper_count)))
+
+    def _extract_with_fallback(
+        self,
+        session: IdeaSession,
+        paper: RawPaper,
+    ) -> StructuredPaper:
+        try:
+            return self._extract_single(session, paper)
+        except Exception as e:
+            logger.warning(
+                "LLM extraction failed for %s (%s), using heuristic fallback",
+                paper.id, e,
+            )
+            return self._extract_heuristic(session.id, paper)
+
     def extract_structured_papers(
         self,
         session: IdeaSession,
@@ -63,21 +87,31 @@ class DeepReader:
             logger.warning("No selected papers to deep-read")
             return []
 
-        structured_papers: List[StructuredPaper] = []
-        for paper in selected_papers:
-            try:
-                sp = self._extract_single(session, paper)
-            except Exception as e:
-                logger.warning(
-                    "LLM extraction failed for %s (%s), using heuristic fallback",
-                    paper.id, e,
-                )
-                sp = self._extract_heuristic(session.id, paper)
-            structured_papers.append(sp)
+        concurrency = self._get_concurrency(len(selected_papers))
+        if concurrency <= 1 or len(selected_papers) <= 1:
+            structured_papers = [
+                self._extract_with_fallback(session, paper)
+                for paper in selected_papers
+            ]
+        else:
+            indexed_results: Dict[int, StructuredPaper] = {}
+            with ThreadPoolExecutor(max_workers=concurrency) as executor:
+                futures = {
+                    executor.submit(self._extract_with_fallback, session, paper): index
+                    for index, paper in enumerate(selected_papers)
+                }
+                for future in as_completed(futures):
+                    indexed_results[futures[future]] = future.result()
+            structured_papers = [
+                indexed_results[index]
+                for index in range(len(selected_papers))
+                if index in indexed_results
+            ]
 
         logger.info(
-            "Deep-read %d papers: %d llm, %d heuristic",
+            "Deep-read %d papers with concurrency=%d: %d llm, %d heuristic",
             len(structured_papers),
+            concurrency,
             sum(1 for s in structured_papers if s.extractionMethod == "llm"),
             sum(1 for s in structured_papers if s.extractionMethod == "heuristic"),
         )
