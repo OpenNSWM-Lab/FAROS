@@ -5,6 +5,11 @@
 backend/data/
 backend/tests/
 
+# Temp docs, backups, work logs
+docs/
+*.bak
+stop_dev.sh
+
 # Python
 __pycache__/
 **/__pycache__/

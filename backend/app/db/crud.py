@@ -25,6 +25,7 @@ from .models import (
     CodeProjectFile, CodeProjectFileCreate,
     CodeProjectGeneration, CodeProjectGenerationCreate, GenerationStatus,
     CodeProjectExport, CodeProjectExportCreate,
+    AgentRunDB, AgentRunCreate, AgentRunStatus,
 )
 
 logger = logging.getLogger(__name__)
@@ -254,20 +255,23 @@ def get_job(session: Session, job_id: str) -> Optional[CodeJob]:
 def list_jobs(
     session: Session,
     session_id: Optional[str] = None,
+    project_id: Optional[str] = None,
     candidate_id: Optional[str] = None,
     status: Optional[JobStatus] = None,
     limit: int = 100,
 ) -> List[CodeJob]:
     """List jobs with optional filters."""
     stmt = select(CodeJob).order_by(CodeJob.created_at.desc())
-    
+
     if session_id:
         stmt = stmt.where(CodeJob.session_id == session_id)
+    if project_id:
+        stmt = stmt.where(CodeJob.project_id == project_id)
     if candidate_id:
         stmt = stmt.where(CodeJob.candidate_id == candidate_id)
     if status:
         stmt = stmt.where(CodeJob.status == status)
-    
+
     stmt = stmt.limit(limit)
     return list(session.exec(stmt).all())
 
@@ -277,15 +281,38 @@ def update_job(session: Session, job_id: str, updates: Dict[str, Any]) -> Option
     job = session.get(CodeJob, job_id)
     if not job:
         return None
-    
+
     for key, value in updates.items():
         if hasattr(job, key):
             setattr(job, key, value)
-    
+
     session.add(job)
     session.commit()
     session.refresh(job)
     return job
+
+
+def delete_job(session: Session, job_id: str) -> bool:
+    """Delete a job and its associated artifacts."""
+    job = session.get(CodeJob, job_id)
+    if not job:
+        return False
+    # Delete associated artifacts
+    artifacts = list(session.exec(
+        select(ArtifactDB).where(ArtifactDB.job_id == job_id)
+    ).all())
+    for a in artifacts:
+        session.delete(a)
+    # Delete associated eval reports
+    eval_report = session.exec(
+        select(EvalReportDB).where(EvalReportDB.job_id == job_id)
+    ).first()
+    if eval_report:
+        session.delete(eval_report)
+    # Delete job
+    session.delete(job)
+    session.commit()
+    return True
 
 
 # ============ Eval Reports ============
@@ -445,9 +472,49 @@ def update_project_v2(session: Session, project_id: str, updates: Dict[str, Any]
 
 
 def delete_project_v2(session: Session, project_id: str) -> bool:
+    """Delete a project and all related records (cascading)."""
     project = session.get(CodeProjectV2, project_id)
     if not project:
         return False
+
+    # Delete related generations
+    gens = list(session.exec(
+        select(CodeProjectGeneration).where(CodeProjectGeneration.project_id == project_id)
+    ).all())
+    for g in gens:
+        session.delete(g)
+
+    # Delete related exports
+    exports = list(session.exec(
+        select(CodeProjectExport).where(CodeProjectExport.project_id == project_id)
+    ).all())
+    for e in exports:
+        session.delete(e)
+
+    # Delete related jobs (and their artifacts/eval reports)
+    jobs = list(session.exec(
+        select(CodeJob).where(CodeJob.project_id == project_id)
+    ).all())
+    for job in jobs:
+        # Delete artifacts for this job
+        artifacts = list(session.exec(
+            select(ArtifactDB).where(ArtifactDB.job_id == job.id)
+        ).all())
+        for a in artifacts:
+            session.delete(a)
+        # Delete eval reports for this job
+        eval_report = session.exec(
+            select(EvalReportDB).where(EvalReportDB.job_id == job.id)
+        ).first()
+        if eval_report:
+            session.delete(eval_report)
+        session.delete(job)
+
+    session.flush()
+
+    # Delete project files (already handled by delete_project_files, but do it here for safety)
+    delete_project_files(session, project_id)
+
     session.delete(project)
     session.commit()
     return True
@@ -580,3 +647,65 @@ def create_project_export(session: Session, data: CodeProjectExportCreate) -> Co
 
 def get_project_export(session: Session, export_id: str) -> Optional[CodeProjectExport]:
     return session.get(CodeProjectExport, export_id)
+
+
+# ============ Autonomous Agent Runs ============
+
+def create_agent_run(session: Session, data: AgentRunCreate) -> AgentRunDB:
+    """Create a new autonomous agent run record."""
+    run = AgentRunDB(
+        id=generate_id("agentrun"),
+        **data.model_dump(),
+        status="running",
+        created_at=_utcnow(),
+    )
+    session.add(run)
+    session.commit()
+    session.refresh(run)
+    return run
+
+
+def get_agent_run(session: Session, run_id: str) -> Optional[AgentRunDB]:
+    """Get agent run by ID."""
+    return session.get(AgentRunDB, run_id)
+
+
+def update_agent_run(session: Session, run_id: str, updates: Dict[str, Any]) -> Optional[AgentRunDB]:
+    """Update agent run fields."""
+    run = session.get(AgentRunDB, run_id)
+    if not run:
+        return None
+    for k, v in updates.items():
+        if hasattr(run, k):
+            setattr(run, k, v)
+    session.add(run)
+    session.commit()
+    session.refresh(run)
+    return run
+
+
+def list_agent_runs(
+    session: Session,
+    project_id: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> List[AgentRunDB]:
+    """List agent runs, optionally filtered."""
+    stmt = select(AgentRunDB).order_by(AgentRunDB.created_at.desc())
+    if project_id:
+        stmt = stmt.where(AgentRunDB.project_id == project_id)
+    if status:
+        stmt = stmt.where(AgentRunDB.status == status)
+    stmt = stmt.offset(offset).limit(limit)
+    return list(session.exec(stmt).all())
+
+
+def delete_agent_run(session: Session, run_id: str) -> bool:
+    """Delete an agent run record."""
+    run = session.get(AgentRunDB, run_id)
+    if not run:
+        return False
+    session.delete(run)
+    session.commit()
+    return True

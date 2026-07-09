@@ -885,7 +885,7 @@ export function PlanGenerationPanel({
                   )}
                 </div>
                 <div className="flex flex-wrap gap-2">
-                  <Button variant="outline" onClick={() => navigate(`/code?packageId=${encodeURIComponent(planPackage.packageId)}`)}>
+                  <Button variant="outline" onClick={() => navigate(`/code/workspace?packageId=${encodeURIComponent(planPackage.packageId)}`)}>
                     <ArrowRight className="mr-2 h-4 w-4" />
                     Code
                   </Button>
