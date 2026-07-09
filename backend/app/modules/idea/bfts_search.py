@@ -76,6 +76,8 @@ def _path_seed_to_idea_node(
     literature_context: str,
     provider_name: str,
     model: str,
+    seed_query: str = "",
+    paper_type: str = "algorithm",
     max_reflection_rounds: int = 2,
 ) -> Optional[IdeaNode]:
     """Convert a ReasoningPathSeed into an initialized IdeaNode via LLM.
@@ -93,10 +95,16 @@ def _path_seed_to_idea_node(
         steps_text = ""
         for i, step in enumerate(seed.steps[:5]):
             steps_text += f"  Step {i+1}: {step.description} (type: {step.stepType})\\n"
+        if seed.sourcePaperIds:
+            steps_text += f"  Source papers: {', '.join(seed.sourcePaperIds[:8])}\\n"
+        if seed.linkedGapIds:
+            steps_text += "  Linked gaps:\\n"
+            for gap in seed.linkedGapIds[:5]:
+                steps_text += f"    - {gap}\\n"
 
         user_prompt = BFTS_SEED_USER.format(
-            seed_query=seed.sessionId or "research",  # fallback
-            paper_type="algorithm",  # default; overridden by caller context
+            seed_query=seed_query or seed.sessionId or "research",
+            paper_type=paper_type or "algorithm",
             template_type=seed.templateType or "generic",
             anchor_entities=", ".join(seed.anchorEntityIds[:5]) or "(none)",
             path_steps=steps_text or "  (no steps defined)",
@@ -350,6 +358,11 @@ class BFTSSearchTree:
         self.seed_query = seed_query
         self.paper_type = paper_type
         self.structured_papers = structured_papers  # Stored for literature probe context
+        self._seed_prior_by_id = {
+            seed.seedId: (seed.scores or seed.initialScores)
+            for seed in path_seeds
+            if seed.seedId and (seed.scores or seed.initialScores)
+        }
 
         # Tree storage
         self.nodes: List[IdeaNode] = []
@@ -392,6 +405,8 @@ class BFTSSearchTree:
                 literature_context=literature_context,
                 provider_name=self.provider_name,
                 model=self.model,
+                seed_query=self.seed_query,
+                paper_type=self.paper_type,
                 max_reflection_rounds=1,  # Just initialize, no deep reflection yet
             )
             if node:
@@ -728,21 +743,28 @@ class BFTSSearchTree:
         return min(1.0, len(words) / 5.0)
 
     def _estimate_evidence_support(self, node: IdeaNode) -> float:
-        """Estimate evidence support: 0-1, based on reflection rounds and search results."""
-        # More reflection rounds = more literature grounding
-        return min(1.0, node.reflectionRounds / max(1, self.config.maxReflectionRounds))
+        """Estimate evidence support from path seed prior plus reflection/probe evidence."""
+        score = min(1.0, node.reflectionRounds / max(1, self.config.maxReflectionRounds))
+        if node.sourceSeedId:
+            prior = self._get_seed_prior(node.sourceSeedId)
+            if prior:
+                score = max(score, prior.evidencePrior)
+        if node.literatureProbeIds:
+            score = min(1.0, score + 0.15)
+        return score
 
     def _estimate_graph_grounding(self, node: IdeaNode) -> float:
         """Estimate graph grounding: 0-1, based on source seed."""
         if node.sourceSeedId:
+            prior = self._get_seed_prior(node.sourceSeedId)
+            if prior:
+                return max(0.3, prior.graphAlignmentPrior)
             return 0.7  # Has a reasoning path seed backing
         return 0.3
 
     def _get_seed_prior(self, seed_id: str) -> Optional[Any]:
         """Get PathSeedScores prior for a seed."""
-        # This requires access to path_seed storage
-        # For now, return None (use defaults)
-        return None
+        return self._seed_prior_by_id.get(seed_id)
 
     def _get_literature_context_for_node(self, node: IdeaNode) -> str:
         """Get literature context string for a node's reflection loop."""

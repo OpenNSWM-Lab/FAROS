@@ -8,6 +8,7 @@ Each seed is a chain of (entity → relation → entity) steps with scores.
 """
 
 import logging
+import re
 import uuid
 from collections import defaultdict
 from typing import List, Dict, Set, Tuple, Optional, Any
@@ -27,6 +28,30 @@ from app.models.idea import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _topic_tokens(text: str) -> Set[str]:
+    """Tokenize English/CJK topic text for lightweight alignment checks."""
+    text = (text or "").lower().replace("-", " ")
+    tokens = {
+        token
+        for token in re.findall(r"[a-z][a-z0-9]{2,}|[\u4e00-\u9fff]{2,}", text)
+        if token not in {
+            "the", "and", "for", "with", "from", "this", "that", "into",
+            "using", "method", "system", "model", "paper", "research",
+        }
+    }
+    # Long uninterrupted CJK spans are common in user queries; add short windows.
+    cjk_chars = "".join(re.findall(r"[\u4e00-\u9fff]", text))
+    if len(cjk_chars) >= 2:
+        tokens.update(cjk_chars[i:i + 2] for i in range(len(cjk_chars) - 1))
+    return tokens
+
+
+def _token_overlap(left: Set[str], right: Set[str]) -> float:
+    if not left or not right:
+        return 0.0
+    return len(left & right) / max(1, min(len(left), len(right)))
 
 # Paper type taxonomy mapping
 PAPER_TYPE_KEYWORDS: Dict[str, List[str]] = {
@@ -53,6 +78,7 @@ class PathSeedGenerator:
         structured_papers: List[StructuredPaper],
         literature_map: LiteratureMap,
         max_seeds: int = 10,
+        seed_query: str = "",
     ) -> List[ReasoningPathSeed]:
         """Generate reasoning path seeds.
 
@@ -74,7 +100,15 @@ class PathSeedGenerator:
         # Build claim/paper index from structured papers
         claim_paper_map: Dict[str, str] = {}
         claim_confidence: Dict[str, float] = {}
+        paper_text_by_id: Dict[str, str] = {}
         for sp in structured_papers:
+            paper_text_by_id[sp.rawPaperId] = " ".join([
+                sp.title or "",
+                sp.abstract or "",
+                sp.summary or "",
+                " ".join(sp.limitations or []),
+                " ".join(claim.text for claim in sp.claims[:5]),
+            ])
             for c in sp.claims:
                 claim_paper_map[c.claimId] = sp.rawPaperId
                 claim_confidence[c.claimId] = c.confidence
@@ -92,9 +126,13 @@ class PathSeedGenerator:
                 novelty_directions.add(ne.direction.lower())
 
         # 1. Select root entities
+        seed_tokens = _topic_tokens(seed_query)
         entities_by_importance = sorted(
             reasoning_kg.entities,
-            key=lambda e: e.importanceScore,
+            key=lambda e: (
+                self._entity_topic_alignment(e, seed_tokens, paper_text_by_id),
+                e.importanceScore,
+            ),
             reverse=True,
         )
         root_entities = entities_by_importance[:5]
@@ -214,7 +252,10 @@ class PathSeedGenerator:
                 evidence_by_entity, claim_confidence, novelty_directions,
                 reasoning_kg,
             )
-            scored_seeds.append((steps, papers, claims, scores))
+            topic_alignment = self._path_topic_alignment(
+                steps, papers, seed_tokens, reasoning_kg, paper_text_by_id
+            )
+            scored_seeds.append((steps, papers, claims, scores, topic_alignment))
 
         logger.info(
             "Path seed scoring: all_seeds=%d, scored=%d",
@@ -234,16 +275,20 @@ class PathSeedGenerator:
             before_filter, len(scored_seeds),
         )
         scored_seeds.sort(
-            key=lambda s: s[3].noveltyPrior + s[3].feasibilityPrior + s[3].evidencePrior,
+            key=lambda s: (
+                s[4] * 2.0
+                + s[3].noveltyPrior
+                + s[3].feasibilityPrior
+                + s[3].evidencePrior
+                + s[3].graphAlignmentPrior
+            ),
             reverse=True,
         )
 
         # 5. Build ReasoningPathSeed objects
         result = []
         evidence_link_ids = [l.linkId for l in evidence_links]
-        gap_ids = [g.direction for g in getattr(literature_map, 'gaps', [])][:5]
-
-        for steps, papers, claims, scores in scored_seeds[:max_seeds]:
+        for steps, papers, claims, scores, _topic_alignment in scored_seeds[:max_seeds]:
             entity_names = []
             for step in steps:
                 entity = next(
@@ -255,6 +300,15 @@ class PathSeedGenerator:
 
             paper_types = self._classify_paper_types(entity_names)
             template_type = paper_types[0] if paper_types else "generic"
+
+            gap_ids = self._select_path_gap_ids(
+                steps=steps,
+                papers=papers,
+                literature_map=literature_map,
+                reasoning_kg=reasoning_kg,
+                seed_tokens=seed_tokens,
+                paper_text_by_id=paper_text_by_id,
+            )
 
             result.append(ReasoningPathSeed(
                 seedId=f"rps_{uuid.uuid4().hex[:12]}",
@@ -281,6 +335,83 @@ class PathSeedGenerator:
             len(result), len(root_entities), len(scored_seeds), len(result),
         )
         return result
+
+    def _entity_topic_alignment(
+        self,
+        entity: KGEntity,
+        seed_tokens: Set[str],
+        paper_text_by_id: Dict[str, str],
+    ) -> float:
+        """Score whether a KG entity belongs to the user's seed topic."""
+        if not seed_tokens:
+            return 0.0
+        text = " ".join([
+            entity.name,
+            entity.normalizedName,
+            " ".join(paper_text_by_id.get(pid, "") for pid in entity.sourcePaperIds[:3]),
+        ])
+        return _token_overlap(seed_tokens, _topic_tokens(text))
+
+    def _path_topic_alignment(
+        self,
+        steps: List[PathSeedStep],
+        papers: List[str],
+        seed_tokens: Set[str],
+        reasoning_kg: ReasoningKG,
+        paper_text_by_id: Dict[str, str],
+    ) -> float:
+        """Score whether a candidate reasoning path is on-topic."""
+        if not seed_tokens:
+            return 0.0
+        entity_text: List[str] = []
+        for step in steps:
+            entity = next(
+                (e for e in reasoning_kg.entities if e.entityId == step.entityId),
+                None,
+            )
+            if entity:
+                entity_text.extend([entity.name, entity.normalizedName])
+            entity_text.extend([step.text, step.description])
+        paper_text = " ".join(paper_text_by_id.get(pid, "") for pid in papers[:5])
+        return _token_overlap(seed_tokens, _topic_tokens(" ".join(entity_text) + " " + paper_text))
+
+    def _select_path_gap_ids(
+        self,
+        *,
+        steps: List[PathSeedStep],
+        papers: List[str],
+        literature_map: LiteratureMap,
+        reasoning_kg: ReasoningKG,
+        seed_tokens: Set[str],
+        paper_text_by_id: Dict[str, str],
+    ) -> List[str]:
+        """Bind only gaps that are relevant to this path, not global map prefixes."""
+        path_text_parts: List[str] = []
+        for step in steps:
+            entity = next(
+                (e for e in reasoning_kg.entities if e.entityId == step.entityId),
+                None,
+            )
+            if entity:
+                path_text_parts.extend([entity.name, entity.normalizedName])
+            path_text_parts.extend([step.text, step.description])
+        path_text_parts.extend(paper_text_by_id.get(pid, "") for pid in papers[:5])
+        path_tokens = _topic_tokens(" ".join(path_text_parts))
+        paper_set = set(papers)
+
+        scored: List[Tuple[float, str]] = []
+        for gap in getattr(literature_map, "gaps", []) or []:
+            gap_text = " ".join([gap.direction, gap.evidence])
+            gap_tokens = _topic_tokens(gap_text)
+            path_score = _token_overlap(path_tokens, gap_tokens)
+            topic_score = _token_overlap(seed_tokens, gap_tokens)
+            paper_score = 1.0 if paper_set & set(gap.paperIds or []) else 0.0
+            score = paper_score + path_score + topic_score
+            if score > 0.0:
+                scored.append((score, gap.direction))
+
+        scored.sort(key=lambda item: item[0], reverse=True)
+        return [direction for _score, direction in scored[:5]]
 
     def _score_path(
         self,

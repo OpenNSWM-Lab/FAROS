@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -17,9 +17,12 @@ import {
   ChevronDown,
   ChevronUp,
   FileText,
-  Settings
+  Settings,
+  ShieldCheck,
+  AlertTriangle
 } from 'lucide-react'
 import { PAPER_TYPES, getPaperTypeById } from '@/lib/models/providers'
+import { summarizeEvidenceGate, type EvidenceGateSummary } from './evidenceGateSummary'
 
 interface IdeaSession {
   id: string
@@ -114,6 +117,77 @@ interface CandidateSelection {
   ideaSeedQuery: string
 }
 
+function EvidenceGateStatus({ summary }: { summary: EvidenceGateSummary }) {
+  const toneClass = {
+    success: 'border-emerald-300 border-l-emerald-700 bg-emerald-50/80',
+    warning: 'border-amber-300 border-l-amber-700 bg-amber-50/80',
+    danger: 'border-red-300 border-l-red-700 bg-red-50/80',
+    neutral: 'border-slate-300 border-l-slate-700 bg-slate-50',
+  }[summary.tone]
+  const icon = summary.tone === 'danger'
+    ? <AlertTriangle className="h-4 w-4 text-red-700" />
+    : <ShieldCheck className="h-4 w-4 text-emerald-700" />
+
+  return (
+    <div className={`rounded-md border border-l-4 p-3 ${toneClass}`}>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="flex min-w-0 items-start gap-2">
+          <div className="mt-0.5">{icon}</div>
+          <div className="min-w-0">
+            <p className="text-sm font-semibold text-slate-950">{summary.title}</p>
+            <p className="mt-0.5 text-xs text-slate-700">{summary.description}</p>
+          </div>
+        </div>
+        {summary.reviewerScore && (
+          <Badge variant="outline" className="border-slate-400 bg-white text-xs text-slate-800">
+            Reviewer {summary.reviewerScore}
+          </Badge>
+        )}
+      </div>
+
+      <div className="mt-3 grid gap-2 sm:grid-cols-4">
+        {summary.stats.map((item) => (
+          <div key={item.label} className="rounded border border-white/70 bg-white px-2 py-1.5">
+            <p className="text-[11px] font-medium uppercase text-slate-500">{item.label}</p>
+            <p className="mt-0.5 text-sm font-semibold text-slate-950">{item.value}</p>
+          </div>
+        ))}
+      </div>
+
+      {summary.issues.length > 0 && (
+        <div className="mt-3 space-y-1">
+          <p className="text-xs font-semibold text-slate-800">Main issues</p>
+          {summary.issues.map((issue) => (
+            <p key={issue} className="text-xs text-slate-700">{issue}</p>
+          ))}
+        </div>
+      )}
+
+      {summary.repairQueries.length > 0 && (
+        <div className="mt-3 space-y-1">
+          <p className="text-xs font-semibold text-slate-800">Repair searches</p>
+          <div className="flex flex-wrap gap-1.5">
+            {summary.repairQueries.map((query) => (
+              <Badge key={query} variant="outline" className="max-w-full border-slate-300 bg-white text-xs text-slate-700">
+                <span className="truncate">{query}</span>
+              </Badge>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {summary.warnings.length > 0 && summary.issues.length === 0 && (
+        <div className="mt-3 space-y-1">
+          <p className="text-xs font-semibold text-slate-800">Notes</p>
+          {summary.warnings.map((warning) => (
+            <p key={warning} className="text-xs text-slate-700">{warning}</p>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 export function IdeaGenerationPanel({
   onCandidateSelected,
 }: {
@@ -140,6 +214,7 @@ export function IdeaGenerationPanel({
   const [isLoadingHistory, setIsLoadingHistory] = useState(false)
   const [expandedCandidate, setExpandedCandidate] = useState<string | null>(null)
   const [expandedStep, setExpandedStep] = useState<number | null>(null)
+  const evidenceSummary = useMemo(() => summarizeEvidenceGate(trace?.steps), [trace])
 
   useEffect(() => {
     loadSessionHistory()
@@ -447,6 +522,11 @@ export function IdeaGenerationPanel({
             </div>
           </CardHeader>
           <CardContent>
+            {evidenceSummary && (
+              <div className="mb-4">
+                <EvidenceGateStatus summary={evidenceSummary} />
+              </div>
+            )}
             {trace && trace.steps.length > 0 && (
               <div className="space-y-2">
                 <h4 className="text-sm font-medium mb-3">Pipeline Steps</h4>
