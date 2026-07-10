@@ -1185,6 +1185,63 @@ def _candidate_jaccard(a: set[str], b: set[str]) -> float:
     return len(a & b) / max(1, len(a | b))
 
 
+IDEA_REVIEWER_SPECS: List[Dict[str, str]] = [
+    {
+        "name": "IdeaEvidenceReviewer",
+        "focus": "Judge whether the idea is faithfully grounded in cited papers, KG entities, path seeds, and explicit evidence IDs.",
+        "rubric": "High score requires concrete evidenceRefs and no invented citations.",
+    },
+    {
+        "name": "IdeaNoveltyReviewer",
+        "focus": "Judge whether the idea has a concrete difference from closest prior work and addresses a real gap.",
+        "rubric": "High score requires a precise novelty claim, not a generic combination of known methods.",
+    },
+    {
+        "name": "IdeaFeasibilityReviewer",
+        "focus": "Judge whether the method can plausibly be implemented and evaluated by downstream modules.",
+        "rubric": "High score requires implementable modules, clear inputs/outputs, and manageable risks.",
+    },
+    {
+        "name": "IdeaSpecificityReviewer",
+        "focus": "Judge whether the hypothesis, method, variables, metrics, and expected validation are specific enough.",
+        "rubric": "High score requires measurable expected outcomes and concrete evaluation handles.",
+    },
+    {
+        "name": "IdeaImpactReviewer",
+        "focus": "Judge whether the idea would matter scientifically if validated and whether contributions are publishable.",
+        "rubric": "High score requires clear research value, meaningful scope, and credible downstream contribution claims.",
+    },
+]
+
+
+def _score_0_10(value: Any, default: float = 0.0) -> float:
+    try:
+        score = float(value)
+    except (TypeError, ValueError):
+        score = default
+    if 0.0 <= score <= 1.0:
+        score *= 10.0
+    return round(max(0.0, min(10.0, score)), 2)
+
+
+def _confidence_0_1(value: Any, default: float = 0.5) -> float:
+    try:
+        score = float(value)
+    except (TypeError, ValueError):
+        score = default
+    if score > 1.0:
+        score /= 10.0
+    return round(max(0.0, min(1.0, score)), 3)
+
+
+def _bool_from_review(value: Any, *, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "yes", "pass", "passed", "1"}
+    return default
+
+
 class IdeaGenerationService:
     """Service for managing idea generation sessions."""
 
@@ -3602,6 +3659,10 @@ class IdeaGenerationService:
             evidence_list=evidence_list,
             prior_work_comparisons=prior_work_comparisons,
             critiques=critiques,
+            seed_query=seed,
+            provider_name=session.config.providerName,
+            model=session.config.model,
+            literature_context=literature_context,
         )
         ranked = sorted(ranked, key=lambda c: c.overallScore, reverse=True)
         regenerated_candidate_ids: List[str] = []
@@ -3721,6 +3782,10 @@ class IdeaGenerationService:
                         evidence_list=evidence_list,
                         prior_work_comparisons=prior_work_comparisons,
                         critiques=critiques,
+                        seed_query=seed,
+                        provider_name=session.config.providerName,
+                        model=session.config.model,
+                        literature_context=literature_context,
                     )
                     top_gate = gate_reports.get(top_candidate.id) if top_candidate else None
                     top_passed = bool(
@@ -3812,6 +3877,10 @@ class IdeaGenerationService:
                         evidence_list=[regenerated_evidence],
                         prior_work_comparisons=[comparison],
                         critiques=[critique],
+                        seed_query=seed,
+                        provider_name=session.config.providerName,
+                        model=session.config.model,
+                        literature_context=literature_context,
                     ))
                     ranked.append(regenerated)
                     regenerated_candidate_ids.append(regenerated.id)
@@ -4343,6 +4412,293 @@ class IdeaGenerationService:
 
         return "\n\n".join(lines) if lines else "(No literature available)"
 
+    def _allowed_idea_evidence_refs(
+        self,
+        *,
+        candidate: IdeaCandidate,
+        evidence: Optional[CandidateGraphEvidence],
+        comparisons: List[PriorWorkComparison],
+    ) -> List[str]:
+        """Collect evidence IDs a reviewer is allowed to cite."""
+        refs: List[str] = []
+        if evidence:
+            refs.extend(evidence.supportingPaperIds)
+            refs.extend(evidence.supportingClaimIds)
+            refs.extend(evidence.supportingEntityIds)
+            refs.extend(evidence.supportingPathSeedIds)
+            refs.extend(evidence.evidenceLinkIds)
+            refs.extend(evidence.probePaperIds)
+        for comparison in comparisons:
+            refs.extend(comparison.comparedPaperIds)
+        refs.extend(str(ref) for ref in (candidate.references or []))
+        return [ref for ref in dict.fromkeys(str(ref).strip() for ref in refs) if ref]
+
+    def _rule_idea_reviewer_report(
+        self,
+        *,
+        spec: Dict[str, str],
+        candidate: IdeaCandidate,
+        evidence: Optional[CandidateGraphEvidence],
+        comparisons: List[PriorWorkComparison],
+        critique: Optional[IdeaCritique],
+        seed_query: str,
+        allowed_evidence_refs: List[str],
+    ) -> Dict[str, Any]:
+        """Hard validation for one idea reviewer.
+
+        Rules only check facts the system can verify: required fields, available
+        evidence IDs, thresholds, and coarse topic alignment. Scientific judgment
+        is left to the LLM reviewer.
+        """
+        reviewer = spec["name"]
+        blocking: List[str] = []
+        repair: List[str] = []
+        score = 8.0
+
+        missing_fields = [
+            field for field, value in {
+                "title": candidate.title,
+                "problem": candidate.problem,
+                "keyInsight": candidate.keyInsight,
+            }.items()
+            if not str(value or "").strip()
+        ]
+        if missing_fields:
+            blocking.append(f"Missing required candidate fields: {', '.join(missing_fields)}.")
+            repair.append("Regenerate the candidate with complete title, problem, and keyInsight fields.")
+            score -= 2.0
+
+        seed_tokens = _candidate_similarity_key(IdeaCandidate(
+            id="cand_seed_alignment_check",
+            sessionId=candidate.sessionId,
+            title=seed_query or "",
+            problem=seed_query or "",
+            keyInsight=seed_query or "",
+        ))
+        candidate_tokens = _candidate_similarity_key(candidate)
+        if seed_query and seed_tokens and candidate_tokens and _candidate_jaccard(seed_tokens, candidate_tokens) < 0.04:
+            blocking.append("Candidate has weak topic overlap with the seed query.")
+            repair.append("Rewrite the idea so the problem, method, and hypothesis directly answer the seed query.")
+            score -= 1.0
+
+        if reviewer == "IdeaEvidenceReviewer":
+            if not allowed_evidence_refs:
+                blocking.append("No valid evidence IDs are available for this candidate.")
+                repair.append("Bind the candidate to supporting papers, claims, KG entities, path seeds, or probe papers.")
+                score -= 2.0
+            if candidate.referenceSupport < 4.5:
+                blocking.append("Reference support score is below the handoff threshold.")
+                repair.append("Strengthen the evidence grounding before exposing this candidate.")
+                score -= 1.0
+
+        if reviewer == "IdeaNoveltyReviewer":
+            if candidate.novelty < 5.5:
+                blocking.append("Novelty score is below the handoff threshold.")
+                repair.append("Clarify the concrete mechanism, setting, or evaluation difference from prior work.")
+                score -= 1.0
+            if not any(item.differences for item in comparisons):
+                blocking.append("No concrete prior-work difference is recorded.")
+                repair.append("Add an explicit closest-prior-work contrast with evidence-backed differences.")
+                score -= 1.0
+
+        if reviewer == "IdeaFeasibilityReviewer":
+            if candidate.feasibility < 5.5:
+                blocking.append("Feasibility score is below the handoff threshold.")
+                repair.append("Make the method implementable with clear modules, inputs, outputs, and likely resources.")
+                score -= 1.0
+            if not (candidate.proposedMethod or (candidate.draftPlan and candidate.draftPlan.methodology)):
+                blocking.append("Candidate has no proposed method.")
+                repair.append("Add a concrete method sketch before planning.")
+                score -= 1.0
+
+        if reviewer == "IdeaSpecificityReviewer":
+            if candidate.clarity < 5.0 or candidate.experimentSpecificity < 5.0:
+                blocking.append("Specificity scores are below the handoff threshold.")
+                repair.append("Specify variables, expected metrics, datasets, and validation steps.")
+                score -= 1.0
+            if not candidate.hypothesisStatement:
+                blocking.append("Candidate has no explicit hypothesisStatement.")
+                repair.append("Write a testable hypothesis that links method to expected outcome.")
+                score -= 0.8
+            if not candidate.expectedOutcome:
+                blocking.append("Candidate has no expectedOutcome.")
+                repair.append("State what measurable success should look like.")
+                score -= 0.8
+
+        if reviewer == "IdeaImpactReviewer":
+            if candidate.impact < 5.5:
+                blocking.append("Impact score is below the handoff threshold.")
+                repair.append("Sharpen the contribution statement and target scientific value.")
+                score -= 1.0
+            if critique and len(critique.weaknesses) >= 4:
+                blocking.append("Critique contains too many unresolved weaknesses for impact handoff.")
+                repair.append("Resolve or narrow the weakest claims before exposing this idea.")
+                score -= 0.8
+
+        passed = not blocking
+        return {
+            "reviewer": reviewer,
+            "mode": "rule",
+            "score": round(max(0.0, min(10.0, score)), 2),
+            "pass": passed,
+            "passed": passed,
+            "blockingIssues": blocking,
+            "repairInstructions": list(dict.fromkeys(repair)),
+            "evidenceRefs": allowed_evidence_refs[:8],
+            "confidence": 0.9,
+            "summary": "Rule hard validation passed." if passed else "Rule hard validation failed.",
+        }
+
+    def _run_llm_idea_reviewer(
+        self,
+        *,
+        spec: Dict[str, str],
+        candidate: IdeaCandidate,
+        evidence: Optional[CandidateGraphEvidence],
+        comparisons: List[PriorWorkComparison],
+        critique: Optional[IdeaCritique],
+        seed_query: str,
+        provider_name: Optional[str],
+        model: Optional[str],
+        literature_context: str,
+        allowed_evidence_refs: List[str],
+    ) -> Optional[Dict[str, Any]]:
+        """Run one independent LLM reviewer and normalize its JSON response."""
+        if not provider_name or not model:
+            return None
+
+        reviewer = spec["name"]
+        payload = {
+            "reviewer": reviewer,
+            "reviewFocus": spec["focus"],
+            "rubric": spec["rubric"],
+            "seedQuery": seed_query,
+            "candidate": {
+                "id": candidate.id,
+                "title": candidate.title,
+                "problem": candidate.problem,
+                "hypothesisStatement": candidate.hypothesisStatement,
+                "keyInsight": candidate.keyInsight,
+                "proposedMethod": candidate.proposedMethod,
+                "expectedOutcome": candidate.expectedOutcome,
+                "scores": candidate.scoreBreakdown,
+                "expectedMetrics": candidate.expectedMetrics,
+                "experimentSpecs": [
+                    spec_item.model_dump() if hasattr(spec_item, "model_dump") else spec_item
+                    for spec_item in candidate.experimentSpecs[:5]
+                ],
+            },
+            "allowedEvidenceRefs": allowed_evidence_refs,
+            "candidateGraphEvidence": evidence.model_dump() if evidence else {},
+            "priorWorkComparisons": [item.model_dump() for item in comparisons[:3]],
+            "critique": critique.model_dump() if critique else {},
+            "literatureContext": literature_context[:6000],
+        }
+        messages = [
+            ChatMessage(
+                role="system",
+                content=(
+                    f"You are {reviewer}, an independent LLM scientist reviewer. "
+                    "Return JSON only. Judge only your assigned dimension. "
+                    "Do not invent evidence IDs. evidenceRefs must be chosen from allowedEvidenceRefs. "
+                    "Use this schema exactly: score:number 0-10, pass:boolean, "
+                    "blockingIssues:string[], repairInstructions:string[], evidenceRefs:string[], "
+                    "confidence:number 0-1, summary:string."
+                ),
+            ),
+            ChatMessage(
+                role="user",
+                content=json.dumps(payload, ensure_ascii=False, default=str),
+            ),
+        ]
+        try:
+            response = get_provider_client(provider_name).chat(
+                messages,
+                model=model,
+                temperature=0.0,
+                max_tokens=1000,
+                response_format={"type": "json_object"},
+            )
+        except Exception as exc:
+            logger.warning("%s LLM idea reviewer failed: %s", reviewer, exc)
+            return None
+
+        data = _extract_json_object(response.text or "")
+        if not data:
+            logger.warning("%s LLM idea reviewer returned non-JSON output", reviewer)
+            return None
+
+        score = _score_0_10(data.get("score", data.get("rating", 0.0)))
+        passed = _bool_from_review(data.get("pass", data.get("passed")), default=score >= 6.0)
+        return {
+            "reviewer": reviewer,
+            "mode": "llm",
+            "score": score,
+            "pass": passed,
+            "passed": passed,
+            "blockingIssues": _as_string_list(data.get("blockingIssues", data.get("issues", [])), limit=8),
+            "repairInstructions": _as_string_list(
+                data.get("repairInstructions", data.get("suggestedImprovements", [])),
+                limit=8,
+            ),
+            "evidenceRefs": _as_string_list(data.get("evidenceRefs", data.get("evidenceRefIds", [])), limit=12),
+            "confidence": _confidence_0_1(data.get("confidence", data.get("reviewConfidence", 0.5))),
+            "summary": str(data.get("summary", data.get("rationale", "")) or ""),
+            "llmLatencyMs": getattr(response, "latency_ms", None),
+        }
+
+    def _merge_idea_reviewer_reports(
+        self,
+        *,
+        spec: Dict[str, str],
+        rule_report: Dict[str, Any],
+        llm_report: Optional[Dict[str, Any]],
+        allowed_evidence_refs: List[str],
+    ) -> Dict[str, Any]:
+        """Merge LLM scientific judgment with rule hard validation."""
+        reviewer = spec["name"]
+        if not llm_report:
+            return rule_report
+
+        allowed = set(allowed_evidence_refs)
+        raw_refs = [str(ref).strip() for ref in llm_report.get("evidenceRefs", []) if str(ref).strip()]
+        verified_refs = [ref for ref in raw_refs if ref in allowed]
+        unknown_refs = [ref for ref in raw_refs if ref not in allowed]
+        blocking = [
+            *rule_report.get("blockingIssues", []),
+            *llm_report.get("blockingIssues", []),
+        ]
+        if unknown_refs:
+            blocking.append(
+                "LLM reviewer referenced unknown evidence IDs: "
+                + ", ".join(unknown_refs[:5])
+            )
+
+        repair = [
+            *rule_report.get("repairInstructions", []),
+            *llm_report.get("repairInstructions", []),
+        ]
+        score = _score_0_10(llm_report.get("score", 0.0))
+        passed = (
+            bool(llm_report.get("pass", llm_report.get("passed", False)))
+            and score >= 6.0
+            and not blocking
+        )
+        evidence_refs = verified_refs or list(rule_report.get("evidenceRefs", []))[:8]
+        return {
+            "reviewer": reviewer,
+            "mode": "llm+rule",
+            "score": score,
+            "pass": passed,
+            "passed": passed,
+            "blockingIssues": list(dict.fromkeys(str(item) for item in blocking if str(item).strip())),
+            "repairInstructions": list(dict.fromkeys(str(item) for item in repair if str(item).strip())),
+            "evidenceRefs": evidence_refs,
+            "confidence": _confidence_0_1(llm_report.get("confidence", 0.5)),
+            "summary": llm_report.get("summary") or rule_report.get("summary", ""),
+            "llmLatencyMs": llm_report.get("llmLatencyMs"),
+        }
+
     def _apply_idea_review_gate(
         self,
         *,
@@ -4350,6 +4706,10 @@ class IdeaGenerationService:
         evidence_list: List[CandidateGraphEvidence],
         prior_work_comparisons: List[PriorWorkComparison],
         critiques: List[IdeaCritique],
+        seed_query: str = "",
+        provider_name: Optional[str] = None,
+        model: Optional[str] = None,
+        literature_context: str = "",
     ) -> Dict[str, Dict[str, Any]]:
         """Apply idea-stage review findings before PlanPackage generation."""
 
@@ -4433,6 +4793,59 @@ class IdeaGenerationService:
                 warnings.append("Reference support score is below the idea-stage handoff threshold.")
                 suggestions.append("Tie the hypothesis and method to stronger supporting literature evidence.")
 
+            allowed_evidence_refs = self._allowed_idea_evidence_refs(
+                candidate=candidate,
+                evidence=evidence,
+                comparisons=comparisons,
+            )
+            reviewer_reports: List[Dict[str, Any]] = []
+            for spec in IDEA_REVIEWER_SPECS:
+                rule_report = self._rule_idea_reviewer_report(
+                    spec=spec,
+                    candidate=candidate,
+                    evidence=evidence,
+                    comparisons=comparisons,
+                    critique=critique,
+                    seed_query=seed_query,
+                    allowed_evidence_refs=allowed_evidence_refs,
+                )
+                llm_report = self._run_llm_idea_reviewer(
+                    spec=spec,
+                    candidate=candidate,
+                    evidence=evidence,
+                    comparisons=comparisons,
+                    critique=critique,
+                    seed_query=seed_query,
+                    provider_name=provider_name,
+                    model=model,
+                    literature_context=literature_context,
+                    allowed_evidence_refs=allowed_evidence_refs,
+                )
+                reviewer_reports.append(self._merge_idea_reviewer_reports(
+                    spec=spec,
+                    rule_report=rule_report,
+                    llm_report=llm_report,
+                    allowed_evidence_refs=allowed_evidence_refs,
+                ))
+
+            reviewer_blocking = [
+                issue
+                for report in reviewer_reports
+                for issue in report.get("blockingIssues", [])
+            ]
+            reviewer_repairs = [
+                instruction
+                for report in reviewer_reports
+                for instruction in report.get("repairInstructions", [])
+            ]
+            if reviewer_blocking:
+                blocking.extend(reviewer_blocking)
+                penalty += min(1.5, len(reviewer_blocking) * 0.25)
+            suggestions.extend(reviewer_repairs)
+            failed_reviewer_count = sum(1 for report in reviewer_reports if not report.get("passed", False))
+            if failed_reviewer_count:
+                penalty += min(1.0, failed_reviewer_count * 0.2)
+
             if penalty and "idea_review_gate" not in (candidate.scoringMethod or ""):
                 candidate.referenceSupport = max(0.0, candidate.referenceSupport - penalty)
                 candidate.feasibility = max(0.0, candidate.feasibility - min(0.8, penalty * 0.35))
@@ -4440,7 +4853,12 @@ class IdeaGenerationService:
                 if any("difference" in item.lower() or "novelty" in item.lower() for item in warnings):
                     candidate.novelty = max(0.0, candidate.novelty - min(0.8, penalty * 0.35))
 
-            passed = not blocking and candidate.overallScore >= 6.0 and candidate.referenceSupport >= 4.5
+            passed = (
+                not blocking
+                and all(report.get("passed", False) for report in reviewer_reports)
+                and candidate.overallScore >= 6.0
+                and candidate.referenceSupport >= 4.5
+            )
             summary = "Idea review gate passed." if passed else "Idea review gate requires regeneration or another candidate."
             if warnings:
                 summary += " Warnings: " + "; ".join(warnings[:3])
@@ -4465,43 +4883,7 @@ class IdeaGenerationService:
                 "blockingIssues": blocking,
                 "warnings": warnings,
                 "suggestedImprovements": list(dict.fromkeys(suggestions)),
-                "reviewerReports": [
-                    {
-                        "reviewer": "IdeaEvidenceReviewer",
-                        "mode": "rule+llm_context",
-                        "score": round(min(10.0, support_count * 2.2 + candidate.referenceSupport * 0.45), 2),
-                        "passed": support_count > 0 and candidate.referenceSupport >= 4.5,
-                        "summary": "Checks whether the idea is grounded in papers, KG entities, or path seeds.",
-                    },
-                    {
-                        "reviewer": "IdeaNoveltyReviewer",
-                        "mode": "rule+prior_work_llm",
-                        "score": round(min(10.0, candidate.novelty * 0.75 + (1.5 if has_difference else 0.0)), 2),
-                        "passed": candidate.novelty >= 5.5 and has_difference,
-                        "summary": "Checks concrete difference from closest prior work.",
-                    },
-                    {
-                        "reviewer": "IdeaFeasibilityReviewer",
-                        "mode": "rule+critique_llm",
-                        "score": round(max(0.0, candidate.feasibility - critique_failure_count * 0.4), 2),
-                        "passed": candidate.feasibility >= 5.5 and critique_failure_count < 3,
-                        "summary": "Checks implementability and likely failure modes.",
-                    },
-                    {
-                        "reviewer": "IdeaSpecificityReviewer",
-                        "mode": "rule+critique_llm",
-                        "score": round((candidate.clarity + candidate.experimentSpecificity) / 2, 2),
-                        "passed": candidate.clarity >= 5.0 and candidate.experimentSpecificity >= 5.0,
-                        "summary": "Checks whether method, variables, and validation requirements are concrete.",
-                    },
-                    {
-                        "reviewer": "IdeaImpactReviewer",
-                        "mode": "rule+critique_llm",
-                        "score": round(max(0.0, candidate.impact - critique_weakness_count * 0.2), 2),
-                        "passed": candidate.impact >= 5.5,
-                        "summary": "Checks expected research value and downstream contribution potential.",
-                    },
-                ],
+                "reviewerReports": reviewer_reports,
                 "priorWorkComparisonConfidence": round(avg_comparison_confidence, 3),
                 "needsFeedbackOptimization": self._should_optimize_candidate_from_gate(candidate, {
                     "passed": passed,
