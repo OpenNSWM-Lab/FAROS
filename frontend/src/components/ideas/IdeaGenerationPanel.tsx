@@ -8,7 +8,6 @@ import {
   Play,
   CheckCircle2,
   XCircle,
-  Clock,
   BookOpen,
   Sparkles,
   RefreshCw,
@@ -75,6 +74,17 @@ interface TraceData {
   successfulSteps: number
   failedSteps: number
 }
+
+const PIPELINE_STEPS = [
+  { name: 'expandQuery', label: 'Expand query', desc: 'Build search terms and query plan' },
+  { name: 'literatureSearch', label: 'Search literature', desc: 'Retrieve and filter candidate papers' },
+  { name: 'noveltyCheck', label: 'Read papers', desc: 'Deep-read selected papers and extract claims' },
+  { name: 'gapAnalysis', label: 'Find gaps', desc: 'Map limitations and research opportunities' },
+  { name: 'evidenceGate', label: 'Check evidence', desc: 'Verify whether the paper pool is usable' },
+  { name: 'ideaBrainstorm', label: 'Generate ideas', desc: 'Create evidence-grounded idea candidates' },
+  { name: 'rankCandidates', label: 'Review ideas', desc: 'Rank, review, and repair candidate ideas' },
+  { name: 'finalizeSession', label: 'Finalize', desc: 'Prepare the reviewed shortlist' },
+] as const
 
 interface ScoreEntry {
   value: number
@@ -231,6 +241,102 @@ function EvidenceGateStatus({ summary }: { summary: EvidenceGateSummary }) {
           ))}
         </div>
       )}
+    </div>
+  )
+}
+
+function PipelineProgress({
+  trace,
+  isPolling,
+  status,
+  expandedStep,
+  onToggleStep,
+}: {
+  trace: TraceData | null
+  isPolling: boolean
+  status?: string
+  expandedStep: number | null
+  onToggleStep: (index: number | null) => void
+}) {
+  const actualByName = new Map((trace?.steps || []).map((step) => [step.name, step]))
+  const failedStep = trace?.steps.find((step) => step.status === 'failed')
+  const firstMissingIndex = PIPELINE_STEPS.findIndex((step) => !actualByName.has(step.name))
+  const activeIndex = failedStep
+    ? PIPELINE_STEPS.findIndex((step) => step.name === failedStep.name)
+    : isPolling && firstMissingIndex >= 0
+      ? firstMissingIndex
+      : -1
+  const visibleSteps = trace?.steps.length
+    ? trace.steps
+    : []
+  const runningMeta = activeIndex >= 0 ? PIPELINE_STEPS[activeIndex] : null
+
+  const stepIcon = (stepStatus: string, order: number) => {
+    if (stepStatus === 'ok') return <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+    if (stepStatus === 'failed') return <XCircle className="h-4 w-4 text-red-600" />
+    if (stepStatus === 'running') return <RefreshCw className="h-4 w-4 animate-spin text-blue-600" />
+    return <span className="flex h-4 w-4 items-center justify-center rounded-full border border-slate-300 text-[10px] text-slate-500">{order}</span>
+  }
+
+  return (
+    <div className="space-y-2">
+      <h4 className="text-sm font-medium mb-3">Pipeline Steps</h4>
+      <div className="space-y-1">
+        {visibleSteps.map((actual, index) => {
+          const isExpandable = Boolean(actual?.outputs && Object.keys(actual.outputs).length > 0)
+          return (
+            <div key={`${actual.name}-${index}`}>
+              <div
+                onClick={() => isExpandable && onToggleStep(expandedStep === index ? null : index)}
+                className={`flex items-center gap-3 p-2 rounded border border-slate-300 bg-white ${isExpandable ? 'cursor-pointer hover:bg-slate-50' : ''}`}
+              >
+                {stepIcon(actual.status, index + 1)}
+                <span className="text-sm font-medium flex-1">{actual.name}</span>
+                <span className="text-xs text-muted-foreground">{actual.durationSeconds.toFixed(1)}s</span>
+                {actual.error && <span className="text-xs text-red-500 truncate max-w-[200px]">{actual.error}</span>}
+                {isExpandable && (expandedStep === index ? <ChevronUp className="h-3 w-3 text-slate-400" /> : <ChevronDown className="h-3 w-3 text-slate-400" />)}
+              </div>
+              {expandedStep === index && actual?.outputs && (
+                <div className="ml-8 mt-1 mb-2 p-2 rounded bg-white border text-xs space-y-1">
+                  {actual.inputs && Object.keys(actual.inputs).length > 0 && (
+                    <div><span className="font-medium text-slate-500">Inputs:</span> {Object.entries(actual.inputs).map(([k, v]) => <span key={k} className="ml-1 text-slate-600">{k}={typeof v === 'string' ? v : JSON.stringify(v)}</span>)}</div>
+                  )}
+                  {Object.entries(actual.outputs).filter(([k]) => k !== 'llmLatencyMs').map(([key, val]) => (
+                    <div key={key}>
+                      <span className="font-medium text-amber-700">{key}:</span>{' '}
+                      <span className="text-slate-700">
+                        {Array.isArray(val) ? (val.length > 3 ? `[${val.slice(0, 3).map(v => typeof v === 'string' ? v : JSON.stringify(v)).join(', ')}... +${val.length - 3} more]` : JSON.stringify(val)) : typeof val === 'object' && val !== null ? JSON.stringify(val).slice(0, 200) : String(val).slice(0, 200)}
+                      </span>
+                    </div>
+                  ))}
+                  {Boolean(actual.outputs.llmLatencyMs) && <div className="text-slate-400">LLM latency: {String(actual.outputs.llmLatencyMs)}ms</div>}
+                </div>
+              )}
+            </div>
+          )
+        })}
+
+        {isPolling && runningMeta && !actualByName.has(runningMeta.name) && (
+          <div className="flex items-center gap-3 p-2 rounded border border-blue-300 bg-blue-50">
+            {stepIcon('running', visibleSteps.length + 1)}
+            <span className="text-sm font-medium flex-1">{runningMeta.name}</span>
+            <span className="text-xs text-blue-700">running</span>
+          </div>
+        )}
+
+        {!visibleSteps.length && !isPolling && (
+          <div className="flex items-center gap-3 p-2 rounded border border-slate-300 bg-white text-sm text-slate-500">
+            {stepIcon('pending', 1)}
+            <span>Waiting to start</span>
+          </div>
+        )}
+      </div>
+      <div className="flex gap-4 mt-3 text-xs text-muted-foreground">
+        <span>Total: {trace?.totalSteps || visibleSteps.length}</span>
+        <span className="text-green-600">Success: {trace?.successfulSteps || 0}</span>
+        <span className="text-red-600">Failed: {trace?.failedSteps || 0}</span>
+        {status === 'completed' && <span className="text-emerald-700">Reviewed shortlist is ready</span>}
+      </div>
     </div>
   )
 }
@@ -438,14 +544,6 @@ export function IdeaGenerationPanel({
     }
   }
 
-  const getStepIcon = (status: string) => {
-    switch (status) {
-      case 'ok': return <CheckCircle2 className="h-4 w-4 text-green-500" />
-      case 'failed': return <XCircle className="h-4 w-4 text-red-500" />
-      default: return <Clock className="h-4 w-4 text-gray-400" />
-    }
-  }
-
   const getScoreColor = (score: number) => {
     if (score >= 8) return 'bg-emerald-700 text-white'
     if (score >= 6) return 'bg-amber-600 text-white'
@@ -580,14 +678,19 @@ export function IdeaGenerationPanel({
                   Internally filtered: {session.hiddenCandidateIds?.length}
                 </Badge>
               )}
-              {(session.rejectedCandidateIds?.length ?? 0) > 0 && (
-                <Badge variant="outline" className="border-amber-300 bg-amber-50 text-amber-800">
-                  Repaired/rejected: {session.rejectedCandidateIds?.length}
-                </Badge>
-              )}
             </div>
 
-            {(evidenceSummary || (trace && trace.steps.length > 0)) && (
+            <div className="mt-4">
+              <PipelineProgress
+                trace={trace}
+                isPolling={isPolling}
+                status={session.status}
+                expandedStep={expandedStep}
+                onToggleStep={setExpandedStep}
+              />
+            </div>
+
+            {evidenceSummary && (
               <div className="mt-4">
                 <Button
                   variant="ghost"
@@ -596,52 +699,11 @@ export function IdeaGenerationPanel({
                   className="px-0 text-xs text-slate-600 hover:bg-transparent hover:text-slate-950"
                 >
                   {showDebugDetails ? <ChevronUp className="h-3 w-3 mr-1" /> : <ChevronDown className="h-3 w-3 mr-1" />}
-                  Developer diagnostics
+                  Evidence details
                 </Button>
                 {showDebugDetails && (
-                  <div className="mt-3 space-y-4">
-                    {evidenceSummary && <EvidenceGateStatus summary={evidenceSummary} />}
-                    {trace && trace.steps.length > 0 && (
-                      <div className="space-y-2">
-                        <h4 className="text-sm font-medium mb-3">Pipeline Steps</h4>
-                        <div className="space-y-1">
-                          {trace.steps.map((step, i) => (
-                            <div key={i}>
-                              <div className="flex items-center gap-3 p-2 rounded border border-slate-300 bg-white cursor-pointer hover:bg-slate-50" onClick={() => setExpandedStep(expandedStep === i ? null : i)}>
-                                {getStepIcon(step.status)}
-                                <span className="text-sm font-medium flex-1">{step.name}</span>
-                                <span className="text-xs text-muted-foreground">{step.durationSeconds.toFixed(1)}s</span>
-                                {step.error && <span className="text-xs text-red-500 truncate max-w-[200px]">{step.error}</span>}
-                                {step.outputs && Object.keys(step.outputs).length > 0 && (
-                                  expandedStep === i ? <ChevronUp className="h-3 w-3 text-slate-400" /> : <ChevronDown className="h-3 w-3 text-slate-400" />
-                                )}
-                              </div>
-                              {expandedStep === i && step.outputs && (
-                                <div className="ml-8 mt-1 mb-2 p-2 rounded bg-white border text-xs space-y-1">
-                                  {step.inputs && Object.keys(step.inputs).length > 0 && (
-                                    <div><span className="font-medium text-slate-500">Inputs:</span> {Object.entries(step.inputs).map(([k, v]) => <span key={k} className="ml-1 text-slate-600">{k}={typeof v === 'string' ? v : JSON.stringify(v)}</span>)}</div>
-                                  )}
-                                  {Object.entries(step.outputs).filter(([k]) => k !== 'llmLatencyMs').map(([key, val]) => (
-                                    <div key={key}>
-                                      <span className="font-medium text-amber-700">{key}:</span>{' '}
-                                      <span className="text-slate-700">
-                                        {Array.isArray(val) ? (val.length > 3 ? `[${val.slice(0, 3).map(v => typeof v === 'string' ? v : JSON.stringify(v)).join(', ')}... +${val.length - 3} more]` : JSON.stringify(val)) : typeof val === 'object' && val !== null ? JSON.stringify(val).slice(0, 200) : String(val).slice(0, 200)}
-                                      </span>
-                                    </div>
-                                  ))}
-                                  {Boolean(step.outputs.llmLatencyMs) && <div className="text-slate-400">LLM latency: {String(step.outputs.llmLatencyMs)}ms</div>}
-                                </div>
-                              )}
-                            </div>
-                          ))}
-                        </div>
-                        <div className="flex gap-4 mt-3 text-xs text-muted-foreground">
-                          <span>Total: {trace.totalSteps}</span>
-                          <span className="text-green-600">Success: {trace.successfulSteps}</span>
-                          <span className="text-red-600">Failed: {trace.failedSteps}</span>
-                        </div>
-                      </div>
-                    )}
+                  <div className="mt-3">
+                    <EvidenceGateStatus summary={evidenceSummary} />
                   </div>
                 )}
               </div>

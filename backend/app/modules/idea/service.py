@@ -7,6 +7,7 @@ Orchestrates the idea generation pipeline with step-based tracing.
 import logging
 import os
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from typing import Optional, List, Dict, Any
 
@@ -1172,17 +1173,97 @@ def _candidate_similarity_key(candidate: IdeaCandidate) -> set[str]:
         "and", "are", "for", "from", "that", "the", "this", "with", "using",
         "method", "model", "paper", "research", "study", "approach", "system",
     }
-    return {
+    tokens = {
         token
         for token in re.findall(r"[a-zA-Z][a-zA-Z0-9]{2,}|[\u4e00-\u9fff]{2,}", text)
         if token not in stopwords
     }
+    alias_groups = [
+        (
+            ("引用忠实", "忠实性", "citation fidelity", "citation faithfulness", "faithful citation", "citation faithful"),
+            ("citation", "fidelity", "faithfulness", "faithful"),
+        ),
+        (
+            ("拒答", "拒绝回答", "abstention", "abstain", "refusal", "refuse"),
+            ("refusal", "refuse", "abstention", "abstain"),
+        ),
+        (
+            ("证据可追踪", "可追踪性", "traceable evidence", "evidence traceability", "provenance"),
+            ("evidence", "traceability", "traceable", "provenance"),
+        ),
+        (
+            ("高风险", "高危", "high risk", "high stakes", "safety critical", "critical"),
+            ("high", "risk", "stakes", "safety", "critical"),
+        ),
+        (
+            ("问答", "question answering", "qa"),
+            ("qa", "question", "answering"),
+        ),
+        (
+            ("检索增强", "retrieval augmented generation", "rag"),
+            ("rag", "retrieval", "augmented", "generation"),
+        ),
+    ]
+    for triggers, aliases in alias_groups:
+        if any(trigger in text for trigger in triggers):
+            tokens.update(aliases)
+    return tokens
 
 
 def _candidate_jaccard(a: set[str], b: set[str]) -> float:
     if not a or not b:
         return 0.0
     return len(a & b) / max(1, len(a | b))
+
+
+def _coerce_text_list(value: Any) -> List[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str):
+        cleaned = value.strip()
+        return [cleaned] if cleaned else []
+    return [str(value).strip()] if str(value).strip() else []
+
+
+def _is_inline_evidence_format_issue(issue: str) -> bool:
+    """Return whether an evidence issue is only asking for inline raw IDs."""
+
+    normalized = str(issue or "").strip().lower()
+    if not normalized:
+        return False
+    text_mentions = (
+        "candidate text" in normalized
+        or "candidate's text" in normalized
+        or "prose" in normalized
+        or "inline" in normalized
+    )
+    citation_mentions = (
+        "citation" in normalized
+        or "citations" in normalized
+        or "evidencerefs" in normalized
+        or "evidence refs" in normalized
+        or "evidence references" in normalized
+        or "raw id" in normalized
+        or "paper id" in normalized
+        or "references" in normalized
+    )
+    weak_binding_mentions = (
+        "lack of concrete evidencerefs" in normalized
+        or "lack of specific evidence references" in normalized
+        or "no explicit citations" in normalized
+        or "does not cite any specific references" in normalized
+    )
+    return (text_mentions and citation_mentions) or weak_binding_mentions
+
+
+def _idea_reviewer_concurrency() -> int:
+    try:
+        configured = int(os.getenv("FAROS_IDEA_REVIEWER_CONCURRENCY", "2"))
+    except ValueError:
+        configured = 2
+    return max(1, min(len(IDEA_REVIEWER_SPECS), configured))
 
 
 IDEA_REVIEWER_SPECS: List[Dict[str, str]] = [
@@ -2052,7 +2133,7 @@ class IdeaGenerationService:
         Internal generation may keep many candidates for exploration and repair.
         This selector exposes only diverse, review-passed ideas by default.
         """
-        target_count = max(1, min(3, max_count, len(ranked)))
+        target_count = max(1, min(2, max_count, len(ranked)))
         scored = sorted(
             ranked,
             key=lambda candidate: self._idea_candidate_quality_score(
@@ -2132,6 +2213,177 @@ class IdeaGenerationService:
                 "qualityScores": final_scores,
             },
         }
+
+    def _target_final_candidate_count(
+        self,
+        session: IdeaSession,
+        ranked: List[IdeaCandidate],
+    ) -> int:
+        """Target at least two user-facing ideas when the pool can support it."""
+
+        configured_max = max(1, getattr(session.config, "maxCandidates", 1) or 1)
+        return max(1, min(2, configured_max, len(ranked)))
+
+    def _current_final_ready_candidates(
+        self,
+        ranked: List[IdeaCandidate],
+        gate_reports: Dict[str, Dict[str, Any]],
+        target_count: int,
+    ) -> List[IdeaCandidate]:
+        """Return candidates already strong enough for the reviewed shortlist."""
+
+        scored = sorted(
+            ranked,
+            key=lambda candidate: self._idea_candidate_quality_score(
+                candidate,
+                gate_reports.get(candidate.id),
+            ),
+            reverse=True,
+        )
+        ready: List[IdeaCandidate] = []
+        ready_keys: List[set[str]] = []
+
+        def _try_add(pool: List[IdeaCandidate], *, strict: bool, similarity_limit: float) -> None:
+            for candidate in pool:
+                if len(ready) >= target_count:
+                    return
+                if any(existing.id == candidate.id for existing in ready):
+                    continue
+                gate = gate_reports.get(candidate.id)
+                if not self._passes_final_candidate_quality(candidate, gate, strict=strict):
+                    continue
+                candidate_key = _candidate_similarity_key(candidate)
+                max_similarity = max(
+                    (_candidate_jaccard(candidate_key, key) for key in ready_keys),
+                    default=0.0,
+                )
+                if max_similarity > similarity_limit:
+                    continue
+                ready.append(candidate)
+                ready_keys.append(candidate_key)
+
+        _try_add(scored, strict=True, similarity_limit=0.72)
+        if len(ready) < target_count:
+            _try_add(scored, strict=False, similarity_limit=0.84)
+        return ready
+
+    def _candidate_pool_repair_action(
+        self,
+        candidate: IdeaCandidate,
+        review_gate: Optional[Dict[str, Any]],
+        paper_quality_gate: Dict[str, Any],
+    ) -> str:
+        """Classify how a non-final candidate should be repaired, if at all."""
+
+        if not review_gate:
+            return "none"
+        if "llm_regenerated_from_idea_review" in (candidate.scoringMethod or ""):
+            return "drop"
+        if (
+            candidate.overallScore < 5.8
+            or candidate.alignment < 4.5
+            or candidate.novelty < 4.8
+        ):
+            return "drop"
+        if review_gate.get("passed") and self._passes_final_candidate_quality(
+            candidate,
+            review_gate,
+            strict=False,
+        ):
+            return "none"
+        if self._idea_gate_requires_literature_repair(review_gate, paper_quality_gate):
+            return "literature_repair"
+
+        text = " ".join(
+            str(item)
+            for item in [
+                *review_gate.get("blockingIssues", []),
+                *review_gate.get("warnings", []),
+                *review_gate.get("suggestedImprovements", []),
+            ]
+        ).lower()
+        regenerate_terms = [
+            "specificity",
+            "feasibility",
+            "novelty",
+            "hypothesis",
+            "method",
+            "metric",
+            "dataset",
+            "experiment",
+            "variable",
+            "contribution",
+            "unclear",
+            "too vague",
+            "具体",
+            "方法",
+            "假设",
+            "实验",
+            "指标",
+        ]
+        if (
+            review_gate.get("blockingIssues")
+            or review_gate.get("suggestedImprovements")
+            or any(term in text for term in regenerate_terms)
+        ):
+            return "regenerate_idea"
+        return "none"
+
+    def _candidate_pool_repair_reason(
+        self,
+        candidate: IdeaCandidate,
+        review_gate: Optional[Dict[str, Any]],
+        action: str,
+    ) -> str:
+        if action == "literature_repair":
+            return "Evidence grounding is insufficient for a high-quality shortlist candidate."
+        if action == "regenerate_idea":
+            return "The candidate is promising but needs idea-level revision before shortlist handoff."
+        if action == "drop":
+            return "The candidate is too weak, duplicated, or already regenerated unsuccessfully."
+        if review_gate and review_gate.get("warnings"):
+            return str(review_gate.get("warnings", ["Candidate does not need repair."])[0])
+        return "Candidate does not need repair."
+
+    def _pick_pool_repair_targets(
+        self,
+        ranked: List[IdeaCandidate],
+        gate_reports: Dict[str, Dict[str, Any]],
+        *,
+        final_ready_ids: set[str],
+        paper_quality_gate: Dict[str, Any],
+        max_targets: int = 1,
+        skipped_candidate_ids: Optional[set[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Pick high-ranked non-final candidates worth repairing."""
+
+        skipped_candidate_ids = skipped_candidate_ids or set()
+        scored = sorted(
+            ranked,
+            key=lambda candidate: self._idea_candidate_quality_score(
+                candidate,
+                gate_reports.get(candidate.id),
+            ),
+            reverse=True,
+        )
+        targets: List[Dict[str, Any]] = []
+        for candidate in scored:
+            if len(targets) >= max_targets:
+                break
+            if candidate.id in final_ready_ids or candidate.id in skipped_candidate_ids:
+                continue
+            gate = gate_reports.get(candidate.id)
+            action = self._candidate_pool_repair_action(candidate, gate, paper_quality_gate)
+            if action not in {"literature_repair", "regenerate_idea"}:
+                continue
+            targets.append({
+                "candidate": candidate,
+                "candidateId": candidate.id,
+                "action": action,
+                "reason": self._candidate_pool_repair_reason(candidate, gate, action),
+                "qualityScore": self._idea_candidate_quality_score(candidate, gate),
+            })
+        return targets
     
     def run_pipeline(self, session_id: str) -> IdeaSession:
         """
@@ -3380,6 +3632,21 @@ class IdeaGenerationService:
                 ideas = data.get("ideas", [])
                 
                 for idea in ideas[:max_count]:
+                    expected_outcomes = _coerce_text_list(idea.get("expectedOutcomes", []))
+                    hypothesis = (
+                        idea.get("hypothesisStatement")
+                        or idea.get("hypothesis")
+                        or idea.get("keyInsight", "")
+                    )
+                    proposed_method = (
+                        idea.get("proposedMethod")
+                        or idea.get("method")
+                        or idea.get("approach", "To be defined")
+                    )
+                    expected_outcome = (
+                        idea.get("expectedOutcome")
+                        or "; ".join(expected_outcomes)
+                    )
                     # Parse experiments
                     experiments = []
                     for exp in idea.get("requiredExperiments", []):
@@ -3405,7 +3672,10 @@ class IdeaGenerationService:
                         sessionId=session_id,
                         title=idea.get("title", "Untitled Idea"),
                         problem=idea.get("problem", "Problem statement pending."),
+                        hypothesisStatement=hypothesis,
                         keyInsight=idea.get("keyInsight", idea.get("approach", "Key insight pending.")),
+                        proposedMethod=proposed_method,
+                        expectedOutcome=expected_outcome,
                         novelty=5.0,
                         noveltyRationale="Pending ranking",
                         feasibility=5.0,
@@ -3415,12 +3685,12 @@ class IdeaGenerationService:
                         scoringMethod="pending",
                         risks=risks,
                         requiredExperiments=experiments,
-                        expectedMetrics=idea.get("expectedOutcomes", []),
+                        expectedMetrics=expected_outcomes,
                         draftPlan=DraftPlan(
                             researchQuestion=idea.get("problem", ""),
-                            hypothesis=idea.get("keyInsight", ""),
-                            methodology=idea.get("approach", "To be defined"),
-                            expectedOutcomes=idea.get("expectedOutcomes", []),
+                            hypothesis=hypothesis,
+                            methodology=proposed_method,
+                            expectedOutcomes=expected_outcomes,
                         ),
                     )
                     candidates.append(candidate)
@@ -3675,7 +3945,9 @@ class IdeaGenerationService:
             extra_terms=self._get_step_output(session, "expandQuery", "expandedTerms", []),
         )
         max_review_iterations = max(1, min(5, getattr(session.config, "maxReviewIterations", 2)))
+        target_final_count = self._target_final_candidate_count(session, ranked)
         review_iteration_summaries: List[Dict[str, Any]] = []
+        repaired_candidate_ids: set[str] = set()
 
         def _replace_candidate_analysis(
             comparison: PriorWorkComparison,
@@ -3694,6 +3966,12 @@ class IdeaGenerationService:
 
         for review_iteration in range(max_review_iterations):
             ranked = sorted(ranked, key=lambda c: c.overallScore, reverse=True)
+            final_ready = self._current_final_ready_candidates(
+                ranked,
+                gate_reports,
+                target_final_count,
+            )
+            final_ready_ids = {candidate.id for candidate in final_ready}
             top_candidate = ranked[0] if ranked else None
             top_gate = gate_reports.get(top_candidate.id) if top_candidate else None
             top_passed = bool(
@@ -3703,202 +3981,233 @@ class IdeaGenerationService:
             )
             summary = {
                 "iteration": review_iteration + 1,
+                "targetFinalCount": target_final_count,
+                "finalReadyCountBefore": len(final_ready),
+                "finalReadyCandidateIdsBefore": [candidate.id for candidate in final_ready],
                 "topCandidateId": top_candidate.id if top_candidate else None,
                 "topPassed": top_passed,
                 "paperGatePassed": bool(paper_quality_gate.get("passed", False)),
                 "blockingIssueCount": len(top_gate.get("blockingIssues", [])) if top_gate else 0,
                 "warningCount": len(top_gate.get("warnings", [])) if top_gate else 0,
+                "repairTargets": [],
                 "action": "none",
             }
-            if top_passed or not top_gate:
+            if len(final_ready) >= target_final_count or not top_gate:
                 review_iteration_summaries.append(summary)
                 break
 
-            if (
-                self._idea_gate_requires_literature_repair(top_gate, paper_quality_gate)
-                and not literature_repair_reports
-                and session.config.providerName
-                and session.config.model
-            ):
-                repair_report = self._repair_literature_pool_for_idea_quality(
-                    session,
-                    review_gate=top_gate,
-                    paper_quality_gate=paper_quality_gate,
-                )
-                literature_repair_reports.append(repair_report)
-                summary["action"] = "rerun_literature_search"
-                summary["createdRawPaperCount"] = len(
-                    repair_report.get("persistReport", {}).get("createdRawPaperIds", [])
-                )
-                summary["paperGateAfterRepair"] = bool(
-                    repair_report.get("paperQualityGateAfter", {}).get("passed", False)
-                )
-                try:
-                    structured_papers = self.structured_storage.list_by_session(session.id)
-                    reasoning_kg = self.reasoning_kg_storage.get_by_session(session.id)
-                    path_seeds = self.path_seed_storage.list_by_session(session.id)
-                    evidence_links = self.evidence_link_storage.list_by_session(session.id)
-                    literature_context = self._build_ranking_literature_context(
-                        structured_papers, reasoning_kg, path_seeds
-                    ) if structured_papers else literature_context
-                    evidence_list = [
-                        self._build_candidate_evidence(
-                            candidate=candidate,
-                            structured_papers=structured_papers,
-                            reasoning_kg=reasoning_kg,
-                            path_seeds=path_seeds,
-                            evidence_links=evidence_links,
-                        )
-                        for candidate in ranked
-                    ]
-                    paper_quality_gate = _evaluate_paper_quality_gate(
-                        seed=seed,
-                        domain=domain,
-                        papers=structured_papers,
-                        stage=f"ideaReview.iteration{review_iteration + 1}.afterLiteratureRepair",
-                        extra_terms=self._get_step_output(session, "expandQuery", "expandedTerms", []),
-                    )
-                    if structured_papers:
-                        for candidate in ranked[:top_k]:
-                            try:
-                                comparison, critique = self._llm_analyze_candidate(
-                                    candidate=candidate,
-                                    seed_query=seed,
-                                    paper_type=paper_type,
-                                    domain=domain,
-                                    literature_context=literature_context,
-                                    provider_name=session.config.providerName,
-                                    model=session.config.model,
-                                )
-                            except Exception as e:
-                                logger.warning(
-                                    "LLM candidate re-analysis after literature repair failed: %s",
-                                    e,
-                                )
-                                comparison, critique = self._fallback_analysis(candidate)
-                            _replace_candidate_analysis(comparison, critique)
-                    gate_reports = self._apply_idea_review_gate(
-                        ranked=ranked,
-                        evidence_list=evidence_list,
-                        prior_work_comparisons=prior_work_comparisons,
-                        critiques=critiques,
-                        seed_query=seed,
-                        provider_name=session.config.providerName,
-                        model=session.config.model,
-                        literature_context=literature_context,
-                    )
-                    top_gate = gate_reports.get(top_candidate.id) if top_candidate else None
-                    top_passed = bool(
-                        top_gate
-                        and top_gate.get("passed")
-                        and paper_quality_gate.get("passed", False)
-                    )
-                    summary["topPassedAfterRepair"] = top_passed
-                    summary["warningCountAfterRepair"] = (
-                        len(top_gate.get("warnings", [])) if top_gate else 0
-                    )
-                    summary["blockingIssueCountAfterRepair"] = (
-                        len(top_gate.get("blockingIssues", [])) if top_gate else 0
-                    )
-                except Exception as e:
-                    logger.warning("Reloading repaired idea-stage evidence failed: %s", e, exc_info=True)
-                    summary["error"] = str(e)
-                if top_passed:
-                    review_iteration_summaries.append(summary)
-                    break
+            repair_targets = self._pick_pool_repair_targets(
+                ranked,
+                gate_reports,
+                final_ready_ids=final_ready_ids,
+                paper_quality_gate=paper_quality_gate,
+                max_targets=1,
+                skipped_candidate_ids=repaired_candidate_ids,
+            )
+            if not repair_targets:
+                review_iteration_summaries.append(summary)
+                break
 
-            if (
-                top_gate
-                and top_candidate
-                and self._should_optimize_candidate_from_gate(top_candidate, top_gate)
-                and structured_papers
-                and session.config.providerName
-                and session.config.model
-            ):
+            for repair_target in repair_targets:
+                target_candidate = repair_target["candidate"]
+                target_gate = gate_reports.get(target_candidate.id, {})
+                action = repair_target["action"]
+                target_summary = {
+                    "candidateId": target_candidate.id,
+                    "action": action,
+                    "reason": repair_target.get("reason", ""),
+                    "qualityScore": repair_target.get("qualityScore"),
+                }
+                summary["repairTargets"].append(target_summary)
                 summary["action"] = (
-                    "rerun_literature_search+regenerate_idea"
-                    if summary.get("action") == "rerun_literature_search"
-                    else "regenerate_idea"
+                    "pool_repair"
+                    if summary.get("action") == "none"
+                    else f"{summary.get('action')}+pool_repair"
                 )
+
+                if action == "literature_repair" and literature_repair_reports:
+                    action = "regenerate_idea"
+                    target_summary["action"] = action
+                    target_summary["reason"] = (
+                        f"{target_summary['reason']} Literature repair was already attempted; "
+                        "regenerating the candidate against the repaired evidence pool."
+                    )
+
+                if (
+                    action == "literature_repair"
+                    and session.config.providerName
+                    and session.config.model
+                ):
+                    repair_report = self._repair_literature_pool_for_idea_quality(
+                        session,
+                        review_gate=target_gate,
+                        paper_quality_gate=paper_quality_gate,
+                    )
+                    literature_repair_reports.append(repair_report)
+                    target_summary["createdRawPaperCount"] = len(
+                        repair_report.get("persistReport", {}).get("createdRawPaperIds", [])
+                    )
+                    target_summary["paperGateAfterRepair"] = bool(
+                        repair_report.get("paperQualityGateAfter", {}).get("passed", False)
+                    )
+                    try:
+                        structured_papers = self.structured_storage.list_by_session(session.id)
+                        reasoning_kg = self.reasoning_kg_storage.get_by_session(session.id)
+                        path_seeds = self.path_seed_storage.list_by_session(session.id)
+                        evidence_links = self.evidence_link_storage.list_by_session(session.id)
+                        literature_context = self._build_ranking_literature_context(
+                            structured_papers, reasoning_kg, path_seeds
+                        ) if structured_papers else literature_context
+                        evidence_list = [
+                            self._build_candidate_evidence(
+                                candidate=candidate,
+                                structured_papers=structured_papers,
+                                reasoning_kg=reasoning_kg,
+                                path_seeds=path_seeds,
+                                evidence_links=evidence_links,
+                            )
+                            for candidate in ranked
+                        ]
+                        paper_quality_gate = _evaluate_paper_quality_gate(
+                            seed=seed,
+                            domain=domain,
+                            papers=structured_papers,
+                            stage=f"ideaReview.iteration{review_iteration + 1}.afterLiteratureRepair",
+                            extra_terms=self._get_step_output(session, "expandQuery", "expandedTerms", []),
+                        )
+                        if structured_papers:
+                            for candidate in ranked[:min(5, len(ranked))]:
+                                try:
+                                    comparison, critique = self._llm_analyze_candidate(
+                                        candidate=candidate,
+                                        seed_query=seed,
+                                        paper_type=paper_type,
+                                        domain=domain,
+                                        literature_context=literature_context,
+                                        provider_name=session.config.providerName,
+                                        model=session.config.model,
+                                    )
+                                except Exception as e:
+                                    logger.warning(
+                                        "LLM candidate re-analysis after literature repair failed: %s",
+                                        e,
+                                    )
+                                    comparison, critique = self._fallback_analysis(candidate)
+                                _replace_candidate_analysis(comparison, critique)
+                        gate_reports = self._apply_idea_review_gate(
+                            ranked=ranked,
+                            evidence_list=evidence_list,
+                            prior_work_comparisons=prior_work_comparisons,
+                            critiques=critiques,
+                            seed_query=seed,
+                            provider_name=session.config.providerName,
+                            model=session.config.model,
+                            literature_context=literature_context,
+                        )
+                    except Exception as e:
+                        logger.warning("Reloading repaired idea-stage evidence failed: %s", e, exc_info=True)
+                        target_summary["error"] = str(e)
+                    continue
+
+                if action != "regenerate_idea":
+                    target_summary["skipped"] = True
+                    target_summary["skipReason"] = f"Unsupported repair action: {action}"
+                    repaired_candidate_ids.add(target_candidate.id)
+                    continue
+
+                repaired_candidate_ids.add(target_candidate.id)
+                if not (structured_papers and session.config.providerName and session.config.model):
+                    target_summary["skipped"] = True
+                    target_summary["skipReason"] = "Regeneration requires structured evidence and an active LLM provider."
+                    continue
+
                 try:
                     regenerated = self._regenerate_candidate_from_review(
                         session=session,
-                        base_candidate=top_candidate,
-                        review_gate=top_gate,
-                        critique=next((item for item in critiques if item.candidateId == top_candidate.id), None),
+                        base_candidate=target_candidate,
+                        review_gate=target_gate,
+                        critique=next((item for item in critiques if item.candidateId == target_candidate.id), None),
                         prior_work=[
                             item for item in prior_work_comparisons
-                            if item.candidateId == top_candidate.id
+                            if item.candidateId == target_candidate.id
                         ],
                         literature_context=literature_context,
                     )
                 except Exception as e:
                     logger.warning(f"Idea review regeneration failed: {e}")
-                    summary["error"] = str(e)
+                    target_summary["error"] = str(e)
                     regenerated = None
-                if regenerated:
-                    try:
-                        scored_candidates, _ = ranking_service.rank_candidates(
-                            candidates=[regenerated],
-                            seed_query=seed,
-                            paper_type=paper_type,
-                            domain=domain,
-                            provider_name=session.config.providerName,
-                            model=session.config.model,
-                            session_id=session.id,
-                        )
-                        regenerated = scored_candidates[0] if scored_candidates else regenerated
-                    except Exception as e:
-                        logger.warning(f"Ranking regenerated candidate failed: {e}")
-                    regenerated_evidence = self._build_candidate_evidence(
-                        candidate=regenerated,
-                        structured_papers=structured_papers,
-                        reasoning_kg=reasoning_kg,
-                        path_seeds=path_seeds,
-                        evidence_links=evidence_links,
-                    )
-                    evidence_list.append(regenerated_evidence)
-                    try:
-                        comparison, critique = self._llm_analyze_candidate(
-                            candidate=regenerated,
-                            seed_query=seed,
-                            paper_type=paper_type,
-                            domain=domain,
-                            literature_context=literature_context,
-                            provider_name=session.config.providerName,
-                            model=session.config.model,
-                        )
-                    except Exception as e:
-                        logger.warning(f"LLM analysis for regenerated candidate failed: {e}")
-                        comparison, critique = self._fallback_analysis(regenerated)
-                    _replace_candidate_analysis(comparison, critique)
-                    gate_reports.update(self._apply_idea_review_gate(
-                        ranked=[regenerated],
-                        evidence_list=[regenerated_evidence],
-                        prior_work_comparisons=[comparison],
-                        critiques=[critique],
+                if not regenerated:
+                    target_summary["skipped"] = True
+                    target_summary["skipReason"] = "LLM regeneration returned no candidate."
+                    continue
+
+                try:
+                    scored_candidates, _ = ranking_service.rank_candidates(
+                        candidates=[regenerated],
                         seed_query=seed,
+                        paper_type=paper_type,
+                        domain=domain,
                         provider_name=session.config.providerName,
                         model=session.config.model,
+                        session_id=session.id,
+                    )
+                    regenerated = scored_candidates[0] if scored_candidates else regenerated
+                except Exception as e:
+                    logger.warning(f"Ranking regenerated candidate failed: {e}")
+                regenerated_evidence = self._build_candidate_evidence(
+                    candidate=regenerated,
+                    structured_papers=structured_papers,
+                    reasoning_kg=reasoning_kg,
+                    path_seeds=path_seeds,
+                    evidence_links=evidence_links,
+                )
+                evidence_list.append(regenerated_evidence)
+                try:
+                    comparison, critique = self._llm_analyze_candidate(
+                        candidate=regenerated,
+                        seed_query=seed,
+                        paper_type=paper_type,
+                        domain=domain,
                         literature_context=literature_context,
-                    ))
-                    ranked.append(regenerated)
-                    regenerated_candidate_ids.append(regenerated.id)
-                    summary["regeneratedCandidateId"] = regenerated.id
-                    if regenerated.id not in session.candidateIds:
-                        session.candidateIds.append(regenerated.id)
-                    try:
-                        self.candidate_storage.create(regenerated)
-                    except Exception as e:
-                        logger.warning(f"Failed to persist regenerated candidate {regenerated.id}: {e}")
-                    ranked = sorted(ranked, key=lambda c: c.overallScore, reverse=True)
-                review_iteration_summaries.append(summary)
-                continue
+                        provider_name=session.config.providerName,
+                        model=session.config.model,
+                    )
+                except Exception as e:
+                    logger.warning(f"LLM analysis for regenerated candidate failed: {e}")
+                    comparison, critique = self._fallback_analysis(regenerated)
+                _replace_candidate_analysis(comparison, critique)
+                gate_reports.update(self._apply_idea_review_gate(
+                    ranked=[regenerated],
+                    evidence_list=[regenerated_evidence],
+                    prior_work_comparisons=[comparison],
+                    critiques=[critique],
+                    seed_query=seed,
+                    provider_name=session.config.providerName,
+                    model=session.config.model,
+                    literature_context=literature_context,
+                ))
+                ranked.append(regenerated)
+                regenerated_candidate_ids.append(regenerated.id)
+                target_summary["regeneratedCandidateId"] = regenerated.id
+                if regenerated.id not in session.candidateIds:
+                    session.candidateIds.append(regenerated.id)
+                try:
+                    self.candidate_storage.create(regenerated)
+                except Exception as e:
+                    logger.warning(f"Failed to persist regenerated candidate {regenerated.id}: {e}")
+                ranked = sorted(ranked, key=lambda c: c.overallScore, reverse=True)
 
+            final_ready_after = self._current_final_ready_candidates(
+                ranked,
+                gate_reports,
+                target_final_count,
+            )
+            summary["finalReadyCountAfter"] = len(final_ready_after)
+            summary["finalReadyCandidateIdsAfter"] = [candidate.id for candidate in final_ready_after]
             review_iteration_summaries.append(summary)
-            if review_iteration == max_review_iterations - 1:
+            if len(final_ready_after) >= target_final_count:
                 break
-            break
 
         # --- Phase 6: Backfill evidence/critique into final candidates (PDF v5) ---
         evidence_by_candidate = {e.candidateId: e for e in evidence_list}
@@ -4601,6 +4910,10 @@ class IdeaGenerationService:
                     f"You are {reviewer}, an independent LLM scientist reviewer. "
                     "Return JSON only. Judge only your assigned dimension. "
                     "Do not invent evidence IDs. evidenceRefs must be chosen from allowedEvidenceRefs. "
+                    "The candidate prose may omit raw evidence IDs; candidateGraphEvidence and "
+                    "allowedEvidenceRefs are the machine-readable citation binding. Do not fail solely "
+                    "because IDs are not inline in the prose. Fail evidence only when the provided IDs "
+                    "are missing, invalid, unrelated, or insufficient for the core claims. "
                     "Use this schema exactly: score:number 0-10, pass:boolean, "
                     "blockingIssues:string[], repairInstructions:string[], evidenceRefs:string[], "
                     "confidence:number 0-1, summary:string."
@@ -4664,9 +4977,25 @@ class IdeaGenerationService:
         raw_refs = [str(ref).strip() for ref in llm_report.get("evidenceRefs", []) if str(ref).strip()]
         verified_refs = [ref for ref in raw_refs if ref in allowed]
         unknown_refs = [ref for ref in raw_refs if ref not in allowed]
+        rule_blocking = list(rule_report.get("blockingIssues", []))
+        llm_blocking = list(llm_report.get("blockingIssues", []))
+        downgraded_format_issues: List[str] = []
+        if (
+            reviewer == "IdeaEvidenceReviewer"
+            and verified_refs
+            and not rule_blocking
+        ):
+            hard_llm_blocking: List[str] = []
+            for issue in llm_blocking:
+                if _is_inline_evidence_format_issue(str(issue)):
+                    downgraded_format_issues.append(str(issue))
+                else:
+                    hard_llm_blocking.append(issue)
+            llm_blocking = hard_llm_blocking
+
         blocking = [
-            *rule_report.get("blockingIssues", []),
-            *llm_report.get("blockingIssues", []),
+            *rule_blocking,
+            *llm_blocking,
         ]
         if unknown_refs:
             blocking.append(
@@ -4677,10 +5006,16 @@ class IdeaGenerationService:
         repair = [
             *rule_report.get("repairInstructions", []),
             *llm_report.get("repairInstructions", []),
+            *downgraded_format_issues,
         ]
         score = _score_0_10(llm_report.get("score", 0.0))
+        if downgraded_format_issues and not blocking and not unknown_refs:
+            score = max(score, _score_0_10(rule_report.get("score", 0.0)), 6.2)
+        llm_passed = bool(llm_report.get("pass", llm_report.get("passed", False)))
+        if downgraded_format_issues and not blocking and not unknown_refs:
+            llm_passed = True
         passed = (
-            bool(llm_report.get("pass", llm_report.get("passed", False)))
+            llm_passed
             and score >= 6.0
             and not blocking
         )
@@ -4798,9 +5133,9 @@ class IdeaGenerationService:
                 evidence=evidence,
                 comparisons=comparisons,
             )
-            reviewer_reports: List[Dict[str, Any]] = []
+            rule_reports: Dict[str, Dict[str, Any]] = {}
             for spec in IDEA_REVIEWER_SPECS:
-                rule_report = self._rule_idea_reviewer_report(
+                rule_reports[spec["name"]] = self._rule_idea_reviewer_report(
                     spec=spec,
                     candidate=candidate,
                     evidence=evidence,
@@ -4809,7 +5144,12 @@ class IdeaGenerationService:
                     seed_query=seed_query,
                     allowed_evidence_refs=allowed_evidence_refs,
                 )
-                llm_report = self._run_llm_idea_reviewer(
+
+            llm_reports: Dict[str, Optional[Dict[str, Any]]] = {}
+            reviewer_concurrency = _idea_reviewer_concurrency()
+
+            def _run_one_llm_reviewer(spec: Dict[str, str]) -> tuple[str, Optional[Dict[str, Any]]]:
+                return spec["name"], self._run_llm_idea_reviewer(
                     spec=spec,
                     candidate=candidate,
                     evidence=evidence,
@@ -4821,10 +5161,36 @@ class IdeaGenerationService:
                     literature_context=literature_context,
                     allowed_evidence_refs=allowed_evidence_refs,
                 )
+
+            if provider_name and model and reviewer_concurrency > 1:
+                with ThreadPoolExecutor(
+                    max_workers=reviewer_concurrency,
+                    thread_name_prefix="idea-reviewer",
+                ) as executor:
+                    future_to_spec = {
+                        executor.submit(_run_one_llm_reviewer, spec): spec
+                        for spec in IDEA_REVIEWER_SPECS
+                    }
+                    for future in as_completed(future_to_spec):
+                        spec = future_to_spec[future]
+                        try:
+                            reviewer_name, llm_report = future.result()
+                        except Exception as exc:
+                            logger.warning("%s LLM idea reviewer crashed: %s", spec["name"], exc)
+                            reviewer_name, llm_report = spec["name"], None
+                        llm_reports[reviewer_name] = llm_report
+            else:
+                for spec in IDEA_REVIEWER_SPECS:
+                    reviewer_name, llm_report = _run_one_llm_reviewer(spec)
+                    llm_reports[reviewer_name] = llm_report
+
+            reviewer_reports: List[Dict[str, Any]] = []
+            for spec in IDEA_REVIEWER_SPECS:
+                reviewer_name = spec["name"]
                 reviewer_reports.append(self._merge_idea_reviewer_reports(
                     spec=spec,
-                    rule_report=rule_report,
-                    llm_report=llm_report,
+                    rule_report=rule_reports[reviewer_name],
+                    llm_report=llm_reports.get(reviewer_name),
                     allowed_evidence_refs=allowed_evidence_refs,
                 ))
 

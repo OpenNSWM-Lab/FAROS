@@ -853,7 +853,7 @@ class LiteratureProbeQuery(BaseModel):
     """Targeted literature search query for idea validation (PDF v5 section 7.8)."""
     nodeId: str
     query: str
-    intent: str = Field(..., description="closest_prior | missing_baseline | dataset_check | contradiction_check | feasibility_check")
+    intent: str = Field(..., description="closest_prior | missing_baseline | dataset_check | metric_check | contradiction_check | feasibility_check")
     maxPapers: int = Field(default=8, ge=1, le=50)
     model_config = ConfigDict(frozen=True)
 
