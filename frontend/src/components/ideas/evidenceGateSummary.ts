@@ -12,6 +12,14 @@ export interface EvidenceGateSummary {
   description: string
   tone: EvidenceGateTone
   stats: Array<{ label: string; value: string }>
+  coverageDimensions: Array<{
+    key: string
+    label: string
+    status: string
+    score?: string
+    paperCount: number
+  }>
+  scientistJudgment?: string
   issues: string[]
   warnings: string[]
   repairQueries: string[]
@@ -50,6 +58,27 @@ function stat(label: string, value: unknown): { label: string; value: string } {
   return { label, value: num == null ? '-' : String(num) }
 }
 
+function summarizeCoverageDimensions(value: unknown): EvidenceGateSummary['coverageDimensions'] {
+  if (!Array.isArray(value)) return []
+  return value
+    .filter(isRecord)
+    .map((item, index) => {
+      const key = String(item.key || `dimension_${index + 1}`)
+      const label = String(item.label || key.replace(/_/g, ' '))
+      const status = String(item.status || 'unknown')
+      const score = asNumber(item.score)
+      const paperIds = Array.isArray(item.supportingPaperIds) ? item.supportingPaperIds : []
+      return {
+        key,
+        label,
+        status,
+        score: score == null ? undefined : `${Math.round(Math.min(1, Math.max(0, score)) * 100)}%`,
+        paperCount: paperIds.length,
+      }
+    })
+    .slice(0, 6)
+}
+
 export function summarizeEvidenceGate(steps: TraceStepLike[] | null | undefined): EvidenceGateSummary | null {
   const step = (steps || []).find((item) => item.name === 'evidenceGate')
   if (!step) return null
@@ -58,6 +87,7 @@ export function summarizeEvidenceGate(steps: TraceStepLike[] | null | undefined)
   const gate = isRecord(outputs.evidenceGate) ? outputs.evidenceGate : {}
   const repairReport = isRecord(outputs.repairReport) ? outputs.repairReport : {}
   const reviewer = isRecord(gate.llmReviewer) ? gate.llmReviewer : {}
+  const coverageReport = isRecord(gate.coverageReport) ? gate.coverageReport : {}
   const passed = gate.passed === true && outputs.allowedToBrainstorm !== false && step.status !== 'failed'
   const repairAttempted = outputs.repairAttempted === true
 
@@ -96,12 +126,17 @@ export function summarizeEvidenceGate(steps: TraceStepLike[] | null | undefined)
 
   const score = asNumber(reviewer.score)
   const reviewerScore = score == null ? undefined : `${Math.round(Math.min(1, Math.max(0, score)) * 100)}%`
+  const scientistJudgment = typeof coverageReport.scientistJudgment === 'string'
+    ? coverageReport.scientistJudgment.trim()
+    : undefined
 
   return {
     title,
     description,
     tone,
     stats,
+    coverageDimensions: summarizeCoverageDimensions(coverageReport.dimensions),
+    scientistJudgment,
     issues,
     warnings,
     repairQueries,

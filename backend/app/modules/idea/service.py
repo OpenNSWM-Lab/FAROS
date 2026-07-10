@@ -115,17 +115,59 @@ def _extract_json_object(text: str) -> Optional[Dict[str, Any]]:
         if len(parts) >= 3:
             raw = parts[1]
     raw = raw.strip()
-    try:
-        data = json.loads(raw)
-        return data if isinstance(data, dict) else None
-    except json.JSONDecodeError:
-        match = re.search(r"\{[\s\S]*\}", raw)
-        if match:
-            try:
-                data = json.loads(match.group())
-                return data if isinstance(data, dict) else None
-            except json.JSONDecodeError:
-                return None
+
+    def _loads(candidate: str) -> Optional[Dict[str, Any]]:
+        normalized = (
+            candidate.strip()
+            .removeprefix("json")
+            .strip()
+            .replace("\u201c", '"')
+            .replace("\u201d", '"')
+            .replace("\u2018", "'")
+            .replace("\u2019", "'")
+        )
+        normalized = re.sub(r",\s*([}\]])", r"\1", normalized)
+        try:
+            data = json.loads(normalized)
+            return data if isinstance(data, dict) else None
+        except json.JSONDecodeError:
+            return None
+
+    parsed = _loads(raw)
+    if parsed:
+        return parsed
+
+    start = raw.find("{")
+    if start >= 0:
+        depth = 0
+        in_string = False
+        escape = False
+        for index in range(start, len(raw)):
+            char = raw[index]
+            if escape:
+                escape = False
+                continue
+            if char == "\\":
+                escape = True
+                continue
+            if char == '"':
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    parsed = _loads(raw[start:index + 1])
+                    if parsed:
+                        return parsed
+                    break
+
+    match = re.search(r"\{[\s\S]*\}", raw)
+    if match:
+        return _loads(match.group())
     return None
 
 
@@ -643,16 +685,320 @@ def _env_bool(name: str, default: bool) -> bool:
 
 
 def _as_string_list(value: Any, *, limit: int = 8) -> List[str]:
-    if not isinstance(value, list):
+    if isinstance(value, str):
+        if not value.strip():
+            return []
+        raw_values = re.split(r"[\n,;，；]+|\s+(?=raw_|lit_|cl_|ke_|rps_|gp_|lpr_)", value)
+    elif isinstance(value, list):
+        raw_values = value
+    else:
         return []
     items: List[str] = []
-    for item in value:
+    for item in raw_values:
         text = str(item).strip()
         if text and text not in items:
             items.append(text)
         if len(items) >= limit:
             break
     return items
+
+
+def _score_0_1(value: Any, default: float = 0.0) -> float:
+    try:
+        score = float(value)
+    except (TypeError, ValueError):
+        score = default
+    if score > 1.0:
+        score = score / 10.0
+    return max(0.0, min(1.0, score))
+
+
+def _coverage_dimension_key(value: Any, fallback: str) -> str:
+    key = re.sub(r"[^a-zA-Z0-9_]+", "_", str(value or "").strip().lower()).strip("_")
+    return key or fallback
+
+
+def _normalize_coverage_report(
+    data: Optional[Dict[str, Any]],
+    *,
+    available_paper_ids: set[str],
+    source: str = "llm",
+) -> Dict[str, Any]:
+    """Normalize LLM-first coverage output and enforce citation integrity."""
+
+    data = data or {}
+    raw_dimensions = (
+        data.get("dimensions")
+        or data.get("coverageDimensions")
+        or data.get("dimensionCoverage")
+        or []
+    )
+    dimensions: List[Dict[str, Any]] = []
+    warnings = _as_string_list(data.get("warnings", []), limit=8)
+    repair_queries = _as_string_list(data.get("repairQueries", []), limit=8)
+
+    for index, raw in enumerate(raw_dimensions if isinstance(raw_dimensions, list) else []):
+        if not isinstance(raw, dict):
+            continue
+        key = _coverage_dimension_key(raw.get("key", raw.get("name")), f"dimension_{index + 1}")
+        required = bool(raw.get("required", True))
+        score = _score_0_1(raw.get("score", raw.get("coverageScore", 0.0)))
+        raw_paper_ids = _as_string_list(
+            raw.get("supportingPaperIds", raw.get("paperIds", [])),
+            limit=12,
+        )
+        verified_paper_ids = [
+            paper_id for paper_id in raw_paper_ids
+            if paper_id in available_paper_ids
+        ]
+        dropped_ids = [
+            paper_id for paper_id in raw_paper_ids
+            if paper_id not in available_paper_ids
+        ]
+        if dropped_ids:
+            warnings.append(
+                f"{key}: ignored unknown paper IDs: {', '.join(dropped_ids[:4])}"
+            )
+        status = str(raw.get("status", "") or "").strip().lower()
+        if required and not verified_paper_ids:
+            status = "missing"
+        elif not status:
+            if score >= 0.75 and verified_paper_ids:
+                status = "strong"
+            elif score >= 0.45 and verified_paper_ids:
+                status = "partial"
+            elif verified_paper_ids:
+                status = "weak"
+            else:
+                status = "missing"
+        dimension_queries = _as_string_list(raw.get("repairQueries", []), limit=4)
+        repair_queries.extend(query for query in dimension_queries if query not in repair_queries)
+        dimensions.append({
+            "key": key,
+            "label": str(raw.get("label", raw.get("name", key.replace("_", " ").title())) or ""),
+            "required": required,
+            "status": status,
+            "score": round(score, 3),
+            "supportingPaperIds": verified_paper_ids,
+            "supportedClaims": _as_string_list(raw.get("supportedClaims", raw.get("claims", [])), limit=5),
+            "remainingGap": str(raw.get("remainingGap", raw.get("gap", "")) or ""),
+            "whyRequired": str(raw.get("whyRequired", "") or ""),
+            "repairQueries": dimension_queries,
+        })
+
+    missing_required = [
+        item["key"] for item in dimensions
+        if item.get("required") and not item.get("supportingPaperIds")
+    ]
+    blocking_issues = _as_string_list(data.get("blockingIssues", data.get("issues", [])), limit=8)
+    if not dimensions:
+        blocking_issues.append("Coverage report has no evidence dimensions.")
+    for key in missing_required:
+        issue = f"Required evidence dimension '{key}' has no verified supporting paper IDs."
+        if issue not in blocking_issues:
+            blocking_issues.append(issue)
+
+    if dimensions:
+        average_dimension_score = sum(item["score"] for item in dimensions) / len(dimensions)
+    else:
+        average_dimension_score = 0.0
+    overall_score = _score_0_1(
+        data.get("overallEvidenceScore", data.get("score", average_dimension_score)),
+        average_dimension_score,
+    )
+    min_score = float(os.getenv("FAROS_EVIDENCE_COVERAGE_MIN_SCORE", "0.62"))
+    raw_passed = data.get("passed")
+    passed = bool(raw_passed) if isinstance(raw_passed, bool) else overall_score >= min_score
+    passed = passed and not missing_required and not blocking_issues
+
+    return {
+        "version": "evidence_coverage_v2_1",
+        "source": source,
+        "passed": passed,
+        "hardBlocked": not passed,
+        "overallEvidenceScore": round(overall_score, 3),
+        "minScore": min_score,
+        "dimensions": dimensions,
+        "missingRequiredDimensions": missing_required,
+        "blockingIssues": blocking_issues,
+        "warnings": warnings,
+        "repairQueries": repair_queries[:8],
+        "scientistJudgment": str(data.get("scientistJudgment", data.get("recommendation", "")) or ""),
+    }
+
+
+def _default_coverage_dimensions(seed: str, paper_type: str) -> List[Dict[str, Any]]:
+    if _seed_mentions_rag_safety(seed):
+        return [
+            {
+                "key": "citation_faithfulness",
+                "label": "Citation faithfulness",
+                "required": True,
+                "whyRequired": "The seed query asks to improve citation fidelity.",
+                "keywords": ["citation", "faithfulness", "faithful", "attribution", "support"],
+                "repairQueries": ["RAG citation faithfulness verification attribution"],
+            },
+            {
+                "key": "refusal_abstention",
+                "label": "Refusal / abstention",
+                "required": True,
+                "whyRequired": "The seed query asks for refusal capability in high-risk QA.",
+                "keywords": ["refusal", "refuse", "abstention", "abstain", "insufficient evidence"],
+                "repairQueries": ["RAG abstention refusal insufficient evidence high-risk QA"],
+            },
+            {
+                "key": "evidence_traceability",
+                "label": "Evidence traceability",
+                "required": True,
+                "whyRequired": "The seed query asks for traceable evidence chains.",
+                "keywords": ["traceability", "traceable", "provenance", "evidence", "grounding"],
+                "repairQueries": ["RAG evidence traceability provenance grounding"],
+            },
+            {
+                "key": "high_risk_qa",
+                "label": "High-risk QA context",
+                "required": False,
+                "whyRequired": "Domain evidence helps keep the idea aligned with high-risk use cases.",
+                "keywords": ["high-risk", "high risk", "safety", "medical", "legal", "finance", "question answering", "qa"],
+                "repairQueries": ["high-risk question answering RAG safety evaluation"],
+            },
+            {
+                "key": "evaluation_protocol",
+                "label": "Evaluation protocol",
+                "required": True,
+                "whyRequired": "Downstream planning needs measurable validation criteria.",
+                "keywords": ["evaluation", "benchmark", "metric", "dataset", "measure", "score"],
+                "repairQueries": ["RAG citation refusal traceability benchmark metric evaluation"],
+            },
+        ]
+
+    required = ["method", "evaluation", "limitation"]
+    if paper_type in {"survey", "position", "theory"}:
+        required = ["claim", "gap", "limitation"]
+    return [
+        {
+            "key": item,
+            "label": item.replace("_", " ").title(),
+            "required": True,
+            "whyRequired": f"Required evidence coverage for {paper_type} paper type.",
+            "keywords": [item, "evaluation" if item == "method" else item],
+            "repairQueries": [f"{seed} {item} evidence"],
+        }
+        for item in required
+    ]
+
+
+def _rule_seed_coverage_report(
+    *,
+    seed: str,
+    paper_type: str,
+    structured_papers: List[StructuredPaper],
+    literature_map: Optional[LiteratureMap],
+    gap_outputs: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Rule fallback for LLM-first evidence coverage."""
+
+    dimensions = []
+    for dimension in _default_coverage_dimensions(seed, paper_type):
+        keywords = [str(item).lower() for item in dimension.get("keywords", [])]
+        matched_paper_ids: List[str] = []
+        supported_claims: List[str] = []
+        for paper in structured_papers:
+            text = _paper_text_for_quality(paper)
+            if any(keyword and keyword in text for keyword in keywords):
+                matched_paper_ids.append(paper.id)
+                if getattr(paper, "summary", ""):
+                    supported_claims.append(str(paper.summary)[:220])
+                elif getattr(paper, "abstract", ""):
+                    supported_claims.append(str(paper.abstract)[:220])
+            if len(matched_paper_ids) >= 4:
+                break
+
+        score = min(1.0, 0.25 + 0.25 * len(matched_paper_ids)) if matched_paper_ids else 0.0
+        dimensions.append({
+            "key": dimension["key"],
+            "label": dimension["label"],
+            "required": bool(dimension.get("required", True)),
+            "score": score,
+            "supportingPaperIds": matched_paper_ids,
+            "supportedClaims": supported_claims[:3],
+            "remainingGap": "",
+            "whyRequired": dimension.get("whyRequired", ""),
+            "repairQueries": dimension.get("repairQueries", []),
+        })
+
+    report = _normalize_coverage_report(
+        {
+            "passed": True,
+            "dimensions": dimensions,
+            "scientistJudgment": (
+                "Rule fallback coverage was used because LLM coverage analysis was unavailable. "
+                "Treat this as a conservative evidence sanity check, not a full scientific review."
+            ),
+        },
+        available_paper_ids={paper.id for paper in structured_papers},
+        source="rule_fallback",
+    )
+    if gap_outputs:
+        report["gapContextAvailable"] = True
+    if literature_map and getattr(literature_map, "gaps", None):
+        report["literatureGapCount"] = len(literature_map.gaps)
+    return report
+
+
+def _merge_coverage_report_with_gate(
+    gate: Dict[str, Any],
+    coverage_report: Dict[str, Any],
+) -> Dict[str, Any]:
+    merged = dict(gate)
+    errors = list(merged.get("errors", []))
+    warnings = list(merged.get("warnings", []))
+    merged["coverageReport"] = coverage_report
+
+    coverage_warnings = _as_string_list(coverage_report.get("warnings", []), limit=8)
+    warnings.extend(item for item in coverage_warnings if item not in warnings)
+
+    if not coverage_report.get("passed", False):
+        missing = _as_string_list(coverage_report.get("missingRequiredDimensions", []), limit=6)
+        blocking = _as_string_list(coverage_report.get("blockingIssues", []), limit=3)
+        if missing:
+            errors.append(
+                "Evidence Coverage 2.1 failed: missing required dimensions "
+                + ", ".join(missing)
+            )
+        elif blocking:
+            errors.append("Evidence Coverage 2.1 failed: " + "; ".join(blocking))
+        else:
+            errors.append("Evidence Coverage 2.1 failed")
+
+    merged["errors"] = errors
+    merged["warnings"] = warnings
+    merged["passed"] = bool(merged.get("passed", False)) and not errors
+    merged["hardBlocked"] = not merged["passed"]
+    return merged
+
+
+def _coverage_repair_queries(quality_gate: Dict[str, Any], *, limit: int = 5) -> List[str]:
+    coverage = quality_gate.get("coverageReport") if isinstance(quality_gate, dict) else {}
+    if not isinstance(coverage, dict):
+        return []
+    queries: List[str] = []
+    for query in _as_string_list(coverage.get("repairQueries", []), limit=limit):
+        if query not in queries:
+            queries.append(query)
+    dimensions = coverage.get("dimensions", [])
+    if isinstance(dimensions, list):
+        for dimension in dimensions:
+            if not isinstance(dimension, dict):
+                continue
+            if dimension.get("status") not in {"missing", "weak", "partial"}:
+                continue
+            for query in _as_string_list(dimension.get("repairQueries", []), limit=3):
+                if query not in queries:
+                    queries.append(query)
+                if len(queries) >= limit:
+                    return queries[:limit]
+    return queries[:limit]
 
 
 def _ensure_gap_outputs(
@@ -939,6 +1285,7 @@ class IdeaGenerationService:
             ]
 
         candidates: List[str] = []
+        candidates.extend(_coverage_repair_queries(quality_gate, limit=5))
         candidates.extend(targeted_queries)
         candidates.append(seed)
         if domain:
@@ -994,6 +1341,14 @@ class IdeaGenerationService:
             stage=stage,
             extra_terms=extra_terms,
         )
+        coverage_report = self._run_evidence_coverage_llm_reviewer(
+            session=session,
+            rule_gate=rule_gate,
+            structured_papers=structured_papers,
+            literature_map=literature_map,
+            gap_outputs=gap_outputs,
+        )
+        rule_gate = _merge_coverage_report_with_gate(rule_gate, coverage_report)
         if not rule_gate.get("passed", False):
             rule_gate["reviewMode"] = "rule"
             return rule_gate, structured_papers, literature_map, gap_outputs
@@ -1141,6 +1496,199 @@ class IdeaGenerationService:
             },
             "error": rebuild_error,
         }
+
+    def _run_evidence_coverage_llm_reviewer(
+        self,
+        *,
+        session: IdeaSession,
+        rule_gate: Dict[str, Any],
+        structured_papers: List[StructuredPaper],
+        literature_map: Optional[LiteratureMap],
+        gap_outputs: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """LLM-first coverage planner/mapper with rule verification fallback."""
+
+        rule_fallback = _rule_seed_coverage_report(
+            seed=session.config.seedQuery,
+            paper_type=session.config.paperType,
+            structured_papers=structured_papers,
+            literature_map=literature_map,
+            gap_outputs=gap_outputs,
+        )
+        if not _env_bool("FAROS_EVIDENCE_COVERAGE_LLM_ENABLED", True):
+            rule_fallback["warnings"] = [
+                *rule_fallback.get("warnings", []),
+                "LLM Evidence Coverage disabled by FAROS_EVIDENCE_COVERAGE_LLM_ENABLED",
+            ]
+            return rule_fallback
+        if not session.config.providerName or not session.config.model:
+            rule_fallback["warnings"] = [
+                *rule_fallback.get("warnings", []),
+                "No provider/model configured for LLM Evidence Coverage",
+            ]
+            return rule_fallback
+
+        paper_summaries = []
+        for index, paper in enumerate(structured_papers[:12], 1):
+            paper_summaries.append({
+                "index": index,
+                "paperId": paper.id,
+                "title": paper.title,
+                "source": paper.source,
+                "summary": paper.summary[:650],
+                "abstract": paper.abstract[:450],
+                "claims": [claim.text[:240] for claim in paper.claims[:4]],
+                "limitations": paper.limitations[:4],
+                "methods": [
+                    f"{method.name}: {method.description[:180]}"
+                    for method in paper.methods[:4]
+                ],
+                "datasets": paper.datasets[:5],
+                "metrics": paper.metrics[:5],
+                "noveltyEvidence": [
+                    {
+                        "type": evidence.evidenceType,
+                        "direction": evidence.direction,
+                        "description": evidence.description[:240],
+                    }
+                    for evidence in paper.noveltyEvidence[:4]
+                ],
+            })
+
+        literature_gaps = [
+            {
+                "direction": gap.direction,
+                "evidence": gap.evidence,
+                "paperIds": gap.paperIds,
+                "confidence": gap.confidence,
+            }
+            for gap in (getattr(literature_map, "gaps", []) or [])[:8]
+        ]
+        prompt = {
+            "task": (
+                "Act as an LLM-Scientist evidence coverage reviewer. "
+                "First infer the evidence dimensions required by the seed query, "
+                "then map the provided papers and gaps to those dimensions."
+            ),
+            "seedQuery": session.config.seedQuery,
+            "domain": session.config.domain or "",
+            "paperType": session.config.paperType,
+            "ruleGate": rule_gate,
+            "dimensionHints": _default_coverage_dimensions(
+                session.config.seedQuery,
+                session.config.paperType,
+            ),
+            "papers": paper_summaries,
+            "gapContext": {
+                "literatureMapGaps": literature_gaps,
+                "gapAnalysis": gap_outputs.get("gapAnalysis", [])[:5],
+                "prioritizedGaps": gap_outputs.get("prioritizedGaps", [])[:5],
+                "researchOpportunities": gap_outputs.get("researchOpportunities", [])[:5],
+            },
+            "constraints": [
+                "Use only paperId values that appear in the provided papers.",
+                "Do not fabricate paper IDs, paper titles, gaps, or claims.",
+                "Required dimensions with no direct paper support must be marked missing or weak.",
+                "Generate targeted repairQueries for each missing or weak required dimension.",
+                "Prefer scientific judgment over keyword matching, but explain evidence gaps concretely.",
+            ],
+            "responseSchema": {
+                "passed": "boolean",
+                "overallEvidenceScore": "number from 0 to 1",
+                "scientistJudgment": "short natural-language judgment",
+                "dimensions": [
+                    {
+                        "key": "snake_case string",
+                        "label": "human readable label",
+                        "required": "boolean",
+                        "whyRequired": "string",
+                        "status": "strong | partial | weak | missing",
+                        "score": "number from 0 to 1",
+                        "supportingPaperIds": ["raw paper IDs from provided papers only"],
+                        "supportedClaims": ["strings grounded in those papers"],
+                        "remainingGap": "string",
+                        "repairQueries": ["targeted search queries"],
+                    }
+                ],
+                "blockingIssues": ["string"],
+                "warnings": ["string"],
+                "repairQueries": ["string"],
+            },
+        }
+
+        try:
+            client = get_provider_client(session.config.providerName)
+            response = client.chat(
+                [
+                    ChatMessage(
+                        role="system",
+                        content=(
+                            "You are an LLM-Scientist evidence coverage reviewer. "
+                            "Return only valid JSON. Make nuanced scientific judgments, "
+                            "but never invent evidence IDs."
+                        ),
+                    ),
+                    ChatMessage(role="user", content=json.dumps(prompt, ensure_ascii=False)),
+                ],
+                model=session.config.model,
+                temperature=0.0,
+                max_tokens=2200,
+                response_format={"type": "json_object"},
+            )
+            data = _extract_json_object(response.text)
+            if not data:
+                repair_response = client.chat(
+                    [
+                        ChatMessage(
+                            role="system",
+                            content=(
+                                "Repair the following evidence coverage review into strict JSON only. "
+                                "Preserve the scientific judgment and all paper IDs exactly. "
+                                "Do not add new evidence, claims, or IDs. "
+                                "Required top-level keys: passed, overallEvidenceScore, scientistJudgment, "
+                                "dimensions, blockingIssues, warnings, repairQueries. "
+                                "Each dimension must include key, label, required, whyRequired, status, score, "
+                                "supportingPaperIds, supportedClaims, remainingGap, repairQueries."
+                            ),
+                        ),
+                        ChatMessage(role="user", content=response.text[:6000]),
+                    ],
+                    model=session.config.model,
+                    temperature=0.0,
+                    max_tokens=1800,
+                    response_format={"type": "json_object"},
+                )
+                data = _extract_json_object(repair_response.text)
+                if not data:
+                    rule_fallback["warnings"] = [
+                        *rule_fallback.get("warnings", []),
+                        "LLM Evidence Coverage returned non-JSON output; repair failed; rule fallback used.",
+                    ]
+                    rule_fallback["llmStatus"] = "non_json"
+                    rule_fallback["llmLatencyMs"] = response.latency_ms + repair_response.latency_ms
+                    return rule_fallback
+            report = _normalize_coverage_report(
+                data,
+                available_paper_ids={paper.id for paper in structured_papers},
+                source="llm",
+            )
+            report["latencyMs"] = response.latency_ms
+            if "repair_response" in locals():
+                report["latencyMs"] = response.latency_ms + repair_response.latency_ms
+                report["llmStatus"] = "json_repaired"
+                report["warnings"] = [
+                    *report.get("warnings", []),
+                    "LLM Evidence Coverage JSON was repaired before validation.",
+                ]
+            return report
+        except Exception as exc:
+            logger.warning("LLM Evidence Coverage failed: %s", exc)
+            rule_fallback["warnings"] = [
+                *rule_fallback.get("warnings", []),
+                f"LLM Evidence Coverage failed; rule fallback used: {exc}",
+            ]
+            rule_fallback["llmStatus"] = "error"
+            return rule_fallback
 
     def _run_evidence_llm_reviewer(
         self,
@@ -1358,9 +1906,24 @@ class IdeaGenerationService:
         """Get literature items for a session."""
         return self.literature_storage.list_by_session(session_id)
     
-    def get_candidates(self, session_id: str) -> List[IdeaCandidate]:
-        """Get candidates for a session."""
-        return self.candidate_storage.list_by_session(session_id)
+    def get_candidates(self, session_id: str, view: str = "final") -> List[IdeaCandidate]:
+        """Get candidates for a session.
+
+        The default view is product-facing: only candidates that survived the
+        internal review/repair loop are returned. Use view="debug" to inspect
+        every generated candidate.
+        """
+        candidates = self.candidate_storage.list_by_session(session_id)
+        if view in {"debug", "all"}:
+            return candidates
+
+        session = self.session_storage.get(session_id)
+        final_ids = list(getattr(session, "finalCandidateIds", []) or []) if session else []
+        if not final_ids:
+            return candidates
+
+        by_id = {candidate.id: candidate for candidate in candidates}
+        return [by_id[candidate_id] for candidate_id in final_ids if candidate_id in by_id]
     
     def select_candidate(self, session_id: str, candidate_id: str) -> IdeaSession:
         """Select a candidate for the session."""
@@ -1377,6 +1940,141 @@ class IdeaGenerationService:
         
         session.selectedCandidateId = candidate_id
         return self.session_storage.update(session)
+
+    def _idea_candidate_quality_score(
+        self,
+        candidate: IdeaCandidate,
+        review_gate: Optional[Dict[str, Any]] = None,
+    ) -> float:
+        """Score candidates for the product-facing shortlist after review."""
+        score = float(getattr(candidate, "overallScore", 0.0) or 0.0)
+        if review_gate:
+            score = max(score, float(review_gate.get("scoreAfterGate", score) or score))
+            if review_gate.get("passed"):
+                score += 0.35
+            score -= len(review_gate.get("blockingIssues", []) or []) * 1.6
+            score -= min(0.8, len(review_gate.get("warnings", []) or []) * 0.12)
+        score += max(0.0, float(getattr(candidate, "scoringConfidence", 0.5) or 0.5) - 0.5) * 0.5
+        return round(max(0.0, min(10.0, score)), 3)
+
+    def _passes_final_candidate_quality(
+        self,
+        candidate: IdeaCandidate,
+        review_gate: Optional[Dict[str, Any]] = None,
+        *,
+        strict: bool = True,
+    ) -> bool:
+        """Return whether a candidate is strong enough for the default UI."""
+        if review_gate:
+            if review_gate.get("blockingIssues"):
+                return False
+            if not review_gate.get("passed", False):
+                return False
+
+        if strict:
+            return (
+                candidate.overallScore >= 6.8
+                and candidate.alignment >= 5.8
+                and candidate.referenceSupport >= 4.8
+                and candidate.experimentSpecificity >= 5.0
+            )
+        return (
+            candidate.overallScore >= 6.0
+            and candidate.referenceSupport >= 4.3
+        )
+
+    def _select_final_candidates(
+        self,
+        ranked: List[IdeaCandidate],
+        gate_reports: Dict[str, Dict[str, Any]],
+        *,
+        max_count: int = 3,
+    ) -> Dict[str, Any]:
+        """Select the small candidate set shown to users.
+
+        Internal generation may keep many candidates for exploration and repair.
+        This selector exposes only diverse, review-passed ideas by default.
+        """
+        target_count = max(1, min(3, max_count, len(ranked)))
+        scored = sorted(
+            ranked,
+            key=lambda candidate: self._idea_candidate_quality_score(
+                candidate,
+                gate_reports.get(candidate.id),
+            ),
+            reverse=True,
+        )
+        final: List[IdeaCandidate] = []
+        final_keys: List[set[str]] = []
+        warnings: List[str] = []
+
+        def _try_add(pool: List[IdeaCandidate], *, similarity_limit: float) -> None:
+            for candidate in pool:
+                if len(final) >= target_count:
+                    return
+                if any(existing.id == candidate.id for existing in final):
+                    continue
+                candidate_key = _candidate_similarity_key(candidate)
+                max_similarity = max(
+                    (_candidate_jaccard(candidate_key, key) for key in final_keys),
+                    default=0.0,
+                )
+                if max_similarity > similarity_limit:
+                    continue
+                final.append(candidate)
+                final_keys.append(candidate_key)
+
+        strict_pool = [
+            candidate for candidate in scored
+            if self._passes_final_candidate_quality(candidate, gate_reports.get(candidate.id), strict=True)
+        ]
+        _try_add(strict_pool, similarity_limit=0.72)
+
+        relaxed_pool = [
+            candidate for candidate in scored
+            if self._passes_final_candidate_quality(candidate, gate_reports.get(candidate.id), strict=False)
+        ]
+        if len(final) < min(2, target_count):
+            _try_add(relaxed_pool, similarity_limit=0.84)
+            warnings.append("Strict shortlist produced fewer than two candidates; relaxed reviewed candidates were considered.")
+
+        if not final and scored:
+            final.append(scored[0])
+            warnings.append("No candidate passed final shortlist thresholds; exposing the highest-scored candidate for manual inspection.")
+
+        final_ids = [candidate.id for candidate in final]
+        rejected_ids = [
+            candidate.id for candidate in ranked
+            if candidate.id not in final_ids
+            and (
+                bool((gate_reports.get(candidate.id) or {}).get("blockingIssues"))
+                or gate_reports.get(candidate.id, {}).get("passed") is False
+            )
+        ]
+        hidden_ids = [
+            candidate.id for candidate in ranked
+            if candidate.id not in final_ids and candidate.id not in rejected_ids
+        ]
+        final_scores = {
+            candidate.id: self._idea_candidate_quality_score(candidate, gate_reports.get(candidate.id))
+            for candidate in ranked
+        }
+        return {
+            "finalCandidateIds": final_ids,
+            "hiddenCandidateIds": hidden_ids,
+            "rejectedCandidateIds": rejected_ids,
+            "summary": {
+                "mode": "internal_review_shortlist",
+                "generatedCandidateCount": len(ranked),
+                "finalCandidateCount": len(final_ids),
+                "hiddenCandidateCount": len(hidden_ids),
+                "rejectedCandidateCount": len(rejected_ids),
+                "targetFinalCandidateCount": target_count,
+                "finalCandidateIds": final_ids,
+                "warnings": warnings,
+                "qualityScores": final_scores,
+            },
+        }
     
     def run_pipeline(self, session_id: str) -> IdeaSession:
         """
@@ -2799,7 +3497,7 @@ class IdeaGenerationService:
         seed = session.config.seedQuery
         paper_type = session.config.paperType
         domain = session.config.domain or "general"
-        candidates = self.get_candidates(session.id)
+        candidates = self.get_candidates(session.id, view="debug")
 
         if not candidates:
             return {"candidateCount": 0}, {"rankings": [], "error": "No candidates to rank"}, []
@@ -3259,6 +3957,15 @@ class IdeaGenerationService:
             })
 
         idea_review_passed_count = sum(1 for item in gate_reports.values() if item.get("passed"))
+        shortlist = self._select_final_candidates(
+            ranked,
+            gate_reports,
+            max_count=min(3, max(1, session.config.maxCandidates)),
+        )
+        session.finalCandidateIds = shortlist["finalCandidateIds"]
+        session.hiddenCandidateIds = shortlist["hiddenCandidateIds"]
+        session.rejectedCandidateIds = shortlist["rejectedCandidateIds"]
+        session.qualityLoopSummary = shortlist["summary"]
         inputs = {"candidateCount": len(candidates)}
         outputs = {
             "rankings": rankings,
@@ -3278,6 +3985,10 @@ class IdeaGenerationService:
             "literatureRepairCount": len(literature_repair_reports),
             "regeneratedCandidateIds": regenerated_candidate_ids,
             "feedbackOptimizedCandidateIds": regenerated_candidate_ids,
+            "finalCandidateIds": session.finalCandidateIds,
+            "hiddenCandidateIds": session.hiddenCandidateIds,
+            "rejectedCandidateIds": session.rejectedCandidateIds,
+            "qualityLoopSummary": session.qualityLoopSummary,
         }
 
         if gate_reports and idea_review_passed_count == 0:

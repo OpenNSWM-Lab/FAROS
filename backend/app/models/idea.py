@@ -126,6 +126,10 @@ class IdeaSession(BaseModel):
     endedAt: Optional[datetime] = None
     trace: Optional[WorkflowTrace] = None
     candidateIds: List[str] = Field(default_factory=list)
+    finalCandidateIds: List[str] = Field(default_factory=list)
+    hiddenCandidateIds: List[str] = Field(default_factory=list)
+    rejectedCandidateIds: List[str] = Field(default_factory=list)
+    qualityLoopSummary: Dict[str, Any] = Field(default_factory=dict)
     selectedCandidateId: Optional[str] = None
     errorMessage: Optional[str] = None
     

@@ -123,6 +123,13 @@ _ALLOWED_TOP_LEVEL = {
     "principle",
 }
 
+_RECOVERABLE_TOP_LEVEL = {
+    # Models often add this despite instructions. The canonical contract stores
+    # planned metrics under stages[].steps[].expected, so the top-level copy is
+    # ignored instead of failing an otherwise valid repair round.
+    "expectedMetrics",
+}
+
 
 def _null_paths(value: Any, prefix: str = "") -> List[str]:
     paths: List[str] = []
@@ -156,6 +163,9 @@ def validate_llm_plan_output(
 
     if not isinstance(raw, dict):
         return None, ["LLM output must be one JSON object"]
+    raw = dict(raw)
+    for key in _RECOVERABLE_TOP_LEVEL:
+        raw.pop(key, None)
     unknown = sorted(set(raw) - _ALLOWED_TOP_LEVEL)
     if unknown:
         return None, [

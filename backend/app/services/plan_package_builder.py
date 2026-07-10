@@ -167,6 +167,177 @@ def _paper_relevance(
     return round(score, 3), signals[:12], reason
 
 
+def _clean_metric_name(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"\s+", " ", text)
+    text = text.strip(" .;:,")
+    lowered = text.lower()
+    if not text:
+        return ""
+    if len(text) > 72:
+        return ""
+    if len(text.split()) > 7:
+        return ""
+    if lowered.startswith(("the paper claims", "this paper claims", "we show", "we demonstrate")):
+        return ""
+    if any(marker in lowered for marker in [" q/v ", "attention projection", "vendi score"]):
+        return ""
+    return text
+
+
+def _metric_topic_score(metric: str, anchors: List[str]) -> float:
+    if not metric:
+        return 0.0
+    lowered = metric.lower().replace("-", " ")
+    metric_tokens = {
+        token
+        for token in re.findall(r"[a-zA-Z][a-zA-Z0-9]{2,}|[\u4e00-\u9fff]{2,}", lowered)
+        if token not in _RELEVANCE_STOPWORDS
+    }
+    anchor_hits = sum(1 for anchor in anchors[:18] if anchor in lowered)
+    scientific_metric_hits = sum(
+        1
+        for keyword in [
+            "accuracy", "faithfulness", "faithful", "citation", "refusal", "abstention",
+            "traceability", "provenance", "hallucination", "robustness", "latency",
+            "cost", "precision", "recall", "auc", "f1", "score",
+        ]
+        if keyword in lowered
+    )
+    if anchor_hits:
+        return min(1.0, 0.45 + 0.2 * anchor_hits + 0.1 * scientific_metric_hits)
+    if metric_tokens and any(token in anchors for token in metric_tokens):
+        return 0.55
+    return min(0.4, 0.12 * scientific_metric_hits)
+
+
+def _extract_metric_names_from_text(text: str) -> List[str]:
+    lowered = (text or "").lower().replace("-", " ")
+    candidates: List[str] = []
+    phrase_map = [
+        ("citation faithfulness", "citation faithfulness"),
+        ("citation fidelity", "citation faithfulness"),
+        ("attribution precision", "attribution precision"),
+        ("refusal accuracy", "refusal accuracy"),
+        ("abstention accuracy", "refusal accuracy"),
+        ("evidence traceability", "evidence traceability"),
+        ("traceability score", "evidence traceability"),
+        ("hallucination rate", "hallucination rate"),
+        ("citation correctness", "citation correctness"),
+        ("answer accuracy", "answer accuracy"),
+        ("precision", "precision"),
+        ("recall", "recall"),
+        ("f1", "F1"),
+        ("latency", "latency"),
+        ("throughput", "throughput"),
+        ("cost", "cost"),
+        ("robustness", "robustness"),
+    ]
+    for needle, metric in phrase_map:
+        if needle in lowered and metric not in candidates:
+            candidates.append(metric)
+    return candidates
+
+
+def _planned_validation_metrics(
+    *,
+    candidate: IdeaCandidate,
+    literature_survey: PlanLiteratureSurvey,
+    literature_map: Optional[LiteratureMap],
+    template_metrics: List[str],
+    limit: int = 8,
+) -> List[str]:
+    anchors = _topic_anchors(candidate, literature_map)
+    metrics: List[str] = []
+
+    def add(value: Any, *, require_relevance: bool = False) -> None:
+        metric = _clean_metric_name(value)
+        if not metric:
+            return
+        if require_relevance and _metric_topic_score(metric, anchors) < 0.45:
+            return
+        if metric not in metrics:
+            metrics.append(metric)
+
+    for metric in candidate.expectedMetrics:
+        add(metric)
+    for experiment in [*(candidate.experimentSpecs or []), *(candidate.requiredExperiments or [])]:
+        for metric in experiment.metrics:
+            add(metric)
+
+    if not metrics:
+        relevant_papers = []
+        for paper in literature_survey.papers:
+            score, _, _ = _paper_relevance(
+                title=paper.title,
+                summary=paper.summary,
+                methods=paper.methods,
+                findings=paper.findings,
+                limitations=paper.limitations,
+                claims=paper.claims,
+                anchors=anchors,
+            )
+            if score >= 0.45:
+                relevant_papers.append(paper)
+        for paper in relevant_papers:
+            for claim in paper.claims[:4]:
+                claim_type = str(claim.get("claimType", "")).lower() if isinstance(claim, dict) else ""
+                text = str(claim.get("text", "")) if isinstance(claim, dict) else str(claim)
+                if claim_type == "metric":
+                    extracted = _extract_metric_names_from_text(text)
+                    for metric in extracted:
+                        add(metric, require_relevance=True)
+
+    if not metrics and _seed_mentions_rag_safety_text(" ".join(anchors)):
+        for metric in ["citation faithfulness", "refusal accuracy", "evidence traceability"]:
+            add(metric)
+    if not metrics:
+        for metric in template_metrics:
+            add(metric)
+    return metrics[:limit] or ["primary_metric"]
+
+
+def _seed_mentions_rag_safety_text(text: str) -> bool:
+    lowered = text.lower()
+    return (
+        "rag" in lowered
+        and any(term in lowered for term in ["citation", "faithfulness", "faithful", "引用"])
+        and any(term in lowered for term in ["refusal", "abstention", "拒答", "traceability", "provenance", "可追踪"])
+    )
+
+
+def _is_placeholder_novelty(value: str) -> bool:
+    lowered = (value or "").lower()
+    return (
+        not lowered.strip()
+        or "needs to be contrasted" in lowered
+        or "llm analysis unavailable" in lowered
+        or "heuristic review" in lowered
+        or len(lowered.split()) < 8
+    )
+
+
+def _specific_novelty_basis(candidate: IdeaCandidate, gap: PlanGap, principle: PlanPrinciple) -> str:
+    selected_gap = next(
+        (item for item in gap.items if item.id == gap.selectedGapId),
+        gap.items[0] if gap.items else None,
+    )
+    mechanism = _first_text_value(principle.mechanism, candidate.proposedMethod, candidate.keyInsight)
+    gap_text = selected_gap.unresolvedIssue if selected_gap else gap.summary
+    validation_needs = selected_gap.validationNeeds if selected_gap else []
+    validation_clause = (
+        f" It is validated through {', '.join(validation_needs[:4])}."
+        if validation_needs
+        else ""
+    )
+    return (
+        "The contribution differs from prior work by binding the proposed mechanism to the selected unresolved gap: "
+        f"{gap_text.rstrip('.')}. The method operationalizes this through: {mechanism.rstrip('.')}.{validation_clause}"
+    )
+
+
 def _safe_id(value: Any) -> str:
     return str(value).strip() if value else ""
 
@@ -808,14 +979,12 @@ def build_default_stages(
     max_steps_per_stage: int = 3,
 ) -> List[PlanStage]:
     template = get_plan_template(paper_type)
-    metrics = candidate.expectedMetrics or []
-    if not metrics:
-        for paper in literature_survey.papers:
-            for method_metric in paper.claims[:2]:
-                text = str(method_metric.get("text", "") or method_metric.get("claimType", ""))
-                if "metric" in text.lower():
-                    metrics.append(text[:80])
-        metrics = metrics or template.recommendedMetrics or ["primary_metric"]
+    metrics = _planned_validation_metrics(
+        candidate=candidate,
+        literature_survey=literature_survey,
+        literature_map=None,
+        template_metrics=template.recommendedMetrics,
+    )
 
     evidence_refs = [
         PlanEvidenceRef(type="paper", id=paper.paperId, source=paper.source)
@@ -1202,6 +1371,8 @@ def build_contribution_statements(
 
     mechanism_sentence = (principle.mechanism or candidate.proposedMethod or candidate.keyInsight).split(".")[0].strip()
     novelty_basis = principle.noveltyClaim or candidate.keyInsight
+    if _is_placeholder_novelty(novelty_basis):
+        novelty_basis = _specific_novelty_basis(candidate, gap, principle)
     selected_gap = next(
         (item.statement for item in gap.items if item.id == gap.selectedGapId),
         gap.summary,

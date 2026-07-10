@@ -64,6 +64,62 @@ describe('summarizeEvidenceGate', () => {
     expect(summary?.repairQueries).toEqual(['citation faithfulness limitations'])
   })
 
+  it('summarizes LLM-first coverage dimensions', () => {
+    const summary = summarizeEvidenceGate([
+      {
+        name: 'evidenceGate',
+        status: 'ok',
+        outputs: {
+          allowedToBrainstorm: true,
+          evidenceGate: {
+            passed: true,
+            externalPaperCount: 6,
+            alignedPaperCount: 5,
+            gapSignalCount: 4,
+            reviewMode: 'rule+llm',
+            coverageReport: {
+              scientistJudgment: 'The evidence is strong enough, with traceability still moderate.',
+              dimensions: [
+                {
+                  key: 'citation_faithfulness',
+                  label: 'Citation faithfulness',
+                  status: 'strong',
+                  score: 0.88,
+                  supportingPaperIds: ['raw_a', 'raw_b'],
+                },
+                {
+                  key: 'refusal_abstention',
+                  label: 'Refusal / abstention',
+                  status: 'partial',
+                  score: 0.62,
+                  supportingPaperIds: ['raw_c'],
+                },
+              ],
+            },
+          },
+        },
+      },
+    ])
+
+    expect(summary?.scientistJudgment).toBe('The evidence is strong enough, with traceability still moderate.')
+    expect(summary?.coverageDimensions).toEqual([
+      {
+        key: 'citation_faithfulness',
+        label: 'Citation faithfulness',
+        status: 'strong',
+        score: '88%',
+        paperCount: 2,
+      },
+      {
+        key: 'refusal_abstention',
+        label: 'Refusal / abstention',
+        status: 'partial',
+        score: '62%',
+        paperCount: 1,
+      },
+    ])
+  })
+
   it('summarizes a failed evidence gate with concise issues', () => {
     const summary = summarizeEvidenceGate([
       {
