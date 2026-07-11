@@ -677,18 +677,24 @@ class BFTSSearchTree:
                 sp.title,
                 sp.abstract,
                 " ".join(sp.limitations),
+                " ".join(sp.openQuestions),
+                " ".join(sp.failedAssumptions),
+                " ".join(sp.methodWeaknesses),
+                " ".join(sp.missingEvaluation),
                 " ".join(sp.baselines),
+                " ".join(sp.baselineMethods),
                 " ".join(sp.datasets),
                 " ".join(sp.metrics),
+                " ".join(sp.recommendedMetrics),
                 " ".join(contradiction.description for contradiction in sp.contradictions),
             ]
             text = " ".join(text_parts).lower()
             overlap = sum(1 for term in topic_terms if term in text)
             intent_hit = (
-                (intent == "contradiction_check" and (sp.contradictions or any("fail" in item.lower() for item in sp.limitations)))
-                or (intent == "missing_baseline" and sp.baselines)
+                (intent == "contradiction_check" and (sp.contradictions or any("fail" in item.lower() for item in [*sp.limitations, *sp.failedAssumptions, *sp.methodWeaknesses])))
+                or (intent == "missing_baseline" and (sp.baselines or sp.baselineMethods))
                 or (intent == "dataset_check" and sp.datasets)
-                or (intent == "metric_check" and sp.metrics)
+                or (intent == "metric_check" and (sp.metrics or sp.recommendedMetrics or sp.missingEvaluation))
                 or intent == "closest_prior"
             )
             if overlap >= 2 and intent_hit:

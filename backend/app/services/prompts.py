@@ -115,6 +115,46 @@ Respond in JSON format:
 }}"""
 
 # Step 5: Idea Brainstorm
+SEED_DIRECTION_DECOMPOSITION_SYSTEM = """You are a research direction decomposer.
+Your task is to split an ambiguous seed topic into a small, diverse set of concrete research directions before idea generation.
+Prefer directions that can lead to distinct scientific contributions and experiments."""
+
+SEED_DIRECTION_DECOMPOSITION_USER = """Seed Topic: {seed_query}
+Paper Type: {paper_type}
+Domain: {domain}
+
+Gap Analysis:
+{gap_analysis}
+
+Research Opportunities:
+{opportunities}
+
+Key Literature:
+{key_papers}
+
+Create 3-5 complementary research directions. Cover different contribution styles when relevant:
+- method
+- benchmark
+- system
+- safety_reliability
+- application
+
+Each direction must stay faithful to the seed topic and cite why it is worth exploring.
+
+Respond in strict JSON:
+{{
+  "researchDirections": [
+    {{
+      "id": "dir-method",
+      "type": "method",
+      "title": "...",
+      "focus": "...",
+      "rationale": "...",
+      "evidenceAnchors": ["paper title, gap, or claim"]
+    }}
+  ]
+}}"""
+
 IDEA_BRAINSTORM_SYSTEM = """You are a creative research idea generator.
 Your task is to generate novel, feasible, and impactful research ideas based on identified gaps and opportunities."""
 
@@ -259,6 +299,7 @@ For each extraction:
 - Findings: key research results. Categorize as empirical, theoretical, methodological, or negative.
 - Methods: techniques, algorithms, frameworks, metrics, datasets mentioned. Categorize as algorithm, framework, metric, dataset, or technique.
 - Novelty Evidence: for each claimed novel contribution, assess whether the evidence supports, contradicts, or overlaps with existing work.
+- Idea cut-in points: extract concrete limitations, open questions, failed assumptions, method weaknesses, missing evaluations, baseline methods, and recommended metrics that could seed new ideas.
 - Always include the evidence span (the sentence or passage from which the claim was extracted).
 - Provide a 2-3 sentence summary of the paper's contribution."""
 
@@ -277,6 +318,7 @@ Extract:
 2. Findings (up to 3): key research results with categories
 3. Methods (up to 5): techniques, algorithms, frameworks, metrics, datasets
 4. Novelty Evidence (up to 3): assessment of whether evidence supports, contradicts, or overlaps with known work
+5. Idea cut-in points: concrete gaps that future idea generation can safely use without inventing evidence
 
 Respond in JSON format:
 {{
@@ -309,7 +351,17 @@ Respond in JSON format:
       "rationale": "Why this evidence supports/contradicts the novelty claim"
     }}
   ],
-  "summary": "A 2-3 sentence summary of the paper's contribution."
+  "summary": "A 2-3 sentence summary of the paper's contribution.",
+  "datasets": ["dataset names mentioned"],
+  "metrics": ["evaluation metrics mentioned"],
+  "limitations": ["limitations stated or directly implied"],
+  "baselines": ["baseline methods compared against"],
+  "openQuestions": ["unresolved questions left by the paper"],
+  "failedAssumptions": ["assumptions that may fail or remain unvalidated"],
+  "methodWeaknesses": ["weaknesses or brittle parts of the method"],
+  "missingEvaluation": ["missing datasets, metrics, ablations, stress tests, or deployment settings"],
+  "baselineMethods": ["baseline methods useful for downstream experiments"],
+  "recommendedMetrics": ["metrics that should test ideas addressing this paper's gaps"]
 }}"""
 
 

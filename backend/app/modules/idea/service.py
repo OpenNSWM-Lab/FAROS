@@ -55,6 +55,8 @@ from app.modules.idea.storage import (
     get_structured_paper_storage,
     get_literature_map_storage,
     get_handoff_storage,
+    get_structured_paper_cache_storage,
+    get_llm_task_cache_storage,
     generate_raw_paper_id,
     generate_graph_id,
     generate_map_id,
@@ -77,6 +79,7 @@ from app.modules.idea.reasoning_kg import ReasoningKGBuilder
 from app.modules.idea.graph_linker import GraphLinker
 from app.modules.idea.path_seed import PathSeedGenerator
 from app.llm.provider_client import get_provider_client, ChatMessage, ProviderError
+from app.llm.task_scheduler import get_llm_task_scheduler
 from app.services.search_service import get_search_service, SearchResult
 from app.services.ranking_service import get_ranking_service
 from app.services import prompts
@@ -84,6 +87,10 @@ import json
 import re
 
 logger = logging.getLogger(__name__)
+
+STRUCTURED_PAPER_CACHE_SCHEMA_VERSION = "structured-paper-v2"
+STRUCTURED_PAPER_CACHE_PROMPT_VERSION = "deep-reader-cutin-v1"
+IDEA_REVIEWER_CACHE_PROMPT_VERSION = "idea-reviewer-v1"
 
 
 class StepContextError(ValueError):
@@ -355,6 +362,12 @@ def _paper_text_for_quality(paper: Any) -> str:
         getattr(paper, "abstract", ""),
         getattr(paper, "summary", ""),
         " ".join(getattr(paper, "limitations", []) or []),
+        " ".join(getattr(paper, "openQuestions", []) or []),
+        " ".join(getattr(paper, "failedAssumptions", []) or []),
+        " ".join(getattr(paper, "methodWeaknesses", []) or []),
+        " ".join(getattr(paper, "missingEvaluation", []) or []),
+        " ".join(getattr(paper, "baselineMethods", []) or []),
+        " ".join(getattr(paper, "recommendedMetrics", []) or []),
         " ".join(getattr(paper, "datasets", []) or []),
         " ".join(getattr(paper, "metrics", []) or []),
     ]
@@ -424,6 +437,28 @@ def _evaluate_paper_quality_gate(
         item for item in scored
         if any(source and source != "local" for source in item["sources"])
     ]
+    sources_used = sorted({
+        source
+        for item in scored
+        for source in item["sources"]
+        if source
+    })
+    local_count = sum(
+        1 for item in scored if item["sources"] and all(source == "local" for source in item["sources"])
+    )
+    local_only = bool(total and local_count == total)
+    if local_only:
+        source_quality = "local_only"
+        provider_fallback_risk = "high"
+    elif local_count and external:
+        source_quality = "mixed_external_local"
+        provider_fallback_risk = "medium"
+    elif external:
+        source_quality = "external"
+        provider_fallback_risk = "low"
+    else:
+        source_quality = "empty"
+        provider_fallback_risk = "high"
     avg_top_score = (
         sum(item["score"] for item in scored[: min(5, len(scored))]) / max(1, min(5, len(scored)))
         if scored else 0.0
@@ -452,6 +487,11 @@ def _evaluate_paper_quality_gate(
         "paperCount": total,
         "alignedPaperCount": len(aligned),
         "externalPaperCount": len(external),
+        "localPaperCount": local_count,
+        "localOnly": local_only,
+        "sourcesUsed": sources_used,
+        "sourceQuality": source_quality,
+        "providerFallbackRisk": provider_fallback_risk,
         "avgTopAlignment": round(avg_top_score, 3),
         "topicTerms": topic_terms[:12],
         "topPapers": scored[:8],
@@ -535,14 +575,27 @@ def _paper_type_coverage(papers: List[Any], literature_map: Optional[LiteratureM
         has_metric = has_metric or bool(getattr(paper, "metrics", []) or []) or any(
             marker in paper_text for marker in metric_markers
         )
-        has_baseline = has_baseline or bool(getattr(paper, "baselines", []) or []) or any(
+        has_baseline = (
+            has_baseline
+            or bool(getattr(paper, "baselines", []) or [])
+            or bool(getattr(paper, "baselineMethods", []) or [])
+            or any(
             marker in paper_text for marker in baseline_markers
+            )
         )
         has_evaluation_text = has_evaluation_text or any(
             marker in paper_text for marker in evaluation_markers
         )
         has_claim = has_claim or bool(claims)
         has_limitation = has_limitation or bool(getattr(paper, "limitations", []) or [])
+        has_limitation = has_limitation or any(
+            getattr(paper, field, []) or []
+            for field in ["openQuestions", "failedAssumptions", "methodWeaknesses", "missingEvaluation"]
+        )
+        has_metric = has_metric or bool(getattr(paper, "recommendedMetrics", []) or [])
+        has_evaluation_text = has_evaluation_text or bool(getattr(paper, "missingEvaluation", []) or [])
+        if any(getattr(paper, field, []) or [] for field in ["openQuestions", "failedAssumptions", "methodWeaknesses", "missingEvaluation"]):
+            has_gap = True
 
         for claim in claims:
             claim_type = str(getattr(claim, "claimType", "") or "").lower()
@@ -589,6 +642,8 @@ def _count_gap_signals(
             count += len([item for item in values if str(item).strip()])
     for paper in papers:
         count += len(getattr(paper, "limitations", []) or [])
+        for field in ["openQuestions", "failedAssumptions", "methodWeaknesses", "missingEvaluation"]:
+            count += len(getattr(paper, field, []) or [])
         for evidence in getattr(paper, "noveltyEvidence", []) or []:
             evidence_type = str(getattr(evidence, "evidenceType", "") or "").lower()
             if evidence_type in {
@@ -1210,6 +1265,188 @@ def _candidate_similarity_key(candidate: IdeaCandidate) -> set[str]:
     return tokens
 
 
+def _normalized_topic_text(*parts: Any) -> str:
+    return " ".join(str(part or "") for part in parts if part is not None).lower().replace("-", " ")
+
+
+_APPLICATION_DOMAIN_DRIFT_GROUPS = [
+    {
+        "label": "carbon market / climate finance",
+        "phrases": [
+            "carbon market",
+            "carbon trading",
+            "carbon credit",
+            "carbon markets",
+            "emissions trading",
+            "climate finance",
+        ],
+        "terms": {"carbon", "emission", "emissions", "trading", "finance", "financial", "market", "markets"},
+    },
+    {
+        "label": "financial market analysis",
+        "phrases": [
+            "financial market",
+            "stock market",
+            "market analysis",
+            "investment analysis",
+            "trading strategy",
+        ],
+        "terms": {"financial", "finance", "stock", "investment", "trading", "market", "markets"},
+    },
+    {
+        "label": "clinical or medical deployment",
+        "phrases": [
+            "clinical",
+            "medical",
+            "healthcare",
+            "biomedical",
+            "radiology",
+            "electronic health record",
+            "ehr",
+        ],
+        "terms": {"clinical", "medical", "healthcare", "biomedical", "radiology", "patient", "ehr"},
+    },
+    {
+        "label": "legal domain",
+        "phrases": ["legal", "law firm", "court", "contract review", "legal reasoning"],
+        "terms": {"legal", "law", "court", "contract", "judicial"},
+    },
+]
+
+
+_APPLICATION_PHRASE_SUFFIXES = {
+    "analysis",
+    "analytics",
+    "optimization",
+    "optimisation",
+    "report",
+    "reports",
+    "reporting",
+    "deployment",
+    "forecasting",
+    "routing",
+    "trading",
+    "diagnosis",
+    "simulation",
+    "recommendation",
+    "tutoring",
+    "screening",
+    "monitoring",
+}
+
+
+_APPLICATION_PHRASE_STOPWORDS = {
+    "and", "are", "based", "for", "from", "high", "into", "main", "multi",
+    "real", "reliable", "research", "self", "system", "systems", "that",
+    "the", "this", "use", "using", "with", "world",
+}
+
+
+def _candidate_direction_tag_text(candidate: IdeaCandidate) -> str:
+    if not getattr(candidate, "draftPlan", None):
+        return ""
+    return " ".join(str(tag or "") for tag in (candidate.draftPlan.tags or []))
+
+
+def _topic_phrase_tokens(text: str) -> List[str]:
+    return [
+        token
+        for token in re.findall(r"[a-zA-Z][a-zA-Z0-9]{2,}", text.lower().replace("-", " "))
+        if token not in _APPLICATION_PHRASE_STOPWORDS
+    ]
+
+
+def _candidate_unrequested_application_phrase_issues(seed_query: str, candidate: IdeaCandidate) -> List[str]:
+    seed_tokens = set(_topic_phrase_tokens(seed_query))
+    if not seed_tokens:
+        return []
+    phrase_candidates: List[str] = []
+    for source_text in [
+        _normalized_topic_text(candidate.title),
+        _normalized_topic_text(candidate.problem),
+        _normalized_topic_text(candidate.keyInsight),
+    ]:
+        for match in re.finditer(
+            r"\b(?:for|in|on|within|across)\s+([a-z][a-z0-9\s]{4,80}?)(?:[.;,:]|\bwith\b|\busing\b|\buse\b|\buses\b|\bneeds\b|\bshould\b|\bcan\b|$)",
+            source_text,
+        ):
+            phrase = " ".join(match.group(1).split())
+            if phrase:
+                phrase_candidates.append(phrase)
+
+    issues: List[str] = []
+    for phrase in phrase_candidates[:8]:
+        tokens = _topic_phrase_tokens(phrase)
+        if len(tokens) < 2:
+            continue
+        novel_tokens = [token for token in tokens if token not in seed_tokens]
+        if len(novel_tokens) < 2:
+            continue
+        has_application_shape = (
+            any(token in _APPLICATION_PHRASE_SUFFIXES for token in tokens)
+            or tokens[-1] in _APPLICATION_PHRASE_SUFFIXES
+        )
+        if not has_application_shape:
+            continue
+        novelty_ratio = len(novel_tokens) / max(1, len(tokens))
+        if novelty_ratio >= 0.6:
+            issues.append(
+                "Candidate shows topic drift: unrequested application phrase "
+                f"'{phrase}' is central but absent from the seed query."
+            )
+    return issues
+
+
+def _candidate_topic_drift_issues(seed_query: str, candidate: IdeaCandidate) -> List[str]:
+    """Detect strong unrequested application-domain anchors in an idea.
+
+    Coarse token overlap catches fully unrelated candidates, but it misses
+    cases where an idea keeps the seed's generic words while making a new
+    application domain the primary object (for example, turning "multi-agent
+    research automation" into "carbon market analysis"). This guard only
+    fires for strong domain phrases absent from the seed.
+    """
+
+    seed_text = _normalized_topic_text(seed_query)
+    if not seed_text:
+        return []
+    candidate_text = _normalized_topic_text(
+        candidate.title,
+        candidate.problem,
+        candidate.keyInsight,
+        candidate.proposedMethod,
+        candidate.hypothesisStatement,
+        _candidate_direction_tag_text(candidate),
+    )
+    if not candidate_text:
+        return []
+
+    issues: List[str] = []
+    for group in _APPLICATION_DOMAIN_DRIFT_GROUPS:
+        label = str(group["label"])
+        phrases = [str(phrase) for phrase in group["phrases"]]
+        terms = {str(term) for term in group["terms"]}
+        seed_has_group = any(phrase in seed_text for phrase in phrases) or any(
+            re.search(rf"\b{re.escape(term)}\b", seed_text)
+            for term in terms
+        )
+        if seed_has_group:
+            continue
+        matched_phrases = [phrase for phrase in phrases if phrase in candidate_text]
+        matched_terms = [
+            term
+            for term in terms
+            if re.search(rf"\b{re.escape(term)}\b", candidate_text)
+        ]
+        if matched_phrases or len(matched_terms) >= 2:
+            marker = matched_phrases[0] if matched_phrases else ", ".join(matched_terms[:3])
+            issues.append(
+                f"Candidate shows topic drift: unrequested {label} anchor '{marker}' is central but absent from the seed query."
+            )
+    issues.extend(_candidate_unrequested_application_phrase_issues(seed_query, candidate))
+    return list(dict.fromkeys(issues))
+
+
 def _candidate_jaccard(a: set[str], b: set[str]) -> float:
     if not a or not b:
         return 0.0
@@ -1260,9 +1497,9 @@ def _is_inline_evidence_format_issue(issue: str) -> bool:
 
 def _idea_reviewer_concurrency() -> int:
     try:
-        configured = int(os.getenv("FAROS_IDEA_REVIEWER_CONCURRENCY", "2"))
+        configured = int(os.getenv("FAROS_IDEA_REVIEWER_CONCURRENCY", "3"))
     except ValueError:
-        configured = 2
+        configured = 3
     return max(1, min(len(IDEA_REVIEWER_SPECS), configured))
 
 
@@ -1337,6 +1574,9 @@ class IdeaGenerationService:
         self.raw_paper_storage = get_raw_paper_storage()
         self.graph_storage = get_literature_graph_storage()
         self.structured_storage = get_structured_paper_storage()
+        self.structured_cache_storage = get_structured_paper_cache_storage()
+        self.llm_task_cache_storage = get_llm_task_cache_storage()
+        self.llm_task_scheduler = get_llm_task_scheduler()
         self.map_storage = get_literature_map_storage()
         self.handoff_storage = get_handoff_storage()
         # Phase 2 builders
@@ -1360,6 +1600,182 @@ class IdeaGenerationService:
             if step.name == step_name:
                 return step.outputs.get(key, default)
         return default
+
+    def _retarget_structured_paper(
+        self,
+        structured_paper: StructuredPaper,
+        *,
+        session: IdeaSession,
+        raw_paper: RawPaper,
+    ) -> StructuredPaper:
+        """Reuse global paper understanding while binding IDs to this session."""
+
+        return structured_paper.model_copy(update={
+            "id": raw_paper.id,
+            "sessionId": session.id,
+            "rawPaperId": raw_paper.id,
+            "title": raw_paper.title or structured_paper.title,
+            "abstract": raw_paper.abstract or structured_paper.abstract,
+            "authors": raw_paper.authors or structured_paper.authors,
+            "year": raw_paper.year or structured_paper.year,
+            "venue": raw_paper.venue or structured_paper.venue,
+            "citationCount": raw_paper.citationCount or structured_paper.citationCount,
+            "source": list(raw_paper.source or structured_paper.source),
+            "claims": [
+                claim.model_copy(update={"paperId": raw_paper.id})
+                for claim in structured_paper.claims
+            ],
+            "findings": [
+                finding.model_copy(update={"paperId": raw_paper.id})
+                for finding in structured_paper.findings
+            ],
+            "methods": [
+                method.model_copy(update={"paperId": raw_paper.id})
+                for method in structured_paper.methods
+            ],
+            "contradictions": [
+                contradiction.model_copy(update={"paperId": raw_paper.id})
+                for contradiction in structured_paper.contradictions
+            ],
+            "noveltyEvidence": [
+                evidence.model_copy(update={"paperId": raw_paper.id})
+                for evidence in structured_paper.noveltyEvidence
+            ],
+            "extractionMethod": (
+                structured_paper.extractionMethod
+                if structured_paper.extractionMethod.endswith("+cache")
+                else f"{structured_paper.extractionMethod}+cache"
+            ),
+        })
+
+    def _load_trusted_structured_paper_cache(
+        self,
+        *,
+        session: IdeaSession,
+        raw_paper: RawPaper,
+        schema_version: str = STRUCTURED_PAPER_CACHE_SCHEMA_VERSION,
+        prompt_version: str = STRUCTURED_PAPER_CACHE_PROMPT_VERSION,
+    ) -> Optional[StructuredPaper]:
+        """Load a version-matched, non-suspect global StructuredPaper cache hit."""
+
+        cache_storage = getattr(self, "structured_cache_storage", None)
+        if not cache_storage:
+            return None
+        entry = cache_storage.get_valid(
+            raw_paper=raw_paper,
+            schema_version=schema_version,
+            prompt_version=prompt_version,
+            model=session.config.model or "",
+        )
+        if not entry:
+            return None
+        try:
+            structured = StructuredPaper(**entry.get("structuredPaper", {}))
+        except Exception as exc:
+            logger.warning("Structured paper cache entry is unreadable for %s: %s", raw_paper.id, exc)
+            cache_storage.mark_status(
+                entry.get("cacheKey", ""),
+                "invalidated",
+                reason="unreadable_structured_paper_payload",
+            )
+            return None
+        return self._retarget_structured_paper(
+            structured,
+            session=session,
+            raw_paper=raw_paper,
+        )
+
+    def _store_trusted_structured_paper_cache(
+        self,
+        *,
+        session: IdeaSession,
+        raw_paper: RawPaper,
+        structured_paper: StructuredPaper,
+    ) -> Optional[str]:
+        cache_storage = getattr(self, "structured_cache_storage", None)
+        if not cache_storage:
+            return None
+        try:
+            return cache_storage.put(
+                raw_paper=raw_paper,
+                structured_paper=structured_paper,
+                schema_version=STRUCTURED_PAPER_CACHE_SCHEMA_VERSION,
+                prompt_version=STRUCTURED_PAPER_CACHE_PROMPT_VERSION,
+                model=session.config.model or "",
+            )
+        except Exception as exc:
+            logger.warning("Failed to store structured paper cache for %s: %s", raw_paper.id, exc)
+            return None
+
+    def _mark_structured_cache_suspect_from_reviewer_reports(
+        self,
+        *,
+        evidence: Optional[CandidateGraphEvidence],
+        reviewer_reports: List[Dict[str, Any]],
+    ) -> List[str]:
+        """Let explicit evidence-review failures invalidate cached paper understanding."""
+
+        cache_storage = getattr(self, "structured_cache_storage", None)
+        raw_storage = getattr(self, "raw_paper_storage", None)
+        if not cache_storage or not raw_storage or not evidence:
+            return []
+
+        suspect_terms = [
+            "does not support",
+            "not support",
+            "unsupported",
+            "invalid evidence",
+            "unrelated evidence",
+            "citation missing",
+            "missing citation",
+            "claim not supported",
+            "evidence grounding",
+            "证据不支持",
+            "引用不成立",
+            "证据不相关",
+        ]
+        suspect_refs: set[str] = set()
+        for report in reviewer_reports:
+            if report.get("passed", False):
+                continue
+            reviewer = str(report.get("reviewer", ""))
+            if reviewer and reviewer != "IdeaEvidenceReviewer":
+                continue
+            text = " ".join(
+                str(item)
+                for key in ["blockingIssues", "warnings", "repairInstructions", "summary"]
+                for item in (
+                    report.get(key, [])
+                    if isinstance(report.get(key), list)
+                    else [report.get(key, "")]
+                )
+            ).lower()
+            if not any(term in text for term in suspect_terms):
+                continue
+            suspect_refs.update(str(ref) for ref in report.get("evidenceRefs", []) if str(ref).strip())
+
+        supporting_paper_ids = set(str(item) for item in evidence.supportingPaperIds)
+        target_paper_ids = sorted((suspect_refs & supporting_paper_ids) or supporting_paper_ids)
+        marked: List[str] = []
+        for paper_id in target_paper_ids:
+            try:
+                raw_paper = raw_storage.get(paper_id)
+            except Exception as exc:
+                logger.warning("Could not load raw paper %s for cache suspect marking: %s", paper_id, exc)
+                continue
+            if not raw_paper:
+                continue
+            try:
+                cache_key = cache_storage.cache_key_for_raw_paper(raw_paper)
+                cache_storage.mark_status(
+                    cache_key,
+                    "suspect",
+                    reason="idea_evidence_reviewer_reported_unsupported_claim",
+                )
+                marked.append(cache_key)
+            except Exception as exc:
+                logger.warning("Could not mark structured cache suspect for %s: %s", paper_id, exc)
+        return marked
 
     def _build_literature_repair_queries(
         self,
@@ -1677,12 +2093,18 @@ class IdeaGenerationService:
                 "abstract": paper.abstract[:450],
                 "claims": [claim.text[:240] for claim in paper.claims[:4]],
                 "limitations": paper.limitations[:4],
+                "openQuestions": paper.openQuestions[:4],
+                "failedAssumptions": paper.failedAssumptions[:4],
+                "methodWeaknesses": paper.methodWeaknesses[:4],
+                "missingEvaluation": paper.missingEvaluation[:4],
                 "methods": [
                     f"{method.name}: {method.description[:180]}"
                     for method in paper.methods[:4]
                 ],
                 "datasets": paper.datasets[:5],
                 "metrics": paper.metrics[:5],
+                "baselineMethods": paper.baselineMethods[:5],
+                "recommendedMetrics": paper.recommendedMetrics[:5],
                 "noveltyEvidence": [
                     {
                         "type": evidence.evidenceType,
@@ -1868,6 +2290,10 @@ class IdeaGenerationService:
                     for method in paper.methods[:3]
                 ],
                 "limitations": paper.limitations[:3],
+                "openQuestions": paper.openQuestions[:3],
+                "failedAssumptions": paper.failedAssumptions[:3],
+                "methodWeaknesses": paper.methodWeaknesses[:3],
+                "missingEvaluation": paper.missingEvaluation[:3],
                 "noveltyEvidence": [
                     {
                         "type": evidence.evidenceType,
@@ -1878,6 +2304,8 @@ class IdeaGenerationService:
                 ],
                 "datasets": paper.datasets[:4],
                 "metrics": paper.metrics[:4],
+                "baselineMethods": paper.baselineMethods[:4],
+                "recommendedMetrics": paper.recommendedMetrics[:4],
             })
 
         literature_gaps = [
@@ -2062,6 +2490,151 @@ class IdeaGenerationService:
 
         by_id = {candidate.id: candidate for candidate in candidates}
         return [by_id[candidate_id] for candidate_id in final_ids if candidate_id in by_id]
+
+    def _candidate_embedded_evidence(self, candidate: IdeaCandidate) -> Optional[CandidateGraphEvidence]:
+        value = getattr(candidate, "graphEvidence", None)
+        if isinstance(value, CandidateGraphEvidence):
+            return value
+        if isinstance(value, dict):
+            try:
+                return CandidateGraphEvidence(**value)
+            except Exception:
+                return None
+        return None
+
+    def _candidate_embedded_prior_work(self, candidate: IdeaCandidate) -> List[PriorWorkComparison]:
+        items: List[PriorWorkComparison] = []
+        for value in getattr(candidate, "closestPriorWork", []) or []:
+            if isinstance(value, PriorWorkComparison):
+                items.append(value)
+            elif isinstance(value, dict):
+                try:
+                    items.append(PriorWorkComparison(**value))
+                except Exception:
+                    continue
+        return items
+
+    def _candidate_embedded_critique(self, candidate: IdeaCandidate) -> Optional[IdeaCritique]:
+        value = getattr(candidate, "critique", None)
+        if isinstance(value, IdeaCritique):
+            return value
+        if isinstance(value, dict):
+            try:
+                return IdeaCritique(**value)
+            except Exception:
+                return None
+        return None
+
+    def _rule_only_idea_review_gate(
+        self,
+        *,
+        candidate: IdeaCandidate,
+        seed_query: str,
+    ) -> Dict[str, Any]:
+        evidence = self._candidate_embedded_evidence(candidate)
+        comparisons = self._candidate_embedded_prior_work(candidate)
+        critique = self._candidate_embedded_critique(candidate)
+        allowed_evidence_refs = self._allowed_idea_evidence_refs(
+            candidate=candidate,
+            evidence=evidence,
+            comparisons=comparisons,
+        )
+        reviewer_reports = [
+            self._rule_idea_reviewer_report(
+                spec=spec,
+                candidate=candidate,
+                evidence=evidence,
+                comparisons=comparisons,
+                critique=critique,
+                seed_query=seed_query,
+                allowed_evidence_refs=allowed_evidence_refs,
+            )
+            for spec in IDEA_REVIEWER_SPECS
+        ]
+        blocking = [
+            issue
+            for report in reviewer_reports
+            for issue in report.get("blockingIssues", [])
+        ]
+        repairs = [
+            instruction
+            for report in reviewer_reports
+            for instruction in report.get("repairInstructions", [])
+        ]
+        passed = not blocking and all(report.get("passed", False) for report in reviewer_reports)
+        return {
+            "candidateId": candidate.id,
+            "passed": passed,
+            "scoreAfterGate": candidate.overallScore,
+            "blockingIssues": list(dict.fromkeys(str(item) for item in blocking if str(item).strip())),
+            "warnings": [],
+            "suggestedImprovements": list(dict.fromkeys(str(item) for item in repairs if str(item).strip())),
+            "reviewerReports": reviewer_reports,
+            "revalidationMode": "rule_only",
+        }
+
+    def revalidate_final_candidates(self, session_id: str) -> IdeaSession:
+        """Re-run current hard gates on an existing session's candidate pool.
+
+        This is intentionally rule-only: it lets old sessions benefit from new
+        safety gates without spending LLM calls. If every candidate fails, no
+        final candidate is exposed; the session remains available for debug view
+        and can be regenerated by the normal pipeline.
+        """
+
+        session = self.session_storage.get(session_id)
+        if not session:
+            raise ValueError(f"Session {session_id} not found")
+        candidates = self.candidate_storage.list_by_session(session_id)
+        if not candidates:
+            summary = dict(session.qualityLoopSummary or {})
+            summary["revalidation"] = {
+                "status": "no_candidates",
+                "removedFinalCandidateIds": [],
+                "finalCandidateIds": [],
+                "checkedCandidateCount": 0,
+            }
+            session.qualityLoopSummary = summary
+            return self.session_storage.update(session)
+
+        previous_final_ids = list(getattr(session, "finalCandidateIds", []) or [])
+        gate_reports = {
+            candidate.id: self._rule_only_idea_review_gate(
+                candidate=candidate,
+                seed_query=session.config.seedQuery,
+            )
+            for candidate in candidates
+        }
+        shortlist = self._select_final_candidates(
+            candidates,
+            gate_reports,
+            max_count=self._target_final_candidate_count(session, candidates),
+            allow_failed_fallback=False,
+        )
+        removed_final_ids = [
+            candidate_id
+            for candidate_id in previous_final_ids
+            if candidate_id not in shortlist["finalCandidateIds"]
+        ]
+        session.finalCandidateIds = shortlist["finalCandidateIds"]
+        session.hiddenCandidateIds = shortlist["hiddenCandidateIds"]
+        session.rejectedCandidateIds = shortlist["rejectedCandidateIds"]
+        summary = dict(session.qualityLoopSummary or {})
+        summary.update(shortlist["summary"])
+        summary["revalidation"] = {
+            "status": "updated" if removed_final_ids else "unchanged",
+            "mode": "rule_only",
+            "removedFinalCandidateIds": removed_final_ids,
+            "finalCandidateIds": list(session.finalCandidateIds),
+            "checkedCandidateCount": len(candidates),
+            "blockingByCandidate": {
+                candidate_id: report.get("blockingIssues", [])
+                for candidate_id, report in gate_reports.items()
+                if report.get("blockingIssues")
+            },
+        }
+        session.qualityLoopSummary = summary
+        return self.session_storage.update(session)
     
     def select_candidate(self, session_id: str, candidate_id: str) -> IdeaSession:
         """Select a candidate for the session."""
@@ -2121,12 +2694,141 @@ class IdeaGenerationService:
             and candidate.referenceSupport >= 4.3
         )
 
+    def _candidate_direction_type(self, candidate: Optional[IdeaCandidate]) -> str:
+        if not candidate or not getattr(candidate, "draftPlan", None):
+            return "unknown"
+        for tag in getattr(candidate.draftPlan, "tags", []) or []:
+            text = str(tag or "").strip()
+            if text.lower().startswith("directiontype:"):
+                value = text.split(":", 1)[1].strip()
+                return value or "unknown"
+        return "unknown"
+
+    def _candidate_direction_id(self, candidate: Optional[IdeaCandidate]) -> str:
+        if not candidate or not getattr(candidate, "draftPlan", None):
+            return ""
+        for tag in getattr(candidate.draftPlan, "tags", []) or []:
+            text = str(tag or "").strip()
+            if text.lower().startswith("direction:"):
+                return text.split(":", 1)[1].strip()
+        return ""
+
+    def _candidate_direction_title(self, candidate: Optional[IdeaCandidate]) -> str:
+        if not candidate or not getattr(candidate, "draftPlan", None):
+            return ""
+        for tag in getattr(candidate.draftPlan, "tags", []) or []:
+            text = str(tag or "").strip()
+            if text.lower().startswith("directiontitle:"):
+                return text.split(":", 1)[1].strip()
+        return ""
+
+    def _copy_candidate_direction_metadata(
+        self,
+        *,
+        source: IdeaCandidate,
+        target: IdeaCandidate,
+    ) -> None:
+        """Keep direction routing stable after idea repair/regeneration."""
+
+        if not getattr(source, "draftPlan", None):
+            return
+        source_tags = [
+            str(tag or "").strip()
+            for tag in (source.draftPlan.tags or [])
+            if str(tag or "").strip().lower().startswith(
+                ("direction:", "directiontype:", "directiontitle:")
+            )
+        ]
+        if not source_tags:
+            return
+        if not target.draftPlan:
+            target.draftPlan = DraftPlan(
+                researchQuestion=target.problem,
+                hypothesis=target.hypothesisStatement or target.keyInsight,
+                methodology=target.proposedMethod,
+                expectedOutcomes=target.expectedMetrics,
+            )
+        target_tags = list(target.draftPlan.tags or [])
+        for tag in source_tags:
+            if tag not in target_tags:
+                target_tags.append(tag)
+        target.draftPlan.tags = target_tags
+
+    def _candidate_direction_types(
+        self,
+        candidates: List[IdeaCandidate],
+        *,
+        known_only: bool = False,
+    ) -> List[str]:
+        values: List[str] = []
+        for candidate in candidates:
+            direction_type = self._candidate_direction_type(candidate)
+            if known_only and direction_type == "unknown":
+                continue
+            values.append(direction_type)
+        return values
+
+    def _direction_diversity_satisfied(self, candidates: List[IdeaCandidate]) -> bool:
+        known_types = self._candidate_direction_types(candidates, known_only=True)
+        return len(candidates) < 2 or len(set(known_types)) >= 2
+
+    def _direction_aware_quality_score(
+        self,
+        candidate: IdeaCandidate,
+        review_gate: Optional[Dict[str, Any]] = None,
+    ) -> float:
+        """Stable tie-breaker score for reviewed candidates.
+
+        The base score still carries the scientific quality signal. Small
+        evidence/reviewer/direction nudges keep equal-looking candidates from
+        collapsing to identical shortlist scores.
+        """
+
+        score = self._idea_candidate_quality_score(candidate, review_gate)
+        if review_gate:
+            try:
+                prior_confidence = float(review_gate.get("priorWorkComparisonConfidence", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                prior_confidence = 0.0
+            score += max(0.0, min(1.0, prior_confidence)) * 0.08
+            reviewer_reports = review_gate.get("reviewerReports", []) or []
+            reviewer_scores: List[float] = []
+            reviewer_confidences: List[float] = []
+            for report in reviewer_reports:
+                if not isinstance(report, dict):
+                    continue
+                try:
+                    reviewer_scores.append(float(report.get("score", 0.0) or 0.0))
+                except (TypeError, ValueError):
+                    pass
+                try:
+                    reviewer_confidences.append(float(report.get("confidence", 0.0) or 0.0))
+                except (TypeError, ValueError):
+                    pass
+            if reviewer_scores:
+                avg_reviewer_score = sum(reviewer_scores) / len(reviewer_scores)
+                score += max(-0.12, min(0.12, (avg_reviewer_score - 7.0) * 0.03))
+            if reviewer_confidences:
+                avg_confidence = sum(reviewer_confidences) / len(reviewer_confidences)
+                score += max(0.0, min(1.0, avg_confidence)) * 0.04
+        direction_type = self._candidate_direction_type(candidate)
+        direction_priority = {
+            "method": 0.050,
+            "benchmark": 0.045,
+            "safety_reliability": 0.040,
+            "system": 0.035,
+            "application": 0.030,
+        }
+        score += direction_priority.get(direction_type, 0.0)
+        return round(max(0.0, min(10.0, score)), 3)
+
     def _select_final_candidates(
         self,
         ranked: List[IdeaCandidate],
         gate_reports: Dict[str, Dict[str, Any]],
         *,
         max_count: int = 3,
+        allow_failed_fallback: bool = True,
     ) -> Dict[str, Any]:
         """Select the small candidate set shown to users.
 
@@ -2136,7 +2838,7 @@ class IdeaGenerationService:
         target_count = max(1, min(2, max_count, len(ranked)))
         scored = sorted(
             ranked,
-            key=lambda candidate: self._idea_candidate_quality_score(
+            key=lambda candidate: self._direction_aware_quality_score(
                 candidate,
                 gate_reports.get(candidate.id),
             ),
@@ -2162,23 +2864,53 @@ class IdeaGenerationService:
                 final.append(candidate)
                 final_keys.append(candidate_key)
 
+        def _try_add_new_direction(pool: List[IdeaCandidate], *, similarity_limit: float) -> None:
+            known_final_types = set(self._candidate_direction_types(final, known_only=True))
+            if not known_final_types:
+                return
+            for candidate in pool:
+                if len(final) >= target_count:
+                    return
+                if any(existing.id == candidate.id for existing in final):
+                    continue
+                direction_type = self._candidate_direction_type(candidate)
+                if direction_type == "unknown" or direction_type in known_final_types:
+                    continue
+                candidate_key = _candidate_similarity_key(candidate)
+                max_similarity = max(
+                    (_candidate_jaccard(candidate_key, key) for key in final_keys),
+                    default=0.0,
+                )
+                if max_similarity > similarity_limit:
+                    continue
+                final.append(candidate)
+                final_keys.append(candidate_key)
+                known_final_types.add(direction_type)
+
         strict_pool = [
             candidate for candidate in scored
             if self._passes_final_candidate_quality(candidate, gate_reports.get(candidate.id), strict=True)
         ]
-        _try_add(strict_pool, similarity_limit=0.72)
+        _try_add(strict_pool[:1], similarity_limit=0.72)
+        if len(final) < target_count:
+            _try_add_new_direction(strict_pool, similarity_limit=0.84)
+        if len(final) < target_count:
+            _try_add(strict_pool, similarity_limit=0.72)
 
         relaxed_pool = [
             candidate for candidate in scored
             if self._passes_final_candidate_quality(candidate, gate_reports.get(candidate.id), strict=False)
         ]
         if len(final) < min(2, target_count):
+            _try_add_new_direction(relaxed_pool, similarity_limit=0.88)
             _try_add(relaxed_pool, similarity_limit=0.84)
             warnings.append("Strict shortlist produced fewer than two candidates; relaxed reviewed candidates were considered.")
 
-        if not final and scored:
+        if not final and scored and allow_failed_fallback:
             final.append(scored[0])
             warnings.append("No candidate passed final shortlist thresholds; exposing the highest-scored candidate for manual inspection.")
+        elif not final and scored:
+            warnings.append("No candidate passed final shortlist thresholds; final handoff is empty until regeneration.")
 
         final_ids = [candidate.id for candidate in final]
         rejected_ids = [
@@ -2194,9 +2926,31 @@ class IdeaGenerationService:
             if candidate.id not in final_ids and candidate.id not in rejected_ids
         ]
         final_scores = {
-            candidate.id: self._idea_candidate_quality_score(candidate, gate_reports.get(candidate.id))
+            candidate.id: self._direction_aware_quality_score(candidate, gate_reports.get(candidate.id))
             for candidate in ranked
         }
+        final_direction_types = self._candidate_direction_types(final)
+        passing_direction_types = set(
+            self._candidate_direction_type(candidate)
+            for candidate in relaxed_pool
+            if self._candidate_direction_type(candidate) != "unknown"
+        )
+        direction_diversity_satisfied = self._direction_diversity_satisfied(final)
+        requires_regeneration = len(final_ids) < target_count
+        quality_status = "ready" if not requires_regeneration else "insufficient_final_candidates"
+        if requires_regeneration:
+            warnings.append(
+                f"Final shortlist has {len(final_ids)} candidate(s), below target {target_count}; run another repair/regeneration pass before downstream handoff."
+            )
+        if (
+            target_count >= 2
+            and len(final) >= 2
+            and not direction_diversity_satisfied
+            and passing_direction_types
+        ):
+            warnings.append(
+                "Final shortlist lacks direction diversity because only one direction passed review."
+            )
         return {
             "finalCandidateIds": final_ids,
             "hiddenCandidateIds": hidden_ids,
@@ -2209,6 +2963,10 @@ class IdeaGenerationService:
                 "rejectedCandidateCount": len(rejected_ids),
                 "targetFinalCandidateCount": target_count,
                 "finalCandidateIds": final_ids,
+                "finalDirectionTypes": final_direction_types,
+                "directionDiversitySatisfied": direction_diversity_satisfied,
+                "qualityStatus": quality_status,
+                "requiresRegeneration": requires_regeneration,
                 "warnings": warnings,
                 "qualityScores": final_scores,
             },
@@ -2234,7 +2992,7 @@ class IdeaGenerationService:
 
         scored = sorted(
             ranked,
-            key=lambda candidate: self._idea_candidate_quality_score(
+            key=lambda candidate: self._direction_aware_quality_score(
                 candidate,
                 gate_reports.get(candidate.id),
             ),
@@ -2267,6 +3025,190 @@ class IdeaGenerationService:
             _try_add(scored, strict=False, similarity_limit=0.84)
         return ready
 
+    def _candidate_pool_failure_text(
+        self,
+        review_gate: Optional[Dict[str, Any]],
+        paper_quality_gate: Optional[Dict[str, Any]],
+    ) -> str:
+        values: List[str] = []
+
+        def _collect_from_gate(gate: Optional[Dict[str, Any]]) -> None:
+            if not isinstance(gate, dict):
+                return
+            for key in [
+                "blockingIssues",
+                "warnings",
+                "suggestedImprovements",
+                "repairInstructions",
+                "errors",
+                "missingCoverage",
+            ]:
+                value = gate.get(key)
+                if isinstance(value, list):
+                    values.extend(str(item) for item in value)
+                elif isinstance(value, str):
+                    values.append(value)
+
+        _collect_from_gate(review_gate)
+        _collect_from_gate(paper_quality_gate)
+
+        if isinstance(review_gate, dict):
+            for report in review_gate.get("reviewerReports", []) or []:
+                if isinstance(report, dict):
+                    _collect_from_gate(report)
+
+        return " ".join(item for item in values if item).lower()
+
+    def _paper_quality_gate_indicates_bad_pool(
+        self,
+        paper_quality_gate: Optional[Dict[str, Any]],
+    ) -> bool:
+        if not isinstance(paper_quality_gate, dict):
+            return False
+        if not paper_quality_gate.get("passed", True):
+            return True
+        if paper_quality_gate.get("hardBlocked"):
+            return True
+
+        try:
+            external_count = int(paper_quality_gate.get("externalPaperCount", 0) or 0)
+            min_external = int(paper_quality_gate.get("minExternalPaperCount", 0) or 0)
+        except (TypeError, ValueError):
+            external_count = 0
+            min_external = 0
+        if min_external and external_count < min_external:
+            return True
+
+        try:
+            gap_signal_count = int(paper_quality_gate.get("gapSignalCount", 0) or 0)
+            min_gap_signal_count = int(paper_quality_gate.get("minGapSignalCount", 0) or 0)
+        except (TypeError, ValueError):
+            gap_signal_count = 0
+            min_gap_signal_count = 0
+        if min_gap_signal_count and gap_signal_count < min_gap_signal_count:
+            return True
+
+        gate_text = self._candidate_pool_failure_text(None, paper_quality_gate)
+        bad_pool_terms = [
+            "all retrieved papers are from local fallback sources",
+            "insufficient external evidence",
+            "too few papers",
+            "paper pool is too small",
+            "weak topic alignment",
+            "weak overlap with the seed topic",
+            "missing paper-type evidence coverage",
+            "no explicit gap or limitation signal",
+            "local fallback",
+            "论文池",
+            "外部证据",
+            "主题相关",
+            "缺口信号",
+        ]
+        return any(term in gate_text for term in bad_pool_terms)
+
+    def _candidate_pool_failure_route(
+        self,
+        candidate: Optional[IdeaCandidate],
+        review_gate: Optional[Dict[str, Any]],
+        paper_quality_gate: Optional[Dict[str, Any]],
+    ) -> str:
+        """Diagnose the root failure so repair loops can choose the right path."""
+
+        if self._paper_quality_gate_indicates_bad_pool(paper_quality_gate):
+            return "evidence_pool_bad"
+        if not isinstance(review_gate, dict):
+            return "none"
+        if review_gate.get("passed") and not review_gate.get("blockingIssues"):
+            return "none"
+
+        text = self._candidate_pool_failure_text(review_gate, paper_quality_gate)
+
+        off_topic_terms = [
+            "weak topic overlap",
+            "off-topic",
+            "off topic",
+            "topic drift",
+            "drifted away",
+            "seed query",
+            "unrelated to the seed",
+            "主题漂移",
+            "跑题",
+            "不相关",
+        ]
+        novelty_terms = [
+            "closest prior",
+            "closest-prior",
+            "prior-work",
+            "prior work",
+            "novelty comparison",
+            "comparison confidence",
+            "baseline search",
+            "contradiction search",
+            "novelty unclear",
+            "prior art",
+            "已有工作",
+            "相关工作对比",
+            "创新性不清",
+        ]
+        ungrounded_terms = [
+            "no valid evidence",
+            "not sufficiently grounded",
+            "ungrounded",
+            "evidence id",
+            "evidence ids",
+            "evidencerefs",
+            "evidence refs",
+            "graph evidence",
+            "supporting evidence",
+            "claim to evidence",
+            "claims to evidence",
+            "unsupported claim",
+            "citation missing",
+            "missing citation",
+            "没有证据",
+            "未引用证据",
+            "证据引用",
+        ]
+        method_terms = [
+            "specificity",
+            "too vague",
+            "vague",
+            "method",
+            "hypothesis",
+            "metric",
+            "dataset",
+            "experiment",
+            "variable",
+            "implementation",
+            "contribution",
+            "unclear",
+            "不具体",
+            "太泛",
+            "方法",
+            "假设",
+            "实验",
+            "指标",
+            "变量",
+        ]
+
+        if any(term in text for term in off_topic_terms):
+            return "off_topic"
+        try:
+            prior_work_confidence = float(
+                review_gate.get("priorWorkComparisonConfidence", 1.0) or 1.0
+            )
+        except (TypeError, ValueError):
+            prior_work_confidence = 1.0
+        if any(term in text for term in novelty_terms) or prior_work_confidence < 0.35:
+            return "novelty_unclear"
+        if any(term in text for term in ungrounded_terms):
+            return "candidate_ungrounded"
+        if any(term in text for term in method_terms):
+            return "method_vague"
+        if review_gate.get("blockingIssues") or review_gate.get("suggestedImprovements"):
+            return "method_vague"
+        return "none"
+
     def _candidate_pool_repair_action(
         self,
         candidate: IdeaCandidate,
@@ -2279,6 +3221,13 @@ class IdeaGenerationService:
             return "none"
         if "llm_regenerated_from_idea_review" in (candidate.scoringMethod or ""):
             return "drop"
+        failure_route = self._candidate_pool_failure_route(
+            candidate,
+            review_gate,
+            paper_quality_gate,
+        )
+        if failure_route == "evidence_pool_bad":
+            return "literature_repair"
         if (
             candidate.overallScore < 5.8
             or candidate.alignment < 4.5
@@ -2291,40 +3240,13 @@ class IdeaGenerationService:
             strict=False,
         ):
             return "none"
-        if self._idea_gate_requires_literature_repair(review_gate, paper_quality_gate):
+        if failure_route == "novelty_unclear":
             return "literature_repair"
-
-        text = " ".join(
-            str(item)
-            for item in [
-                *review_gate.get("blockingIssues", []),
-                *review_gate.get("warnings", []),
-                *review_gate.get("suggestedImprovements", []),
-            ]
-        ).lower()
-        regenerate_terms = [
-            "specificity",
-            "feasibility",
-            "novelty",
-            "hypothesis",
-            "method",
-            "metric",
-            "dataset",
-            "experiment",
-            "variable",
-            "contribution",
-            "unclear",
-            "too vague",
-            "具体",
-            "方法",
-            "假设",
-            "实验",
-            "指标",
-        ]
+        if failure_route in {"candidate_ungrounded", "method_vague", "off_topic"}:
+            return "regenerate_idea"
         if (
             review_gate.get("blockingIssues")
             or review_gate.get("suggestedImprovements")
-            or any(term in text for term in regenerate_terms)
         ):
             return "regenerate_idea"
         return "none"
@@ -2334,7 +3256,32 @@ class IdeaGenerationService:
         candidate: IdeaCandidate,
         review_gate: Optional[Dict[str, Any]],
         action: str,
+        failure_route: Optional[str] = None,
     ) -> str:
+        route_reasons = {
+            "evidence_pool_bad": (
+                "The paper pool failed quality checks; run targeted external/gap literature repair "
+                "before trusting this candidate."
+            ),
+            "candidate_ungrounded": (
+                "The candidate is not bound to available evidence IDs; rewrite the idea against "
+                "existing graph/literature evidence."
+            ),
+            "novelty_unclear": (
+                "The closest-prior-work comparison is too thin; supplement novelty probe evidence "
+                "before final ranking."
+            ),
+            "method_vague": (
+                "The method or hypothesis is too vague; rewrite it with concrete variables, metrics, "
+                "datasets, and validation steps."
+            ),
+            "off_topic": (
+                "The candidate drifted away from the seed query; regenerate it from the original "
+                "research intent."
+            ),
+        }
+        if failure_route in route_reasons:
+            return route_reasons[failure_route]
         if action == "literature_repair":
             return "Evidence grounding is insufficient for a high-quality shortlist candidate."
         if action == "regenerate_idea":
@@ -2358,9 +3305,15 @@ class IdeaGenerationService:
         """Pick high-ranked non-final candidates worth repairing."""
 
         skipped_candidate_ids = skipped_candidate_ids or set()
+        ready_direction_types = {
+            self._candidate_direction_type(candidate)
+            for candidate in ranked
+            if candidate.id in final_ready_ids
+            and self._candidate_direction_type(candidate) != "unknown"
+        }
         scored = sorted(
             ranked,
-            key=lambda candidate: self._idea_candidate_quality_score(
+            key=lambda candidate: self._direction_aware_quality_score(
                 candidate,
                 gate_reports.get(candidate.id),
             ),
@@ -2368,22 +3321,48 @@ class IdeaGenerationService:
         )
         targets: List[Dict[str, Any]] = []
         for candidate in scored:
-            if len(targets) >= max_targets:
-                break
             if candidate.id in final_ready_ids or candidate.id in skipped_candidate_ids:
                 continue
             gate = gate_reports.get(candidate.id)
+            failure_route = self._candidate_pool_failure_route(
+                candidate,
+                gate,
+                paper_quality_gate,
+            )
             action = self._candidate_pool_repair_action(candidate, gate, paper_quality_gate)
             if action not in {"literature_repair", "regenerate_idea"}:
                 continue
+            direction_type = self._candidate_direction_type(candidate)
+            direction_id = self._candidate_direction_id(candidate)
+            fills_missing_direction = (
+                direction_type != "unknown"
+                and direction_type not in ready_direction_types
+            )
+            quality_score = self._direction_aware_quality_score(candidate, gate)
             targets.append({
                 "candidate": candidate,
                 "candidateId": candidate.id,
                 "action": action,
-                "reason": self._candidate_pool_repair_reason(candidate, gate, action),
-                "qualityScore": self._idea_candidate_quality_score(candidate, gate),
+                "failureRoute": failure_route,
+                "reason": self._candidate_pool_repair_reason(
+                    candidate,
+                    gate,
+                    action,
+                    failure_route,
+                ),
+                "qualityScore": quality_score,
+                "directionType": direction_type,
+                "directionId": direction_id,
+                "fillsMissingDirection": fills_missing_direction,
             })
-        return targets
+        targets = sorted(
+            targets,
+            key=lambda target: (
+                0 if target.get("fillsMissingDirection") else 1,
+                -float(target.get("qualityScore") or 0.0),
+            ),
+        )
+        return targets[:max_targets]
     
     def run_pipeline(self, session_id: str) -> IdeaSession:
         """
@@ -2997,7 +3976,10 @@ class IdeaGenerationService:
             )
 
         # Step 3c: Deep-read only papers that are not already structured.
+        raw_by_id = {paper.id: paper for paper in raw_papers}
         cached_structured: Dict[str, StructuredPaper] = {}
+        session_structured_cache_hit_count = 0
+        global_structured_cache_hit_count = 0
         missing_paper_ids: List[str] = []
         for paper_id in selected_paper_ids:
             cached = None
@@ -3007,8 +3989,27 @@ class IdeaGenerationService:
                 logger.warning("Structured paper cache lookup failed for %s: %s", paper_id, e)
             if cached and cached.sessionId == session.id:
                 cached_structured[paper_id] = cached
+                session_structured_cache_hit_count += 1
             else:
-                missing_paper_ids.append(paper_id)
+                raw_paper = raw_by_id.get(paper_id)
+                global_cached = (
+                    self._load_trusted_structured_paper_cache(
+                        session=session,
+                        raw_paper=raw_paper,
+                    )
+                    if raw_paper
+                    else None
+                )
+                if global_cached:
+                    cached_structured[paper_id] = global_cached
+                    global_structured_cache_hit_count += 1
+                    try:
+                        if not self.structured_storage.get(global_cached.id):
+                            self.structured_storage.create(global_cached)
+                    except Exception as e:
+                        logger.warning("Failed to persist global structured cache hit %s: %s", paper_id, e)
+                else:
+                    missing_paper_ids.append(paper_id)
 
         new_structured_papers: List[StructuredPaper] = []
         if missing_paper_ids:
@@ -3017,12 +4018,20 @@ class IdeaGenerationService:
                 selected_paper_ids=missing_paper_ids,
                 raw_papers=raw_papers,
             )
+        structured_cache_store_count = 0
         for sp in new_structured_papers:
             try:
                 if not self.structured_storage.get(sp.id):
                     self.structured_storage.create(sp)
             except Exception as e:
                 logger.warning(f"Failed to persist structured paper {sp.id}: {e}")
+            raw_paper = raw_by_id.get(sp.rawPaperId or sp.id)
+            if raw_paper and self._store_trusted_structured_paper_cache(
+                session=session,
+                raw_paper=raw_paper,
+                structured_paper=sp,
+            ):
+                structured_cache_store_count += 1
         structured_by_id = {
             **cached_structured,
             **{sp.id: sp for sp in new_structured_papers},
@@ -3075,10 +4084,24 @@ class IdeaGenerationService:
         self.handoff_storage.create(handoff)
 
         # Also run the original LLM novelty check for backward compatibility
-        lit_summary = "\n".join([
-            f"- {item.title} ({item.year or 'N/A'}): {item.snippet[:150]}..."
-            for item in literature[:8]
-        ])
+        if structured_papers:
+            lit_summary = "\n".join([
+                (
+                    f"- {sp.title} ({sp.year or 'N/A'}): {sp.summary[:180] or sp.abstract[:180]}\n"
+                    f"  limitations: {'; '.join(sp.limitations[:2]) or 'N/A'}\n"
+                    f"  openQuestions: {'; '.join(sp.openQuestions[:2]) or 'N/A'}\n"
+                    f"  failedAssumptions: {'; '.join(sp.failedAssumptions[:2]) or 'N/A'}\n"
+                    f"  methodWeaknesses: {'; '.join(sp.methodWeaknesses[:2]) or 'N/A'}\n"
+                    f"  missingEvaluation: {'; '.join(sp.missingEvaluation[:2]) or 'N/A'}\n"
+                    f"  baselines/metrics: {'; '.join([*sp.baselineMethods[:2], *sp.recommendedMetrics[:2]]) or 'N/A'}"
+                )
+                for sp in structured_papers[:8]
+            ])
+        else:
+            lit_summary = "\n".join([
+                f"- {item.title} ({item.year or 'N/A'}): {item.snippet[:150]}..."
+                for item in literature[:8]
+            ])
 
         covered_areas: List[str] = []
         gaps: List[str] = []
@@ -3142,6 +4165,9 @@ class IdeaGenerationService:
             "forcedRepairPaperCount": len(forced_selected_ids),
             "structuredPaperCount": len(structured_papers),
             "structuredCacheHitCount": len(cached_structured),
+            "structuredSessionCacheHitCount": session_structured_cache_hit_count,
+            "structuredGlobalCacheHitCount": global_structured_cache_hit_count,
+            "structuredCacheStoredCount": structured_cache_store_count,
             "deepReadRequestedCount": len(missing_paper_ids),
             "selectedPaperQualityGate": selected_quality_gate,
             "structuredPaperQualityGate": structured_quality_gate,
@@ -3423,22 +4449,111 @@ class IdeaGenerationService:
             f"maxReflectionRounds={bfts_config.maxReflectionRounds}"
         )
 
+        gap_analysis = self._get_step_output(session, "gapAnalysis", "gapAnalysis", [])
+        prioritized_gaps = self._get_step_output(session, "gapAnalysis", "prioritizedGaps", [])
+        opportunities = self._get_step_output(session, "gapAnalysis", "researchOpportunities", [])
+        gap_text = (
+            json.dumps(gap_analysis[:3], indent=2)
+            if isinstance(gap_analysis, list) and gap_analysis
+            else "\n".join([f"- {gap}" for gap in prioritized_gaps[:3]])
+        )
+        opp_text = (
+            "\n".join([f"- {item}" for item in opportunities[:3]])
+            if isinstance(opportunities, list) and opportunities
+            else "Based on identified gaps"
+        )
+        research_directions: List[Dict[str, Any]] = []
+        direction_latency_ms = 0
+        try:
+            direction_client = get_provider_client(session.config.providerName)
+            research_directions, direction_latency_ms = self._decompose_seed_query_for_brainstorm(
+                session=session,
+                client=direction_client,
+                gap_text=gap_text,
+                opp_text=opp_text,
+                key_papers=literature_context,
+            )
+        except Exception as e:
+            logger.warning("BFTS seed direction decomposition unavailable: %s", e)
+
         try:
             from app.modules.idea.bfts_search import BFTSSearchTree
 
-            tree = BFTSSearchTree(
-                session_id=session.id,
-                bfts_config=bfts_config,
-                provider_name=session.config.providerName,
-                model=session.config.model,
-                path_seeds=path_seeds,
-                structured_papers=structured_papers,
-                literature_context=literature_context,
-                seed_query=seed,
-                paper_type=paper_type,
-            )
+            candidates: List[IdeaCandidate] = []
+            direction_summaries: List[Dict[str, Any]] = []
+            used_directional_bfts = False
 
-            candidates = tree.run()
+            if research_directions:
+                direction_config = BFTSConfig(
+                    maxNodes=max(5, min(8, bfts_config.maxNodes)),
+                    maxIterations=max(1, min(2, bfts_config.maxIterations)),
+                    beamWidth=1,
+                    expansionWidth=1,
+                    maxLiteratureProbes=min(bfts_config.maxLiteratureProbes, 4),
+                    maxReflectionRounds=max(1, min(bfts_config.maxReflectionRounds, 2)),
+                    minEvidenceSupport=bfts_config.minEvidenceSupport,
+                    minGraphGrounding=bfts_config.minGraphGrounding,
+                    pruneDuplicateThreshold=bfts_config.pruneDuplicateThreshold,
+                    scoreWeights=bfts_config.scoreWeights,
+                )
+                for index, direction in enumerate(research_directions):
+                    direction_seed_query = self._direction_seed_query(seed, direction)
+                    direction_literature_context = (
+                        f"{literature_context}\n\n"
+                        f"Research Direction: {direction.get('title', '')}\n"
+                        f"Type: {direction.get('type', '')}\n"
+                        f"Focus: {direction.get('focus', '')}\n"
+                        f"Rationale: {direction.get('rationale', '')}"
+                    )
+                    direction_path_seed = path_seeds[index % len(path_seeds)]
+                    try:
+                        tree = BFTSSearchTree(
+                            session_id=session.id,
+                            bfts_config=direction_config,
+                            provider_name=session.config.providerName,
+                            model=session.config.model,
+                            path_seeds=[direction_path_seed],
+                            structured_papers=structured_papers,
+                            literature_context=direction_literature_context,
+                            seed_query=direction_seed_query,
+                            paper_type=f"{paper_type} / {direction.get('type', '')}",
+                        )
+                        direction_candidates = tree.run()
+                        self._tag_candidates_with_research_direction(direction_candidates, direction)
+                        candidates.extend(direction_candidates)
+                        direction_summaries.append({
+                            **direction,
+                            "pathSeedId": direction_path_seed.seedId,
+                            "generatedCandidateCount": len(direction_candidates),
+                        })
+                    except Exception as direction_error:
+                        logger.warning(
+                            "BFTS directional search failed for %s: %s",
+                            direction.get("id"),
+                            direction_error,
+                        )
+                        direction_summaries.append({
+                            **direction,
+                            "pathSeedId": direction_path_seed.seedId,
+                            "generatedCandidateCount": 0,
+                            "error": str(direction_error),
+                        })
+
+            used_directional_bfts = bool(candidates and research_directions)
+            if not candidates:
+                tree = BFTSSearchTree(
+                    session_id=session.id,
+                    bfts_config=bfts_config,
+                    provider_name=session.config.providerName,
+                    model=session.config.model,
+                    path_seeds=path_seeds,
+                    structured_papers=structured_papers,
+                    literature_context=literature_context,
+                    seed_query=seed,
+                    paper_type=paper_type,
+                )
+
+                candidates = tree.run()
 
             if not candidates:
                 logger.warning("BFTS produced no candidates, falling back to legacy")
@@ -3459,7 +4574,7 @@ class IdeaGenerationService:
             inputs = {
                 "seedQuery": seed,
                 "paperType": paper_type,
-                "method": "bfts_tree_search",
+                "method": "bfts_directional_tree_search" if used_directional_bfts else "bfts_tree_search",
                 "seedCount": len(path_seeds),
                 "maxNodes": bfts_config.maxNodes,
                 "beamWidth": bfts_config.beamWidth,
@@ -3468,8 +4583,12 @@ class IdeaGenerationService:
             outputs = {
                 "candidateCount": len(candidates),
                 "candidateIds": candidate_ids,
-                "method": "bfts_tree_search",
+                "method": "bfts_directional_tree_search" if used_directional_bfts else "bfts_tree_search",
                 "bftsConfig": bfts_config.model_dump(),
+                "directionalBftsConfig": direction_config.model_dump() if used_directional_bfts else None,
+                "researchDirections": direction_summaries,
+                "researchDirectionCount": len(research_directions),
+                "directionDecompositionLatencyMs": direction_latency_ms,
                 "dedupedCandidateIds": deduped_candidate_ids,
             }
 
@@ -3497,11 +4616,261 @@ class IdeaGenerationService:
             claims_str = ""
             if sp.claims:
                 claims_str = ". ".join(c.text[:100] for c in sp.claims[:2])
+            cut_ins = [
+                *sp.openQuestions[:2],
+                *sp.failedAssumptions[:2],
+                *sp.methodWeaknesses[:2],
+                *sp.missingEvaluation[:2],
+            ]
+            cut_in_str = "; ".join(cut_ins[:4]) or "N/A"
+            eval_str = "; ".join([
+                *sp.baselineMethods[:2],
+                *sp.recommendedMetrics[:2],
+            ]) or "N/A"
             lines.append(
                 f"[{i+1}] {title} ({year})\n"
-                f"    Key claims: {claims_str}"
+                f"    Key claims: {claims_str}\n"
+                f"    Idea cut-ins: {cut_in_str}\n"
+                f"    Baselines/metrics: {eval_str}"
             )
         return "\n\n".join(lines)
+
+    def _direction_decomposition_enabled(self) -> bool:
+        return _env_bool("FAROS_IDEA_DIRECTION_DECOMPOSITION", True)
+
+    def _direction_count_target(self) -> int:
+        try:
+            configured = int(os.getenv("FAROS_IDEA_DIRECTION_COUNT", "5"))
+        except ValueError:
+            configured = 5
+        return max(3, min(5, configured))
+
+    def _fallback_seed_research_directions(
+        self,
+        seed: str,
+        paper_type: str,
+        *,
+        max_directions: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        target = max_directions or self._direction_count_target()
+        base = [
+            {
+                "id": "dir-method",
+                "type": "method",
+                "title": "Method direction",
+                "focus": f"Design a concrete method or algorithmic mechanism for {seed}.",
+                "rationale": "Method-focused ideas usually produce a clear technical contribution.",
+                "evidenceAnchors": [],
+            },
+            {
+                "id": "dir-benchmark",
+                "type": "benchmark",
+                "title": "Benchmark direction",
+                "focus": f"Build evaluation tasks, metrics, or baselines for {seed}.",
+                "rationale": "Benchmark-focused ideas reduce ambiguity and make later experiments easier to verify.",
+                "evidenceAnchors": [],
+            },
+            {
+                "id": "dir-system",
+                "type": "system",
+                "title": "System direction",
+                "focus": f"Turn {seed} into an end-to-end system with clear inputs, modules, and outputs.",
+                "rationale": "System-focused ideas expose integration and deployment gaps.",
+                "evidenceAnchors": [],
+            },
+            {
+                "id": "dir-safety-reliability",
+                "type": "safety_reliability",
+                "title": "Safety and reliability direction",
+                "focus": f"Improve robustness, faithfulness, reliability, or safety for {seed}.",
+                "rationale": "Reliability-focused ideas are valuable when scientific claims need strong evidence.",
+                "evidenceAnchors": [],
+            },
+            {
+                "id": "dir-application",
+                "type": "application",
+                "title": "Application direction",
+                "focus": f"Apply {seed} to a concrete high-value scenario with measurable outcomes.",
+                "rationale": "Application-focused ideas turn broad topics into domain-grounded research questions.",
+                "evidenceAnchors": [],
+            },
+        ]
+        if paper_type in {"benchmark", "evaluation", "reproducibility"}:
+            base = [base[1], base[0], base[3], base[2], base[4]]
+        elif paper_type in {"system", "application"}:
+            base = [base[2], base[4], base[0], base[3], base[1]]
+        elif paper_type in {"safety"}:
+            base = [base[3], base[1], base[0], base[2], base[4]]
+        return base[:target]
+
+    def _normalize_seed_research_directions(
+        self,
+        raw: Any,
+        *,
+        seed: str,
+        paper_type: str,
+        max_directions: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        target = max_directions or self._direction_count_target()
+        allowed_types = {
+            "method",
+            "benchmark",
+            "system",
+            "safety_reliability",
+            "application",
+        }
+        if isinstance(raw, dict):
+            raw_directions = raw.get("researchDirections") or raw.get("directions") or []
+        elif isinstance(raw, list):
+            raw_directions = raw
+        else:
+            raw_directions = []
+
+        directions: List[Dict[str, Any]] = []
+        seen: set[str] = set()
+        for index, item in enumerate(raw_directions):
+            if not isinstance(item, dict):
+                continue
+            direction_type = str(item.get("type", "") or "").strip().lower().replace("-", "_")
+            if direction_type == "safety":
+                direction_type = "safety_reliability"
+            if direction_type not in allowed_types:
+                direction_type = self._fallback_seed_research_directions(
+                    seed,
+                    paper_type,
+                    max_directions=target,
+                )[min(index, target - 1)]["type"]
+            title = str(item.get("title", "") or "").strip()
+            focus = str(item.get("focus", item.get("description", "")) or "").strip()
+            rationale = str(item.get("rationale", item.get("why", "")) or "").strip()
+            if not title and not focus:
+                continue
+            direction_id = str(item.get("id", "") or "").strip()
+            if not direction_id:
+                direction_id = f"dir-{direction_type}"
+            direction_id = re.sub(r"[^a-zA-Z0-9_-]+", "-", direction_id).strip("-").lower()
+            key = f"{direction_type}:{title.lower()}:{focus.lower()[:80]}"
+            if key in seen:
+                continue
+            seen.add(key)
+            directions.append({
+                "id": direction_id or f"dir-{direction_type}-{index + 1}",
+                "type": direction_type,
+                "title": title or f"{direction_type.replace('_', ' ').title()} direction",
+                "focus": focus or f"Explore {seed} from a {direction_type} perspective.",
+                "rationale": rationale or "Selected to diversify candidate idea generation.",
+                "evidenceAnchors": _coerce_text_list(item.get("evidenceAnchors", []))[:5],
+            })
+            if len(directions) >= target:
+                break
+
+        if len(directions) < min(3, target):
+            for fallback in self._fallback_seed_research_directions(
+                seed,
+                paper_type,
+                max_directions=target,
+            ):
+                if len(directions) >= target:
+                    break
+                if fallback["type"] in {direction["type"] for direction in directions}:
+                    continue
+                directions.append(fallback)
+        return directions[:target]
+
+    def _decompose_seed_query_for_brainstorm(
+        self,
+        *,
+        session: IdeaSession,
+        client: Any,
+        gap_text: str,
+        opp_text: str,
+        key_papers: str,
+    ) -> tuple[List[Dict[str, Any]], int]:
+        if not self._direction_decomposition_enabled():
+            return [], 0
+        seed = session.config.seedQuery
+        paper_type = session.config.paperType
+        target = self._direction_count_target()
+        fallback = self._fallback_seed_research_directions(
+            seed,
+            paper_type,
+            max_directions=target,
+        )
+        try:
+            messages = [
+                ChatMessage(role="system", content=prompts.SEED_DIRECTION_DECOMPOSITION_SYSTEM),
+                ChatMessage(
+                    role="user",
+                    content=prompts.SEED_DIRECTION_DECOMPOSITION_USER.format(
+                        seed_query=seed,
+                        paper_type=paper_type,
+                        domain=session.config.domain or "unspecified",
+                        gap_analysis=gap_text or "N/A",
+                        opportunities=opp_text or "N/A",
+                        key_papers=key_papers or "N/A",
+                    ),
+                ),
+            ]
+            response = client.chat(messages, model=session.config.model, max_tokens=1400)
+            data = _extract_json_object(getattr(response, "text", "") or "")
+            directions = self._normalize_seed_research_directions(
+                data,
+                seed=seed,
+                paper_type=paper_type,
+                max_directions=target,
+            )
+            return directions or fallback, int(getattr(response, "latency_ms", 0) or 0)
+        except Exception as e:
+            logger.warning("Seed query direction decomposition failed; using fallback directions: %s", e)
+            return fallback, 0
+
+    def _direction_seed_query(self, seed: str, direction: Dict[str, Any]) -> str:
+        return (
+            f"{seed}\n"
+            f"Research Direction ID: {direction.get('id', '')}\n"
+            f"Research Direction Type: {direction.get('type', '')}\n"
+            f"Research Direction Title: {direction.get('title', '')}\n"
+            f"Direction Focus: {direction.get('focus', '')}\n"
+            f"Direction Rationale: {direction.get('rationale', '')}\n"
+            "Generate ideas only for this direction while staying faithful to the seed topic."
+        )
+
+    def _tag_candidates_with_research_direction(
+        self,
+        candidates: List[IdeaCandidate],
+        direction: Dict[str, Any],
+    ) -> None:
+        direction_id = str(direction.get("id", "") or "")
+        direction_type = str(direction.get("type", "") or "")
+        direction_title = str(direction.get("title", "") or "")
+        tags = [
+            f"direction:{direction_id}",
+            f"directionType:{direction_type}",
+            f"directionTitle:{direction_title}",
+        ]
+        for candidate in candidates:
+            if not candidate.draftPlan:
+                candidate.draftPlan = DraftPlan(
+                    researchQuestion=candidate.problem,
+                    hypothesis=candidate.hypothesisStatement or candidate.keyInsight,
+                    methodology=candidate.proposedMethod,
+                    expectedOutcomes=candidate.expectedMetrics,
+                )
+            existing_tags = list(candidate.draftPlan.tags or [])
+            for tag in tags:
+                if tag and tag not in existing_tags:
+                    existing_tags.append(tag)
+            candidate.draftPlan.tags = existing_tags
+            note = (
+                f"Generated from {direction_type} research direction: "
+                f"{direction.get('focus', '')}"
+            ).strip()
+            if note and note not in (candidate.draftPlan.notes or ""):
+                candidate.draftPlan.notes = (
+                    f"{candidate.draftPlan.notes}\n{note}".strip()
+                    if candidate.draftPlan.notes
+                    else note
+                )
 
     def _step_idea_brainstorm(self, session: IdeaSession) -> tuple:
         """Generate candidate ideas — routes to BFTS or legacy based on availability."""
@@ -3523,6 +4892,11 @@ class IdeaGenerationService:
         max_candidates = session.config.maxCandidates
         generation_count = min(20, max(max_candidates, max_candidates * 3))
         literature = self.get_literature(session.id)
+        structured_papers: List[StructuredPaper] = []
+        try:
+            structured_papers = self.structured_storage.list_by_session(session.id)
+        except Exception:
+            structured_papers = []
 
         # Get gap analysis results
         gap_analysis = []
@@ -3537,43 +4911,128 @@ class IdeaGenerationService:
                     break
 
         # Build context
-        key_papers = "\n".join([
-            f"- {item.title} ({item.year or 'N/A'})"
-            for item in literature[:5]
-        ])
+        if structured_papers:
+            key_papers = "\n".join([
+                (
+                    f"- {sp.title} ({sp.year or 'N/A'})\n"
+                    f"  cut-ins: {'; '.join([*sp.openQuestions[:1], *sp.failedAssumptions[:1], *sp.methodWeaknesses[:1], *sp.missingEvaluation[:1]]) or 'N/A'}\n"
+                    f"  baselines/metrics: {'; '.join([*sp.baselineMethods[:2], *sp.recommendedMetrics[:2]]) or 'N/A'}"
+                )
+                for sp in structured_papers[:5]
+            ])
+        else:
+            key_papers = "\n".join([
+                f"- {item.title} ({item.year or 'N/A'})"
+                for item in literature[:5]
+            ])
 
         gap_text = json.dumps(gap_analysis[:3], indent=2) if gap_analysis else "\n".join([f"- {g}" for g in prioritized_gaps[:3]])
         opp_text = "\n".join([f"- {o}" for o in opportunities[:3]]) if opportunities else "Based on identified gaps"
 
         try:
             client = get_provider_client(session.config.providerName)
-
-            user_prompt = prompts.IDEA_BRAINSTORM_USER.format(
-                seed_query=seed,
-                paper_type=paper_type,
-                max_candidates=generation_count,
-                gap_analysis=gap_text,
-                opportunities=opp_text,
-                key_papers=key_papers
+            research_directions, direction_latency_ms = self._decompose_seed_query_for_brainstorm(
+                session=session,
+                client=client,
+                gap_text=gap_text,
+                opp_text=opp_text,
+                key_papers=key_papers,
             )
+            candidates: List[IdeaCandidate] = []
+            direction_summaries: List[Dict[str, Any]] = []
+            total_latency_ms = direction_latency_ms
 
-            messages = [
-                ChatMessage(role="system", content=prompts.IDEA_BRAINSTORM_SYSTEM),
-                ChatMessage(role="user", content=user_prompt)
-            ]
+            if research_directions:
+                ideas_per_direction = max(
+                    1,
+                    min(5, (generation_count + len(research_directions) - 1) // len(research_directions)),
+                )
+                for direction in research_directions:
+                    user_prompt = prompts.IDEA_BRAINSTORM_USER.format(
+                        seed_query=self._direction_seed_query(seed, direction),
+                        paper_type=f"{paper_type} / {direction.get('type', '')}",
+                        max_candidates=ideas_per_direction,
+                        gap_analysis=gap_text,
+                        opportunities=opp_text,
+                        key_papers=key_papers,
+                    )
 
-            response = client.chat(messages, model=session.config.model, max_tokens=3000)
+                    messages = [
+                        ChatMessage(role="system", content=prompts.IDEA_BRAINSTORM_SYSTEM),
+                        ChatMessage(role="user", content=user_prompt),
+                    ]
 
-            # Parse ideas from response
-            candidates = self._parse_ideas_json(session.id, response.text, generation_count)
+                    try:
+                        response = client.chat(messages, model=session.config.model, max_tokens=2200)
+                        total_latency_ms += int(getattr(response, "latency_ms", 0) or 0)
+                        direction_candidates = self._parse_ideas_json(
+                            session.id,
+                            response.text,
+                            ideas_per_direction,
+                        )
+                        if not direction_candidates:
+                            direction_candidates = self._parse_ideas(
+                                session.id,
+                                response.text,
+                                ideas_per_direction,
+                            )
+                        self._tag_candidates_with_research_direction(direction_candidates, direction)
+                        candidates.extend(direction_candidates)
+                        direction_summaries.append({
+                            **direction,
+                            "requestedCandidateCount": ideas_per_direction,
+                            "generatedCandidateCount": len(direction_candidates),
+                        })
+                    except Exception as direction_error:
+                        logger.warning(
+                            "Directional idea generation failed for %s: %s",
+                            direction.get("id"),
+                            direction_error,
+                        )
+                        direction_summaries.append({
+                            **direction,
+                            "requestedCandidateCount": ideas_per_direction,
+                            "generatedCandidateCount": 0,
+                            "error": str(direction_error),
+                        })
+            else:
+                user_prompt = prompts.IDEA_BRAINSTORM_USER.format(
+                    seed_query=seed,
+                    paper_type=paper_type,
+                    max_candidates=generation_count,
+                    gap_analysis=gap_text,
+                    opportunities=opp_text,
+                    key_papers=key_papers
+                )
 
-            if not candidates:
-                # Fallback to text parsing
-                candidates = self._parse_ideas(session.id, response.text, generation_count)
+                messages = [
+                    ChatMessage(role="system", content=prompts.IDEA_BRAINSTORM_SYSTEM),
+                    ChatMessage(role="user", content=user_prompt)
+                ]
+
+                response = client.chat(messages, model=session.config.model, max_tokens=3000)
+                total_latency_ms += int(getattr(response, "latency_ms", 0) or 0)
+
+                # Parse ideas from response
+                candidates = self._parse_ideas_json(session.id, response.text, generation_count)
+
+                if not candidates:
+                    # Fallback to text parsing
+                    candidates = self._parse_ideas(session.id, response.text, generation_count)
 
             if not candidates:
                 # Generate fallback
+                fallback_directions = research_directions or self._fallback_seed_research_directions(
+                    seed,
+                    paper_type,
+                    max_directions=min(3, self._direction_count_target()),
+                )
                 candidates = self._generate_fallback_candidates(session.id, seed, min(3, max_candidates))
+                for index, candidate in enumerate(candidates):
+                    self._tag_candidates_with_research_direction(
+                        [candidate],
+                        fallback_directions[index % len(fallback_directions)],
+                    )
             candidates, deduped_candidate_ids = self._dedupe_candidates(
                 candidates,
                 max_count=min(20, max(max_candidates, len(candidates))),
@@ -3590,9 +5049,11 @@ class IdeaGenerationService:
             outputs = {
                 "candidateCount": len(candidates),
                 "candidateIds": candidate_ids,
-                "llmLatencyMs": response.latency_ms,
-                "method": "legacy_single_shot",
+                "llmLatencyMs": total_latency_ms,
+                "method": "legacy_directional_brainstorm" if research_directions else "legacy_single_shot",
                 "requestedGenerationCount": generation_count,
+                "researchDirections": direction_summaries,
+                "researchDirectionCount": len(research_directions),
                 "dedupedCandidateIds": deduped_candidate_ids,
             }
 
@@ -4015,8 +5476,12 @@ class IdeaGenerationService:
                 target_summary = {
                     "candidateId": target_candidate.id,
                     "action": action,
+                    "failureRoute": repair_target.get("failureRoute", "none"),
                     "reason": repair_target.get("reason", ""),
                     "qualityScore": repair_target.get("qualityScore"),
+                    "directionType": repair_target.get("directionType"),
+                    "directionId": repair_target.get("directionId"),
+                    "fillsMissingDirection": bool(repair_target.get("fillsMissingDirection")),
                 }
                 summary["repairTargets"].append(target_summary)
                 summary["action"] = (
@@ -4141,6 +5606,10 @@ class IdeaGenerationService:
                     target_summary["skipped"] = True
                     target_summary["skipReason"] = "LLM regeneration returned no candidate."
                     continue
+                self._copy_candidate_direction_metadata(
+                    source=target_candidate,
+                    target=regenerated,
+                )
 
                 try:
                     scored_candidates, _ = ranking_service.rank_candidates(
@@ -4153,6 +5622,10 @@ class IdeaGenerationService:
                         session_id=session.id,
                     )
                     regenerated = scored_candidates[0] if scored_candidates else regenerated
+                    self._copy_candidate_direction_metadata(
+                        source=target_candidate,
+                        target=regenerated,
+                    )
                 except Exception as e:
                     logger.warning(f"Ranking regenerated candidate failed: {e}")
                 regenerated_evidence = self._build_candidate_evidence(
@@ -4196,7 +5669,14 @@ class IdeaGenerationService:
                     self.candidate_storage.create(regenerated)
                 except Exception as e:
                     logger.warning(f"Failed to persist regenerated candidate {regenerated.id}: {e}")
-                ranked = sorted(ranked, key=lambda c: c.overallScore, reverse=True)
+                ranked = sorted(
+                    ranked,
+                    key=lambda c: self._direction_aware_quality_score(
+                        c,
+                        gate_reports.get(c.id),
+                    ),
+                    reverse=True,
+                )
 
             final_ready_after = self._current_final_ready_candidates(
                 ranked,
@@ -4389,32 +5869,12 @@ class IdeaGenerationService:
     ) -> bool:
         """Route idea failures back to literature repair when evidence is the root cause."""
 
-        if not paper_quality_gate.get("passed", False):
-            return True
-        text = " ".join(
-            str(item)
-            for item in [
-                *review_gate.get("blockingIssues", []),
-                *review_gate.get("warnings", []),
-                *review_gate.get("suggestedImprovements", []),
-            ]
-        ).lower()
-        evidence_terms = [
-            "no paper",
-            "supporting paper",
-            "reference support",
-            "prior-work",
-            "prior work",
-            "evidence",
-            "literature",
-            "citation",
-            "closest prior",
-            "证据",
-            "论文",
-            "引用",
-            "相关工作",
-        ]
-        return any(term in text for term in evidence_terms)
+        route = self._candidate_pool_failure_route(
+            candidate=None,
+            review_gate=review_gate,
+            paper_quality_gate=paper_quality_gate,
+        )
+        return route in {"evidence_pool_bad", "novelty_unclear"}
 
     def _persist_repair_search_results(
         self,
@@ -4703,9 +6163,22 @@ class IdeaGenerationService:
             claims_str = ". ".join(
                 c.text[:120] for c in (sp.claims or [])[:2]
             ) or "N/A"
+            cut_ins = [
+                *sp.openQuestions[:2],
+                *sp.failedAssumptions[:2],
+                *sp.methodWeaknesses[:2],
+                *sp.missingEvaluation[:2],
+            ]
+            cut_in_str = "; ".join(cut_ins[:4]) or "N/A"
+            eval_str = "; ".join([
+                *sp.baselineMethods[:2],
+                *sp.recommendedMetrics[:2],
+            ]) or "N/A"
             lines.append(
                 f"[{paper_id}] {title} ({year})\n"
-                f"    Claims: {claims_str}"
+                f"    Claims: {claims_str}\n"
+                f"    Idea cut-ins: {cut_in_str}\n"
+                f"    Baselines/metrics: {eval_str}"
             )
 
         # Add key gaps / path seeds summary
@@ -4789,6 +6262,13 @@ class IdeaGenerationService:
             blocking.append("Candidate has weak topic overlap with the seed query.")
             repair.append("Rewrite the idea so the problem, method, and hypothesis directly answer the seed query.")
             score -= 1.0
+        drift_issues = _candidate_topic_drift_issues(seed_query, candidate)
+        if drift_issues:
+            blocking.extend(drift_issues)
+            repair.append(
+                "Regenerate the candidate from the original seed query and remove unrequested application-domain anchors."
+            )
+            score -= min(1.5, 0.75 * len(drift_issues))
 
         if reviewer == "IdeaEvidenceReviewer":
             if not allowed_evidence_refs:
@@ -4903,6 +6383,24 @@ class IdeaGenerationService:
             "critique": critique.model_dump() if critique else {},
             "literatureContext": literature_context[:6000],
         }
+        cache_storage = getattr(self, "llm_task_cache_storage", None)
+        cache_task_type = f"idea_reviewer:{reviewer}"
+        if cache_storage:
+            try:
+                cached = cache_storage.get_valid(
+                    task_type=cache_task_type,
+                    prompt_version=IDEA_REVIEWER_CACHE_PROMPT_VERSION,
+                    model=model,
+                    input_payload=payload,
+                )
+                if cached and isinstance(cached.get("result"), dict):
+                    result = dict(cached["result"])
+                    result["cacheHit"] = True
+                    result["cacheKey"] = cached.get("cacheKey")
+                    return result
+            except Exception as exc:
+                logger.warning("%s LLM idea reviewer cache lookup failed: %s", reviewer, exc)
+
         messages = [
             ChatMessage(
                 role="system",
@@ -4925,12 +6423,16 @@ class IdeaGenerationService:
             ),
         ]
         try:
-            response = get_provider_client(provider_name).chat(
-                messages,
-                model=model,
-                temperature=0.0,
-                max_tokens=1000,
-                response_format={"type": "json_object"},
+            scheduler = getattr(self, "llm_task_scheduler", None) or get_llm_task_scheduler()
+            response = scheduler.run(
+                cache_task_type,
+                lambda: get_provider_client(provider_name).chat(
+                    messages,
+                    model=model,
+                    temperature=0.0,
+                    max_tokens=1000,
+                    response_format={"type": "json_object"},
+                ),
             )
         except Exception as exc:
             logger.warning("%s LLM idea reviewer failed: %s", reviewer, exc)
@@ -4943,7 +6445,7 @@ class IdeaGenerationService:
 
         score = _score_0_10(data.get("score", data.get("rating", 0.0)))
         passed = _bool_from_review(data.get("pass", data.get("passed")), default=score >= 6.0)
-        return {
+        report = {
             "reviewer": reviewer,
             "mode": "llm",
             "score": score,
@@ -4958,7 +6460,21 @@ class IdeaGenerationService:
             "confidence": _confidence_0_1(data.get("confidence", data.get("reviewConfidence", 0.5))),
             "summary": str(data.get("summary", data.get("rationale", "")) or ""),
             "llmLatencyMs": getattr(response, "latency_ms", None),
+            "cacheHit": False,
         }
+        if cache_storage:
+            try:
+                cache_key = cache_storage.put(
+                    task_type=cache_task_type,
+                    prompt_version=IDEA_REVIEWER_CACHE_PROMPT_VERSION,
+                    model=model,
+                    input_payload=payload,
+                    result=report,
+                )
+                report["cacheKey"] = cache_key
+            except Exception as exc:
+                logger.warning("%s LLM idea reviewer cache store failed: %s", reviewer, exc)
+        return report
 
     def _merge_idea_reviewer_reports(
         self,
@@ -5193,6 +6709,10 @@ class IdeaGenerationService:
                     llm_report=llm_reports.get(reviewer_name),
                     allowed_evidence_refs=allowed_evidence_refs,
                 ))
+            suspect_cache_keys = self._mark_structured_cache_suspect_from_reviewer_reports(
+                evidence=evidence,
+                reviewer_reports=reviewer_reports,
+            )
 
             reviewer_blocking = [
                 issue
@@ -5250,6 +6770,7 @@ class IdeaGenerationService:
                 "warnings": warnings,
                 "suggestedImprovements": list(dict.fromkeys(suggestions)),
                 "reviewerReports": reviewer_reports,
+                "suspectStructuredCacheKeys": suspect_cache_keys,
                 "priorWorkComparisonConfidence": round(avg_comparison_confidence, 3),
                 "needsFeedbackOptimization": self._should_optimize_candidate_from_gate(candidate, {
                     "passed": passed,
@@ -5316,6 +6837,12 @@ class IdeaGenerationService:
             "seedQuery": session.config.seedQuery,
             "domain": session.config.domain,
             "paperType": session.config.paperType,
+            "researchDirection": {
+                "id": self._candidate_direction_id(base_candidate),
+                "type": self._candidate_direction_type(base_candidate),
+                "title": self._candidate_direction_title(base_candidate),
+                "notes": base_candidate.draftPlan.notes if base_candidate.draftPlan else "",
+            },
             "literatureContext": literature_context[:8000],
         }
         messages = [
@@ -5325,7 +6852,9 @@ class IdeaGenerationService:
                     "You regenerate one stronger research idea from idea-stage review findings. "
                     "Return JSON only. Do not claim executed experiments. Do not invent paper IDs. "
                     "The new idea must preserve useful parts of the source candidate while directly addressing "
-                    "reviewGate warnings, blocking issues, and suggested improvements."
+                    "reviewGate warnings, blocking issues, and suggested improvements. "
+                    "If researchDirection is provided, keep the regenerated idea inside that direction; "
+                    "for example, a benchmark direction should remain a benchmark idea."
                 ),
             ),
             ChatMessage(
@@ -5353,6 +6882,7 @@ class IdeaGenerationService:
             return None
         candidate = candidates[0]
         candidate.references = list(base_candidate.references)
+        self._copy_candidate_direction_metadata(source=base_candidate, target=candidate)
         candidate.overallRationale = "Regenerated automatically from idea-stage review feedback."
         candidate.scoringMethod = "llm_regenerated_from_idea_review"
         return candidate

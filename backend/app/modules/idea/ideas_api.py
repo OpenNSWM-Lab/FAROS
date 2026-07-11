@@ -498,6 +498,29 @@ async def cancel_session(session_id: str) -> SessionResponse:
         )
 
 
+@router.post(
+    "/sessions/{session_id}/revalidate-final-candidates",
+    response_model=SessionResponse,
+    summary="Revalidate Final Idea Candidates",
+    description=(
+        "Run current hard quality gates on an existing idea session and update "
+        "the user-facing final candidate shortlist without new LLM calls."
+    )
+)
+async def revalidate_final_candidates(session_id: str) -> SessionResponse:
+    """Revalidate final candidates for old sessions after gate upgrades."""
+    service = get_idea_service()
+
+    try:
+        session = service.revalidate_final_candidates(session_id)
+        return _session_to_response(session)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e),
+        )
+
+
 @router.get(
     "/sessions/{session_id}/trace",
     response_model=TraceResponse,

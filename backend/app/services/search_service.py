@@ -94,6 +94,12 @@ class SemanticScholarSearch:
         # Unauthenticated free tier is 100 requests / 5 minutes. Keep a small
         # margin so multi-query idea sessions do not immediately hit 429.
         self.min_request_interval = 1.0 if api_key else 3.2
+        try:
+            self.rate_limit_cooldown_seconds = float(
+                os.getenv("FAROS_SEMANTIC_SCHOLAR_429_COOLDOWN_SECONDS", "180")
+            )
+        except ValueError:
+            self.rate_limit_cooldown_seconds = 180.0
     
     def _rate_limit(self):
         """Ensure we don't exceed rate limits."""
@@ -133,6 +139,8 @@ class SemanticScholarSearch:
                     logger.warning("Semantic Scholar rate limited; retrying in %.1fs", delay)
                     time.sleep(delay)
                     continue
+                if e.code == 429:
+                    self.disabled_until = time.time() + max(30.0, self.rate_limit_cooldown_seconds)
                 logger.warning(f"Semantic Scholar API error: {e.code} - {e.reason}")
                 return None
             except urllib.error.URLError as e:

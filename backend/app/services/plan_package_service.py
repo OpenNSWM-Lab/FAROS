@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import uuid
 from typing import Any, Dict, List, Optional
 
 from app.llm.provider_client import ChatMessage, get_provider_client
+from app.llm.task_scheduler import get_llm_task_scheduler
 from app.models.idea import IdeaCandidate, IdeaSession
 from app.models.plan_package import (
     PlanEvidenceRef,
@@ -55,6 +57,14 @@ from app.storage.idea_storage import (
 from app.storage.plan_package_storage import get_plan_package_storage
 
 logger = logging.getLogger(__name__)
+
+
+def _plan_llm_timeout_seconds() -> float:
+    try:
+        configured = float(os.getenv("FAROS_PLAN_PACKAGE_LLM_TIMEOUT_SECONDS", "120"))
+    except ValueError:
+        configured = 120.0
+    return max(5.0, min(600.0, configured))
 
 
 class PlanPackageNotFoundError(ValueError):
@@ -694,27 +704,32 @@ class PlanPackageService:
                 for report in rule_reports
             ]
         llm_reports: List[PlanReviewerReport] = []
+        scheduler = get_llm_task_scheduler()
         for rule_report in rule_reports:
             try:
-                response = client.chat(
-                    messages=[
-                        ChatMessage(
-                            role="system",
-                            content=(
-                                "You are a strict scientific reviewer for one specific dimension of an idea+plan handoff package. "
-                                "Return one JSON object only. Do not invent paper IDs, claim IDs, datasets, benchmarks, KG IDs, "
-                                "probe IDs, graph patch IDs, or executed results."
+                response = scheduler.run(
+                    "plan_package_reviewer",
+                    lambda rule_report=rule_report: client.chat(
+                        messages=[
+                            ChatMessage(
+                                role="system",
+                                content=(
+                                    "You are a strict scientific reviewer for one specific dimension of an idea+plan handoff package. "
+                                    "Return one JSON object only. Do not invent paper IDs, claim IDs, datasets, benchmarks, KG IDs, "
+                                    "probe IDs, graph patch IDs, or executed results."
+                                ),
                             ),
-                        ),
-                        ChatMessage(
-                            role="user",
-                            content=self._build_llm_review_prompt(package, rule_report=rule_report),
-                        ),
-                    ],
-                    model=model,
-                    temperature=0.0,
-                    max_tokens=3072,
-                    response_format={"type": "json_object"},
+                            ChatMessage(
+                                role="user",
+                                content=self._build_llm_review_prompt(package, rule_report=rule_report),
+                            ),
+                        ],
+                        model=model,
+                        temperature=0.0,
+                        max_tokens=3072,
+                        response_format={"type": "json_object"},
+                    ),
+                    timeout_seconds=_plan_llm_timeout_seconds(),
                 )
                 parsed = _extract_json(response.text or "")
                 if not parsed:
@@ -1352,12 +1367,16 @@ class PlanPackageService:
                         content=self._build_llm_repair_prompt(last_issues, target_sections=target_sections),
                     ),
                 ])
-            response = client.chat(
-                messages=messages,
-                model=session.config.model,
-                temperature=0.2 if attempt == 0 else 0.0,
-                max_tokens=8192,
-                response_format={"type": "json_object"},
+            response = get_llm_task_scheduler().run(
+                "plan_package_fields",
+                lambda messages=messages, attempt=attempt: client.chat(
+                    messages=messages,
+                    model=session.config.model,
+                    temperature=0.2 if attempt == 0 else 0.0,
+                    max_tokens=8192,
+                    response_format={"type": "json_object"},
+                ),
+                timeout_seconds=_plan_llm_timeout_seconds(),
             )
             last_response_text = response.text or ""
             raw_parsed = _extract_json(last_response_text)

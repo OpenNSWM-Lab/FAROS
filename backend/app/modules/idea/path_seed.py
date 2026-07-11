@@ -107,6 +107,12 @@ class PathSeedGenerator:
                 sp.abstract or "",
                 sp.summary or "",
                 " ".join(sp.limitations or []),
+                " ".join(sp.openQuestions or []),
+                " ".join(sp.failedAssumptions or []),
+                " ".join(sp.methodWeaknesses or []),
+                " ".join(sp.missingEvaluation or []),
+                " ".join(sp.baselineMethods or []),
+                " ".join(sp.recommendedMetrics or []),
                 " ".join(claim.text for claim in sp.claims[:5]),
             ])
             for c in sp.claims:

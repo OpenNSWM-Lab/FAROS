@@ -557,6 +557,12 @@ class StructuredPaper(BaseModel):
     metrics: List[str] = Field(default_factory=list)
     limitations: List[str] = Field(default_factory=list)
     baselines: List[str] = Field(default_factory=list)
+    openQuestions: List[str] = Field(default_factory=list, description="Unresolved questions explicitly surfaced by the paper")
+    failedAssumptions: List[str] = Field(default_factory=list, description="Assumptions that may fail or remain unvalidated")
+    methodWeaknesses: List[str] = Field(default_factory=list, description="Weaknesses of the paper's proposed method")
+    missingEvaluation: List[str] = Field(default_factory=list, description="Evaluation settings, datasets, metrics, or ablations missing from the paper")
+    baselineMethods: List[str] = Field(default_factory=list, description="Baseline methods useful for downstream planning")
+    recommendedMetrics: List[str] = Field(default_factory=list, description="Metrics recommended for ideas addressing this paper's gaps")
     contradictions: List[ContradictionMention] = Field(default_factory=list)
     noveltyEvidence: List[NoveltyEvidence] = Field(default_factory=list)
     summary: str = ""
