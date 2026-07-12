@@ -139,20 +139,16 @@ def _topic_relevance_score(result: SearchResult, topic_terms: List[str], signal_
 
     topic_hits = sum(1 for term in topic_terms if term in text)
     signal_hits = sum(1 for term in signal_terms if term in text)
-    # Only apply RAG phrase bonus when the topic itself is about RAG/faithfulness,
-    # so non-RAG domains are not unfairly penalised.  signal_terms is derived from
-    # the topic text upstream, so a non-empty list means the topic mentions RAG.
     phrase_bonus = 0.0
-    if signal_terms:
-        for phrase in [
-            "citation faithfulness",
-            "citation faithful",
-            "uncertainty estimation",
-            "retrieval augmented generation",
-            "retrieval-augmented generation",
-        ]:
-            if phrase in text:
-                phrase_bonus += 0.2
+    for phrase in [
+        "citation faithfulness",
+        "citation faithful",
+        "uncertainty estimation",
+        "retrieval augmented generation",
+        "retrieval-augmented generation",
+    ]:
+        if phrase in text:
+            phrase_bonus += 0.2
 
     source_bonus = 0.1 if result.source in {"arxiv", "semantic_scholar"} else 0.0
     base = min(0.5, topic_hits * 0.04)
@@ -168,7 +164,7 @@ def _rank_results_for_topic(
     search_queries: List[str],
 ) -> List[SearchResult]:
     topic_text = " ".join([seed, domain, *search_queries]).lower()
-    tokens = re.findall(r"[a-zA-Z][a-zA-Z0-9-]{2,}|[\u4e00-\u9fff]+", topic_text)
+    tokens = re.findall(r"[a-zA-Z][a-zA-Z0-9-]{2,}", topic_text)
     stopwords = {
         "and", "the", "for", "with", "from", "that", "this", "into",
         "using", "based", "how", "can", "are", "what", "when", "where",
@@ -358,228 +354,6 @@ def _candidate_similarity_key(candidate: IdeaCandidate) -> set[str]:
         for token in re.findall(r"[a-zA-Z][a-zA-Z0-9]{2,}|[\u4e00-\u9fff]{2,}", text)
         if token not in stopwords
     }
-    alias_groups = [
-        (
-            ("引用忠实", "忠实性", "citation fidelity", "citation faithfulness", "faithful citation", "citation faithful"),
-            ("citation", "fidelity", "faithfulness", "faithful"),
-        ),
-        (
-            ("拒答", "拒绝回答", "abstention", "abstain", "refusal", "refuse"),
-            ("refusal", "refuse", "abstention", "abstain"),
-        ),
-        (
-            ("证据可追踪", "可追踪性", "traceable evidence", "evidence traceability", "provenance"),
-            ("evidence", "traceability", "traceable", "provenance"),
-        ),
-        (
-            ("高风险", "高危", "high risk", "high stakes", "safety critical", "critical"),
-            ("high", "risk", "stakes", "safety", "critical"),
-        ),
-        (
-            ("问答", "question answering", "qa"),
-            ("qa", "question", "answering"),
-        ),
-        (
-            ("检索增强", "retrieval augmented generation", "rag"),
-            ("rag", "retrieval", "augmented", "generation"),
-        ),
-    ]
-    for triggers, aliases in alias_groups:
-        if any(trigger in text for trigger in triggers):
-            tokens.update(aliases)
-    return tokens
-
-
-def _normalized_topic_text(*parts: Any) -> str:
-    return " ".join(str(part or "") for part in parts if part is not None).lower().replace("-", " ")
-
-
-_APPLICATION_DOMAIN_DRIFT_GROUPS = [
-    {
-        "label": "carbon market / climate finance",
-        "phrases": [
-            "carbon market",
-            "carbon trading",
-            "carbon credit",
-            "carbon markets",
-            "emissions trading",
-            "climate finance",
-        ],
-        "terms": {"carbon", "emission", "emissions", "trading", "finance", "financial", "market", "markets"},
-    },
-    {
-        "label": "financial market analysis",
-        "phrases": [
-            "financial market",
-            "stock market",
-            "market analysis",
-            "investment analysis",
-            "trading strategy",
-        ],
-        "terms": {"financial", "finance", "stock", "investment", "trading", "market", "markets"},
-    },
-    {
-        "label": "clinical or medical deployment",
-        "phrases": [
-            "clinical",
-            "medical",
-            "healthcare",
-            "biomedical",
-            "radiology",
-            "electronic health record",
-            "ehr",
-        ],
-        "terms": {"clinical", "medical", "healthcare", "biomedical", "radiology", "patient", "ehr"},
-    },
-    {
-        "label": "legal domain",
-        "phrases": ["legal", "law firm", "court", "contract review", "legal reasoning"],
-        "terms": {"legal", "law", "court", "contract", "judicial"},
-    },
-]
-
-
-_APPLICATION_PHRASE_SUFFIXES = {
-    "analysis",
-    "analytics",
-    "optimization",
-    "optimisation",
-    "report",
-    "reports",
-    "reporting",
-    "deployment",
-    "forecasting",
-    "routing",
-    "trading",
-    "diagnosis",
-    "simulation",
-    "recommendation",
-    "tutoring",
-    "screening",
-    "monitoring",
-}
-
-
-_APPLICATION_PHRASE_STOPWORDS = {
-    "and", "are", "based", "for", "from", "high", "into", "main", "multi",
-    "real", "reliable", "research", "self", "system", "systems", "that",
-    "the", "this", "use", "using", "with", "world",
-}
-
-
-def _candidate_direction_tag_text(candidate: IdeaCandidate) -> str:
-    if not getattr(candidate, "draftPlan", None):
-        return ""
-    return " ".join(str(tag or "") for tag in (candidate.draftPlan.tags or []))
-
-
-def _topic_phrase_tokens(text: str) -> List[str]:
-    return [
-        token
-        for token in re.findall(r"[a-zA-Z][a-zA-Z0-9]{2,}", text.lower().replace("-", " "))
-        if token not in _APPLICATION_PHRASE_STOPWORDS
-    ]
-
-
-def _candidate_unrequested_application_phrase_issues(seed_query: str, candidate: IdeaCandidate) -> List[str]:
-    seed_tokens = set(_topic_phrase_tokens(seed_query))
-    if not seed_tokens:
-        return []
-    phrase_candidates: List[str] = []
-    for source_text in [
-        _normalized_topic_text(candidate.title),
-        _normalized_topic_text(candidate.problem),
-        _normalized_topic_text(candidate.keyInsight),
-    ]:
-        for match in re.finditer(
-            r"\b(?:for|in|on|within|across)\s+([a-z][a-z0-9\s]{4,80}?)(?:[.;,:]|\bwith\b|\busing\b|\buse\b|\buses\b|\bneeds\b|\bshould\b|\bcan\b|$)",
-            source_text,
-        ):
-            phrase = " ".join(match.group(1).split())
-            if phrase:
-                phrase_candidates.append(phrase)
-
-    issues: List[str] = []
-    for phrase in phrase_candidates[:8]:
-        tokens = _topic_phrase_tokens(phrase)
-        if len(tokens) < 2:
-            continue
-        novel_tokens = [token for token in tokens if token not in seed_tokens]
-        if len(novel_tokens) < 2:
-            continue
-        has_application_shape = (
-            any(token in _APPLICATION_PHRASE_SUFFIXES for token in tokens)
-            or tokens[-1] in _APPLICATION_PHRASE_SUFFIXES
-        )
-        if not has_application_shape:
-            continue
-        novelty_ratio = len(novel_tokens) / max(1, len(tokens))
-        if novelty_ratio >= 0.6:
-            issues.append(
-                "Candidate shows topic drift: unrequested application phrase "
-                f"'{phrase}' is central but absent from the seed query."
-            )
-    return issues
-
-
-def _candidate_topic_drift_issues(
-    seed_query: str,
-    candidate: IdeaCandidate,
-    english_search_queries: Optional[List[str]] = None,
-) -> List[str]:
-    """Detect strong unrequested application-domain anchors in an idea.
-
-    Coarse token overlap catches fully unrelated candidates, but it misses
-    cases where an idea keeps the seed's generic words while making a new
-    application domain the primary object (for example, turning "multi-agent
-    research automation" into "carbon market analysis"). This guard only
-    fires for strong domain phrases absent from the seed.
-    """
-
-    seed_text = _normalized_topic_text(seed_query)
-    # Bug 9 fix: When the seed is CJK, English domain phrases (e.g. "clinical",
-    # "medical") won't appear in the Chinese text, causing false positives.
-    # Augment seed_text with English search queries from expandQuery so that
-    # domains implied by the translated queries are not flagged as drift.
-    if english_search_queries and re.search(r'[\u4e00-\u9fff]', seed_query or ""):
-        seed_text = seed_text + " " + _normalized_topic_text(*english_search_queries)
-    if not seed_text:
-        return []
-    candidate_text = _normalized_topic_text(
-        candidate.title,
-        candidate.problem,
-        candidate.keyInsight,
-        candidate.proposedMethod,
-        candidate.hypothesisStatement,
-        _candidate_direction_tag_text(candidate),
-    )
-    if not candidate_text:
-        return []
-
-    issues: List[str] = []
-    for group in _APPLICATION_DOMAIN_DRIFT_GROUPS:
-        label = str(group["label"])
-        phrases = [str(phrase) for phrase in group["phrases"]]
-        terms = {str(term) for term in group["terms"]}
-        seed_has_group = any(phrase in seed_text for phrase in phrases) or any(
-            re.search(rf"\b{re.escape(term)}\b", seed_text)
-            for term in terms
-        )
-        if seed_has_group:
-            continue
-        matched_phrases = [phrase for phrase in phrases if phrase in candidate_text]
-        matched_terms = [
-            term
-            for term in terms
-            if re.search(rf"\b{re.escape(term)}\b", candidate_text)
-        ]
-        if matched_phrases or len(matched_terms) >= 2:
-            marker = matched_phrases[0] if matched_phrases else ", ".join(matched_terms[:3])
-            issues.append(
-                f"Candidate shows topic drift: unrequested {label} anchor '{marker}' is central but absent from the seed query."
-            )
-    issues.extend(_candidate_unrequested_application_phrase_issues(seed_query, candidate))
-    return list(dict.fromkeys(issues))
 
 
 def _candidate_jaccard(a: set[str], b: set[str]) -> float:
@@ -676,11 +450,8 @@ class IdeaGenerationService:
         candidates.append(seed)
         if domain:
             candidates.append(f"{seed} {domain}")
-        # Skip English focus-term appending for CJK seeds — mixed-language queries
-        # like "预测红楼梦可能结局 evaluation" perform poorly on ArXiv/Semantic Scholar.
-        if not re.search(r"[\u4e00-\u9fff]", seed):
-            for focus in focus_terms:
-                candidates.append(f"{seed} {focus}")
+        for focus in focus_terms:
+            candidates.append(f"{seed} {focus}")
         if key_concepts:
             candidates.append(" ".join([seed, *key_concepts[:3]]))
         if anchors:
@@ -944,30 +715,18 @@ class IdeaGenerationService:
         try:
             client = get_provider_client(session.config.providerName)
 
-            # CJK detection: if the seed contains Chinese characters, ask the
-            # LLM to also generate English search queries so that international
-            # academic databases (Semantic Scholar, ArXiv, OpenAlex) can find
-            # relevant papers about the Chinese research topic.
-            is_cjk = bool(re.search(r'[\u4e00-\u9fff]', seed))
-
             user_prompt = prompts.EXPAND_QUERY_USER.format(
                 seed_query=seed,
                 paper_type=paper_type,
                 domain=domain
             )
-            if is_cjk:
-                user_prompt += prompts.EXPAND_QUERY_CJK_SUFFIX
 
             messages = [
                 ChatMessage(role="system", content=prompts.EXPAND_QUERY_SYSTEM),
                 ChatMessage(role="user", content=user_prompt)
             ]
 
-            response = client.chat(
-                messages,
-                model=session.config.model,
-                max_tokens=800 if is_cjk else 500,
-            )
+            response = client.chat(messages, model=session.config.model, max_tokens=500)
 
             # Parse JSON response. If the model wraps JSON in text/fences, recover
             # the object; if parsing still fails, use deterministic clean queries.
@@ -989,26 +748,6 @@ class IdeaGenerationService:
                 for item in data.get("keyConcepts", [])
                 if isinstance(item, str) and item.strip()
             ][:10]
-
-            # CJK: extract English search queries generated by the LLM and
-            # prepend them so that international databases (Semantic Scholar,
-            # ArXiv, OpenAlex) receive English queries for the Chinese topic.
-            english_search_queries: list[str] = []
-            if is_cjk:
-                english_search_queries = [
-                    str(q).strip()
-                    for q in data.get("englishSearchQueries", [])
-                    if isinstance(q, str) and q.strip()
-                ]
-                english_concepts = [
-                    str(c).strip()
-                    for c in data.get("englishKeyConcepts", [])
-                    if isinstance(c, str) and c.strip()
-                ]
-                if english_search_queries:
-                    expanded_terms = english_search_queries + expanded_terms
-                if english_concepts:
-                    key_concepts = key_concepts + english_concepts[:5]
             refined_question = data.get("refinedQuestion", seed)
             if not isinstance(refined_question, str) or not refined_question.strip():
                 refined_question = seed
@@ -1067,40 +806,18 @@ class IdeaGenerationService:
                 "keyConcepts": key_concepts[:10],
                 "queryPlan": query_plan.model_dump(),
                 "llmLatencyMs": response.latency_ms,
-                "cjkTranslationApplied": is_cjk,
-                "englishSearchQueries": english_search_queries if is_cjk else [],
             }
 
         except Exception as e:
             logger.warning(f"LLM query expansion failed: {e}, using fallback")
-            expanded_terms = [seed]
-            if domain != "general" and domain:
+            expanded_terms = [
+                seed,
+                f"{seed} machine learning",
+                f"{seed} deep learning",
+                f"{seed} neural network",
+            ]
+            if domain != "general":
                 expanded_terms.append(f"{seed} {domain}")
-
-            # CJK fallback: attempt a lightweight translation call so that
-            # international databases can still be searched. If this also
-            # fails, the seed is used as-is (OpenAlex may still find results).
-            is_cjk = bool(re.search(r'[\u4e00-\u9fff]', seed))
-            english_search_queries: list[str] = []
-            if is_cjk:
-                try:
-                    client = get_provider_client(session.config.providerName)
-                    trans_messages = [
-                        ChatMessage(role="system", content="You are a translation assistant. Translate the given Chinese research topic into 3 English academic search queries."),
-                        ChatMessage(role="user", content=f"Chinese topic: {seed}\n\nReturn JSON: {{\"queries\": [\"English query 1\", \"English query 2\", \"English query 3\"]}}"),
-                    ]
-                    trans_resp = client.chat(trans_messages, model=session.config.model, max_tokens=200)
-                    trans_data = _extract_json_object(trans_resp.text) or {}
-                    english_search_queries = [
-                        str(q).strip()
-                        for q in trans_data.get("queries", [])
-                        if isinstance(q, str) and q.strip()
-                    ]
-                    if english_search_queries:
-                        expanded_terms = english_search_queries + expanded_terms
-                        logger.info(f"CJK fallback translation succeeded: {english_search_queries}")
-                except Exception as trans_e:
-                    logger.warning(f"CJK fallback translation also failed: {trans_e}")
 
             query_plan = QueryPlan(
                 refinedQuestion=seed,
@@ -1121,8 +838,6 @@ class IdeaGenerationService:
                 "expandedTerms": expanded_terms,
                 "queryPlan": query_plan.model_dump(),
                 "error": str(e),
-                "cjkTranslationApplied": bool(english_search_queries),
-                "englishSearchQueries": english_search_queries,
             }
 
         return inputs, outputs, []
@@ -2117,32 +1832,30 @@ class IdeaGenerationService:
     
     def _generate_fallback_candidates(self, session_id: str, seed: str, count: int) -> List[IdeaCandidate]:
         """Generate fallback candidates when LLM fails."""
-        # Domain-agnostic templates — avoid hard-coding ML-specific terminology so
-        # non-ML seeds (e.g. Chinese literature, biology) are not misrepresented.
         templates = [
             {
-                "title": f"A Systematic Survey and Meta-Analysis of {seed}",
-                "problem": f"Existing studies on {seed} lack unified evaluation frameworks and comprehensive synthesis.",
-                "insight": "A systematic meta-analysis can consolidate fragmented findings and identify consistent patterns across studies.",
+                "title": f"Scalable {seed} with Efficient Attention",
+                "problem": f"Current {seed} methods do not scale to large datasets.",
+                "insight": "Using sparse attention patterns can reduce complexity.",
+                "novelty": 7.5,
+                "feasibility": 8.0,
+                "impact": 7.0,
+            },
+            {
+                "title": f"Interpretable {seed} via Concept Bottlenecks",
+                "problem": f"{seed} models lack interpretability.",
+                "insight": "Concept bottleneck layers provide human-understandable explanations.",
+                "novelty": 8.0,
+                "feasibility": 7.0,
+                "impact": 8.5,
+            },
+            {
+                "title": f"Self-Supervised {seed} for Low-Resource Settings",
+                "problem": f"{seed} requires large labeled datasets.",
+                "insight": "Self-supervised pretraining can reduce label requirements.",
                 "novelty": 7.0,
                 "feasibility": 8.5,
                 "impact": 7.5,
-            },
-            {
-                "title": f"Identifying Key Factors and Predictive Models for {seed}",
-                "problem": f"The factors influencing {seed} are not well understood, limiting predictive capability.",
-                "insight": "A multi-factor analysis framework can reveal the most significant predictors and their interactions.",
-                "novelty": 7.5,
-                "feasibility": 8.0,
-                "impact": 8.0,
-            },
-            {
-                "title": f"A Comparative Study of Approaches to {seed}",
-                "problem": f"Multiple approaches to {seed} exist but lack rigorous comparative evaluation.",
-                "insight": "A controlled benchmark across diverse conditions can reveal trade-offs and best practices.",
-                "novelty": 7.0,
-                "feasibility": 8.5,
-                "impact": 7.0,
             },
         ]
         
@@ -2250,22 +1963,11 @@ class IdeaGenerationService:
                 logger.warning(f"LLM candidate analysis failed: {e}")
 
         # --- Phase 5: Idea-stage review gate + optional regeneration ---
-        # Retrieve English search queries from expandQuery (for CJK topics,
-        # the seed is Chinese but candidates are English — we need the English
-        # translations to compute meaningful Jaccard similarity in the gate).
-        english_search_queries = self._get_step_output(
-            session, "expandQuery", "englishSearchQueries", [],
-        ) or []
         gate_reports = self._apply_idea_review_gate(
             ranked=ranked,
             evidence_list=evidence_list,
             prior_work_comparisons=prior_work_comparisons,
             critiques=critiques,
-            seed_query=seed,
-            provider_name=session.config.providerName,
-            model=session.config.model,
-            literature_context=literature_context,
-            english_search_queries=english_search_queries,
         )
         ranked = sorted(ranked, key=lambda c: c.overallScore, reverse=True)
         regenerated_candidate_ids: List[str] = []
@@ -2873,398 +2575,6 @@ class IdeaGenerationService:
 
         return "\n\n".join(lines) if lines else "(No literature available)"
 
-    def _allowed_idea_evidence_refs(
-        self,
-        *,
-        candidate: IdeaCandidate,
-        evidence: Optional[CandidateGraphEvidence],
-        comparisons: List[PriorWorkComparison],
-    ) -> List[str]:
-        """Collect evidence IDs a reviewer is allowed to cite."""
-        refs: List[str] = []
-        if evidence:
-            refs.extend(evidence.supportingPaperIds)
-            refs.extend(evidence.supportingClaimIds)
-            refs.extend(evidence.supportingEntityIds)
-            refs.extend(evidence.supportingPathSeedIds)
-            refs.extend(evidence.evidenceLinkIds)
-            refs.extend(evidence.probePaperIds)
-        for comparison in comparisons:
-            refs.extend(comparison.comparedPaperIds)
-        refs.extend(str(ref) for ref in (candidate.references or []))
-        return [ref for ref in dict.fromkeys(str(ref).strip() for ref in refs) if ref]
-
-    def _rule_idea_reviewer_report(
-        self,
-        *,
-        spec: Dict[str, str],
-        candidate: IdeaCandidate,
-        evidence: Optional[CandidateGraphEvidence],
-        comparisons: List[PriorWorkComparison],
-        critique: Optional[IdeaCritique],
-        seed_query: str,
-        allowed_evidence_refs: List[str],
-        english_search_queries: Optional[List[str]] = None,
-    ) -> Dict[str, Any]:
-        """Hard validation for one idea reviewer.
-
-        Rules only check facts the system can verify: required fields, available
-        evidence IDs, thresholds, and coarse topic alignment. Scientific judgment
-        is left to the LLM reviewer.
-        """
-        reviewer = spec["name"]
-        blocking: List[str] = []
-        repair: List[str] = []
-        score = 8.0
-
-        missing_fields = [
-            field for field, value in {
-                "title": candidate.title,
-                "problem": candidate.problem,
-                "keyInsight": candidate.keyInsight,
-            }.items()
-            if not str(value or "").strip()
-        ]
-        if missing_fields:
-            blocking.append(f"Missing required candidate fields: {', '.join(missing_fields)}.")
-            repair.append("Regenerate the candidate with complete title, problem, and keyInsight fields.")
-            score -= 2.0
-
-        seed_tokens = _candidate_similarity_key(IdeaCandidate(
-            id="cand_seed_alignment_check",
-            sessionId=candidate.sessionId,
-            title=seed_query or "",
-            problem=seed_query or "",
-            keyInsight=seed_query or "",
-        ))
-        # Bug 8 fix: When the seed query contains CJK characters, the seed tokens
-        # are Chinese while candidate tokens are English (because candidates are
-        # generated from English literature). This causes Jaccard similarity to
-        # always be 0, triggering a false "weak topic overlap" blocking issue.
-        # Fix: augment seed tokens with English search queries from expandQuery.
-        if english_search_queries and re.search(r'[\u4e00-\u9fff]', seed_query or ""):
-            for eq in english_search_queries:
-                seed_tokens |= _candidate_similarity_key(IdeaCandidate(
-                    id="cand_seed_english",
-                    sessionId=candidate.sessionId,
-                    title=eq,
-                    problem=eq,
-                    keyInsight=eq,
-                ))
-        candidate_tokens = _candidate_similarity_key(candidate)
-        # Bug 8b fix: For CJK seeds, candidates with long text fields can dilute
-        # the Jaccard below 0.04 even when they are on-topic. Add a containment
-        # fallback: if any significant English query token appears in the
-        # candidate tokens, the candidate is considered on-topic.
-        _cjk_seed_has_english_overlap = False
-        if english_search_queries and re.search(r'[\u4e00-\u9fff]', seed_query or ""):
-            _english_query_tokens = set()
-            for eq in english_search_queries:
-                _english_query_tokens |= _candidate_similarity_key(IdeaCandidate(
-                    id="cand_eq",
-                    sessionId=candidate.sessionId,
-                    title=eq,
-                    problem=eq,
-                    keyInsight=eq,
-                ))
-            # Remove generic tokens that are not discriminative
-            _generic_tokens = {"analysis", "network", "social", "study", "empirical"}
-            _discriminative_overlap = (candidate_tokens & _english_query_tokens) - _generic_tokens
-            _cjk_seed_has_english_overlap = len(_discriminative_overlap) >= 2
-        if (seed_query and seed_tokens and candidate_tokens
-                and not _cjk_seed_has_english_overlap
-                and _candidate_jaccard(seed_tokens, candidate_tokens) < 0.04):
-            blocking.append("Candidate has weak topic overlap with the seed query.")
-            repair.append("Rewrite the idea so the problem, method, and hypothesis directly answer the seed query.")
-            score -= 1.0
-        drift_issues = _candidate_topic_drift_issues(seed_query, candidate, english_search_queries=english_search_queries)
-        if drift_issues:
-            blocking.extend(drift_issues)
-            repair.append(
-                "Regenerate the candidate from the original seed query and remove unrequested application-domain anchors."
-            )
-            score -= min(1.5, 0.75 * len(drift_issues))
-
-        if reviewer == "IdeaEvidenceReviewer":
-            if not allowed_evidence_refs:
-                blocking.append("No valid evidence IDs are available for this candidate.")
-                repair.append("Bind the candidate to supporting papers, claims, KG entities, path seeds, or probe papers.")
-                score -= 2.0
-            if candidate.referenceSupport < 4.5:
-                blocking.append("Reference support score is below the handoff threshold.")
-                repair.append("Strengthen the evidence grounding before exposing this candidate.")
-                score -= 1.0
-
-        if reviewer == "IdeaNoveltyReviewer":
-            if candidate.novelty < 5.5:
-                blocking.append("Novelty score is below the handoff threshold.")
-                repair.append("Clarify the concrete mechanism, setting, or evaluation difference from prior work.")
-                score -= 1.0
-            if not any(item.differences for item in comparisons):
-                blocking.append("No concrete prior-work difference is recorded.")
-                repair.append("Add an explicit closest-prior-work contrast with evidence-backed differences.")
-                score -= 1.0
-
-        if reviewer == "IdeaFeasibilityReviewer":
-            if candidate.feasibility < 5.5:
-                blocking.append("Feasibility score is below the handoff threshold.")
-                repair.append("Make the method implementable with clear modules, inputs, outputs, and likely resources.")
-                score -= 1.0
-            if not (candidate.proposedMethod or (candidate.draftPlan and candidate.draftPlan.methodology)):
-                blocking.append("Candidate has no proposed method.")
-                repair.append("Add a concrete method sketch before planning.")
-                score -= 1.0
-
-        if reviewer == "IdeaSpecificityReviewer":
-            if candidate.clarity < 5.0 or candidate.experimentSpecificity < 5.0:
-                blocking.append("Specificity scores are below the handoff threshold.")
-                repair.append("Specify variables, expected metrics, datasets, and validation steps.")
-                score -= 1.0
-            if not candidate.hypothesisStatement:
-                blocking.append("Candidate has no explicit hypothesisStatement.")
-                repair.append("Write a testable hypothesis that links method to expected outcome.")
-                score -= 0.8
-            if not candidate.expectedOutcome:
-                blocking.append("Candidate has no expectedOutcome.")
-                repair.append("State what measurable success should look like.")
-                score -= 0.8
-
-        if reviewer == "IdeaImpactReviewer":
-            if candidate.impact < 5.5:
-                blocking.append("Impact score is below the handoff threshold.")
-                repair.append("Sharpen the contribution statement and target scientific value.")
-                score -= 1.0
-            if critique and len(critique.weaknesses) >= 4:
-                blocking.append("Critique contains too many unresolved weaknesses for impact handoff.")
-                repair.append("Resolve or narrow the weakest claims before exposing this idea.")
-                score -= 0.8
-
-        passed = not blocking
-        return {
-            "reviewer": reviewer,
-            "mode": "rule",
-            "score": round(max(0.0, min(10.0, score)), 2),
-            "pass": passed,
-            "passed": passed,
-            "blockingIssues": blocking,
-            "repairInstructions": list(dict.fromkeys(repair)),
-            "evidenceRefs": allowed_evidence_refs[:8],
-            "confidence": 0.9,
-            "summary": "Rule hard validation passed." if passed else "Rule hard validation failed.",
-        }
-
-    def _run_llm_idea_reviewer(
-        self,
-        *,
-        spec: Dict[str, str],
-        candidate: IdeaCandidate,
-        evidence: Optional[CandidateGraphEvidence],
-        comparisons: List[PriorWorkComparison],
-        critique: Optional[IdeaCritique],
-        seed_query: str,
-        provider_name: Optional[str],
-        model: Optional[str],
-        literature_context: str,
-        allowed_evidence_refs: List[str],
-    ) -> Optional[Dict[str, Any]]:
-        """Run one independent LLM reviewer and normalize its JSON response."""
-        if not provider_name or not model:
-            return None
-
-        reviewer = spec["name"]
-        payload = {
-            "reviewer": reviewer,
-            "reviewFocus": spec["focus"],
-            "rubric": spec["rubric"],
-            "seedQuery": seed_query,
-            "candidate": {
-                "id": candidate.id,
-                "title": candidate.title,
-                "problem": candidate.problem,
-                "hypothesisStatement": candidate.hypothesisStatement,
-                "keyInsight": candidate.keyInsight,
-                "proposedMethod": candidate.proposedMethod,
-                "expectedOutcome": candidate.expectedOutcome,
-                "scores": candidate.scoreBreakdown,
-                "expectedMetrics": candidate.expectedMetrics,
-                "experimentSpecs": [
-                    spec_item.model_dump() if hasattr(spec_item, "model_dump") else spec_item
-                    for spec_item in candidate.experimentSpecs[:5]
-                ],
-            },
-            "allowedEvidenceRefs": allowed_evidence_refs,
-            "candidateGraphEvidence": evidence.model_dump() if evidence else {},
-            "priorWorkComparisons": [item.model_dump() for item in comparisons[:3]],
-            "critique": critique.model_dump() if critique else {},
-            "literatureContext": literature_context[:6000],
-        }
-        cache_storage = getattr(self, "llm_task_cache_storage", None)
-        cache_task_type = f"idea_reviewer:{reviewer}"
-        if cache_storage:
-            try:
-                cached = cache_storage.get_valid(
-                    task_type=cache_task_type,
-                    prompt_version=IDEA_REVIEWER_CACHE_PROMPT_VERSION,
-                    model=model,
-                    input_payload=payload,
-                )
-                if cached and isinstance(cached.get("result"), dict):
-                    result = dict(cached["result"])
-                    result["cacheHit"] = True
-                    result["cacheKey"] = cached.get("cacheKey")
-                    return result
-            except Exception as exc:
-                logger.warning("%s LLM idea reviewer cache lookup failed: %s", reviewer, exc)
-
-        messages = [
-            ChatMessage(
-                role="system",
-                content=(
-                    f"You are {reviewer}, an independent LLM scientist reviewer. "
-                    "Return JSON only. Judge only your assigned dimension. "
-                    "Do not invent evidence IDs. evidenceRefs must be chosen from allowedEvidenceRefs. "
-                    "The candidate prose may omit raw evidence IDs; candidateGraphEvidence and "
-                    "allowedEvidenceRefs are the machine-readable citation binding. Do not fail solely "
-                    "because IDs are not inline in the prose. Fail evidence only when the provided IDs "
-                    "are missing, invalid, unrelated, or insufficient for the core claims. "
-                    "Use this schema exactly: score:number 0-10, pass:boolean, "
-                    "blockingIssues:string[], repairInstructions:string[], evidenceRefs:string[], "
-                    "confidence:number 0-1, summary:string."
-                ),
-            ),
-            ChatMessage(
-                role="user",
-                content=json.dumps(payload, ensure_ascii=False, default=str),
-            ),
-        ]
-        try:
-            scheduler = getattr(self, "llm_task_scheduler", None) or get_llm_task_scheduler()
-            response = scheduler.run(
-                cache_task_type,
-                lambda: get_provider_client(provider_name).chat(
-                    messages,
-                    model=model,
-                    temperature=0.0,
-                    max_tokens=1000,
-                    response_format={"type": "json_object"},
-                ),
-            )
-        except Exception as exc:
-            logger.warning("%s LLM idea reviewer failed: %s", reviewer, exc)
-            return None
-
-        data = _extract_json_object(response.text or "")
-        if not data:
-            logger.warning("%s LLM idea reviewer returned non-JSON output", reviewer)
-            return None
-
-        score = _score_0_10(data.get("score", data.get("rating", 0.0)))
-        passed = _bool_from_review(data.get("pass", data.get("passed")), default=score >= 6.0)
-        report = {
-            "reviewer": reviewer,
-            "mode": "llm",
-            "score": score,
-            "pass": passed,
-            "passed": passed,
-            "blockingIssues": _as_string_list(data.get("blockingIssues", data.get("issues", [])), limit=8),
-            "repairInstructions": _as_string_list(
-                data.get("repairInstructions", data.get("suggestedImprovements", [])),
-                limit=8,
-            ),
-            "evidenceRefs": _as_string_list(data.get("evidenceRefs", data.get("evidenceRefIds", [])), limit=12),
-            "confidence": _confidence_0_1(data.get("confidence", data.get("reviewConfidence", 0.5))),
-            "summary": str(data.get("summary", data.get("rationale", "")) or ""),
-            "llmLatencyMs": getattr(response, "latency_ms", None),
-            "cacheHit": False,
-        }
-        if cache_storage:
-            try:
-                cache_key = cache_storage.put(
-                    task_type=cache_task_type,
-                    prompt_version=IDEA_REVIEWER_CACHE_PROMPT_VERSION,
-                    model=model,
-                    input_payload=payload,
-                    result=report,
-                )
-                report["cacheKey"] = cache_key
-            except Exception as exc:
-                logger.warning("%s LLM idea reviewer cache store failed: %s", reviewer, exc)
-        return report
-
-    def _merge_idea_reviewer_reports(
-        self,
-        *,
-        spec: Dict[str, str],
-        rule_report: Dict[str, Any],
-        llm_report: Optional[Dict[str, Any]],
-        allowed_evidence_refs: List[str],
-    ) -> Dict[str, Any]:
-        """Merge LLM scientific judgment with rule hard validation."""
-        reviewer = spec["name"]
-        if not llm_report:
-            return rule_report
-
-        allowed = set(allowed_evidence_refs)
-        raw_refs = [str(ref).strip() for ref in llm_report.get("evidenceRefs", []) if str(ref).strip()]
-        verified_refs = [ref for ref in raw_refs if ref in allowed]
-        unknown_refs = [ref for ref in raw_refs if ref not in allowed]
-        rule_blocking = list(rule_report.get("blockingIssues", []))
-        llm_blocking = list(llm_report.get("blockingIssues", []))
-        downgraded_format_issues: List[str] = []
-        if (
-            reviewer == "IdeaEvidenceReviewer"
-            and verified_refs
-            and not rule_blocking
-        ):
-            hard_llm_blocking: List[str] = []
-            for issue in llm_blocking:
-                if _is_inline_evidence_format_issue(str(issue)):
-                    downgraded_format_issues.append(str(issue))
-                else:
-                    hard_llm_blocking.append(issue)
-            llm_blocking = hard_llm_blocking
-
-        blocking = [
-            *rule_blocking,
-            *llm_blocking,
-        ]
-        if unknown_refs:
-            blocking.append(
-                "LLM reviewer referenced unknown evidence IDs: "
-                + ", ".join(unknown_refs[:5])
-            )
-
-        repair = [
-            *rule_report.get("repairInstructions", []),
-            *llm_report.get("repairInstructions", []),
-            *downgraded_format_issues,
-        ]
-        score = _score_0_10(llm_report.get("score", 0.0))
-        if downgraded_format_issues and not blocking and not unknown_refs:
-            score = max(score, _score_0_10(rule_report.get("score", 0.0)), 6.2)
-        llm_passed = bool(llm_report.get("pass", llm_report.get("passed", False)))
-        if downgraded_format_issues and not blocking and not unknown_refs:
-            llm_passed = True
-        passed = (
-            llm_passed
-            and score >= 6.0
-            and not blocking
-        )
-        evidence_refs = verified_refs or list(rule_report.get("evidenceRefs", []))[:8]
-        return {
-            "reviewer": reviewer,
-            "mode": "llm+rule",
-            "score": score,
-            "pass": passed,
-            "passed": passed,
-            "blockingIssues": list(dict.fromkeys(str(item) for item in blocking if str(item).strip())),
-            "repairInstructions": list(dict.fromkeys(str(item) for item in repair if str(item).strip())),
-            "evidenceRefs": evidence_refs,
-            "confidence": _confidence_0_1(llm_report.get("confidence", 0.5)),
-            "summary": llm_report.get("summary") or rule_report.get("summary", ""),
-            "llmLatencyMs": llm_report.get("llmLatencyMs"),
-        }
-
     def _apply_idea_review_gate(
         self,
         *,
@@ -3272,11 +2582,6 @@ class IdeaGenerationService:
         evidence_list: List[CandidateGraphEvidence],
         prior_work_comparisons: List[PriorWorkComparison],
         critiques: List[IdeaCritique],
-        seed_query: str = "",
-        provider_name: Optional[str] = None,
-        model: Optional[str] = None,
-        literature_context: str = "",
-        english_search_queries: Optional[List[str]] = None,
     ) -> Dict[str, Dict[str, Any]]:
         """Apply idea-stage review findings before PlanPackage generation."""
 
@@ -3359,95 +2664,6 @@ class IdeaGenerationService:
             if candidate.referenceSupport < 5.0:
                 warnings.append("Reference support score is below the idea-stage handoff threshold.")
                 suggestions.append("Tie the hypothesis and method to stronger supporting literature evidence.")
-
-            allowed_evidence_refs = self._allowed_idea_evidence_refs(
-                candidate=candidate,
-                evidence=evidence,
-                comparisons=comparisons,
-            )
-            rule_reports: Dict[str, Dict[str, Any]] = {}
-            for spec in IDEA_REVIEWER_SPECS:
-                rule_reports[spec["name"]] = self._rule_idea_reviewer_report(
-                    spec=spec,
-                    candidate=candidate,
-                    evidence=evidence,
-                    comparisons=comparisons,
-                    critique=critique,
-                    seed_query=seed_query,
-                    allowed_evidence_refs=allowed_evidence_refs,
-                    english_search_queries=english_search_queries or [],
-                )
-
-            llm_reports: Dict[str, Optional[Dict[str, Any]]] = {}
-            reviewer_concurrency = _idea_reviewer_concurrency()
-
-            def _run_one_llm_reviewer(spec: Dict[str, str]) -> tuple[str, Optional[Dict[str, Any]]]:
-                return spec["name"], self._run_llm_idea_reviewer(
-                    spec=spec,
-                    candidate=candidate,
-                    evidence=evidence,
-                    comparisons=comparisons,
-                    critique=critique,
-                    seed_query=seed_query,
-                    provider_name=provider_name,
-                    model=model,
-                    literature_context=literature_context,
-                    allowed_evidence_refs=allowed_evidence_refs,
-                )
-
-            if provider_name and model and reviewer_concurrency > 1:
-                with ThreadPoolExecutor(
-                    max_workers=reviewer_concurrency,
-                    thread_name_prefix="idea-reviewer",
-                ) as executor:
-                    future_to_spec = {
-                        executor.submit(_run_one_llm_reviewer, spec): spec
-                        for spec in IDEA_REVIEWER_SPECS
-                    }
-                    for future in as_completed(future_to_spec):
-                        spec = future_to_spec[future]
-                        try:
-                            reviewer_name, llm_report = future.result()
-                        except Exception as exc:
-                            logger.warning("%s LLM idea reviewer crashed: %s", spec["name"], exc)
-                            reviewer_name, llm_report = spec["name"], None
-                        llm_reports[reviewer_name] = llm_report
-            else:
-                for spec in IDEA_REVIEWER_SPECS:
-                    reviewer_name, llm_report = _run_one_llm_reviewer(spec)
-                    llm_reports[reviewer_name] = llm_report
-
-            reviewer_reports: List[Dict[str, Any]] = []
-            for spec in IDEA_REVIEWER_SPECS:
-                reviewer_name = spec["name"]
-                reviewer_reports.append(self._merge_idea_reviewer_reports(
-                    spec=spec,
-                    rule_report=rule_reports[reviewer_name],
-                    llm_report=llm_reports.get(reviewer_name),
-                    allowed_evidence_refs=allowed_evidence_refs,
-                ))
-            suspect_cache_keys = self._mark_structured_cache_suspect_from_reviewer_reports(
-                evidence=evidence,
-                reviewer_reports=reviewer_reports,
-            )
-
-            reviewer_blocking = [
-                issue
-                for report in reviewer_reports
-                for issue in report.get("blockingIssues", [])
-            ]
-            reviewer_repairs = [
-                instruction
-                for report in reviewer_reports
-                for instruction in report.get("repairInstructions", [])
-            ]
-            if reviewer_blocking:
-                blocking.extend(reviewer_blocking)
-                penalty += min(1.5, len(reviewer_blocking) * 0.25)
-            suggestions.extend(reviewer_repairs)
-            failed_reviewer_count = sum(1 for report in reviewer_reports if not report.get("passed", False))
-            if failed_reviewer_count:
-                penalty += min(1.0, failed_reviewer_count * 0.2)
 
             if penalty and "idea_review_gate" not in (candidate.scoringMethod or ""):
                 candidate.referenceSupport = max(0.0, candidate.referenceSupport - penalty)

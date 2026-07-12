@@ -34,26 +34,6 @@ Respond in JSON format:
   "pathTemplates": ["template1", "template2"]
 }}"""
 
-# Suffix appended when the seed query contains CJK (Chinese) characters.
-# Asks the LLM to also produce English search queries so that international
-# academic databases (Semantic Scholar, ArXiv, OpenAlex) can find relevant
-# papers about the Chinese research topic.
-EXPAND_QUERY_CJK_SUFFIX = """
-
-IMPORTANT: The research topic above is in Chinese (CJK characters).
-In addition to the fields above, please ALSO provide English translations for academic search:
-
-  "englishSearchQueries": ["English search query 1", "English search query 2", ...],
-  "englishKeyConcepts": ["English concept 1", "English concept 2", ...]
-
-These English queries will be used to search international academic databases.
-Translate the research topic and its key concepts accurately into English academic terminology.
-For example, "红楼梦人物关系网络分析" should produce queries like:
-  "Dream of the Red Chamber character network analysis",
-  "Chinese classical literature social network analysis",
-  "character relationship graph in classical Chinese novels"
-Provide 3-5 English search queries that would find relevant academic papers."""
-
 # Step 2: Literature Search (used for relevance scoring)
 SCORE_PAPER_SYSTEM = """You are a research assistant evaluating paper relevance.
 Score how relevant a paper is to a given research query."""

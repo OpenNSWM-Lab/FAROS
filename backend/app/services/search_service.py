@@ -3,10 +3,8 @@ Search Service for Literature Discovery
 
 Provides multiple search backends:
 1. Semantic Scholar API (free, no key required for basic usage)
-2. ArXiv API (free, no key required)
-3. OpenAlex API (free, no key required, indexes 250M+ global papers)
-4. CNKI / WanFang (requires API key, for Chinese academic papers)
-5. Local corpus search (for offline/testing)
+2. Local corpus search (for offline/testing)
+3. ArXiv API (free, no key required)
 
 Falls back gracefully when APIs are unavailable.
 """
@@ -289,7 +287,7 @@ class ArxivSearch:
                 phrase_parts.append(f'all:"{phrase}"')
                 consumed_terms.update(phrase.split())
 
-        tokens = re.findall(r"[a-zA-Z][a-zA-Z0-9-]{2,}|[\u4e00-\u9fff]+", normalized)
+        tokens = re.findall(r"[a-zA-Z][a-zA-Z0-9-]{2,}", normalized)
         stopwords = {
             "and", "the", "for", "with", "from", "that", "this", "into",
             "using", "based", "how", "can", "are", "what", "when", "where",
@@ -501,51 +499,6 @@ class LocalCorpusSearch:
             "venue": "arXiv",
             "arxiv_id": "2001.08361",
             "keywords": ["scaling laws", "language model", "compute", "training", "neural network"]
-        },
-        {
-            "title": "Highly accurate protein structure prediction with AlphaFold",
-            "authors": ["John Jumper", "Richard Evans", "Alexander Pritzel", "Tim Green"],
-            "abstract": "Here we present the most accurate version of our protein structure prediction system, AlphaFold, and show that it predicts protein structure with near-experimental accuracy. We use a neural network architecture based on attention and evolutionary constraints.",
-            "year": 2021,
-            "venue": "Nature",
-            "arxiv_id": None,
-            "keywords": ["alphafold", "protein structure", "bioinformatics", "ai for science", "prediction"]
-        },
-        {
-            "title": "Denoising Diffusion Probabilistic Models",
-            "authors": ["Jonathan Ho", "Ajay Jain", "Pieter Abbeel"],
-            "abstract": "We present high quality image synthesis results using diffusion probabilistic models, a class of latent variable models inspired by considerations from nonequilibrium thermodynamics.",
-            "year": 2020,
-            "venue": "NeurIPS",
-            "arxiv_id": "2006.11239",
-            "keywords": ["diffusion model", "generative model", "image synthesis", "thermodynamics", "denoising"]
-        },
-        {
-            "title": "Graph Attention Networks",
-            "authors": ["Petar Velickovic", "Guillem Cucurull", "Arantxa Casanova", "Adriana Romero"],
-            "abstract": "We present graph attention networks (GATs), novel neural network architectures that operate on graph-structured data, leveraging masked self-attentional layers to address the shortcomings of prior methods based on graph convolutions.",
-            "year": 2018,
-            "venue": "ICLR",
-            "arxiv_id": "1710.10903",
-            "keywords": ["graph neural network", "attention", "graph", "node classification", "representation learning"]
-        },
-        {
-            "title": "Causal Inference in Statistics: A Primer",
-            "authors": ["Judea Pearl", "Madelyn Glymour", "Nicholas P. Jewell"],
-            "abstract": "Causal inference is a rapidly growing research field with applications in science, engineering, business, medicine, and public policy. This primer provides an introduction to the foundational concepts and methods of causal inference from statistical data.",
-            "year": 2016,
-            "venue": "Wiley",
-            "arxiv_id": None,
-            "keywords": ["causal inference", "statistics", "do-calculus", "confounding", "intervention"]
-        },
-        {
-            "title": "The AI Scientist: Towards Fully Automated Open-Ended Scientific Discovery",
-            "authors": ["Chris Lu", "Cong Lu", "Tianyu Wang", "Jeff Clune"],
-            "abstract": "We propose a comprehensive system for fully automated scientific discovery, that leverages large language models to generate novel research ideas, write code, run experiments, and produce full research papers without human intervention.",
-            "year": 2024,
-            "venue": "arXiv",
-            "arxiv_id": "2408.06292",
-            "keywords": ["ai scientist", "automated discovery", "research automation", "llm", "scientific discovery"]
         }
     ]
     
@@ -580,7 +533,7 @@ class LocalCorpusSearch:
             "model", "models", "large", "learning", "neural",
         }
         terms: List[str] = []
-        for token in re.findall(r"[a-zA-Z][a-zA-Z0-9]{2,}|[\u4e00-\u9fff]+", normalized):
+        for token in re.findall(r"[a-zA-Z][a-zA-Z0-9]{2,}", normalized):
             if token in stopwords:
                 continue
             if token not in terms:
@@ -596,9 +549,9 @@ class LocalCorpusSearch:
         title = paper.get("title", "").lower().replace("-", " ")
         abstract = paper.get("abstract", "").lower().replace("-", " ")
         keywords_text = " ".join(str(k).lower().replace("-", " ") for k in paper.get("keywords", []))
-        title_terms = set(re.findall(r"[a-zA-Z][a-zA-Z0-9]{2,}|[\u4e00-\u9fff]+", title))
-        keyword_terms = set(re.findall(r"[a-zA-Z][a-zA-Z0-9]{2,}|[\u4e00-\u9fff]+", keywords_text))
-        abstract_terms = set(re.findall(r"[a-zA-Z][a-zA-Z0-9]{2,}|[\u4e00-\u9fff]+", abstract))
+        title_terms = set(re.findall(r"[a-zA-Z][a-zA-Z0-9]{2,}", title))
+        keyword_terms = set(re.findall(r"[a-zA-Z][a-zA-Z0-9]{2,}", keywords_text))
+        abstract_terms = set(re.findall(r"[a-zA-Z][a-zA-Z0-9]{2,}", abstract))
 
         title_hits = len(query_terms & title_terms)
         keyword_hits = len(query_terms & keyword_terms)
@@ -675,212 +628,6 @@ class LocalCorpusSearch:
         return results
 
 
-class OpenAlexSearch:
-    """OpenAlex academic search adapter (free, no API key required).
-
-    OpenAlex indexes 250M+ works from all disciplines worldwide, including
-    Chinese academic papers with English metadata. It is the recommended
-    replacement for the deprecated Microsoft Academic Graph.
-
-    A ``mailto`` parameter is optional but recommended for the "polite pool"
-    with higher rate limits. Set ``OPENALEX_MAILTO`` in the environment.
-    """
-
-    BASE_URL = "https://api.openalex.org/works"
-
-    def __init__(self, mailto: Optional[str] = None):
-        self.mailto = mailto or os.getenv("OPENALEX_MAILTO", "")
-        self._last_request_time = 0.0
-        self._rate_limit_interval = 1.0  # polite pool: 1 req/sec
-        self._disabled_until: float = 0.0
-
-    def _rate_limit(self):
-        """Enforce a minimum interval between requests."""
-        elapsed = time.time() - self._last_request_time
-        if elapsed < self._rate_limit_interval:
-            time.sleep(self._rate_limit_interval - elapsed)
-        self._last_request_time = time.time()
-
-    def search(
-        self,
-        query: str,
-        limit: int = 10,
-        year_range: Optional[tuple] = None,
-    ) -> List[SearchResult]:
-        """Search OpenAlex for papers matching ``query``.
-
-        Args:
-            query: Search query (English recommended for best results).
-            limit: Maximum number of results.
-            year_range: Optional (start_year, end_year) tuple.
-        """
-        if time.time() < self._disabled_until:
-            return []
-
-        self._rate_limit()
-
-        params: Dict[str, str] = {
-            "search": query,
-            "per-page": str(min(limit, 25)),
-        }
-        if self.mailto:
-            params["mailto"] = self.mailto
-
-        # Build filter string for year range
-        filters = []
-        if year_range:
-            filters.append(f"from_publication_date:{year_range[0]}-01-01")
-            filters.append(f"to_publication_date:{year_range[1]}-12-31")
-        if filters:
-            params["filter"] = ",".join(filters)
-
-        url = f"{self.BASE_URL}?{urllib.parse.urlencode(params)}"
-
-        try:
-            request = urllib.request.Request(url)
-            with _urlopen(request, timeout=30) as resp:
-                raw = resp.read().decode("utf-8")
-            data = json.loads(raw)
-        except urllib.error.HTTPError as e:
-            if e.code == 429:
-                cooldown = 60
-                self._disabled_until = time.time() + cooldown
-                logger.warning(f"OpenAlex rate limited (429), cooling down {cooldown}s")
-            else:
-                logger.warning(f"OpenAlex HTTP error: {e.code}")
-            return []
-        except Exception as e:
-            logger.warning(f"OpenAlex search failed: {e}")
-            self._disabled_until = time.time() + 30
-            return []
-
-        results = []
-        for work in data.get("results", []):
-            title = work.get("title") or work.get("display_name") or ""
-            if not title:
-                continue
-
-            abstract = self._parse_abstract(work.get("abstract_inverted_index"))
-
-            authors: List[str] = []
-            for authorship in work.get("authorships", [])[:10]:
-                author = authorship.get("author", {})
-                name = author.get("display_name", "")
-                if name:
-                    authors.append(name)
-
-            year = work.get("publication_year")
-
-            venue = None
-            primary_location = work.get("primary_location") or {}
-            source_obj = primary_location.get("source") or {}
-            if source_obj:
-                venue = source_obj.get("display_name")
-
-            doi = work.get("doi") or ""
-            if doi and doi.startswith("https://doi.org/"):
-                doi = doi[len("https://doi.org/"):]
-
-            url_val = work.get("id") or work.get("doi") or ""
-            citation_count = work.get("cited_by_count")
-
-            results.append(SearchResult(
-                title=title,
-                authors=authors,
-                abstract=abstract,
-                year=year,
-                venue=venue,
-                url=url_val,
-                doi=doi or None,
-                arxiv_id=None,
-                citation_count=citation_count,
-                source="openalex",
-                relevance_score=float(work.get("relevance_score") or 0.0),
-            ))
-
-        return results[:limit]
-
-    @staticmethod
-    def _parse_abstract(inverted_index: Optional[Dict]) -> str:
-        """Reconstruct abstract text from OpenAlex inverted-index format."""
-        if not inverted_index or not isinstance(inverted_index, dict):
-            return ""
-        word_positions: List[tuple] = []
-        for word, positions in inverted_index.items():
-            for pos in positions:
-                word_positions.append((pos, word))
-        word_positions.sort()
-        return " ".join(w for _, w in word_positions)
-
-
-class CNKISearch:
-    """CNKI (中国知网) search adapter.
-
-    Requires API credentials. Configure via environment variables:
-    - ``CNKI_API_KEY``: API key from CNKI developer portal
-    - ``CNKI_API_URL``: Custom API endpoint (optional)
-
-    Note: CNKI API requires institutional subscription.
-    Register at https://dev.cnki.net/ for API access.
-    When no API key is configured, the adapter is silently disabled.
-    """
-
-    def __init__(self, api_key: Optional[str] = None, api_url: Optional[str] = None):
-        self.api_key = api_key or os.getenv("CNKI_API_KEY")
-        self.api_url = api_url or os.getenv(
-            "CNKI_API_URL", "https://api.cnki.net/search"
-        )
-        self._enabled = bool(self.api_key)
-        if not self._enabled:
-            logger.info("CNKISearch: No API key (set CNKI_API_KEY). Adapter disabled.")
-
-    def search(self, query: str, limit: int = 10) -> List[SearchResult]:
-        if not self._enabled:
-            return []
-        # TODO: Implement CNKI API integration when credentials are available.
-        # Expected flow:
-        #   1. POST to self.api_url with {"query": query, "limit": limit}
-        #   2. Add Authorization header: f"Bearer {self.api_key}"
-        #   3. Parse response JSON into SearchResult objects
-        #   4. Set source="cnki" for each result
-        logger.warning("CNKISearch: search() not yet implemented (needs API key)")
-        return []
-
-
-class WanFangSearch:
-    """万方数据 (WanFang Data) search adapter.
-
-    Requires API credentials. Configure via environment variables:
-    - ``WANFANG_API_KEY``: API key from WanFang developer portal
-    - ``WANFANG_API_URL``: Custom API endpoint (optional)
-
-    Note: WanFang API requires registration.
-    Register at https://developer.wanfangdata.com.cn/ for API access.
-    When no API key is configured, the adapter is silently disabled.
-    """
-
-    def __init__(self, api_key: Optional[str] = None, api_url: Optional[str] = None):
-        self.api_key = api_key or os.getenv("WANFANG_API_KEY")
-        self.api_url = api_url or os.getenv(
-            "WANFANG_API_URL", "https://api.wanfangdata.com.cn/search"
-        )
-        self._enabled = bool(self.api_key)
-        if not self._enabled:
-            logger.info("WanFangSearch: No API key (set WANFANG_API_KEY). Adapter disabled.")
-
-    def search(self, query: str, limit: int = 10) -> List[SearchResult]:
-        if not self._enabled:
-            return []
-        # TODO: Implement WanFang API integration when credentials are available.
-        # Expected flow:
-        #   1. POST to self.api_url with {"query": query, "limit": limit}
-        #   2. Add Authorization header: f"Bearer {self.api_key}"
-        #   3. Parse response JSON into SearchResult objects
-        #   4. Set source="wanfang" for each result
-        logger.warning("WanFangSearch: search() not yet implemented (needs API key)")
-        return []
-
-
 class SearchService:
     """
     Unified search service with fallback support.
@@ -888,9 +635,7 @@ class SearchService:
     Tries multiple backends in order:
     1. Semantic Scholar (if available)
     2. ArXiv (always available)
-    3. OpenAlex (free, no key required, indexes global papers)
-    4. CNKI / WanFang (if API keys configured)
-    5. Local corpus (offline fallback only)
+    3. Local corpus (always available)
     """
     
     def __init__(
@@ -899,16 +644,10 @@ class SearchService:
         local_corpus_path: Optional[str] = None,
         use_semantic_scholar: bool = True,
         use_arxiv: bool = True,
-        use_local: bool = True,
-        use_openalex: bool = True,
-        use_cnki: bool = True,
-        use_wanfang: bool = True,
+        use_local: bool = True
     ):
         self.semantic_scholar = SemanticScholarSearch(semantic_scholar_key) if use_semantic_scholar else None
         self.arxiv = ArxivSearch() if use_arxiv else None
-        self.openalex = OpenAlexSearch() if use_openalex else None
-        self.cnki = CNKISearch() if use_cnki else None
-        self.wanfang = WanFangSearch() if use_wanfang else None
         self.local = LocalCorpusSearch(local_corpus_path) if use_local else None
     
     def search(
@@ -929,7 +668,7 @@ class SearchService:
             Combined list of SearchResult objects, deduplicated by title
         """
         all_results = []
-        sources = sources or ["semantic_scholar", "arxiv", "openalex", "cnki", "wanfang", "local"]
+        sources = sources or ["semantic_scholar", "arxiv", "local"]
         
         # Try Semantic Scholar
         if "semantic_scholar" in sources and self.semantic_scholar:
@@ -948,33 +687,6 @@ class SearchService:
                 logger.info(f"ArXiv returned {len(results)} results")
             except Exception as e:
                 logger.warning(f"ArXiv search failed: {e}")
-        
-        # Try OpenAlex (free, no key required, indexes global papers)
-        if "openalex" in sources and self.openalex:
-            try:
-                results = self.openalex.search(query, limit)
-                all_results.extend(results)
-                logger.info(f"OpenAlex returned {len(results)} results")
-            except Exception as e:
-                logger.warning(f"OpenAlex search failed: {e}")
-        
-        # Try CNKI (requires API key, disabled if not configured)
-        if "cnki" in sources and self.cnki:
-            try:
-                results = self.cnki.search(query, limit)
-                all_results.extend(results)
-                logger.info(f"CNKI returned {len(results)} results")
-            except Exception as e:
-                logger.warning(f"CNKI search failed: {e}")
-        
-        # Try WanFang (requires API key, disabled if not configured)
-        if "wanfang" in sources and self.wanfang:
-            try:
-                results = self.wanfang.search(query, limit)
-                all_results.extend(results)
-                logger.info(f"WanFang returned {len(results)} results")
-            except Exception as e:
-                logger.warning(f"WanFang search failed: {e}")
         
         external_results_count = len(all_results)
 
@@ -1019,8 +731,5 @@ def get_search_service() -> SearchService:
         _search_service = SearchService(
             semantic_scholar_key=semantic_scholar_key,
             local_corpus_path=local_corpus_path,
-            use_openalex=_env_bool("FAROS_USE_OPENALEX", True),
-            use_cnki=_env_bool("FAROS_USE_CNKI", True),
-            use_wanfang=_env_bool("FAROS_USE_WANFANG", True),
         )
     return _search_service
