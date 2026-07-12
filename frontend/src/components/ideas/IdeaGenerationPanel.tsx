@@ -44,6 +44,9 @@ interface IdeaSession {
     hiddenCandidateCount?: number
     rejectedCandidateCount?: number
     warnings?: string[]
+    blockingReason?: string
+    resumeFrom?: string
+    qualityStatus?: string
   }
   selectedCandidateId?: string
   errorMessage?: string
@@ -494,7 +497,7 @@ export function IdeaGenerationPanel({
       const litResponse = await fetch(`${API_BASE}/api/v1/ideas/sessions/${session.id}/literature`)
       const litData = await litResponse.json()
       setLiterature(litData.items || [])
-      if (sessionData.status === 'completed' || sessionData.status === 'failed') {
+      if (['completed', 'failed', 'awaiting_evidence', 'awaiting_ideas'].includes(sessionData.status)) {
         setIsPolling(false)
         if (sessionData.status === 'completed') {
           const candResponse = await fetch(`${API_BASE}/api/v1/ideas/sessions/${session.id}/candidates`)
@@ -505,6 +508,27 @@ export function IdeaGenerationPanel({
       }
     } catch (err) { console.error('Polling error:', err) }
   }, [session?.id, isPolling])
+
+  const resumeSession = async () => {
+    if (!session?.id) return
+    setError(null)
+    setIsLoading(true)
+    try {
+      const response = await fetch(`${API_BASE}/api/v1/ideas/sessions/${session.id}/resume`, {
+        method: 'POST',
+      })
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}))
+        throw new Error(data.detail || `Failed to resume: ${response.status}`)
+      }
+      setSession(await response.json())
+      setIsPolling(true)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to resume session')
+    } finally {
+      setIsLoading(false)
+    }
+  }
 
   useEffect(() => {
     if (!isPolling) return
@@ -539,6 +563,8 @@ export function IdeaGenerationPanel({
       case 'completed': return 'bg-emerald-700 text-white'
       case 'running': return 'bg-blue-700 text-white'
       case 'failed': return 'bg-red-700 text-white'
+      case 'awaiting_evidence': return 'bg-amber-700 text-white'
+      case 'awaiting_ideas': return 'bg-amber-700 text-white'
       case 'pending': return 'bg-amber-600 text-white'
       default: return 'bg-slate-600 text-white'
     }
@@ -709,6 +735,24 @@ export function IdeaGenerationPanel({
               </div>
             )}
             {isPolling && (<div className="flex items-center gap-2 mt-4 text-sm text-muted-foreground"><RefreshCw className="h-4 w-4 animate-spin" /> Processing...</div>)}
+            {(session.status === 'awaiting_evidence' || session.status === 'awaiting_ideas') && (
+              <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-l-4 border-amber-600 bg-amber-50 px-3 py-3">
+                <div>
+                  <p className="text-sm font-semibold text-amber-950">
+                    {session.status === 'awaiting_evidence'
+                      ? 'More relevant evidence is required'
+                      : 'Two approved ideas are required'}
+                  </p>
+                  <p className="mt-0.5 text-xs text-amber-900">
+                    {session.qualityLoopSummary?.blockingReason || session.errorMessage}
+                  </p>
+                </div>
+                <Button variant="outline" onClick={resumeSession} disabled={isLoading || isPolling}>
+                  <RefreshCw className={`mr-2 h-4 w-4 ${isLoading ? 'animate-spin' : ''}`} />
+                  Resume
+                </Button>
+              </div>
+            )}
           </CardContent>
         </Card>
       )}

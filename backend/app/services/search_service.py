@@ -18,7 +18,7 @@ import re
 import ssl
 import time
 from typing import List, Dict, Any, Optional
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 import urllib.request
 import urllib.parse
@@ -64,6 +64,26 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def tokenize_topic_text(text: str) -> List[str]:
+    """Tokenize English words and Han text for lightweight topic matching."""
+    normalized = (text or "").lower().replace("-", " ")
+    tokens: List[str] = []
+
+    def _add(token: str) -> None:
+        if token and token not in tokens:
+            tokens.append(token)
+
+    for token in re.findall(r"[a-zA-Z][a-zA-Z0-9]{2,}", normalized):
+        _add(token)
+    for span in re.findall(r"[\u4e00-\u9fff]+", normalized):
+        if len(span) < 2:
+            continue
+        _add(span)
+        for index in range(len(span) - 1):
+            _add(span[index:index + 2])
+    return tokens
+
+
 @dataclass
 class SearchResult:
     """A single search result."""
@@ -78,6 +98,8 @@ class SearchResult:
     citation_count: Optional[int]
     source: str  # "semantic_scholar", "arxiv", "local"
     relevance_score: float = 0.0
+    retrieval_roles: List[str] = field(default_factory=list)
+    matched_queries: List[str] = field(default_factory=list)
 
 
 class SemanticScholarSearch:
@@ -96,6 +118,12 @@ class SemanticScholarSearch:
         # Unauthenticated free tier is 100 requests / 5 minutes. Keep a small
         # margin so multi-query idea sessions do not immediately hit 429.
         self.min_request_interval = 1.0 if api_key else 3.2
+        try:
+            self.rate_limit_cooldown_seconds = float(
+                os.getenv("FAROS_SEMANTIC_SCHOLAR_429_COOLDOWN_SECONDS", "180")
+            )
+        except ValueError:
+            self.rate_limit_cooldown_seconds = 180.0
     
     def _rate_limit(self):
         """Ensure we don't exceed rate limits."""
@@ -135,6 +163,11 @@ class SemanticScholarSearch:
                     logger.warning("Semantic Scholar rate limited; retrying in %.1fs", delay)
                     time.sleep(delay)
                     continue
+                if e.code == 429:
+                    self.disabled_until = time.time() + max(
+                        30.0,
+                        self.rate_limit_cooldown_seconds,
+                    )
                 logger.warning(f"Semantic Scholar API error: {e.code} - {e.reason}")
                 return None
             except urllib.error.URLError as e:
@@ -289,7 +322,7 @@ class ArxivSearch:
                 phrase_parts.append(f'all:"{phrase}"')
                 consumed_terms.update(phrase.split())
 
-        tokens = re.findall(r"[a-zA-Z][a-zA-Z0-9-]{2,}|[\u4e00-\u9fff]+", normalized)
+        tokens = tokenize_topic_text(normalized)
         stopwords = {
             "and", "the", "for", "with", "from", "that", "this", "into",
             "using", "based", "how", "can", "are", "what", "when", "where",
@@ -580,7 +613,7 @@ class LocalCorpusSearch:
             "model", "models", "large", "learning", "neural",
         }
         terms: List[str] = []
-        for token in re.findall(r"[a-zA-Z][a-zA-Z0-9]{2,}|[\u4e00-\u9fff]+", normalized):
+        for token in tokenize_topic_text(normalized):
             if token in stopwords:
                 continue
             if token not in terms:
@@ -596,9 +629,9 @@ class LocalCorpusSearch:
         title = paper.get("title", "").lower().replace("-", " ")
         abstract = paper.get("abstract", "").lower().replace("-", " ")
         keywords_text = " ".join(str(k).lower().replace("-", " ") for k in paper.get("keywords", []))
-        title_terms = set(re.findall(r"[a-zA-Z][a-zA-Z0-9]{2,}|[\u4e00-\u9fff]+", title))
-        keyword_terms = set(re.findall(r"[a-zA-Z][a-zA-Z0-9]{2,}|[\u4e00-\u9fff]+", keywords_text))
-        abstract_terms = set(re.findall(r"[a-zA-Z][a-zA-Z0-9]{2,}|[\u4e00-\u9fff]+", abstract))
+        title_terms = set(tokenize_topic_text(title))
+        keyword_terms = set(tokenize_topic_text(keywords_text))
+        abstract_terms = set(tokenize_topic_text(abstract))
 
         title_hits = len(query_terms & title_terms)
         keyword_hits = len(query_terms & keyword_terms)
@@ -795,7 +828,8 @@ class OpenAlexSearch:
                 arxiv_id=None,
                 citation_count=citation_count,
                 source="openalex",
-                relevance_score=float(work.get("relevance_score") or 0.0),
+                # OpenAlex scores are ranking magnitudes, not normalized probabilities.
+                relevance_score=0.0,
             ))
 
         return results[:limit]

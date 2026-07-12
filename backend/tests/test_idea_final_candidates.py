@@ -63,6 +63,175 @@ def _service(tmp_path) -> IdeaGenerationService:
     return service
 
 
+def test_cjk_expand_query_backfills_role_queries_when_primary_output_omits_english(monkeypatch):
+    service = object.__new__(IdeaGenerationService)
+    session = IdeaSession(
+        id="idea_cjk_query_roles",
+        config=IdeaSessionConfig(
+            seedQuery="\u9884\u6d4b\u7ea2\u697c\u68a6\u53ef\u80fd\u7ed3\u5c40",
+            providerName="fake",
+            model="fake-model",
+            paperType="system",
+        ),
+    )
+
+    class FakeClient:
+        def __init__(self):
+            self.calls = 0
+
+        def chat(self, messages, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return SimpleNamespace(
+                    text=json.dumps({
+                        "refinedQuestion": "\u5982\u4f55\u8ba1\u7b97\u91cd\u5efa\u7ea2\u697c\u68a6\u7ed3\u5c40\uff1f",
+                        "searchQueries": ["\u7ea2\u697c\u68a6\u7ed3\u5c40\u7814\u7a76"],
+                        "keyConcepts": ["\u53d9\u4e8b\u95ed\u5408"],
+                    }),
+                    latency_ms=10,
+                )
+            return SimpleNamespace(
+                text=json.dumps({
+                    "domainQueries": ["Dream of the Red Chamber ending studies"],
+                    "taskQueries": ["Hongloumeng narrative closure reconstruction"],
+                    "methodQueries": ["computational literary narrative completion"],
+                    "evaluationQueries": ["narrative coherence character consistency evaluation"],
+                }),
+                latency_ms=8,
+            )
+
+    client = FakeClient()
+    monkeypatch.setattr(idea_service_module, "get_provider_client", lambda _provider: client)
+
+    _, outputs, _ = service._step_expand_query(session)
+
+    assert client.calls == 2
+    assert outputs["translationStatus"] == "fallback"
+    assert outputs["searchQueriesByRole"]["domain"] == [
+        "Dream of the Red Chamber ending studies"
+    ]
+    assert outputs["searchQueriesByRole"]["method"] == [
+        "computational literary narrative completion"
+    ]
+    assert outputs["englishSearchQueries"][0] == "Dream of the Red Chamber ending studies"
+
+
+def test_cjk_expand_query_pauses_when_translation_fallback_is_empty(monkeypatch):
+    service = object.__new__(IdeaGenerationService)
+    session = IdeaSession(
+        id="idea_cjk_translation_missing",
+        config=IdeaSessionConfig(
+            seedQuery="\u9884\u6d4b\u7ea2\u697c\u68a6\u53ef\u80fd\u7ed3\u5c40",
+            providerName="fake",
+            model="fake-model",
+        ),
+    )
+
+    class FakeClient:
+        def chat(self, messages, **kwargs):
+            return SimpleNamespace(
+                text=json.dumps({"searchQueries": ["\u7ea2\u697c\u68a6\u7ed3\u5c40\u7814\u7a76"]}),
+                latency_ms=5,
+            )
+
+    monkeypatch.setattr(
+        idea_service_module,
+        "get_provider_client",
+        lambda _provider: FakeClient(),
+    )
+
+    try:
+        service._step_expand_query(session)
+    except idea_service_module.RecoverableIdeaError as exc:
+        assert exc.waiting_status == idea_service_module.IdeaSessionStatus.AWAITING_EVIDENCE
+        assert exc.resume_from == "expandQuery"
+    else:
+        raise AssertionError("Missing CJK translation must pause the session")
+
+
+def test_cjk_repair_queries_keep_english_core_topic_anchor(tmp_path):
+    service = _service(tmp_path)
+    session = IdeaSession(
+        id="idea_cjk_repair_anchor",
+        config=IdeaSessionConfig(seedQuery="\u9884\u6d4b\u7ea2\u697c\u68a6\u53ef\u80fd\u7ed3\u5c40"),
+        trace=idea_service_module.WorkflowTrace(
+            sessionId="idea_cjk_repair_anchor",
+            startedAt=idea_service_module._utcnow(),
+            steps=[
+                idea_service_module.StepResult(
+                    name="expandQuery",
+                    status="ok",
+                    outputs={
+                        "englishSearchQueries": ["Dream of the Red Chamber ending studies"],
+                        "searchQueriesByRole": {
+                            "domain": ["Dream of the Red Chamber ending studies"],
+                            "task": ["Hongloumeng narrative closure reconstruction"],
+                            "method": [],
+                            "evaluation": [],
+                        },
+                    },
+                    startedAt=idea_service_module._utcnow(),
+                    endedAt=idea_service_module._utcnow(),
+                    durationSeconds=0.0,
+                )
+            ],
+        ),
+    )
+
+    anchored = service._anchor_repair_queries(
+        session,
+        [
+            "\u9884\u6d4b\u7ea2\u697c\u68a6\u53ef\u80fd\u7ed3\u5c40 evaluation evidence",
+            "\u9884\u6d4b\u7ea2\u697c\u68a6\u53ef\u80fd\u7ed3\u5c40 method evidence",
+        ],
+    )
+
+    assert anchored == [
+        "Dream of the Red Chamber ending studies evaluation evidence",
+        "Dream of the Red Chamber ending studies method evidence",
+    ]
+
+
+def test_core_search_queries_exclude_method_and_evaluation_only_roles(tmp_path):
+    service = _service(tmp_path)
+    session = IdeaSession(
+        id="idea_role_core_queries",
+        config=IdeaSessionConfig(seedQuery="\u9884\u6d4b\u7ea2\u697c\u68a6\u53ef\u80fd\u7ed3\u5c40"),
+        trace=idea_service_module.WorkflowTrace(
+            sessionId="idea_role_core_queries",
+            startedAt=idea_service_module._utcnow(),
+            steps=[
+                idea_service_module.StepResult(
+                    name="expandQuery",
+                    status="ok",
+                    outputs={
+                        "englishSearchQueries": [
+                            "Dream of the Red Chamber ending studies",
+                            "Hongloumeng narrative closure reconstruction",
+                            "computational literary narrative completion",
+                            "narrative coherence evaluation",
+                        ],
+                        "searchQueriesByRole": {
+                            "domain": ["Dream of the Red Chamber ending studies"],
+                            "task": ["Hongloumeng narrative closure reconstruction"],
+                            "method": ["computational literary narrative completion"],
+                            "evaluation": ["narrative coherence evaluation"],
+                        },
+                    },
+                    startedAt=idea_service_module._utcnow(),
+                    endedAt=idea_service_module._utcnow(),
+                    durationSeconds=0.0,
+                )
+            ],
+        ),
+    )
+
+    assert service._core_search_queries(session) == [
+        "Dream of the Red Chamber ending studies",
+        "Hongloumeng narrative closure reconstruction",
+    ]
+
+
 def test_get_candidates_defaults_to_final_candidate_ids(tmp_path):
     service = _service(tmp_path)
     session_id = "idea_final_view"
@@ -263,6 +432,92 @@ def test_select_final_candidates_marks_insufficient_final_count(tmp_path):
     assert result["summary"]["targetFinalCandidateCount"] == 2
     assert result["summary"]["qualityStatus"] == "insufficient_final_candidates"
     assert result["summary"]["requiresRegeneration"] is True
+
+
+def test_target_final_candidate_count_remains_two_with_one_ranked_candidate(tmp_path):
+    service = _service(tmp_path)
+    session = IdeaSession(
+        id="idea_target_two",
+        config=IdeaSessionConfig(
+            seedQuery="citation faithful RAG",
+            maxCandidates=1,
+        ),
+    )
+    only = _candidate("cand_only", session.id, title="Citation faithful RAG verifier")
+
+    assert service._target_final_candidate_count(session, [only]) == 2
+
+
+def test_resume_session_transitions_waiting_session_to_running(tmp_path):
+    service = _service(tmp_path)
+    session = IdeaSession(
+        id="idea_resume_evidence",
+        config=IdeaSessionConfig(seedQuery="citation faithful RAG"),
+        status=idea_service_module.IdeaSessionStatus.AWAITING_EVIDENCE,
+        startedAt=idea_service_module._utcnow(),
+        endedAt=idea_service_module._utcnow(),
+        errorMessage="Evidence pool is incomplete.",
+        qualityLoopSummary={"resumeFrom": "evidenceGate"},
+    )
+    service.session_storage.create(session)
+
+    resumed = service.resume_session(session.id)
+
+    assert resumed.status == idea_service_module.IdeaSessionStatus.RUNNING
+    assert resumed.endedAt is None
+    assert resumed.errorMessage is None
+
+
+def test_waiting_session_does_not_expose_internal_candidates(tmp_path):
+    service = _service(tmp_path)
+    session_id = "idea_waiting_hidden"
+    service.session_storage.create(
+        IdeaSession(
+            id=session_id,
+            config=IdeaSessionConfig(seedQuery="citation faithful RAG"),
+            status=idea_service_module.IdeaSessionStatus.AWAITING_IDEAS,
+            candidateIds=["cand_internal"],
+            finalCandidateIds=[],
+        )
+    )
+    service.candidate_storage.create(
+        _candidate("cand_internal", session_id, title="Internal rejected candidate")
+    )
+
+    assert service.get_candidates(session_id) == []
+
+
+def test_pipeline_persists_awaiting_evidence_instead_of_failed(monkeypatch, tmp_path):
+    service = _service(tmp_path)
+    service._pipeline_lock_guard = threading.Lock()
+    service._pipeline_locks = {}
+    session = IdeaSession(
+        id="idea_pipeline_waiting_evidence",
+        config=IdeaSessionConfig(seedQuery="citation faithful RAG"),
+        status=idea_service_module.IdeaSessionStatus.RUNNING,
+        startedAt=idea_service_module._utcnow(),
+        trace=idea_service_module.WorkflowTrace(
+            sessionId="idea_pipeline_waiting_evidence",
+            startedAt=idea_service_module._utcnow(),
+        ),
+    )
+    service.session_storage.create(session)
+
+    def ok_step(_session):
+        return {}, {}, []
+
+    def evidence_step(_session):
+        raise idea_service_module.AwaitingEvidenceError("Evidence is incomplete")
+
+    for name in ["_step_expand_query", "_step_literature_search", "_step_novelty_check", "_step_gap_analysis"]:
+        monkeypatch.setattr(service, name, ok_step)
+    monkeypatch.setattr(service, "_step_evidence_gate", evidence_step)
+
+    result = service.run_pipeline(session.id)
+
+    assert result.status == idea_service_module.IdeaSessionStatus.AWAITING_EVIDENCE
+    assert result.qualityLoopSummary["resumeFrom"] == "evidenceGate"
+    assert result.endedAt is None
 
 
 def test_pool_repair_targets_second_candidate_when_top_already_passes(tmp_path):
@@ -1159,6 +1414,50 @@ def test_rule_idea_reviewer_blocks_generic_unrequested_application_phrase(tmp_pa
         critique=None,
         seed_query=seed_query,
         allowed_evidence_refs=["raw_agent", "ent_agent", "rps_agent"],
+    )
+
+    assert report["passed"] is False
+    assert any("unrequested application" in issue.lower() for issue in report["blockingIssues"])
+
+
+def test_rule_idea_reviewer_blocks_generic_drift_for_cjk_seed_with_english_queries(tmp_path):
+    service = _service(tmp_path)
+    candidate = _candidate(
+        "cand_cjk_warehouse_drift",
+        "idea_cjk_topic_drift",
+        title="Reliable multi-agent self-review for warehouse logistics optimization",
+    )
+    candidate.problem = (
+        "Use evidence-grounded planning to coordinate warehouse routing, packing, "
+        "and inventory optimization."
+    )
+    candidate.keyInsight = "Warehouse logistics becomes the main evaluation scenario."
+
+    report = service._rule_idea_reviewer_report(
+        spec={"name": "IdeaFeasibilityReviewer"},
+        candidate=candidate,
+        evidence=CandidateGraphEvidence(
+            candidateId=candidate.id,
+            supportingPaperIds=["raw_agent"],
+            supportingEntityIds=["ent_agent"],
+            supportingPathSeedIds=["rps_agent"],
+        ),
+        comparisons=[
+            PriorWorkComparison(
+                candidateId=candidate.id,
+                comparedPaperIds=["raw_agent"],
+                differences=["Adds evidence-grounded planning and self-review."],
+                advantages=["Improves reliability."],
+                comparisonConfidence=0.8,
+            )
+        ],
+        critique=None,
+        seed_query="\u57fa\u4e8e\u8bc1\u636e\u89c4\u5212\u548c\u81ea\u6211\u8bc4\u5ba1\u7684\u53ef\u9760\u591a\u667a\u80fd\u4f53\u7814\u7a76\u81ea\u52a8\u5316",
+        allowed_evidence_refs=["raw_agent", "ent_agent", "rps_agent"],
+        english_search_queries=[
+            "reliable multi-agent research automation",
+            "evidence-grounded planning and self-review",
+        ],
     )
 
     assert report["passed"] is False

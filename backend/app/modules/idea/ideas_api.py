@@ -479,6 +479,28 @@ async def start_session(
 
 
 @router.post(
+    "/sessions/{session_id}/resume",
+    response_model=SessionResponse,
+    summary="Resume Idea Session",
+    description="Resume a session waiting for evidence or approved ideas.",
+)
+async def resume_session(
+    session_id: str,
+    background_tasks: BackgroundTasks,
+) -> SessionResponse:
+    service = get_idea_service()
+    try:
+        session = service.resume_session(session_id)
+        background_tasks.add_task(service.run_pipeline, session_id)
+        return _session_to_response(session)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+
+
+@router.post(
     "/sessions/{session_id}/cancel",
     response_model=SessionResponse,
     summary="Cancel Idea Session",

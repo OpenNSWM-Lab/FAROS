@@ -41,9 +41,15 @@ Respond in JSON format:
 EXPAND_QUERY_CJK_SUFFIX = """
 
 IMPORTANT: The research topic above is in Chinese (CJK characters).
-In addition to the fields above, please ALSO provide English translations for academic search:
+In addition to the fields above, provide role-specific English academic queries:
 
   "englishSearchQueries": ["English search query 1", "English search query 2", ...],
+  "englishQueryRoles": {
+    "domain": ["queries about the named object/domain"],
+    "task": ["queries about the research task or gap"],
+    "method": ["queries about applicable methods"],
+    "evaluation": ["queries about evaluation and limitations"]
+  },
   "englishKeyConcepts": ["English concept 1", "English concept 2", ...]
 
 These English queries will be used to search international academic databases.
