@@ -146,6 +146,13 @@ class ReasoningKGBuilder:
                 claims_lines.append(f"[{sp.rawPaperId}/{c.claimId}] {c.text}")
             for f in sp.findings:
                 findings_lines.append(f"[{sp.rawPaperId}] {f.description}")
+            for item in [
+                *sp.openQuestions[:3],
+                *sp.failedAssumptions[:3],
+                *sp.methodWeaknesses[:3],
+                *sp.missingEvaluation[:3],
+            ]:
+                findings_lines.append(f"[{sp.rawPaperId}] gap: {item}")
             for m in sp.methods:
                 methods_lines.append(f"[{sp.rawPaperId}] {m.name}: {m.description}")
 
