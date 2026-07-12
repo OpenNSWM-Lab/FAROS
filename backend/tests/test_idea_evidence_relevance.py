@@ -44,6 +44,23 @@ def test_named_work_is_preserved_as_one_core_anchor():
     assert "dream" in profile.generic_terms
 
 
+def test_hyphenated_seed_phrases_are_preserved_and_stopwords_are_not_anchors():
+    profile = build_topic_intent_profile(
+        seed="citation-faithful medical RAG for high-risk clinical QA",
+        domain="medical NLP, retrieval-augmented generation",
+        role_queries={
+            "domain": ["citation-faithful medical RAG"],
+            "task": ["high-risk clinical question answering"],
+            "method": ["retrieval-augmented generation verifier"],
+            "evaluation": ["citation faithfulness evaluation"],
+        },
+    )
+
+    assert "citation faithful" in profile.seed_anchors
+    assert "high risk" in profile.seed_anchors
+    assert "for" not in profile.core_anchors
+
+
 def test_direct_named_work_paper_is_eligible():
     assessment = assess_search_result(
         _result(
@@ -89,6 +106,167 @@ def test_generic_chemical_evaluation_is_rejected():
     )
 
     assert assessment.tier is EvidenceTier.REJECTED
+
+
+def test_generic_autonomous_llm_agent_is_not_direct_scientific_discovery_evidence():
+    profile = build_topic_intent_profile(
+        seed="LLM agents for scientific discovery",
+        domain="AI for science, autonomous research agents",
+        role_queries={
+            "domain": ["LLM agents for scientific discovery"],
+            "task": ["autonomous research agents using LLMs"],
+            "method": ["LLM agent architectures and methods"],
+            "evaluation": ["scientific discovery agent evaluation"],
+        },
+    )
+
+    assessment = assess_search_result(
+        _result(
+            "Agents: An Open-source Framework for Autonomous Language Agents",
+            "A framework for building and deploying LLM agents.",
+        ),
+        profile,
+    )
+
+    assert assessment.tier is not EvidenceTier.DIRECT
+
+
+def test_scientific_discovery_agent_paper_remains_direct():
+    profile = build_topic_intent_profile(
+        seed="LLM agents for scientific discovery",
+        domain="AI for science, autonomous research agents",
+        role_queries={
+            "domain": ["LLM agents for scientific discovery"],
+            "task": ["autonomous research agents using LLMs"],
+            "method": ["LLM agent architectures and methods"],
+            "evaluation": ["scientific discovery agent evaluation"],
+        },
+    )
+
+    assessment = assess_search_result(
+        _result(
+            "Autonomous LLM Agents for Scientific Discovery",
+            "Large language model agents formulate and evaluate scientific hypotheses.",
+        ),
+        profile,
+    )
+
+    assert assessment.tier is EvidenceTier.DIRECT
+
+
+def test_generic_rag_paper_is_not_direct_medical_citation_evidence():
+    profile = build_topic_intent_profile(
+        seed="citation-faithful medical RAG for high-risk clinical question answering",
+        domain="medical NLP, retrieval-augmented generation, clinical QA",
+        role_queries={
+            "domain": ["citation-faithful medical RAG"],
+            "task": ["high-risk clinical question answering"],
+            "method": ["medical RAG attribution methods"],
+            "evaluation": ["clinical RAG citation faithfulness evaluation"],
+        },
+    )
+
+    assessment = assess_search_result(
+        _result(
+            "A Survey of Graph Retrieval-Augmented Generation",
+            "Graph RAG methods, benchmarks, and limitations for customized language models.",
+        ),
+        profile,
+    )
+
+    assert assessment.tier is not EvidenceTier.DIRECT
+
+
+def test_legal_citation_qa_is_not_direct_medical_clinical_evidence():
+    profile = build_topic_intent_profile(
+        seed="citation-faithful medical RAG for high-risk clinical question answering",
+        domain="medical NLP, retrieval-augmented generation, clinical QA",
+        role_queries={
+            "domain": ["citation-faithful medical RAG"],
+            "task": ["high-risk clinical question answering"],
+            "method": ["medical RAG attribution methods"],
+            "evaluation": ["clinical RAG citation faithfulness evaluation"],
+        },
+    )
+
+    assessment = assess_search_result(
+        _result(
+            "Attribution-Aware Citation Quality for Legal QA",
+            "A citation-faithful retrieval-augmented method for legal question answering.",
+        ),
+        profile,
+    )
+
+    assert assessment.tier is not EvidenceTier.DIRECT
+
+
+def test_high_risk_clinical_citation_rag_remains_direct():
+    profile = build_topic_intent_profile(
+        seed="citation-faithful medical RAG for high-risk clinical question answering",
+        domain="medical NLP, retrieval-augmented generation, clinical QA",
+        role_queries={
+            "domain": ["citation-faithful medical RAG"],
+            "task": ["high-risk clinical question answering"],
+            "method": ["medical RAG attribution methods"],
+            "evaluation": ["clinical RAG citation faithfulness evaluation"],
+        },
+    )
+
+    assessment = assess_search_result(
+        _result(
+            "Citation-Faithful Medical RAG for High-Risk Clinical QA",
+            "The system retrieves medical evidence and verifies every clinical citation.",
+        ),
+        profile,
+    )
+
+    assert assessment.tier is EvidenceTier.DIRECT
+
+
+def test_single_multi_agent_phrase_is_not_direct_research_automation_evidence():
+    profile = build_topic_intent_profile(
+        seed="reliable multi-agent research automation with evidence-grounded planning and self-review",
+        domain="autonomous research agents",
+        role_queries={
+            "domain": ["multi-agent research automation"],
+            "task": ["reliable autonomous research workflows"],
+            "method": ["evidence-grounded planning and self-review"],
+            "evaluation": ["multi-agent research reliability benchmark"],
+        },
+    )
+
+    assessment = assess_search_result(
+        _result(
+            "Multi-Agent Workflow for Medical Intent Classification",
+            "A reliable agent framework evaluated on healthcare intent benchmarks.",
+        ),
+        profile,
+    )
+
+    assert assessment.tier is not EvidenceTier.DIRECT
+
+
+def test_multi_phrase_research_automation_evidence_remains_direct():
+    profile = build_topic_intent_profile(
+        seed="reliable multi-agent research automation with evidence-grounded planning and self-review",
+        domain="autonomous research agents",
+        role_queries={
+            "domain": ["multi-agent research automation"],
+            "task": ["reliable autonomous research workflows"],
+            "method": ["evidence-grounded planning and self-review"],
+            "evaluation": ["multi-agent research reliability benchmark"],
+        },
+    )
+
+    assessment = assess_search_result(
+        _result(
+            "Evidence-Grounded Planning and Self-Review for Multi-Agent Research Automation",
+            "The system improves reliable autonomous research workflows and evidence traceability.",
+        ),
+        profile,
+    )
+
+    assert assessment.tier is EvidenceTier.DIRECT
 
 
 def test_deduplication_merges_roles_queries_sources_and_richer_metadata():

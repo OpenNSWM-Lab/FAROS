@@ -18,6 +18,7 @@ class EvidenceTier(str, Enum):
 
 
 GENERIC_TERMS = frozenset({
+    "and",
     "analysis",
     "application",
     "approach",
@@ -26,6 +27,8 @@ GENERIC_TERMS = frozenset({
     "evaluation",
     "exploration",
     "framework",
+    "for",
+    "from",
     "generation",
     "method",
     "model",
@@ -39,20 +42,28 @@ GENERIC_TERMS = frozenset({
     "research",
     "study",
     "system",
+    "the",
     "using",
+    "with",
 })
+
+CONNECTOR_FACET_WEAK_TERMS = frozenset({"answering", "qa", "question"})
 
 
 @dataclass(frozen=True)
 class TopicIntentProfile:
+    seed_anchors: tuple[str, ...]
+    required_seed_facets: tuple[tuple[str, ...], ...]
     core_anchors: tuple[str, ...]
     task_anchors: tuple[str, ...]
     method_anchors: tuple[str, ...]
     evaluation_anchors: tuple[str, ...]
     generic_terms: tuple[str, ...]
 
-    def to_dict(self) -> dict[str, list[str]]:
+    def to_dict(self) -> dict[str, Any]:
         return {
+            "seedAnchors": list(self.seed_anchors),
+            "requiredSeedFacets": [list(facet) for facet in self.required_seed_facets],
             "coreAnchors": list(self.core_anchors),
             "taskAnchors": list(self.task_anchors),
             "methodAnchors": list(self.method_anchors),
@@ -90,6 +101,19 @@ def _quoted_phrases(values: Iterable[str]) -> tuple[str, ...]:
     return _unique(phrases)
 
 
+def _hyphen_phrases(values: Iterable[str]) -> tuple[str, ...]:
+    phrases: list[str] = []
+    for value in values:
+        phrases.extend(
+            match.lower().replace("-", " ")
+            for match in re.findall(
+                r"\b[a-zA-Z0-9]+(?:-[a-zA-Z0-9]+)+\b",
+                value or "",
+            )
+        )
+    return _unique(phrases)
+
+
 def _discriminative_tokens(values: Iterable[str]) -> tuple[str, ...]:
     return _unique(
         token
@@ -97,6 +121,25 @@ def _discriminative_tokens(values: Iterable[str]) -> tuple[str, ...]:
         for token in tokenize_topic_text(value)
         if token not in GENERIC_TERMS and len(token) >= 3
     )
+
+
+def _required_seed_facets(seed: str) -> tuple[tuple[str, ...], ...]:
+    parts = re.split(r"\s+for\s+", seed or "", maxsplit=1, flags=re.IGNORECASE)
+    if len(parts) != 2 or not all(part.strip() for part in parts):
+        return ()
+    facets = []
+    for part in parts:
+        anchors = _unique([
+            *_hyphen_phrases([part]),
+            *(
+                token
+                for token in _discriminative_tokens([part])
+                if token not in CONNECTOR_FACET_WEAK_TERMS
+            ),
+        ])
+        if anchors:
+            facets.append(anchors)
+    return tuple(facets) if len(facets) == 2 else ()
 
 
 def build_topic_intent_profile(
@@ -110,9 +153,16 @@ def build_topic_intent_profile(
     method_queries = list(role_queries.get("method", ()))
     evaluation_queries = list(role_queries.get("evaluation", ()))
     core_phrases = _quoted_phrases([seed, domain, *domain_queries, *task_queries])
+    hyphen_phrases = _hyphen_phrases([seed, domain, *domain_queries, *task_queries])
+    seed_anchors = _unique([
+        *_hyphen_phrases([seed]),
+        *_discriminative_tokens([seed]),
+    ])
     core_tokens = _discriminative_tokens([seed, domain, *domain_queries])
     return TopicIntentProfile(
-        core_anchors=_unique([*core_phrases, *core_tokens]),
+        seed_anchors=seed_anchors,
+        required_seed_facets=_required_seed_facets(seed),
+        core_anchors=_unique([*core_phrases, *hyphen_phrases, *core_tokens]),
         task_anchors=_discriminative_tokens(task_queries),
         method_anchors=_discriminative_tokens(method_queries),
         evaluation_anchors=_discriminative_tokens(evaluation_queries),
@@ -132,6 +182,20 @@ def _hits(text: str, anchors: Sequence[str]) -> tuple[str, ...]:
     return tuple(anchor for anchor in anchors if _anchor_in_text(anchor, text))
 
 
+def _covers_required_seed_facets(
+    text: str,
+    facets: Sequence[Sequence[str]],
+) -> bool:
+    for facet in facets:
+        phrase_hits = _hits(text, tuple(anchor for anchor in facet if " " in anchor))
+        token_anchors = tuple(anchor for anchor in facet if " " not in anchor)
+        token_hits = _hits(text, token_anchors)
+        required_tokens = min(2, len(token_anchors))
+        if not phrase_hits and len(token_hits) < required_tokens:
+            return False
+    return True
+
+
 def assess_search_result(
     result: SearchResult,
     profile: TopicIntentProfile,
@@ -149,6 +213,7 @@ def assess_search_result(
     task_hits = _hits(text, profile.task_anchors)
     method_hits = _hits(text, profile.method_anchors)
     evaluation_hits = _hits(text, profile.evaluation_anchors)
+    seed_hits = _hits(text, profile.seed_anchors)
 
     components = {
         "corePhrase": min(0.55, 0.55 * len(phrase_hits)),
@@ -172,8 +237,43 @@ def assess_search_result(
         *evaluation_hits,
     ])
     has_supporting_signal = bool(task_hits or method_hits or evaluation_hits)
+    has_strong_seed_signal = any(
+        " " in anchor or len(anchor) >= 7
+        for anchor in seed_hits
+    )
+    seed_phrase_anchors = tuple(
+        anchor for anchor in profile.seed_anchors if " " in anchor
+    )
+    if profile.required_seed_facets:
+        seed_facet_coverage = _covers_required_seed_facets(
+            text,
+            profile.required_seed_facets,
+        )
+    elif len(seed_phrase_anchors) >= 2:
+        matched_seed_phrases = _hits(text, seed_phrase_anchors)
+        phrase_component_tokens = {
+            token
+            for phrase in matched_seed_phrases
+            for token in phrase.split()
+        }
+        independent_seed_hits = {
+            anchor
+            for anchor in seed_hits
+            if " " not in anchor and anchor not in phrase_component_tokens
+        }
+        seed_facet_coverage = (
+            len(matched_seed_phrases) >= 2
+            or (
+                bool(matched_seed_phrases)
+                and len(independent_seed_hits) >= 2
+            )
+        )
+    else:
+        seed_facet_coverage = True
 
-    if (phrase_hits or len(core_hits) >= 2) and has_supporting_signal:
+    if (
+        phrase_hits or (len(core_hits) >= 2 and has_strong_seed_signal)
+    ) and has_supporting_signal and seed_facet_coverage:
         tier = EvidenceTier.DIRECT
         rejection_reason = ""
     elif len(task_hits) >= 2 and bool(method_hits or evaluation_hits):

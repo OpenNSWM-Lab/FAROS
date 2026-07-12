@@ -76,6 +76,12 @@ def _service(tmp_path) -> IdeaGenerationService:
     return service
 
 
+def test_idea_review_default_allows_post_literature_candidate_repair():
+    config = IdeaSessionConfig(seedQuery="reliable research automation")
+
+    assert config.maxReviewIterations == 3
+
+
 def test_cjk_expand_query_backfills_role_queries_when_primary_output_omits_english(monkeypatch):
     service = object.__new__(IdeaGenerationService)
     session = IdeaSession(
@@ -127,6 +133,51 @@ def test_cjk_expand_query_backfills_role_queries_when_primary_output_omits_engli
         "computational literary narrative completion"
     ]
     assert outputs["englishSearchQueries"][0] == "Dream of the Red Chamber ending studies"
+
+
+def test_english_expand_query_backfills_roles_from_flat_queries(monkeypatch):
+    service = object.__new__(IdeaGenerationService)
+    session = IdeaSession(
+        id="idea_english_query_roles",
+        config=IdeaSessionConfig(
+            seedQuery="citation-faithful medical RAG for high-risk clinical QA",
+            domain="medical NLP, retrieval-augmented generation, clinical QA",
+            providerName="fake",
+            model="fake-model",
+            paperType="evaluation",
+        ),
+    )
+
+    class FakeClient:
+        def chat(self, messages, **kwargs):
+            return SimpleNamespace(
+                text=json.dumps({
+                    "refinedQuestion": "How can citation-faithful medical RAG be evaluated?",
+                    "searchQueries": [
+                        "citation-faithful medical RAG for clinical QA",
+                        "medical RAG refusal and evidence attribution methods",
+                        "clinical RAG benchmark citation faithfulness evaluation",
+                    ],
+                    "keyConcepts": ["citation faithfulness", "refusal", "clinical QA"],
+                }),
+                latency_ms=10,
+            )
+
+    monkeypatch.setattr(
+        idea_service_module,
+        "get_provider_client",
+        lambda _provider: FakeClient(),
+    )
+
+    _, outputs, _ = service._step_expand_query(session)
+
+    roles = outputs["searchQueriesByRole"]
+    assert roles["domain"]
+    assert roles["task"]
+    assert roles["method"]
+    assert roles["evaluation"]
+    assert "medical RAG refusal and evidence attribution methods" in roles["method"]
+    assert "clinical RAG benchmark citation faithfulness evaluation" in roles["evaluation"]
 
 
 def test_cjk_expand_query_pauses_when_translation_fallback_is_empty(monkeypatch):
@@ -1115,6 +1166,79 @@ def test_regenerated_candidate_preserves_direction_metadata(tmp_path, monkeypatc
     assert "directionType:benchmark" in regenerated.draftPlan.tags
 
 
+def test_off_topic_regeneration_uses_seed_boundary_without_polluted_context(
+    tmp_path,
+    monkeypatch,
+):
+    service = _service(tmp_path)
+    session = IdeaSession(
+        id="idea_regenerate_off_topic",
+        config=IdeaSessionConfig(
+            seedQuery="reliable multi-agent research automation with evidence-grounded planning and self-review",
+            providerName="fake",
+            model="fake-model",
+        ),
+    )
+    base = _tag_direction(
+        _candidate(
+            "cand_medical_benchmark",
+            session.id,
+            title="Multi-agent benchmark for medical intent automation",
+        ),
+        "benchmark",
+        direction_id="dir-benchmark",
+    )
+    base.proposedMethod = "Evaluate the benchmark on medical intents and legal reasoning."
+    captured = {}
+
+    class _FakeResponse:
+        text = json.dumps({
+            "ideas": [{
+                "title": "Evidence-grounded multi-agent research automation benchmark",
+                "problem": "Research automation lacks reliability benchmarks.",
+                "keyInsight": "Evidence traces and self-review should be tested together.",
+                "approach": "Benchmark planning, evidence grounding, and self-review failures.",
+                "expectedOutcomes": ["A reproducible reliability benchmark"],
+                "risks": [],
+                "requiredExperiments": [],
+            }]
+        })
+
+    class _FakeClient:
+        def chat(self, messages, **kwargs):
+            captured["prompt"] = "\n".join(message.content for message in messages)
+            return _FakeResponse()
+
+    monkeypatch.setattr(
+        idea_service_module,
+        "get_provider_client",
+        lambda provider_name: _FakeClient(),
+    )
+
+    regenerated = service._regenerate_candidate_from_review(
+        session=session,
+        base_candidate=base,
+        review_gate={
+            "passed": False,
+            "blockingIssues": [
+                "Candidate shows topic drift: unrequested clinical or medical deployment anchor 'medical' is central but absent from the seed query.",
+                "Candidate shows topic drift: unrequested legal domain anchor 'legal' is central but absent from the seed query.",
+            ],
+            "suggestedImprovements": ["Remove unrequested application domains."],
+        },
+        critique=None,
+        prior_work=[],
+        literature_context="A medical intents paper and a legal reasoning paper.",
+    )
+
+    assert regenerated is not None
+    assert '"forbiddenApplicationAnchors": ["medical", "legal"]' in captured["prompt"]
+    assert '"sourceCandidate": {}' in captured["prompt"]
+    assert '"literatureContext": ""' in captured["prompt"]
+    assert "A medical intents paper" not in captured["prompt"]
+    assert "baselines, metrics, ablations, and validation steps" in captured["prompt"]
+
+
 def test_candidate_pool_failure_routes_drive_repair_actions(tmp_path):
     service = _service(tmp_path)
     candidate = _candidate(
@@ -1807,6 +1931,37 @@ def test_rule_idea_reviewer_blocks_unrequested_application_domain_drift(tmp_path
     assert any("seed query" in instruction.lower() for instruction in report["repairInstructions"])
 
 
+def test_rule_idea_reviewer_blocks_unrequested_climate_science_drift(tmp_path):
+    service = _service(tmp_path)
+    seed_query = "reliable multi-agent research automation with evidence-grounded planning and self-review"
+    candidate = _candidate(
+        "cand_climate_drift",
+        "idea_topic_drift",
+        title="EARS-Climate: Reliable multi-agent planning for climate models",
+    )
+    candidate.problem = "Climate science needs reliable automated model analysis."
+    candidate.keyInsight = "Use climate model datasets as the primary self-review setting."
+    candidate.proposedMethod = "Build evidence-grounded agents for weather and climate simulation."
+
+    report = service._rule_idea_reviewer_report(
+        spec={"name": "IdeaFeasibilityReviewer"},
+        candidate=candidate,
+        evidence=CandidateGraphEvidence(
+            candidateId=candidate.id,
+            supportingPaperIds=["raw_agent"],
+            supportingEntityIds=["ent_agent"],
+            supportingPathSeedIds=["rps_agent"],
+        ),
+        comparisons=[],
+        critique=None,
+        seed_query=seed_query,
+        allowed_evidence_refs=["raw_agent", "ent_agent", "rps_agent"],
+    )
+
+    assert report["passed"] is False
+    assert any("climate" in issue.lower() for issue in report["blockingIssues"])
+
+
 def test_rule_idea_reviewer_blocks_generic_unrequested_application_phrase(tmp_path):
     service = _service(tmp_path)
     seed_query = "reliable multi-agent research automation with evidence-grounded planning and self-review"
@@ -1846,6 +2001,37 @@ def test_rule_idea_reviewer_blocks_generic_unrequested_application_phrase(tmp_pa
 
     assert report["passed"] is False
     assert any("unrequested application" in issue.lower() for issue in report["blockingIssues"])
+
+
+def test_rule_idea_reviewer_blocks_unrequested_title_domain_phrase(tmp_path):
+    service = _service(tmp_path)
+    seed_query = "reliable multi-agent research automation with evidence-grounded planning and self-review"
+    candidate = _candidate(
+        "cand_social_science_drift",
+        "idea_topic_drift",
+        title="Evidential Multi-Agent Research Automation for Social Sciences",
+    )
+    candidate.problem = "Research automation needs reliable evidence and self-review."
+    candidate.keyInsight = "Apply the framework to social sciences discovery workflows."
+    candidate.proposedMethod = "Build evidence-grounded planning and validation agents."
+
+    report = service._rule_idea_reviewer_report(
+        spec={"name": "IdeaFeasibilityReviewer"},
+        candidate=candidate,
+        evidence=CandidateGraphEvidence(
+            candidateId=candidate.id,
+            supportingPaperIds=["raw_agent"],
+            supportingEntityIds=["ent_agent"],
+            supportingPathSeedIds=["rps_agent"],
+        ),
+        comparisons=[],
+        critique=None,
+        seed_query=seed_query,
+        allowed_evidence_refs=["raw_agent", "ent_agent", "rps_agent"],
+    )
+
+    assert report["passed"] is False
+    assert any("social sciences" in issue.lower() for issue in report["blockingIssues"])
 
 
 def test_rule_idea_reviewer_blocks_generic_drift_for_cjk_seed_with_english_queries(tmp_path):

@@ -1466,6 +1466,18 @@ def _normalized_topic_text(*parts: Any) -> str:
 
 _APPLICATION_DOMAIN_DRIFT_GROUPS = [
     {
+        "label": "climate science or weather modeling",
+        "phrases": [
+            "climate science",
+            "climate model",
+            "climate modeling",
+            "climate modelling",
+            "weather model",
+            "weather forecasting",
+        ],
+        "terms": {"climate", "weather", "meteorological"},
+    },
+    {
         "label": "carbon market / climate finance",
         "phrases": [
             "carbon market",
@@ -1562,11 +1574,11 @@ def _candidate_unrequested_application_phrase_issues(
     seed_tokens = set(_topic_phrase_tokens(seed_text))
     if not seed_tokens:
         return []
-    phrase_candidates: List[str] = []
-    for source_text in [
-        _normalized_topic_text(candidate.title),
-        _normalized_topic_text(candidate.problem),
-        _normalized_topic_text(candidate.keyInsight),
+    phrase_candidates: List[tuple[str, bool]] = []
+    for source_text, is_title in [
+        (_normalized_topic_text(candidate.title), True),
+        (_normalized_topic_text(candidate.problem), False),
+        (_normalized_topic_text(candidate.keyInsight), False),
     ]:
         for match in re.finditer(
             r"\b(?:for|in|on|within|across)\s+([a-z][a-z0-9\s]{4,80}?)(?:[.;,:]|\bwith\b|\busing\b|\buse\b|\buses\b|\bneeds\b|\bshould\b|\bcan\b|$)",
@@ -1574,10 +1586,10 @@ def _candidate_unrequested_application_phrase_issues(
         ):
             phrase = " ".join(match.group(1).split())
             if phrase:
-                phrase_candidates.append(phrase)
+                phrase_candidates.append((phrase, is_title))
 
     issues: List[str] = []
-    for phrase in phrase_candidates[:8]:
+    for phrase, is_title in phrase_candidates[:8]:
         tokens = _topic_phrase_tokens(phrase)
         if len(tokens) < 2:
             continue
@@ -1588,10 +1600,9 @@ def _candidate_unrequested_application_phrase_issues(
             any(token in _APPLICATION_PHRASE_SUFFIXES for token in tokens)
             or tokens[-1] in _APPLICATION_PHRASE_SUFFIXES
         )
-        if not has_application_shape:
-            continue
         novelty_ratio = len(novel_tokens) / max(1, len(tokens))
-        if novelty_ratio >= 0.6:
+        title_domain_shape = is_title and novelty_ratio >= 0.75
+        if (has_application_shape and novelty_ratio >= 0.6) or title_domain_shape:
             issues.append(
                 "Candidate shows topic drift: unrequested application phrase "
                 f"'{phrase}' is central but absent from the seed query."
@@ -2193,6 +2204,60 @@ class IdeaGenerationService:
             values = nested.get(role, data.get(field_name, []))
             roles[role] = _as_string_list(values, limit=2)
         return roles
+
+    @staticmethod
+    def _fallback_english_query_roles(
+        *,
+        seed: str,
+        domain: str,
+        expanded_terms: List[str],
+        data: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, List[str]]:
+        provided = IdeaGenerationService._cjk_query_roles(data or {})
+        if any(provided.values()):
+            return provided
+
+        queries = list(dict.fromkeys(
+            str(query).strip() for query in expanded_terms if str(query).strip()
+        ))
+        method_markers = (
+            "algorithm",
+            "approach",
+            "framework",
+            "mechanism",
+            "method",
+            "model",
+            "technique",
+            "using",
+        )
+        evaluation_markers = (
+            "benchmark",
+            "challenge",
+            "evaluation",
+            "experiment",
+            "limitation",
+            "metric",
+            "reliability",
+        )
+        method_queries = [
+            query for query in queries
+            if any(marker in query.lower() for marker in method_markers)
+        ][:2]
+        evaluation_queries = [
+            query for query in queries
+            if any(marker in query.lower() for marker in evaluation_markers)
+        ][:2]
+        domain_query = " ".join(
+            part for part in [seed, domain if domain != "general" else ""] if part
+        ).strip()
+        return {
+            "domain": list(dict.fromkeys([domain_query or seed, *queries[:1]]))[:2],
+            "task": queries[:2] or [seed],
+            "method": method_queries or [f"{seed} methods techniques algorithms"],
+            "evaluation": evaluation_queries or [
+                f"{seed} evaluation benchmark metrics limitations"
+            ],
+        }
 
     def _translate_cjk_query_roles(
         self,
@@ -3996,6 +4061,13 @@ class IdeaGenerationService:
                 # searched first against international databases
                 if english_search_queries:
                     expanded_terms = english_search_queries + expanded_terms
+            else:
+                search_queries_by_role = self._fallback_english_query_roles(
+                    seed=seed,
+                    domain=domain,
+                    expanded_terms=expanded_terms,
+                    data=data,
+                )
             key_concepts = [
                 str(item).strip()
                 for item in data.get("keyConcepts", [])
@@ -4076,6 +4148,9 @@ class IdeaGenerationService:
             # fails, the seed is used as-is (OpenAlex may still find results).
             is_cjk = bool(re.search(r'[\u4e00-\u9fff]', seed))
             english_search_queries: list[str] = []
+            search_queries_by_role: Dict[str, List[str]] = {
+                "domain": [], "task": [], "method": [], "evaluation": [],
+            }
             if is_cjk:
                 try:
                     client = get_provider_client(session.config.providerName)
@@ -4097,6 +4172,12 @@ class IdeaGenerationService:
                         "domain": [], "task": [], "method": [], "evaluation": [],
                     }
                     translation_latency_ms = 0
+            else:
+                search_queries_by_role = self._fallback_english_query_roles(
+                    seed=seed,
+                    domain=domain,
+                    expanded_terms=expanded_terms,
+                )
 
             query_plan = QueryPlan(
                 refinedQuestion=seed,
@@ -4119,7 +4200,7 @@ class IdeaGenerationService:
                 "error": str(e),
                 "cjkTranslationApplied": bool(english_search_queries),
                 "englishSearchQueries": english_search_queries,
-                "searchQueriesByRole": search_queries_by_role if is_cjk else {},
+                "searchQueriesByRole": search_queries_by_role,
                 "translationStatus": (
                     "fallback" if english_search_queries else "missing"
                 ) if is_cjk else "not_required",
@@ -6031,7 +6112,7 @@ class IdeaGenerationService:
             extra_terms=self._core_search_queries(session),
             paper_type=session.config.paperType,
         )
-        max_review_iterations = max(1, min(5, getattr(session.config, "maxReviewIterations", 2)))
+        max_review_iterations = max(1, min(5, getattr(session.config, "maxReviewIterations", 3)))
         target_final_count = self._target_final_candidate_count(session, ranked)
         review_iteration_summaries: List[Dict[str, Any]] = []
         repaired_candidate_ids: set[str] = set()
@@ -7582,8 +7663,25 @@ class IdeaGenerationService:
         """Generate one improved candidate from idea-stage review feedback."""
 
         client = get_provider_client(session.config.providerName)
+        blocking_issues = [
+            str(issue)
+            for issue in review_gate.get("blockingIssues", [])
+            if str(issue).strip()
+        ]
+        off_topic_repair = any(
+            marker in issue.lower()
+            for issue in blocking_issues
+            for marker in ("topic drift", "weak topic overlap")
+        )
+        forbidden_application_anchors = list(dict.fromkeys(
+            anchor.strip()
+            for issue in blocking_issues
+            if "topic drift" in issue.lower()
+            for anchor in re.findall(r"'([^']+)'", issue)
+            if anchor.strip()
+        ))
         review_context = {
-            "sourceCandidate": {
+            "sourceCandidate": {} if off_topic_repair else {
                 "title": base_candidate.title,
                 "problem": base_candidate.problem,
                 "hypothesisStatement": base_candidate.hypothesisStatement,
@@ -7593,18 +7691,36 @@ class IdeaGenerationService:
                 "scores": base_candidate.scoreBreakdown,
             },
             "reviewGate": review_gate,
-            "critique": critique.model_dump() if critique else {},
-            "priorWork": [item.model_dump() for item in prior_work[:3]],
+            "critique": critique.model_dump() if critique and not off_topic_repair else {},
+            "priorWork": (
+                [item.model_dump() for item in prior_work[:3]]
+                if not off_topic_repair else []
+            ),
             "seedQuery": session.config.seedQuery,
             "domain": session.config.domain,
             "paperType": session.config.paperType,
+            "forbiddenApplicationAnchors": forbidden_application_anchors,
+            "hardConstraints": (
+                [
+                    "Treat seedQuery as the complete research boundary.",
+                    "Do not introduce any application domain absent from seedQuery, even as an example, dataset, or evaluation setting.",
+                    "Remove every forbiddenApplicationAnchor from all generated fields.",
+                ]
+                if off_topic_repair else []
+            ),
+            "regenerationRequirements": [
+                "Make the approach operationally specific: name system components and their control flow.",
+                "Define seed-aligned task or dataset selection criteria without inventing unavailable resources.",
+                "Specify baselines, metrics, ablations, and validation steps.",
+                "State measurable expected outcomes and principal failure tests.",
+            ],
             "researchDirection": {
                 "id": self._candidate_direction_id(base_candidate),
                 "type": self._candidate_direction_type(base_candidate),
                 "title": self._candidate_direction_title(base_candidate),
                 "notes": base_candidate.draftPlan.notes if base_candidate.draftPlan else "",
             },
-            "literatureContext": literature_context[:8000],
+            "literatureContext": "" if off_topic_repair else literature_context[:8000],
         }
         messages = [
             ChatMessage(
@@ -7614,6 +7730,10 @@ class IdeaGenerationService:
                     "Return JSON only. Do not claim executed experiments. Do not invent paper IDs. "
                     "The new idea must preserve useful parts of the source candidate while directly addressing "
                     "reviewGate warnings, blocking issues, and suggested improvements. "
+                    "For topic-drift repairs, seedQuery is a hard boundary: do not introduce an absent "
+                    "application domain in any field, including examples, datasets, or evaluation settings. "
+                    "The approach must specify components, task or dataset selection criteria, baselines, "
+                    "metrics, ablations, validation steps, and measurable expected outcomes. "
                     "If researchDirection is provided, keep the regenerated idea inside that direction; "
                     "for example, a benchmark direction should remain a benchmark idea."
                 ),

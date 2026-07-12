@@ -56,7 +56,7 @@ class CreateSessionRequest(BaseModel):
     constraints: Optional[List[str]] = None
     mustCiteList: Optional[List[str]] = None
     searchBudget: Optional[int] = Field(default=None, ge=10, le=500)
-    maxReviewIterations: int = Field(default=2, ge=1, le=5)
+    maxReviewIterations: int = Field(default=3, ge=1, le=5)
 
 
 class SessionResponse(BaseModel):
