@@ -168,6 +168,43 @@ def _extract_json(text: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _compact_prompt_value(
+    value: Any,
+    *,
+    max_string_chars: int = 800,
+    max_items: int = 8,
+    depth: int = 0,
+) -> Any:
+    """Bound LLM prompt context while preserving structured identifiers."""
+
+    if depth >= 5:
+        return str(value or "")[:max_string_chars]
+    if isinstance(value, str):
+        text = value.strip()
+        return text if len(text) <= max_string_chars else text[:max_string_chars].rstrip()
+    if isinstance(value, dict):
+        return {
+            str(key): _compact_prompt_value(
+                item,
+                max_string_chars=max_string_chars,
+                max_items=max_items,
+                depth=depth + 1,
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [
+            _compact_prompt_value(
+                item,
+                max_string_chars=max_string_chars,
+                max_items=max_items,
+                depth=depth + 1,
+            )
+            for item in list(value)[:max_items]
+        ]
+    return value
+
+
 def _topic_terms_from_package(package: PlanPackage) -> List[str]:
     text = " ".join([
         str(package.constants.get("seedQuery", "")),
@@ -1360,20 +1397,19 @@ class PlanPackageService:
         for attempt in range(attempts):
             messages = list(base_messages)
             if attempt > 0:
-                messages.extend([
-                    ChatMessage(role="assistant", content=last_response_text[:4000]),
+                messages.append(
                     ChatMessage(
                         role="user",
                         content=self._build_llm_repair_prompt(last_issues, target_sections=target_sections),
-                    ),
-                ])
+                    )
+                )
             response = get_llm_task_scheduler().run(
                 "plan_package_fields",
                 lambda messages=messages, attempt=attempt: client.chat(
                     messages=messages,
                     model=session.config.model,
                     temperature=0.2 if attempt == 0 else 0.0,
-                    max_tokens=8192,
+                    max_tokens=4096,
                     response_format={"type": "json_object"},
                 ),
                 timeout_seconds=_plan_llm_timeout_seconds(),
@@ -1645,6 +1681,25 @@ class PlanPackageService:
             max_stages=max_stages,
             max_steps_per_stage=max_steps_per_stage,
         )
+        design_brief = build_single_plan_design_brief(
+            package,
+            max_stages=max_stages,
+            max_steps_per_stage=max_steps_per_stage,
+        )
+        selected_gap = next(
+            (item for item in package.gap.items if item.id == package.gap.selectedGapId),
+            None,
+        )
+        supporting_gaps = [
+            item
+            for item in package.gap.items
+            if item.id != package.gap.selectedGapId
+        ][:5]
+        prompt_papers = sorted(
+            package.literatureSurvey.papers,
+            key=lambda paper: paper.relevanceScore,
+            reverse=True,
+        )[:6]
         ablation_instruction = (
             "At least one step must define baselines/control comparisons, and at least one step must define ablation, sensitivity, robustness, or failure analysis."
             if blueprint.ablationRequirements
@@ -1658,31 +1713,82 @@ class PlanPackageService:
                 "maxStepsPerStage": max_steps_per_stage,
                 "note": "Plan describes intended implementation and validation design only; it must not claim executed results.",
             },
-            "planBlueprint": blueprint.model_dump(),
-            "singlePlanDesignBrief": build_single_plan_design_brief(package, max_stages=max_stages, max_steps_per_stage=max_steps_per_stage),
+            "planBlueprint": _compact_prompt_value(
+                blueprint.model_dump(),
+                max_string_chars=400,
+                max_items=10,
+            ),
+            "singlePlanDesignBrief": {
+                "singlePlanOnly": design_brief.get("singlePlanOnly", True),
+                "doNotGenerate": design_brief.get("doNotGenerate", []),
+                "qualityBar": design_brief.get("qualityBar", []),
+            },
             "seedQuery": package.constants.get("seedQuery", ""),
             "domain": package.constants.get("domain", ""),
             "paperType": package.constants.get("paperType", ""),
             "topicAnchors": _topic_terms_from_package(package),
-            "idea": package.idea.model_dump(),
-            "background": package.background.model_dump(),
-            "gap": package.gap.model_dump(),
-            "principle": package.principle.model_dump(),
+            "idea": _compact_prompt_value({
+                "id": package.idea.id,
+                "title": package.idea.title,
+                "problem": package.idea.problem,
+                "hypothesisStatement": package.idea.hypothesisStatement,
+                "keyInsight": package.idea.keyInsight,
+                "proposedMethod": package.idea.proposedMethod,
+                "expectedOutcome": package.idea.expectedOutcome,
+                "closestPriorWork": package.idea.closestPriorWork[:3],
+            }, max_string_chars=900, max_items=8),
+            "background": _compact_prompt_value(
+                {
+                    "summary": package.background.summary,
+                    "motivation": package.background.motivation,
+                    "currentLimitations": package.background.currentLimitations[:6],
+                    "domainContext": package.background.domainContext[:6],
+                    "evidenceRefs": [ref.model_dump() for ref in package.background.evidenceRefs[:12]],
+                },
+                max_string_chars=600,
+                max_items=6,
+            ),
+            "gap": _compact_prompt_value(
+                {
+                    "summary": package.gap.summary,
+                    "selectedGapId": package.gap.selectedGapId,
+                    "items": [
+                        *([selected_gap.model_dump()] if selected_gap else []),
+                        *[item.model_dump() for item in supporting_gaps[:2]],
+                    ],
+                },
+                max_string_chars=600,
+                max_items=6,
+            ),
+            "principle": _compact_prompt_value(
+                {
+                    "summary": package.principle.summary,
+                    "mechanism": package.principle.mechanism,
+                    "noveltyClaim": package.principle.noveltyClaim,
+                    "assumptions": package.principle.assumptions[:6],
+                    "risks": package.principle.risks[:6],
+                    "reasoningPath": package.principle.reasoningPath[:4],
+                    "graphGrounding": package.principle.graphGrounding.model_dump(),
+                    "probeGrounding": package.principle.probeGrounding.model_dump(),
+                },
+                max_string_chars=600,
+                max_items=8,
+            ),
             "allowedEvidenceIds": self._allowed_evidence_ids(package),
             "paperSummaries": [
                 {
                     "paperId": p.paperId,
                     "source": p.source,
                     "title": p.title,
-                    "summary": p.summary,
+                    "summary": _compact_prompt_value(p.summary, max_string_chars=450),
                     "relevanceScore": p.relevanceScore,
                     "relevanceSignals": p.relevanceSignals[:8],
-                    "relevanceReason": p.relevanceReason,
-                    "methods": p.methods[:3],
-                    "findings": p.findings[:3],
-                    "limitations": p.limitations[:3],
+                    "relevanceReason": _compact_prompt_value(p.relevanceReason, max_string_chars=300),
+                    "methods": _compact_prompt_value(p.methods[:2], max_string_chars=250, max_items=2),
+                    "findings": _compact_prompt_value(p.findings[:2], max_string_chars=250, max_items=2),
+                    "limitations": _compact_prompt_value(p.limitations[:2], max_string_chars=250, max_items=2),
                 }
-                for p in package.literatureSurvey.papers[:20]
+                for p in prompt_papers
             ],
             "humanFeedback": [
                 {
@@ -1696,7 +1802,7 @@ class PlanPackageService:
                 for feedback in package.humanFeedback
                 if not feedback.resolved
             ],
-            "reviewFindings": {
+            "reviewFindings": _compact_prompt_value({
                 "decision": package.metaReview.decision if package.metaReview else "",
                 "blockingIssues": [
                     {
@@ -1706,7 +1812,7 @@ class PlanPackageService:
                     for issue in (package.metaReview.blockingIssues if package.metaReview else [])[:12]
                 ],
                 "requiredRepairs": (package.metaReview.requiredRepairs if package.metaReview else [])[:12],
-            },
+            }, max_string_chars=500, max_items=8),
         }
         return (
             "Return ONLY valid JSON. Include writable top-level keys only from: researchQuestion, hypothesis, constants, stages, background, gap, principle.\n"

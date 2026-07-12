@@ -130,6 +130,42 @@ _RECOVERABLE_TOP_LEVEL = {
     "expectedMetrics",
 }
 
+_DUPLICATE_NESTED_TOP_LEVEL = {
+    # Some providers repeat nested step fields after an otherwise complete
+    # plan object. They are never canonical top-level PlanPackage fields.
+    "evidenceRefs",
+    "expected",
+    "desc",
+    "metric",
+    "target",
+}
+
+
+def _is_structural_subset(expected: Any, actual: Any) -> bool:
+    if isinstance(expected, dict) and isinstance(actual, dict):
+        return bool(expected) and all(
+            key in actual and _is_structural_subset(item, actual[key])
+            for key, item in expected.items()
+        )
+    if isinstance(expected, list) and isinstance(actual, list):
+        return bool(expected) and len(expected) == len(actual) and all(
+            _is_structural_subset(expected_item, actual_item)
+            for expected_item, actual_item in zip(expected, actual)
+        )
+    return expected == actual
+
+
+def _contains_nested_duplicate(value: Any, field: str, expected: Any) -> bool:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key == field and _is_structural_subset(expected, item):
+                return True
+            if _contains_nested_duplicate(item, field, expected):
+                return True
+    elif isinstance(value, list):
+        return any(_contains_nested_duplicate(item, field, expected) for item in value)
+    return False
+
 
 def _as_list(value: Any) -> List[Any]:
     if value is None:
@@ -308,10 +344,37 @@ def validate_llm_plan_output(
     raw = _repair_plan_stage_shapes(dict(raw))
     for key in _RECOVERABLE_TOP_LEVEL:
         raw.pop(key, None)
+    for key in _DUPLICATE_NESTED_TOP_LEVEL:
+        if key not in raw:
+            continue
+        if any(
+            _contains_nested_duplicate(value, key, raw[key])
+            for root_key, value in raw.items()
+            if root_key in _ALLOWED_TOP_LEVEL
+        ):
+            raw.pop(key, None)
+    if not set(raw) & _ALLOWED_TOP_LEVEL:
+        return None, ["LLM output did not include any writable PlanPackage fields"]
     unknown = sorted(set(raw) - _ALLOWED_TOP_LEVEL)
     if unknown:
         return None, [
             "LLM output contains forbidden top-level keys: " + ", ".join(unknown)
+        ]
+    if target_sections is None:
+        required_sections = {"stages"}
+    else:
+        required_sections = {
+            section
+            for section in target_sections
+            if section in _ALLOWED_TOP_LEVEL
+        }
+        if "expectedMetrics" in target_sections:
+            required_sections.add("stages")
+    missing_required = sorted(required_sections - set(raw))
+    if missing_required:
+        return None, [
+            "LLM output is missing required writable sections: "
+            + ", ".join(missing_required)
         ]
     nulls = _null_paths(raw)
     if nulls:

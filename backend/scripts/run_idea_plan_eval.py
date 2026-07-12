@@ -58,9 +58,16 @@ def step_map(session):
             errors = [error] if error else []
         elif isinstance(errors, str):
             errors = [errors]
+        duration_seconds = getattr(step, "durationSeconds", None)
+        duration_ms = getattr(step, "durationMs", None)
+        if duration_ms is None and duration_seconds is not None:
+            duration_ms = round(float(duration_seconds) * 1000, 3)
+        if duration_seconds is None and duration_ms is not None:
+            duration_seconds = round(float(duration_ms) / 1000, 3)
         result[step.name] = {
             "status": str(step.status),
-            "durationMs": getattr(step, "durationMs", None),
+            "durationMs": duration_ms,
+            "durationSeconds": duration_seconds,
             "outputs": step.outputs or {},
             "errors": errors,
         }
@@ -74,6 +81,51 @@ def pick(data, path, default=None):
             return default
         cur = cur[part]
     return cur
+
+
+def quality_loop_summary(rank_output, session):
+    summary = rank_output.get("qualityLoopSummary") if isinstance(rank_output, dict) else None
+    if summary:
+        return summary
+    fallback = getattr(session, "qualityLoopSummary", None) or {}
+    if hasattr(fallback, "model_dump"):
+        return fallback.model_dump()
+    return fallback if isinstance(fallback, dict) else {}
+
+
+def reviewer_usage(rank_output):
+    reports = []
+    for gate in rank_output.get("ideaReviewGate", []) if isinstance(rank_output, dict) else []:
+        if isinstance(gate, dict):
+            reports.extend(report for report in gate.get("reviewerReports", []) if isinstance(report, dict))
+    all_llm_reports = [
+        report
+        for report in reports
+        if "llm" in str(report.get("mode", "")).lower()
+    ]
+    llm_reports = [report for report in all_llm_reports if not report.get("cacheHit", False)]
+    cached_llm_reports = [report for report in all_llm_reports if report.get("cacheHit", False)]
+    return {
+        "reportCount": len(reports),
+        "llmReportCount": len(llm_reports),
+        "cachedLlmReportCount": len(cached_llm_reports),
+        "llmLatencyMs": round(sum(float(report.get("llmLatencyMs", 0) or 0) for report in llm_reports), 3),
+        "llmUsed": bool(llm_reports),
+    }
+
+
+def null_paths(value, prefix=""):
+    if value is None:
+        return [prefix or "$"]
+    paths = []
+    if isinstance(value, dict):
+        for key, item in value.items():
+            child = f"{prefix}.{key}" if prefix else str(key)
+            paths.extend(null_paths(item, child))
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            paths.extend(null_paths(item, f"{prefix}[{index}]"))
+    return paths
 
 
 def candidate_quality(candidate):
@@ -159,6 +211,7 @@ def main() -> None:
             session = service.run_pipeline(session.id)
             item["ideaSeconds"] = round(time.perf_counter() - seed_start, 2)
             item["status"] = str(session.status)
+            item["sessionError"] = session.errorMessage
             item["finalCandidateIds"] = list(session.finalCandidateIds or [])
             item["hiddenCandidateIds"] = list(session.hiddenCandidateIds or [])
             steps = step_map(session)
@@ -166,6 +219,7 @@ def main() -> None:
                 name: {
                     "status": data["status"],
                     "durationMs": data["durationMs"],
+                    "durationSeconds": data["durationSeconds"],
                     "errorCount": len(data["errors"]),
                 }
                 for name, data in steps.items()
@@ -174,6 +228,10 @@ def main() -> None:
             brainstorm_out = steps.get("ideaBrainstorm", {}).get("outputs", {})
             rank_out = steps.get("rankCandidates", {}).get("outputs", {})
             evidence_out = steps.get("evidenceGate", {}).get("outputs", {})
+            evidence_gate = evidence_out.get("evidenceGate", evidence_out)
+            repair_novelty_out = pick(evidence_out, ["repairReport", "noveltyOutputs"], {}) or {}
+            quality_loop = quality_loop_summary(rank_out, session)
+            review_usage = reviewer_usage(rank_out)
             item["performance"] = {
                 "baselineSeconds": spec["baselineSeconds"],
                 "ideaSeconds": item["ideaSeconds"],
@@ -187,15 +245,24 @@ def main() -> None:
                 "structuredGlobalCacheHitCount": novelty_out.get("structuredGlobalCacheHitCount"),
                 "deepReadRequestedCount": novelty_out.get("deepReadRequestedCount"),
                 "structuredCacheStoredCount": novelty_out.get("structuredCacheStoredCount"),
+                "repairStructuredCacheHitCount": repair_novelty_out.get("structuredCacheHitCount", 0),
+                "repairDeepReadRequestedCount": repair_novelty_out.get("deepReadRequestedCount", 0),
+                "totalStructuredCacheHitCount": int(novelty_out.get("structuredCacheHitCount", 0) or 0)
+                + int(repair_novelty_out.get("structuredCacheHitCount", 0) or 0),
+                "totalDeepReadRequestedCount": int(novelty_out.get("deepReadRequestedCount", 0) or 0)
+                + int(repair_novelty_out.get("deepReadRequestedCount", 0) or 0),
                 "ideaReviewPassedCount": rank_out.get("ideaReviewPassedCount"),
                 "literatureRepairCount": rank_out.get("literatureRepairCount"),
                 "regeneratedCandidateIds": rank_out.get("regeneratedCandidateIds"),
+                "reviewerUsage": review_usage,
             }
             item["qualitySignals"] = {
                 "finalCandidateCount": len(session.finalCandidateIds or []),
-                "targetFinalCandidateCount": pick(rank_out, ["finalSelection", "targetFinalCandidateCount"]),
-                "directionDiversitySatisfied": pick(rank_out, ["finalSelection", "directionDiversitySatisfied"]),
-                "finalDirectionTypes": pick(rank_out, ["finalSelection", "finalDirectionTypes"]),
+                "targetFinalCandidateCount": quality_loop.get("targetFinalCandidateCount"),
+                "qualityStatus": quality_loop.get("qualityStatus"),
+                "requiresRegeneration": quality_loop.get("requiresRegeneration", False),
+                "directionDiversitySatisfied": quality_loop.get("directionDiversitySatisfied"),
+                "finalDirectionTypes": quality_loop.get("finalDirectionTypes"),
                 "evidenceGatePassed": pick(
                     evidence_out,
                     ["evidenceGate", "passed"],
@@ -205,8 +272,38 @@ def main() -> None:
                 "selectedPaperQualityPassed": pick(novelty_out, ["selectedPaperQualityGate", "passed"]),
                 "researchDirectionCount": brainstorm_out.get("researchDirectionCount"),
                 "candidateCount": brainstorm_out.get("candidateCount"),
+                "externalPaperCount": evidence_gate.get("externalPaperCount"),
+                "localPaperCount": evidence_gate.get("localPaperCount"),
+                "localOnly": evidence_gate.get("localOnly"),
+                "sourcesUsed": evidence_gate.get("sourcesUsed"),
+                "sourceQuality": evidence_gate.get("sourceQuality"),
+                "providerFallbackRisk": evidence_gate.get("providerFallbackRisk"),
+                "evidenceReviewMode": evidence_gate.get("reviewMode"),
+                "evidenceLlmReviewerPassed": pick(evidence_gate, ["llmReviewer", "passed"]),
+                "evidenceLlmReviewerScore": pick(evidence_gate, ["llmReviewer", "score"]),
+                "evidenceRepairAttempted": evidence_out.get("repairAttempted", False),
             }
-            item["finalCandidates"] = [candidate_quality(c) for c in service.get_candidates(session.id)]
+            all_candidates = service.get_candidates(session.id, view="debug")
+            candidate_by_id = {candidate.id: candidate for candidate in all_candidates}
+            item["finalCandidates"] = [
+                candidate_quality(candidate_by_id[candidate_id])
+                for candidate_id in session.finalCandidateIds or []
+                if candidate_id in candidate_by_id
+            ]
+            item["reviewedCandidates"] = [candidate_quality(candidate) for candidate in all_candidates]
+            item["ideaReviewGate"] = [
+                {
+                    "candidateId": gate.get("candidateId"),
+                    "passed": gate.get("passed"),
+                    "scoreAfterGate": gate.get("scoreAfterGate"),
+                    "blockingIssues": gate.get("blockingIssues", []),
+                    "reviewerReportCount": len(gate.get("reviewerReports", []) or []),
+                    "llmReviewerReportCount": reviewer_usage({"ideaReviewGate": [gate]})["llmReportCount"],
+                    "cachedLlmReviewerReportCount": reviewer_usage({"ideaReviewGate": [gate]})["cachedLlmReportCount"],
+                }
+                for gate in rank_out.get("ideaReviewGate", [])
+                if isinstance(gate, dict)
+            ]
             if session.finalCandidateIds:
                 plan_start = time.perf_counter()
                 package = get_plan_package_service().create_from_idea_session(
@@ -229,6 +326,35 @@ def main() -> None:
                     if package.literatureSurvey
                     else 0,
                     "contributionCount": len(getattr(package, "contributionStatement", []) or []),
+                    "researchQuestion": package.researchQuestion,
+                    "hypothesis": package.hypothesis,
+                    "ideaHypothesis": package.idea.hypothesisStatement,
+                    "hypothesisMatchesIdea": package.hypothesis.strip() == package.idea.hypothesisStatement.strip(),
+                    "stageTitles": [stage.title for stage in package.stages or []],
+                    "metrics": list(dict.fromkeys(
+                        expected.metric
+                        for stage in package.stages or []
+                        for step in stage.steps or []
+                        for expected in step.expected or []
+                    )),
+                    "upstreamFieldsNonNull": {
+                        "idea": package.idea is not None,
+                        "background": package.background is not None,
+                        "literatureSurvey": package.literatureSurvey is not None,
+                        "gap": package.gap is not None,
+                        "principle": package.principle is not None,
+                        "evidenceTrace": package.evidenceTrace is not None,
+                        "qualityGate": package.qualityGate is not None,
+                    },
+                    "criticalNullPaths": null_paths({
+                        "researchQuestion": package.researchQuestion,
+                        "hypothesis": package.hypothesis,
+                        "constants": package.constants,
+                        "stages": [stage.model_dump() for stage in package.stages or []],
+                    }),
+                    "generation": package.generation.model_dump()
+                    if hasattr(package.generation, "model_dump")
+                    else {},
                 }
             item["finishedAt"] = utcnow()
             print(

@@ -1464,6 +1464,23 @@ def _coerce_text_list(value: Any) -> List[str]:
     return [str(value).strip()] if str(value).strip() else []
 
 
+def _coerce_dict_list(value: Any) -> List[Dict[str, Any]]:
+    if isinstance(value, dict):
+        return [value]
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict)]
+    return []
+
+
+def _coerce_strict_text_list(value: Any) -> List[str]:
+    if isinstance(value, str):
+        cleaned = value.strip()
+        return [cleaned] if cleaned else []
+    if not isinstance(value, list):
+        return []
+    return [item.strip() for item in value if isinstance(item, str) and item.strip()]
+
+
 def _is_inline_evidence_format_issue(issue: str) -> bool:
     """Return whether an evidence issue is only asking for inline raw IDs."""
 
@@ -5090,7 +5107,7 @@ class IdeaGenerationService:
             json_match = re.search(r'\{[\s\S]*"ideas"[\s\S]*\}', text)
             if json_match:
                 data = json.loads(json_match.group())
-                ideas = data.get("ideas", [])
+                ideas = _coerce_dict_list(data.get("ideas", []))
                 
                 for idea in ideas[:max_count]:
                     expected_outcomes = _coerce_text_list(idea.get("expectedOutcomes", []))
@@ -5110,23 +5127,21 @@ class IdeaGenerationService:
                     )
                     # Parse experiments
                     experiments = []
-                    for exp in idea.get("requiredExperiments", []):
-                        if isinstance(exp, dict):
-                            experiments.append(ExperimentSpec(
-                                name=exp.get("name", "Experiment"),
-                                description=exp.get("description", ""),
-                                metrics=exp.get("metrics", []),
-                                datasets=exp.get("datasets", [])
-                            ))
+                    for exp in _coerce_dict_list(idea.get("requiredExperiments", [])):
+                        experiments.append(ExperimentSpec(
+                            name=exp.get("name", "Experiment"),
+                            description=exp.get("description", ""),
+                            metrics=_coerce_strict_text_list(exp.get("metrics", [])),
+                            datasets=_coerce_strict_text_list(exp.get("datasets", [])),
+                        ))
                     
                     # Parse risks
                     risks = []
-                    for risk in idea.get("risks", []):
-                        if isinstance(risk, dict):
-                            risks.append(RiskItem(
-                                risk=risk.get("risk", ""),
-                                mitigation=risk.get("mitigation", "")
-                            ))
+                    for risk in _coerce_dict_list(idea.get("risks", [])):
+                        risks.append(RiskItem(
+                            risk=risk.get("risk", ""),
+                            mitigation=risk.get("mitigation", ""),
+                        ))
                     
                     candidate = IdeaCandidate(
                         id=generate_candidate_id(),
@@ -6548,6 +6563,8 @@ class IdeaGenerationService:
             "confidence": _confidence_0_1(llm_report.get("confidence", 0.5)),
             "summary": llm_report.get("summary") or rule_report.get("summary", ""),
             "llmLatencyMs": llm_report.get("llmLatencyMs"),
+            "cacheHit": bool(llm_report.get("cacheHit", False)),
+            "cacheKey": llm_report.get("cacheKey"),
         }
 
     def _apply_idea_review_gate(

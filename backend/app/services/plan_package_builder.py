@@ -991,6 +991,78 @@ def build_default_stages(
         for paper in literature_survey.papers[:3]
     ]
     primary_output_prefix = candidate.title.lower().replace(" ", "_")[:40] or "plan"
+    candidate_title = " ".join(candidate.title.split())[:160] or "selected idea"
+    candidate_method = " ".join(
+        (candidate.proposedMethod or candidate.keyInsight or principle.mechanism).split()
+    )[:600]
+    stage_step_limit = max_steps_per_stage if max_stages >= 3 else max(3, max_steps_per_stage)
+
+    def partition(items: List[Any], count: int) -> List[List[Any]]:
+        count = min(max(1, count), len(items))
+        return [
+            items[index * len(items) // count:(index + 1) * len(items) // count]
+            for index in range(count)
+        ]
+
+    def merge_step_group(
+        selected_steps: List[PlanStep],
+        *,
+        stage_index: int,
+        step_index: int,
+    ) -> PlanStep:
+        return PlanStep(
+            id=f"step-{stage_index}-{step_index}",
+            order=step_index,
+            title=" + ".join(step.title for step in selected_steps),
+            desc=" ".join(step.desc for step in selected_steps if step.desc),
+            method=" ".join(step.method for step in selected_steps if step.method),
+            inputFrom=[],
+            outputs=[output.model_copy(deep=True) for step in selected_steps for output in step.outputs],
+            expected=[metric.model_copy(deep=True) for step in selected_steps for metric in step.expected],
+            evidenceRefs=[ref.model_copy(deep=True) for step in selected_steps for ref in step.evidenceRefs],
+            codeHints={key: value for step in selected_steps for key, value in step.codeHints.items()},
+        )
+
+    def fit_constrained_stages(source_stages: List[PlanStage]) -> List[PlanStage]:
+        if max_stages >= 3:
+            return source_stages[:max_stages]
+
+        fitted: List[PlanStage] = []
+        for stage_index, stage_group in enumerate(
+            partition(source_stages, max(1, max_stages)),
+            start=1,
+        ):
+            source_steps = [step for stage in stage_group for step in stage.steps]
+            step_groups = partition(source_steps, min(max(1, max_steps_per_stage), len(source_steps)))
+            base_title = " + ".join(stage.title for stage in stage_group)
+            fitted.append(
+                PlanStage(
+                    id=f"stage-{stage_index}",
+                    order=stage_index,
+                    title=f"{base_title}: {candidate_title}",
+                    goal=" ".join(stage.goal for stage in stage_group if stage.goal),
+                    method=(
+                        " ".join(stage.method for stage in stage_group if stage.method)
+                        + f" Apply the selected mechanism: {candidate_method}."
+                    ).strip(),
+                    dependsOn=[f"stage-{stage_index - 1}"] if stage_index > 1 else [],
+                    steps=[
+                        merge_step_group(
+                            step_group,
+                            stage_index=stage_index,
+                            step_index=step_index,
+                        )
+                        for step_index, step_group in enumerate(step_groups, start=1)
+                    ],
+                )
+            )
+
+        previous_step_id = ""
+        for stage in fitted:
+            for step in stage.steps:
+                step.inputFrom = [previous_step_id] if previous_step_id else []
+                previous_step_id = step.id
+        return fitted
 
     if template.paperType == "survey":
         stages = [
@@ -1024,7 +1096,7 @@ def build_default_stages(
                         expected=[PlanExpectedMetric(metric="comparison_dimension_count", target=">= 3", desc="At least three useful comparison dimensions are defined.")],
                         evidenceRefs=[PlanEvidenceRef(type="gap", id=gap.selectedGapId, source="idea_gap")],
                     ),
-                ][:max_steps_per_stage],
+                ][:stage_step_limit],
             ),
             PlanStage(
                 id="stage-2",
@@ -1055,7 +1127,7 @@ def build_default_stages(
                         outputs=[PlanOutput(type="chart", name="taxonomy_and_gap_figure.png", desc="Planned survey taxonomy or trend figure", requiredFor=["paper"])],
                         expected=[PlanExpectedMetric(metric="survey_artifact_count", target=">= 2", desc="Taxonomy and comparison artifacts are planned.")],
                     ),
-                ][:max_steps_per_stage],
+                ][:stage_step_limit],
             ),
             PlanStage(
                 id="stage-3",
@@ -1075,10 +1147,10 @@ def build_default_stages(
                         outputs=[PlanOutput(type="checkpoint", name="survey_quality_gate.json", desc="Survey handoff validation status", requiredFor=["review"])],
                         expected=[PlanExpectedMetric(metric="schema_valid", target="true", desc="Package satisfies survey handoff requirements.")],
                     )
-                ][:max_steps_per_stage],
+                ][:stage_step_limit],
             ),
         ]
-        return stages[:max_stages]
+        return fit_constrained_stages(stages)
 
     if template.paperType == "benchmark":
         stages = [
@@ -1118,7 +1190,7 @@ def build_default_stages(
                         ],
                         evidenceRefs=evidence_refs,
                     ),
-                ][:max_steps_per_stage],
+                ][:stage_step_limit],
             ),
             PlanStage(
                 id="stage-2",
@@ -1148,7 +1220,7 @@ def build_default_stages(
                         outputs=[PlanOutput(type="metrics", name="evaluation_protocol.json", desc="Metric definitions and scoring protocol", requiredFor=["validation", "paper"])],
                         expected=[PlanExpectedMetric(metric="metric_count", target=">= 2", desc="Benchmark has at least two complementary metrics or checks.")],
                     ),
-                ][:max_steps_per_stage],
+                ][:stage_step_limit],
             ),
             PlanStage(
                 id="stage-3",
@@ -1168,10 +1240,10 @@ def build_default_stages(
                         outputs=[PlanOutput(type="table", name="quality_slice_checks.csv", desc="Quality, leakage, bias, and slice checks", requiredFor=["validation", "review"])],
                         expected=[PlanExpectedMetric(metric="quality_check_count", target=">= 2", desc="At least two quality or bias checks are planned.")],
                     )
-                ][:max_steps_per_stage],
+                ][:stage_step_limit],
             ),
         ]
-        return stages[:max_stages]
+        return fit_constrained_stages(stages)
 
     stages = [
         PlanStage(
@@ -1221,22 +1293,30 @@ def build_default_stages(
                     expected=[PlanExpectedMetric(metric="baseline_count", target=">= 1", desc="At least one baseline or control comparison is declared.")],
                     evidenceRefs=evidence_refs or [PlanEvidenceRef(type="gap", id=gap.selectedGapId, source="idea_gap")],
                 ),
-            ][:max_steps_per_stage],
+            ][:stage_step_limit],
         ),
         PlanStage(
             id="stage-2",
             order=2,
-            title="Method and Principle Specification",
-            goal="Turn the selected idea into an implementation-ready method specification.",
-            method="Use the candidate proposed method, reasoning path, and prior-work differences to specify the principle.",
+            title=f"Method Specification: {candidate_title}",
+            goal=f"Turn {candidate_title} into an implementation-ready method specification.",
+            method=(
+                f"Specify the candidate mechanism ({candidate_method}) using the reasoning path "
+                "and prior-work differences."
+            ),
             dependsOn=["stage-1"],
             steps=[
                 PlanStep(
                     id="step-2-1",
                     order=1,
                     title="Write mechanism specification",
-                    desc="Describe how the proposed method works and why it addresses the selected gap.",
-                    method="Use principle.mechanism, principle.reasoningPath, and graph grounding IDs.",
+                    desc=(
+                        f"Describe how {candidate_title} works and why its mechanism addresses the selected gap."
+                    ),
+                    method=(
+                        f"Ground the mechanism ({candidate_method}) in principle.mechanism, "
+                        "principle.reasoningPath, and graph grounding IDs."
+                    ),
                     inputFrom=["step-1-2"],
                     outputs=[PlanOutput(type="report", name="method_principle.md", desc="Mechanism and novelty claim", requiredFor=["paper", "code"])],
                     expected=[PlanExpectedMetric(metric="reasoning_path_steps", target=f">= {max(1, len(principle.reasoningPath))}", desc="Principle is grounded in a reasoning path or explicit fallback.")],
@@ -1253,7 +1333,7 @@ def build_default_stages(
                     expected=[PlanExpectedMetric(metric="artifact_contracts", target=">= 1", desc="At least one code-facing artifact is specified.")],
                     codeHints={"source": "PlanPackage.stages"},
                 ),
-            ][:max_steps_per_stage],
+            ][:stage_step_limit],
         ),
         PlanStage(
             id="stage-3",
@@ -1306,7 +1386,7 @@ def build_default_stages(
                     ],
                     expected=[PlanExpectedMetric(metric="reportable_artifacts", target=">= 2", desc="At least one table and one chart are planned.")],
                 ),
-            ][:max_steps_per_stage],
+            ][:stage_step_limit],
         ),
         PlanStage(
             id="stage-4",
@@ -1326,10 +1406,10 @@ def build_default_stages(
                     outputs=[PlanOutput(type="checkpoint", name="quality_gate.json", desc="PlanPackage validation status", requiredFor=["review"])],
                     expected=[PlanExpectedMetric(metric="schema_valid", target="true", desc="Package satisfies the hard output schema.")],
                 )
-            ][:max_steps_per_stage],
+            ][:stage_step_limit],
         ),
     ]
-    return stages[:max_stages]
+    return fit_constrained_stages(stages)
 
 
 def build_contribution_statements(
