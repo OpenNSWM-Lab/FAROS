@@ -14,6 +14,7 @@ from app.models.idea import (
     IdeaSession,
     IdeaSessionConfig,
     PriorWorkComparison,
+    RawPaper,
     ReasoningPathSeed,
     StepResult,
     StructuredPaper,
@@ -463,6 +464,200 @@ def test_literature_search_pauses_weak_pool_before_deep_read(monkeypatch, tmp_pa
 
     assert exc_info.value.resume_from == "literatureSearch"
     assert service.raw_paper_storage.list_by_session(session.id) == []
+
+
+def test_deep_read_limit_is_bounded(monkeypatch):
+    monkeypatch.setenv("FAROS_IDEA_DEEP_READ_MAX_PAPERS", "6")
+    assert idea_service_module._deep_read_max_papers() == 6
+
+    monkeypatch.setenv("FAROS_IDEA_DEEP_READ_MAX_PAPERS", "1")
+    assert idea_service_module._deep_read_max_papers() == 4
+
+    monkeypatch.setenv("FAROS_IDEA_DEEP_READ_MAX_PAPERS", "100")
+    assert idea_service_module._deep_read_max_papers() == 40
+
+    monkeypatch.setenv("FAROS_IDEA_DEEP_READ_MAX_PAPERS", "invalid")
+    assert idea_service_module._deep_read_max_papers() == 24
+
+
+def test_deep_read_selection_limits_transferable_quota_and_keeps_must_cite():
+    papers = {
+        **{
+            f"raw_direct_{index}": RawPaper(
+                id=f"raw_direct_{index}",
+                sessionId="idea_quota",
+                title=f"Direct paper {index}",
+                evidenceTier="direct",
+            )
+            for index in range(5)
+        },
+        **{
+            f"raw_transfer_{index}": RawPaper(
+                id=f"raw_transfer_{index}",
+                sessionId="idea_quota",
+                title=f"Transferable paper {index}",
+                evidenceTier="transferable",
+            )
+            for index in range(5)
+        },
+        "raw_must": RawPaper(
+            id="raw_must",
+            sessionId="idea_quota",
+            title="Explicit must cite",
+            evidenceTier="rejected",
+            mustCiteOverride=True,
+        ),
+    }
+    selected = [
+        "raw_transfer_0",
+        "raw_direct_0",
+        "raw_transfer_1",
+        "raw_direct_1",
+        "raw_transfer_2",
+        "raw_direct_2",
+        "raw_transfer_3",
+        "raw_direct_3",
+        "raw_transfer_4",
+        "raw_direct_4",
+        "raw_must",
+    ]
+
+    limited = idea_service_module._limit_deep_read_selection(
+        selected,
+        papers,
+        limit=6,
+    )
+
+    assert len([paper_id for paper_id in limited if "transfer" in paper_id]) == 2
+    assert len([paper_id for paper_id in limited if "direct" in paper_id]) == 4
+    assert "raw_must" in limited
+
+
+def test_repair_search_merges_existing_raw_paper_provenance(tmp_path):
+    service = object.__new__(IdeaGenerationService)
+    service.raw_paper_storage = RawPaperStorage(data_dir=str(tmp_path))
+    service.literature_storage = LiteratureStorage(data_dir=str(tmp_path))
+    service.graph_storage = LiteratureGraphStorage(data_dir=str(tmp_path))
+    service.graph_builder = idea_service_module.LiteratureGraphBuilder()
+    session = IdeaSession(
+        id="idea_repair_upsert",
+        config=IdeaSessionConfig(
+            seedQuery="citation-faithful medical RAG",
+            domain="medical QA",
+            paperType="system",
+        ),
+    )
+    existing = RawPaper(
+        id="raw_existing_repair",
+        sessionId=session.id,
+        title="Citation-Enforced Medical RAG",
+        abstract="Citation faithful retrieval augmented generation.",
+        doi="10.1000/repair-rag",
+        source=["semantic_scholar"],
+        retrievalRoles=["domain"],
+        matchedQueries=["citation faithful medical RAG"],
+        evidenceTier="direct",
+        decisiveAnchors=["citation", "medical", "rag"],
+        normalizedTitleHash=idea_service_module._compute_title_hash(
+            "Citation-Enforced Medical RAG"
+        ),
+        relevanceScore=0.7,
+    )
+    service.raw_paper_storage.create(existing)
+    initial_graph = service.graph_builder.build_graph_v0(
+        session_id=session.id,
+        raw_papers=[existing],
+    )
+    service.graph_storage.create(initial_graph)
+    duplicate = SearchResult(
+        title="Citation-Enforced Medical RAG",
+        authors=[],
+        abstract="A richer abstract with refusal evaluation and evidence traceability.",
+        year=2025,
+        venue="test",
+        url="",
+        doi="10.1000/repair-rag",
+        arxiv_id=None,
+        citation_count=4,
+        source="openalex",
+        relevance_score=0.9,
+        retrieval_roles=["method", "evaluation", "repair"],
+        matched_queries=["citation faithful medical RAG method evaluation"],
+    )
+
+    report = service._persist_repair_search_results(
+        session,
+        [duplicate],
+        search_queries=["citation faithful medical RAG method evaluation"],
+    )
+    loaded = service.raw_paper_storage.get(existing.id)
+
+    assert loaded is not None
+    assert service.raw_paper_storage.list_by_session(session.id) == [loaded]
+    assert loaded.retrievalRoles == ["domain", "method", "evaluation", "repair"]
+    assert loaded.matchedQueries == [
+        "citation faithful medical RAG",
+        "citation faithful medical RAG method evaluation",
+    ]
+    assert loaded.source == ["semantic_scholar", "openalex"]
+    assert loaded.relevanceScore >= existing.relevanceScore
+    assert report["updatedRawPaperIds"] == [existing.id]
+    assert report["duplicateMergeCount"] == 1
+    assert len(list(service.graph_storage.base_path.glob("lg_*.json"))) == 1
+    assert service.graph_storage.get_by_session(session.id).id == initial_graph.id
+
+
+def test_repair_results_keep_query_and_missing_dimension_role():
+    result = SearchResult(
+        title="Citation faithful RAG verifier",
+        authors=[],
+        abstract="",
+        year=2025,
+        venue="test",
+        url="",
+        doi=None,
+        arxiv_id=None,
+        citation_count=0,
+        source="openalex",
+    )
+
+    idea_service_module._tag_repair_results(
+        [result],
+        "citation faithful RAG method evidence",
+    )
+
+    assert result.retrieval_roles == ["repair", "method"]
+    assert result.matched_queries == ["citation faithful RAG method evidence"]
+
+
+def test_trace_counters_are_recomputed_from_recorded_attempts():
+    trace = WorkflowTrace(
+        sessionId="idea_trace_attempts",
+        startedAt=idea_service_module._utcnow(),
+    )
+    ok = StepResult(
+        name="literatureSearch",
+        status="ok",
+        startedAt=idea_service_module._utcnow(),
+        endedAt=idea_service_module._utcnow(),
+        durationSeconds=0.0,
+    )
+    failed = StepResult(
+        name="evidenceGate",
+        status="failed",
+        startedAt=idea_service_module._utcnow(),
+        endedAt=idea_service_module._utcnow(),
+        durationSeconds=0.0,
+        error="insufficient evidence",
+    )
+
+    idea_service_module._record_step_result(trace, ok)
+    idea_service_module._record_step_result(trace, failed)
+
+    assert trace.totalSteps == 2
+    assert trace.successfulSteps == 1
+    assert trace.failedSteps == 1
+    assert trace.steps == [ok, failed]
 
 
 def test_get_candidates_defaults_to_final_candidate_ids(tmp_path):

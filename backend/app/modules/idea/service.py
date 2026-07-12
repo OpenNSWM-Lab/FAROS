@@ -82,10 +82,13 @@ from app.modules.idea.path_seed import PathSeedGenerator
 from app.modules.idea.evidence_relevance import (
     EvidenceTier,
     assess_search_result,
+    better_evidence_tier,
     build_topic_intent_profile,
     deduplicate_search_results,
     evidence_tier_allows_dimension,
+    raw_paper_identity_keys,
     role_requirements_for_paper_type,
+    search_result_identity_keys,
     semantically_eligible_roles,
 )
 from app.llm.provider_client import get_provider_client, ChatMessage, ProviderError
@@ -838,6 +841,63 @@ def _env_bool(name: str, default: bool) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _deep_read_max_papers() -> int:
+    try:
+        configured = int(os.getenv("FAROS_IDEA_DEEP_READ_MAX_PAPERS", "24"))
+    except ValueError:
+        configured = 24
+    return max(4, min(40, configured))
+
+
+def _limit_deep_read_selection(
+    selected_paper_ids: List[str],
+    raw_by_id: Dict[str, RawPaper],
+    *,
+    limit: int,
+) -> List[str]:
+    direct: List[str] = []
+    transferable: List[str] = []
+    must_cite: List[str] = []
+    for paper_id in dict.fromkeys(selected_paper_ids):
+        paper = raw_by_id.get(paper_id)
+        if not paper:
+            continue
+        if paper.mustCiteOverride:
+            must_cite.append(paper_id)
+        elif paper.evidenceTier == EvidenceTier.TRANSFERABLE.value:
+            transferable.append(paper_id)
+        elif paper.evidenceTier != EvidenceTier.REJECTED.value:
+            direct.append(paper_id)
+
+    transfer_cap = max(0, limit // 3)
+    regular = [
+        *direct[: max(0, limit - transfer_cap)],
+        *transferable[:transfer_cap],
+    ]
+    return list(dict.fromkeys([*regular, *must_cite]))
+
+
+def _tag_repair_results(results: List[SearchResult], query: str) -> None:
+    lowered_query = query.lower()
+    roles = ["repair"]
+    for role in ("domain", "task", "method", "evaluation"):
+        if role in lowered_query:
+            roles.append(role)
+    for result in results:
+        for role in roles:
+            if role not in result.retrieval_roles:
+                result.retrieval_roles.append(role)
+        if query not in result.matched_queries:
+            result.matched_queries.append(query)
+
+
+def _record_step_result(trace: WorkflowTrace, result: StepResult) -> None:
+    trace.steps.append(result)
+    trace.totalSteps = len(trace.steps)
+    trace.successfulSteps = sum(step.status == "ok" for step in trace.steps)
+    trace.failedSteps = sum(step.status == "failed" for step in trace.steps)
 
 
 def _as_string_list(value: Any, *, limit: int = 8) -> List[str]:
@@ -2317,6 +2377,7 @@ class IdeaGenerationService:
                     query,
                     limit=max(8, min(24, session.config.maxPapers // max(1, len(queries)))),
                 )
+                _tag_repair_results(batch, query)
                 results.extend(batch)
             except Exception as exc:
                 logger.warning("Pre-idea evidence repair search failed for '%s': %s", query, exc)
@@ -3823,9 +3884,7 @@ class IdeaGenerationService:
             )
             
             if session.trace:
-                session.trace.steps.append(step_result)
-                session.trace.totalSteps += 1
-                session.trace.successfulSteps += 1
+                _record_step_result(session.trace, step_result)
             
             return self.session_storage.update(session)
             
@@ -3849,9 +3908,7 @@ class IdeaGenerationService:
             )
             
             if session.trace:
-                session.trace.steps.append(step_result)
-                session.trace.totalSteps += 1
-                session.trace.failedSteps += 1
+                _record_step_result(session.trace, step_result)
             
             self.session_storage.update(session)
             raise
@@ -4209,15 +4266,7 @@ class IdeaGenerationService:
             for query in repair_queries:
                 try:
                     results = search_service.search(query, limit=max(8, max_papers // max(1, len(repair_queries))))
-                    for result in results:
-                        if "repair" not in result.retrieval_roles:
-                            result.retrieval_roles.append("repair")
-                        lowered_query = query.lower()
-                        for repair_role in ("domain", "task", "method", "evaluation"):
-                            if repair_role in lowered_query and repair_role not in result.retrieval_roles:
-                                result.retrieval_roles.append(repair_role)
-                        if query not in result.matched_queries:
-                            result.matched_queries.append(query)
+                    _tag_repair_results(results, query)
                     all_results.extend(results)
                     query_result_counts[f"repair:{query}"] = len(results)
                     logger.info(f"Repair search for '{query}' returned {len(results)} results")
@@ -4437,13 +4486,25 @@ class IdeaGenerationService:
         graph = self.graph_builder.cluster_papers(graph)
 
         # Step 3b: Select papers by role
-        num_select = min(40, max(5, len(raw_papers) // 2))
+        num_select = min(_deep_read_max_papers(), len(raw_papers))
         graph, selected_paper_ids = self.graph_builder.select_papers(
             graph, num_select=num_select, must_cite_list=must_cite_list
         )
+        raw_by_id = {paper.id: paper for paper in raw_papers}
+        selected_paper_ids = _limit_deep_read_selection(
+            selected_paper_ids,
+            raw_by_id,
+            limit=num_select,
+        )
+        selected_set = set(selected_paper_ids)
+        graph = graph.model_copy(update={
+            "nodes": [
+                node.model_copy(update={"isSelected": node.paperId in selected_set})
+                for node in graph.nodes
+            ]
+        })
         forced_selected_ids: List[str] = []
         if forced_raw_paper_ids:
-            raw_by_id = {paper.id: paper for paper in raw_papers}
             topic_terms = _topic_terms_from_seed(
                 seed,
                 session.config.domain or "",
@@ -6452,42 +6513,113 @@ class IdeaGenerationService:
         search_queries: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         existing_raw = self.raw_paper_storage.list_by_session(session.id)
-        seen_dois = {paper.doi for paper in existing_raw if paper.doi}
-        seen_arxiv_ids = {paper.arxivId for paper in existing_raw if paper.arxivId}
-        seen_title_hashes = {paper.normalizedTitleHash for paper in existing_raw if paper.normalizedTitleHash}
+        existing_by_identity: Dict[str, RawPaper] = {}
+        for paper in existing_raw:
+            for identity in raw_paper_identity_keys(paper):
+                existing_by_identity[identity] = paper
         created_raw_ids: List[str] = []
+        updated_raw_ids: List[str] = []
         created_literature_ids: List[str] = []
-
-        ranked = _rank_results_for_topic(
-            results,
+        queries = search_queries or [session.config.seedQuery]
+        role_queries = self._get_step_output(
+            session,
+            "expandQuery",
+            "searchQueriesByRole",
+            {},
+        ) or {}
+        if not isinstance(role_queries, dict) or not any(role_queries.values()):
+            role_queries = {
+                "domain": [session.config.seedQuery, session.config.domain or ""],
+                "task": [session.config.seedQuery],
+                "method": queries,
+                "evaluation": queries,
+            }
+        profile = build_topic_intent_profile(
             seed=session.config.seedQuery,
             domain=session.config.domain or "",
-            search_queries=search_queries or [session.config.seedQuery],
+            role_queries=role_queries,
         )
-        filtered, filtered_out_count = _filter_results_for_topic(ranked)
-        filtered.sort(
+        dedupe = deduplicate_search_results(results)
+        eligible: List[SearchResult] = []
+        rejected: List[SearchResult] = []
+        for result in dedupe.results:
+            assessment = assess_search_result(result, profile)
+            result.evidence_tier = assessment.tier.value
+            result.decisive_anchors = list(assessment.decisive_anchors)
+            result.relevance_components = dict(assessment.score_components)
+            result.rejection_reason = assessment.rejection_reason
+            result.relevance_score = assessment.score
+            if assessment.tier is EvidenceTier.REJECTED:
+                rejected.append(result)
+            else:
+                eligible.append(result)
+        eligible.sort(
             key=lambda result: _repair_result_priority(result, session.config.paperType),
             reverse=True,
         )
-        for result in filtered:
+        matched_existing_count = 0
+        for result in eligible:
             title_hash = _compute_title_hash(result.title)
-            if result.doi and result.doi in seen_dois:
-                continue
-            if result.arxiv_id and result.arxiv_id in seen_arxiv_ids:
-                continue
-            if title_hash in seen_title_hashes:
-                continue
-            seen_title_hashes.add(title_hash)
-            if result.doi:
-                seen_dois.add(result.doi)
-            if result.arxiv_id:
-                seen_arxiv_ids.add(result.arxiv_id)
-
             s2_id = None
             if result.source == "semantic_scholar" and result.url:
                 s2_match = re.search(r'SemanticScholarID:(\w+)', result.url)
                 if s2_match:
                     s2_id = s2_match.group(1)
+            existing = next(
+                (
+                    existing_by_identity[identity]
+                    for identity in search_result_identity_keys(result)
+                    if identity in existing_by_identity
+                ),
+                None,
+            )
+            if existing:
+                updated = existing.model_copy(update={
+                    "authors": existing.authors or result.authors,
+                    "year": existing.year or result.year,
+                    "venue": existing.venue or result.venue,
+                    "url": existing.url or result.url or "",
+                    "doi": existing.doi or result.doi,
+                    "arxivId": existing.arxivId or result.arxiv_id,
+                    "semanticScholarId": existing.semanticScholarId or s2_id,
+                    "citationCount": max(existing.citationCount, result.citation_count or 0),
+                    "abstract": (
+                        result.abstract
+                        if len(result.abstract or "") > len(existing.abstract or "")
+                        else existing.abstract
+                    ),
+                    "source": list(dict.fromkeys([
+                        *existing.source,
+                        *(result.retrieval_sources or [result.source]),
+                    ])),
+                    "retrievalRoles": list(dict.fromkeys([
+                        *existing.retrievalRoles,
+                        *result.retrieval_roles,
+                    ])),
+                    "matchedQueries": list(dict.fromkeys([
+                        *existing.matchedQueries,
+                        *result.matched_queries,
+                    ])),
+                    "evidenceTier": better_evidence_tier(
+                        existing.evidenceTier,
+                        result.evidence_tier,
+                    ),
+                    "decisiveAnchors": list(dict.fromkeys([
+                        *existing.decisiveAnchors,
+                        *result.decisive_anchors,
+                    ])),
+                    "relevanceComponents": dict(result.relevance_components),
+                    "rejectionReason": result.rejection_reason,
+                    "mustCiteOverride": existing.mustCiteOverride or result.must_cite_override,
+                    "relevanceScore": max(existing.relevanceScore, result.relevance_score),
+                })
+                self.raw_paper_storage.update(updated)
+                updated_raw_ids.append(updated.id)
+                matched_existing_count += 1
+                for identity in raw_paper_identity_keys(updated):
+                    existing_by_identity[identity] = updated
+                continue
+
             raw_paper = RawPaper(
                 id=generate_raw_paper_id(),
                 sessionId=session.id,
@@ -6495,20 +6627,27 @@ class IdeaGenerationService:
                 authors=result.authors,
                 year=result.year,
                 venue=result.venue,
-                url=result.url,
+                url=result.url or "",
                 doi=result.doi,
                 arxivId=result.arxiv_id,
                 semanticScholarId=s2_id,
                 citationCount=result.citation_count or 0,
                 abstract=result.abstract or "",
-                source=[result.source] if result.source else [],
+                source=list(result.retrieval_sources or ([result.source] if result.source else [])),
                 retrievalRoles=list(result.retrieval_roles),
                 matchedQueries=list(result.matched_queries),
+                evidenceTier=result.evidence_tier,
+                decisiveAnchors=list(result.decisive_anchors),
+                relevanceComponents=dict(result.relevance_components),
+                rejectionReason=result.rejection_reason,
+                mustCiteOverride=result.must_cite_override,
                 normalizedTitleHash=title_hash,
                 relevanceScore=min(1.0, max(0.0, result.relevance_score)),
             )
             self.raw_paper_storage.create(raw_paper)
             created_raw_ids.append(raw_paper.id)
+            for identity in raw_paper_identity_keys(raw_paper):
+                existing_by_identity[identity] = raw_paper
 
             lit_item = LiteratureItem(
                 id=generate_literature_id(),
@@ -6517,7 +6656,7 @@ class IdeaGenerationService:
                 authors=result.authors,
                 venue=result.venue,
                 year=result.year,
-                url=result.url,
+                url=result.url or "",
                 doi=result.doi,
                 arxivId=result.arxiv_id,
                 snippet=(result.abstract or "")[:500],
@@ -6530,11 +6669,21 @@ class IdeaGenerationService:
         all_raw = self.raw_paper_storage.list_by_session(session.id)
         if all_raw:
             graph = self.graph_builder.build_graph_v0(session_id=session.id, raw_papers=all_raw)
-            self.graph_storage.create(graph)
+            existing_graph = self.graph_storage.get_by_session(session.id)
+            if existing_graph:
+                graph = graph.model_copy(update={"id": existing_graph.id})
+                self.graph_storage.update(graph)
+            else:
+                self.graph_storage.create(graph)
         return {
             "createdRawPaperIds": created_raw_ids,
+            "updatedRawPaperIds": updated_raw_ids,
             "createdLiteratureIds": created_literature_ids,
-            "filteredOutCount": filtered_out_count,
+            "filteredOutCount": len(rejected),
+            "duplicateMergeCount": dedupe.merge_count + matched_existing_count,
+            "evidenceTierCounts": dict(Counter(
+                result.evidence_tier for result in [*eligible, *rejected]
+            )),
             "rawPaperCountAfterRepair": len(all_raw),
         }
 
@@ -6557,6 +6706,7 @@ class IdeaGenerationService:
         for query in queries:
             try:
                 batch = search_service.search(query, limit=max(8, min(24, session.config.maxPapers // max(1, len(queries)))))
+                _tag_repair_results(batch, query)
                 results.extend(batch)
             except Exception as exc:
                 logger.warning("Idea-stage literature repair search failed for '%s': %s", query, exc)

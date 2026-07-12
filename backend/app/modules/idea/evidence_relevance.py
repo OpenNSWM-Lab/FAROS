@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from enum import Enum
 import hashlib
 import re
-from typing import Iterable, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 from app.services.search_service import SearchResult, tokenize_topic_text
 
@@ -192,7 +192,12 @@ def assess_search_result(
     )
 
 
-def _identity_keys(result: SearchResult) -> tuple[str, ...]:
+def _normalized_title_key(title: str) -> str:
+    normalized = re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "", (title or "").lower())
+    return "title:" + hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def search_result_identity_keys(result: SearchResult) -> tuple[str, ...]:
     keys: list[str] = []
     if result.doi:
         keys.append(f"doi:{result.doi.lower().strip()}")
@@ -201,8 +206,22 @@ def _identity_keys(result: SearchResult) -> tuple[str, ...]:
     semantic_id = re.search(r"SemanticScholarID:(\w+)", result.url or "")
     if semantic_id:
         keys.append(f"s2:{semantic_id.group(1).lower()}")
-    normalized = re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "", result.title.lower())
-    keys.append("title:" + hashlib.sha256(normalized.encode("utf-8")).hexdigest())
+    keys.append(_normalized_title_key(result.title))
+    return tuple(keys)
+
+
+def raw_paper_identity_keys(paper: Any) -> tuple[str, ...]:
+    keys: list[str] = []
+    doi = getattr(paper, "doi", None)
+    arxiv_id = getattr(paper, "arxivId", None)
+    semantic_id = getattr(paper, "semanticScholarId", None)
+    if doi:
+        keys.append(f"doi:{str(doi).lower().strip()}")
+    if arxiv_id:
+        keys.append(f"arxiv:{str(arxiv_id).lower().strip()}")
+    if semantic_id:
+        keys.append(f"s2:{str(semantic_id).lower().strip()}")
+    keys.append(_normalized_title_key(getattr(paper, "title", "")))
     return tuple(keys)
 
 
@@ -236,7 +255,7 @@ def deduplicate_search_results(results: Sequence[SearchResult]) -> DedupeOutcome
     index: dict[str, SearchResult] = {}
     merge_count = 0
     for result in results:
-        keys = _identity_keys(result)
+        keys = search_result_identity_keys(result)
         target = next((index[key] for key in keys if key in index), None)
         if target is not None:
             _merge_result(target, result)
@@ -244,9 +263,24 @@ def deduplicate_search_results(results: Sequence[SearchResult]) -> DedupeOutcome
         else:
             target = result
             unique.append(target)
-        for key in (*_identity_keys(target), *keys):
+        for key in (*search_result_identity_keys(target), *keys):
             index[key] = target
     return DedupeOutcome(tuple(unique), merge_count)
+
+
+_TIER_PRIORITY = {
+    EvidenceTier.REJECTED.value: 0,
+    "unclassified": 1,
+    EvidenceTier.TRANSFERABLE.value: 2,
+    EvidenceTier.DIRECT.value: 3,
+}
+
+
+def better_evidence_tier(current: str, incoming: str) -> str:
+    return max(
+        (current, incoming),
+        key=lambda tier: _TIER_PRIORITY.get(tier, 0),
+    )
 
 
 def role_requirements_for_paper_type(paper_type: str) -> dict[str, int]:
