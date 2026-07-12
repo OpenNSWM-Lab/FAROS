@@ -247,3 +247,41 @@ def deduplicate_search_results(results: Sequence[SearchResult]) -> DedupeOutcome
         for key in (*_identity_keys(target), *keys):
             index[key] = target
     return DedupeOutcome(tuple(unique), merge_count)
+
+
+def role_requirements_for_paper_type(paper_type: str) -> dict[str, int]:
+    normalized = (paper_type or "algorithm").lower()
+    if normalized in {"survey", "position", "theory"}:
+        return {"domainOrTask": 2, "method": 0, "evaluation": 0}
+    if normalized in {"benchmark", "evaluation", "reproducibility"}:
+        return {"domainOrTask": 2, "method": 0, "evaluation": 2}
+    return {"domainOrTask": 2, "method": 1, "evaluation": 1}
+
+
+def semantically_eligible_roles(
+    tier: str,
+    roles: Sequence[str],
+) -> tuple[str, ...]:
+    if tier == EvidenceTier.DIRECT.value:
+        return _unique(roles)
+    if tier == EvidenceTier.TRANSFERABLE.value:
+        return _unique(role for role in roles if role in {"method", "evaluation"})
+    if tier == "unclassified":
+        return _unique(roles)
+    return ()
+
+
+def evidence_tier_allows_dimension(tier: str, dimension: str) -> bool:
+    if tier in {EvidenceTier.DIRECT.value, "unclassified"}:
+        return True
+    if tier != EvidenceTier.TRANSFERABLE.value:
+        return False
+    direct_only = {
+        "background",
+        "claim",
+        "domain",
+        "gap",
+        "high_risk_qa",
+        "novelty",
+    }
+    return dimension not in direct_only

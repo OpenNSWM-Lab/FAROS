@@ -84,6 +84,9 @@ from app.modules.idea.evidence_relevance import (
     assess_search_result,
     build_topic_intent_profile,
     deduplicate_search_results,
+    evidence_tier_allows_dimension,
+    role_requirements_for_paper_type,
+    semantically_eligible_roles,
 )
 from app.llm.provider_client import get_provider_client, ChatMessage, ProviderError
 from app.llm.task_scheduler import get_llm_task_scheduler
@@ -460,25 +463,39 @@ def _evaluate_paper_quality_gate(
     stage: str,
     extra_terms: Optional[List[str]] = None,
     paper_roles: Optional[Dict[str, List[str]]] = None,
+    paper_type: str = "algorithm",
 ) -> Dict[str, Any]:
     """Lightweight paper relevance gate used before idea generation."""
 
     topic_terms = _topic_terms_from_seed(seed, domain, extra_terms)
     total = len(papers)
-    scored = [
-        {
-            "paperId": getattr(paper, "id", ""),
+    scored: List[Dict[str, Any]] = []
+    for paper in papers:
+        paper_id = getattr(paper, "rawPaperId", getattr(paper, "id", ""))
+        raw_roles = list(dict.fromkeys(
+            (paper_roles or {}).get(paper_id, [])
+            or getattr(paper, "retrievalRoles", None)
+            or getattr(paper, "retrieval_roles", [])
+            or []
+        ))
+        tier = str(
+            getattr(paper, "evidenceTier", None)
+            or getattr(paper, "evidence_tier", "unclassified")
+        )
+        eligible_roles = list(semantically_eligible_roles(tier, raw_roles))
+        score = 0.0 if tier == EvidenceTier.REJECTED.value else _paper_alignment_score(
+            paper,
+            topic_terms,
+        )
+        scored.append({
+            "paperId": paper_id,
             "title": getattr(paper, "title", ""),
-            "score": round(_paper_alignment_score(paper, topic_terms), 3),
+            "score": round(score, 3),
             "sources": _paper_sources(paper),
-            "roles": list(dict.fromkeys(
-                (paper_roles or {}).get(getattr(paper, "rawPaperId", getattr(paper, "id", "")), [])
-                or getattr(paper, "retrievalRoles", [])
-                or []
-            )),
-        }
-        for paper in papers
-    ]
+            "roles": eligible_roles,
+            "retrievalRoles": raw_roles,
+            "evidenceTier": tier,
+        })
     scored.sort(key=lambda item: item["score"], reverse=True)
     aligned = [item for item in scored if item["score"] >= 0.32]
     external = [
@@ -523,28 +540,24 @@ def _evaluate_paper_quality_gate(
         )
         for role in role_names
     }
-    role_aware = any(item["roles"] for item in scored)
-    role_requirements = {
-        "domainOrTask": 2,
-        "method": 1,
-        "evaluation": 1,
-    }
+    role_aware = any(item["retrievalRoles"] for item in scored)
+    role_requirements = role_requirements_for_paper_type(paper_type)
     role_issues: List[str] = []
     if role_aware:
         if role_counts["domain"] + role_counts["task"] < role_requirements["domainOrTask"]:
             role_issues.append("insufficient domain/task evidence")
-        if role_counts["method"] < role_requirements["method"]:
+        if role_requirements["method"] and role_counts["method"] < role_requirements["method"]:
             role_issues.append("insufficient method evidence")
-        if role_counts["evaluation"] < role_requirements["evaluation"]:
+        if role_requirements["evaluation"] and role_counts["evaluation"] < role_requirements["evaluation"]:
             role_issues.append("insufficient evaluation evidence")
     role_coverage_passed = role_aware and not role_issues
     errors: List[str] = []
     warnings: List[str] = []
     if total < min_papers:
         errors.append(f"{stage}: paper pool is too small ({total} < {min_papers})")
-    if len(aligned) < min_aligned and not role_coverage_passed:
+    if len(aligned) < min_aligned:
         errors.append(f"{stage}: too few papers are semantically aligned with the seed query ({len(aligned)} < {min_aligned})")
-    if scored and avg_top_score < 0.30 and not role_coverage_passed:
+    if scored and avg_top_score < 0.30:
         errors.append(f"{stage}: top papers have weak topic alignment (avg={avg_top_score:.2f})")
     if role_aware and role_issues:
         errors.append(f"{stage}: role-aware evidence coverage failed: {', '.join(role_issues)}")
@@ -763,6 +776,7 @@ def _evaluate_evidence_gate_v2(
         stage=stage,
         extra_terms=extra_terms,
         paper_roles=paper_roles,
+        paper_type=paper_type,
     )
     coverage = _paper_type_coverage(structured_papers, literature_map)
     required_coverage = _paper_type_coverage_requirements(paper_type)
@@ -860,10 +874,25 @@ def _coverage_dimension_key(value: Any, fallback: str) -> str:
     return key or fallback
 
 
+def _verify_coverage_dimension_support(
+    *,
+    dimension: str,
+    supporting_paper_ids: List[str],
+    paper_tiers: Dict[str, str],
+) -> List[str]:
+    return [
+        paper_id
+        for paper_id in dict.fromkeys(supporting_paper_ids)
+        if paper_id in paper_tiers
+        and evidence_tier_allows_dimension(paper_tiers[paper_id], dimension)
+    ]
+
+
 def _normalize_coverage_report(
     data: Optional[Dict[str, Any]],
     *,
     available_paper_ids: set[str],
+    paper_tiers: Optional[Dict[str, str]] = None,
     source: str = "llm",
 ) -> Dict[str, Any]:
     """Normalize LLM-first coverage output and enforce citation integrity."""
@@ -878,6 +907,10 @@ def _normalize_coverage_report(
     dimensions: List[Dict[str, Any]] = []
     warnings = _as_string_list(data.get("warnings", []), limit=8)
     repair_queries = _as_string_list(data.get("repairQueries", []), limit=8)
+    effective_tiers = {
+        paper_id: (paper_tiers or {}).get(paper_id, "unclassified")
+        for paper_id in available_paper_ids
+    }
 
     for index, raw in enumerate(raw_dimensions if isinstance(raw_dimensions, list) else []):
         if not isinstance(raw, dict):
@@ -889,10 +922,15 @@ def _normalize_coverage_report(
             raw.get("supportingPaperIds", raw.get("paperIds", [])),
             limit=12,
         )
-        verified_paper_ids = [
+        known_paper_ids = [
             paper_id for paper_id in raw_paper_ids
             if paper_id in available_paper_ids
         ]
+        verified_paper_ids = _verify_coverage_dimension_support(
+            dimension=key,
+            supporting_paper_ids=known_paper_ids,
+            paper_tiers=effective_tiers,
+        )
         dropped_ids = [
             paper_id for paper_id in raw_paper_ids
             if paper_id not in available_paper_ids
@@ -900,6 +938,15 @@ def _normalize_coverage_report(
         if dropped_ids:
             warnings.append(
                 f"{key}: ignored unknown paper IDs: {', '.join(dropped_ids[:4])}"
+            )
+        disallowed_ids = [
+            paper_id for paper_id in known_paper_ids
+            if paper_id not in verified_paper_ids
+        ]
+        if disallowed_ids:
+            warnings.append(
+                f"{key}: ignored paper IDs whose evidence tier cannot support "
+                f"this dimension: {', '.join(disallowed_ids[:4])}"
             )
         status = str(raw.get("status", "") or "").strip().lower()
         if required and not verified_paper_ids:
@@ -1037,6 +1084,7 @@ def _rule_seed_coverage_report(
     structured_papers: List[StructuredPaper],
     literature_map: Optional[LiteratureMap],
     gap_outputs: Dict[str, Any],
+    paper_tiers: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """Rule fallback for LLM-first evidence coverage."""
 
@@ -1079,6 +1127,7 @@ def _rule_seed_coverage_report(
             ),
         },
         available_paper_ids={paper.id for paper in structured_papers},
+        paper_tiers=paper_tiers,
         source="rule_fallback",
     )
     if gap_outputs:
@@ -2322,12 +2371,17 @@ class IdeaGenerationService:
     ) -> Dict[str, Any]:
         """LLM-first coverage planner/mapper with rule verification fallback."""
 
+        paper_tiers = {
+            paper.id: paper.evidenceTier
+            for paper in self.raw_paper_storage.list_by_session(session.id)
+        }
         rule_fallback = _rule_seed_coverage_report(
             seed=session.config.seedQuery,
             paper_type=session.config.paperType,
             structured_papers=structured_papers,
             literature_map=literature_map,
             gap_outputs=gap_outputs,
+            paper_tiers=paper_tiers,
         )
         if not _env_bool("FAROS_EVIDENCE_COVERAGE_LLM_ENABLED", True):
             rule_fallback["warnings"] = [
@@ -2349,6 +2403,7 @@ class IdeaGenerationService:
                 "paperId": paper.id,
                 "title": paper.title,
                 "source": paper.source,
+                "evidenceTier": paper_tiers.get(paper.id, "unclassified"),
                 "summary": paper.summary[:650],
                 "abstract": paper.abstract[:450],
                 "claims": [claim.text[:240] for claim in paper.claims[:4]],
@@ -2490,6 +2545,7 @@ class IdeaGenerationService:
             report = _normalize_coverage_report(
                 data,
                 available_paper_ids={paper.id for paper in structured_papers},
+                paper_tiers=paper_tiers,
                 source="llm",
             )
             report["latencyMs"] = response.latency_ms
@@ -4139,6 +4195,7 @@ class IdeaGenerationService:
             papers=gate_eligible_results,
             stage="literatureSearch.initial",
             extra_terms=core_queries,
+            paper_type=session.config.paperType,
         )
         repair_queries: List[str] = []
         repair_attempted = False
@@ -4183,6 +4240,7 @@ class IdeaGenerationService:
                 papers=gate_eligible_results,
                 stage="literatureSearch.repaired",
                 extra_terms=core_queries,
+                paper_type=session.config.paperType,
             )
 
         if not raw_quality_gate.get("passed", False):
@@ -4450,6 +4508,7 @@ class IdeaGenerationService:
             papers=selected_raw,
             stage="noveltyCheck.selectedRaw",
             extra_terms=self._core_search_queries(session),
+            paper_type=paper_type,
         )
         if not selected_quality_gate["passed"] and raw_papers:
             topic_terms = _topic_terms_from_seed(
@@ -4474,6 +4533,7 @@ class IdeaGenerationService:
                 papers=selected_raw,
                 stage="noveltyCheck.selectedRaw.repaired",
                 extra_terms=self._core_search_queries(session),
+                paper_type=paper_type,
             )
 
         # Step 3c: Deep-read only papers that are not already structured.
@@ -4549,6 +4609,7 @@ class IdeaGenerationService:
             papers=structured_papers,
             stage="noveltyCheck.structured",
             extra_terms=self._core_search_queries(session),
+            paper_type=paper_type,
         )
 
         # Step 3d: Build LiteratureMap
@@ -5907,6 +5968,7 @@ class IdeaGenerationService:
             papers=structured_papers,
             stage="ideaReview.structuredPapers",
             extra_terms=self._core_search_queries(session),
+            paper_type=session.config.paperType,
         )
         max_review_iterations = max(1, min(5, getattr(session.config, "maxReviewIterations", 2)))
         target_final_count = self._target_final_candidate_count(session, ranked)
@@ -6042,6 +6104,7 @@ class IdeaGenerationService:
                             papers=structured_papers,
                             stage=f"ideaReview.iteration{review_iteration + 1}.afterLiteratureRepair",
                             extra_terms=self._core_search_queries(session),
+                            paper_type=session.config.paperType,
                         )
                         if structured_papers:
                             for candidate in ranked[:min(5, len(ranked))]:
@@ -6529,6 +6592,7 @@ class IdeaGenerationService:
             papers=repaired_structured,
             stage="ideaReview.literatureRepair.structured",
             extra_terms=self._core_search_queries(session),
+            paper_type=session.config.paperType,
         )
         return {
             "attempted": True,
