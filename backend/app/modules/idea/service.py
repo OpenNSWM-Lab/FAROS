@@ -206,16 +206,20 @@ def _topic_relevance_score(result: SearchResult, topic_terms: List[str], signal_
 
     topic_hits = sum(1 for term in topic_terms if term in text)
     signal_hits = sum(1 for term in signal_terms if term in text)
+    # Only apply RAG phrase bonus when the topic itself is about RAG/faithfulness,
+    # so non-RAG domains are not unfairly penalised.  signal_terms is derived from
+    # the topic text upstream, so a non-empty list means the topic mentions RAG.
     phrase_bonus = 0.0
-    for phrase in [
-        "citation faithfulness",
-        "citation faithful",
-        "uncertainty estimation",
-        "retrieval augmented generation",
-        "retrieval-augmented generation",
-    ]:
-        if phrase in text:
-            phrase_bonus += 0.2
+    if signal_terms:
+        for phrase in [
+            "citation faithfulness",
+            "citation faithful",
+            "uncertainty estimation",
+            "retrieval augmented generation",
+            "retrieval-augmented generation",
+        ]:
+            if phrase in text:
+                phrase_bonus += 0.2
 
     source_bonus = 0.1 if result.source in {"arxiv", "semantic_scholar"} else 0.0
     base = min(0.5, topic_hits * 0.04)
@@ -231,7 +235,7 @@ def _rank_results_for_topic(
     search_queries: List[str],
 ) -> List[SearchResult]:
     topic_text = " ".join([seed, domain, *search_queries]).lower()
-    tokens = re.findall(r"[a-zA-Z][a-zA-Z0-9-]{2,}", topic_text)
+    tokens = re.findall(r"[a-zA-Z][a-zA-Z0-9-]{2,}|[\u4e00-\u9fff]+", topic_text)
     stopwords = {
         "and", "the", "for", "with", "from", "that", "this", "into",
         "using", "based", "how", "can", "are", "what", "when", "where",
@@ -1397,7 +1401,11 @@ def _candidate_unrequested_application_phrase_issues(seed_query: str, candidate:
     return issues
 
 
-def _candidate_topic_drift_issues(seed_query: str, candidate: IdeaCandidate) -> List[str]:
+def _candidate_topic_drift_issues(
+    seed_query: str,
+    candidate: IdeaCandidate,
+    english_search_queries: Optional[List[str]] = None,
+) -> List[str]:
     """Detect strong unrequested application-domain anchors in an idea.
 
     Coarse token overlap catches fully unrelated candidates, but it misses
@@ -1408,6 +1416,12 @@ def _candidate_topic_drift_issues(seed_query: str, candidate: IdeaCandidate) -> 
     """
 
     seed_text = _normalized_topic_text(seed_query)
+    # Bug 9 fix: When the seed is CJK, English domain phrases (e.g. "clinical",
+    # "medical") won't appear in the Chinese text, causing false positives.
+    # Augment seed_text with English search queries from expandQuery so that
+    # domains implied by the translated queries are not flagged as drift.
+    if english_search_queries and re.search(r'[\u4e00-\u9fff]', seed_query or ""):
+        seed_text = seed_text + " " + _normalized_topic_text(*english_search_queries)
     if not seed_text:
         return []
     candidate_text = _normalized_topic_text(
@@ -3535,6 +3549,9 @@ class IdeaGenerationService:
                 paper_type=paper_type,
                 domain=domain
             )
+            is_cjk = bool(re.search(r'[\u4e00-\u9fff]', seed))
+            if is_cjk:
+                user_prompt += prompts.EXPAND_QUERY_CJK_SUFFIX
 
             messages = [
                 ChatMessage(role="system", content=prompts.EXPAND_QUERY_SYSTEM),
@@ -3558,6 +3575,17 @@ class IdeaGenerationService:
                 + domain_terms
             )
             expanded_terms = _clean_query_terms(raw_queries, seed)
+            english_search_queries: list[str] = []
+            if is_cjk:
+                english_search_queries = [
+                    str(q).strip()
+                    for q in data.get("englishSearchQueries", [])
+                    if isinstance(q, str) and q.strip()
+                ][:5]
+                # Prepend English queries to expanded terms so they get
+                # searched first against international databases
+                if english_search_queries:
+                    expanded_terms = english_search_queries + expanded_terms
             key_concepts = [
                 str(item).strip()
                 for item in data.get("keyConcepts", [])
@@ -3621,18 +3649,39 @@ class IdeaGenerationService:
                 "keyConcepts": key_concepts[:10],
                 "queryPlan": query_plan.model_dump(),
                 "llmLatencyMs": response.latency_ms,
+                "englishSearchQueries": english_search_queries if is_cjk else [],
             }
 
         except Exception as e:
             logger.warning(f"LLM query expansion failed: {e}, using fallback")
-            expanded_terms = [
-                seed,
-                f"{seed} machine learning",
-                f"{seed} deep learning",
-                f"{seed} neural network",
-            ]
-            if domain != "general":
+            expanded_terms = [seed]
+            if domain != "general" and domain:
                 expanded_terms.append(f"{seed} {domain}")
+
+            # CJK fallback: attempt a lightweight translation call so that
+            # international databases can still be searched. If this also
+            # fails, the seed is used as-is (OpenAlex may still find results).
+            is_cjk = bool(re.search(r'[\u4e00-\u9fff]', seed))
+            english_search_queries: list[str] = []
+            if is_cjk:
+                try:
+                    client = get_provider_client(session.config.providerName)
+                    trans_messages = [
+                        ChatMessage(role="system", content="You are a translation assistant. Translate the given Chinese research topic into 3 English academic search queries."),
+                        ChatMessage(role="user", content=f"Chinese topic: {seed}\n\nReturn JSON: {{\"queries\": [\"English query 1\", \"English query 2\", \"English query 3\"]}}"),
+                    ]
+                    trans_resp = client.chat(trans_messages, model=session.config.model, max_tokens=200)
+                    trans_data = _extract_json_object(trans_resp.text) or {}
+                    english_search_queries = [
+                        str(q).strip()
+                        for q in trans_data.get("queries", [])
+                        if isinstance(q, str) and q.strip()
+                    ]
+                    if english_search_queries:
+                        expanded_terms = english_search_queries + expanded_terms
+                        logger.info(f"CJK fallback translation succeeded: {english_search_queries}")
+                except Exception as trans_e:
+                    logger.warning(f"CJK fallback translation also failed: {trans_e}")
 
             query_plan = QueryPlan(
                 refinedQuestion=seed,
@@ -3653,6 +3702,8 @@ class IdeaGenerationService:
                 "expandedTerms": expanded_terms,
                 "queryPlan": query_plan.model_dump(),
                 "error": str(e),
+                "cjkTranslationApplied": bool(english_search_queries),
+                "englishSearchQueries": english_search_queries,
             }
 
         return inputs, outputs, []
@@ -5400,6 +5451,9 @@ class IdeaGenerationService:
                 logger.warning(f"LLM candidate analysis failed: {e}")
 
         # --- Phase 5: Idea-stage review gate + optional regeneration ---
+        english_search_queries = self._get_step_output(
+            session, "expandQuery", "englishSearchQueries", [],
+        )
         gate_reports = self._apply_idea_review_gate(
             ranked=ranked,
             evidence_list=evidence_list,
@@ -5409,6 +5463,7 @@ class IdeaGenerationService:
             provider_name=session.config.providerName,
             model=session.config.model,
             literature_context=literature_context,
+            english_search_queries=english_search_queries,
         )
         ranked = sorted(ranked, key=lambda c: c.overallScore, reverse=True)
         regenerated_candidate_ids: List[str] = []
@@ -5583,6 +5638,7 @@ class IdeaGenerationService:
                             provider_name=session.config.providerName,
                             model=session.config.model,
                             literature_context=literature_context,
+                            english_search_queries=english_search_queries,
                         )
                     except Exception as e:
                         logger.warning("Reloading repaired idea-stage evidence failed: %s", e, exc_info=True)
@@ -5674,6 +5730,7 @@ class IdeaGenerationService:
                     provider_name=session.config.providerName,
                     model=session.config.model,
                     literature_context=literature_context,
+                    english_search_queries=english_search_queries,
                 ))
                 ranked.append(regenerated)
                 regenerated_candidate_ids.append(regenerated.id)
@@ -6240,6 +6297,7 @@ class IdeaGenerationService:
         critique: Optional[IdeaCritique],
         seed_query: str,
         allowed_evidence_refs: List[str],
+        english_search_queries: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Hard validation for one idea reviewer.
 
@@ -6272,12 +6330,47 @@ class IdeaGenerationService:
             problem=seed_query or "",
             keyInsight=seed_query or "",
         ))
+        # Bug 8 fix: When the seed query contains CJK characters, the seed tokens
+        # are Chinese while candidate tokens are English (because candidates are
+        # generated from English literature). This causes Jaccard similarity to
+        # always be 0, triggering a false "weak topic overlap" blocking issue.
+        # Fix: augment seed tokens with English search queries from expandQuery.
+        if english_search_queries and re.search(r'[\u4e00-\u9fff]', seed_query or ""):
+            for eq in english_search_queries:
+                seed_tokens |= _candidate_similarity_key(IdeaCandidate(
+                    id="cand_seed_english",
+                    sessionId=candidate.sessionId,
+                    title=eq,
+                    problem=eq,
+                    keyInsight=eq,
+                ))
         candidate_tokens = _candidate_similarity_key(candidate)
-        if seed_query and seed_tokens and candidate_tokens and _candidate_jaccard(seed_tokens, candidate_tokens) < 0.04:
+        # Bug 8b fix: For CJK seeds, candidates with long text fields can dilute
+        # the Jaccard below 0.04 even when they are on-topic. Add a containment
+        # fallback: if any significant English query token appears in the
+        # candidate tokens, the candidate is considered on-topic.
+        _cjk_seed_has_english_overlap = False
+        if english_search_queries and re.search(r'[\u4e00-\u9fff]', seed_query or ""):
+            _english_query_tokens = set()
+            for eq in english_search_queries:
+                _english_query_tokens |= _candidate_similarity_key(IdeaCandidate(
+                    id="cand_eq",
+                    sessionId=candidate.sessionId,
+                    title=eq,
+                    problem=eq,
+                    keyInsight=eq,
+                ))
+            # Remove generic tokens that are not discriminative
+            _generic_tokens = {"analysis", "network", "social", "study", "empirical"}
+            _discriminative_overlap = (candidate_tokens & _english_query_tokens) - _generic_tokens
+            _cjk_seed_has_english_overlap = len(_discriminative_overlap) >= 2
+        if (seed_query and seed_tokens and candidate_tokens
+                and not _cjk_seed_has_english_overlap
+                and _candidate_jaccard(seed_tokens, candidate_tokens) < 0.04):
             blocking.append("Candidate has weak topic overlap with the seed query.")
             repair.append("Rewrite the idea so the problem, method, and hypothesis directly answer the seed query.")
             score -= 1.0
-        drift_issues = _candidate_topic_drift_issues(seed_query, candidate)
+        drift_issues = _candidate_topic_drift_issues(seed_query, candidate, english_search_queries=english_search_queries)
         if drift_issues:
             blocking.extend(drift_issues)
             repair.append(
@@ -6578,6 +6671,7 @@ class IdeaGenerationService:
         provider_name: Optional[str] = None,
         model: Optional[str] = None,
         literature_context: str = "",
+        english_search_queries: Optional[List[str]] = None,
     ) -> Dict[str, Dict[str, Any]]:
         """Apply idea-stage review findings before PlanPackage generation."""
 
@@ -6676,6 +6770,7 @@ class IdeaGenerationService:
                     critique=critique,
                     seed_query=seed_query,
                     allowed_evidence_refs=allowed_evidence_refs,
+                    english_search_queries=english_search_queries or [],
                 )
 
             llm_reports: Dict[str, Optional[Dict[str, Any]]] = {}
