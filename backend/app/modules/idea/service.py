@@ -7,6 +7,7 @@ Orchestrates the idea generation pipeline with step-based tracing.
 import logging
 import os
 import threading
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from typing import Optional, List, Dict, Any
@@ -78,6 +79,12 @@ from app.modules.idea.deep_reading import DeepReader
 from app.modules.idea.reasoning_kg import ReasoningKGBuilder
 from app.modules.idea.graph_linker import GraphLinker
 from app.modules.idea.path_seed import PathSeedGenerator
+from app.modules.idea.evidence_relevance import (
+    EvidenceTier,
+    assess_search_result,
+    build_topic_intent_profile,
+    deduplicate_search_results,
+)
 from app.llm.provider_client import get_provider_client, ChatMessage, ProviderError
 from app.llm.task_scheduler import get_llm_task_scheduler
 from app.services.search_service import get_search_service, SearchResult, tokenize_topic_text
@@ -120,6 +127,11 @@ class RecoverableIdeaError(StepContextError):
 class AwaitingEvidenceError(RecoverableIdeaError):
     waiting_status = IdeaSessionStatus.AWAITING_EVIDENCE
     resume_from = "evidenceGate"
+
+
+class AwaitingLiteratureEvidenceError(RecoverableIdeaError):
+    waiting_status = IdeaSessionStatus.AWAITING_EVIDENCE
+    resume_from = "literatureSearch"
 
 
 class AwaitingTranslationError(RecoverableIdeaError):
@@ -423,7 +435,11 @@ def _paper_alignment_score(paper: Any, topic_terms: List[str]) -> float:
     ]:
         if phrase in text:
             phrase_bonus += 0.12
-    relevance_score = float(getattr(paper, "relevanceScore", 0.0) or 0.0)
+    relevance_score = float(
+        getattr(paper, "relevanceScore", None)
+        or getattr(paper, "relevance_score", 0.0)
+        or 0.0
+    )
     return min(1.0, hits / max(4, min(10, len(topic_terms))) + phrase_bonus + relevance_score * 0.25)
 
 
@@ -4037,6 +4053,16 @@ class IdeaGenerationService:
             query_specs = [("core", query) for query in (expanded or [seed])]
         search_queries = [query for _, query in query_specs]
         core_queries = self._core_search_queries(session)
+        profile = build_topic_intent_profile(
+            seed=seed,
+            domain=session.config.domain or "",
+            role_queries=role_queries if isinstance(role_queries, dict) else {},
+        )
+        must_cite_refs = [
+            str(value).lower().strip()
+            for value in (session.config.mustCiteList or [])
+            if str(value).strip()
+        ]
 
         # Search across sources
         search_service = get_search_service()
@@ -4059,54 +4085,58 @@ class IdeaGenerationService:
                 query_result_counts[f"{role}:{query}"] = 0
                 logger.warning(f"Search failed for '{query}': {e}")
 
-        def _dedupe_rank_filter(results: List[SearchResult], queries: List[str]) -> tuple[List[SearchResult], int, int]:
-            # Dedup chain: doi > arxivId > semanticScholarId > normalized title hash
-            seen_dois: set = set()
-            seen_arxiv_ids: set = set()
-            seen_s2_ids: set = set()
-            seen_title_hashes: set = set()
-            unique: List[SearchResult] = []
+        def _matches_must_cite(result: SearchResult) -> bool:
+            haystack = " ".join(
+                str(value)
+                for value in [result.doi, result.arxiv_id, result.url, result.title]
+                if value
+            ).lower()
+            return any(reference in haystack for reference in must_cite_refs)
 
-            for result in results:
-                if result.doi and result.doi in seen_dois:
-                    continue
-                if result.arxiv_id and result.arxiv_id in seen_arxiv_ids:
-                    continue
-                s2_id = None
-                if result.source == "semantic_scholar" and result.url:
-                    s2_match = re.search(r'SemanticScholarID:(\w+)', result.url)
-                    if s2_match:
-                        s2_id = s2_match.group(1)
-                if s2_id and s2_id in seen_s2_ids:
-                    continue
-                title_hash = _compute_title_hash(result.title)
-                if title_hash in seen_title_hashes:
-                    continue
-
-                if result.doi:
-                    seen_dois.add(result.doi)
-                if result.arxiv_id:
-                    seen_arxiv_ids.add(result.arxiv_id)
-                if s2_id:
-                    seen_s2_ids.add(s2_id)
-                seen_title_hashes.add(title_hash)
-                unique.append(result)
-
-            unique = _rank_results_for_topic(
-                unique,
-                seed=seed,
-                domain=session.config.domain or "",
-                search_queries=queries,
+        def _dedupe_assess_rank(results: List[SearchResult]) -> tuple:
+            dedupe = deduplicate_search_results(results)
+            persistable: List[SearchResult] = []
+            gate_eligible: List[SearchResult] = []
+            rejected: List[SearchResult] = []
+            for result in dedupe.results:
+                assessment = assess_search_result(result, profile)
+                result.evidence_tier = assessment.tier.value
+                result.decisive_anchors = list(assessment.decisive_anchors)
+                result.relevance_components = dict(assessment.score_components)
+                result.rejection_reason = assessment.rejection_reason
+                result.relevance_score = assessment.score
+                if assessment.tier is not EvidenceTier.REJECTED:
+                    persistable.append(result)
+                    gate_eligible.append(result)
+                else:
+                    result.must_cite_override = _matches_must_cite(result)
+                    rejected.append(result)
+                    if result.must_cite_override:
+                        persistable.append(result)
+            persistable.sort(key=lambda item: item.relevance_score, reverse=True)
+            gate_eligible.sort(key=lambda item: item.relevance_score, reverse=True)
+            return (
+                persistable,
+                gate_eligible,
+                rejected,
+                dedupe.merge_count,
+                len(dedupe.results),
             )
-            ranked = len(unique)
-            filtered, dropped = _filter_results_for_topic(unique)
-            return filtered, dropped, ranked
 
-        unique_results, filtered_out_count, ranked_count = _dedupe_rank_filter(all_results, core_queries)
+        (
+            unique_results,
+            gate_eligible_results,
+            rejected_results,
+            duplicate_merge_count,
+            ranked_count,
+        ) = _dedupe_assess_rank(all_results)
+        filtered_out_count = len([
+            result for result in rejected_results if not result.must_cite_override
+        ])
         raw_quality_gate = _evaluate_paper_quality_gate(
             seed=seed,
             domain=session.config.domain or "",
-            papers=unique_results,
+            papers=gate_eligible_results,
             stage="literatureSearch.initial",
             extra_terms=core_queries,
         )
@@ -4125,6 +4155,10 @@ class IdeaGenerationService:
                     for result in results:
                         if "repair" not in result.retrieval_roles:
                             result.retrieval_roles.append("repair")
+                        lowered_query = query.lower()
+                        for repair_role in ("domain", "task", "method", "evaluation"):
+                            if repair_role in lowered_query and repair_role not in result.retrieval_roles:
+                                result.retrieval_roles.append(repair_role)
                         if query not in result.matched_queries:
                             result.matched_queries.append(query)
                     all_results.extend(results)
@@ -4133,16 +4167,60 @@ class IdeaGenerationService:
                 except Exception as e:
                     query_result_counts[f"repair:{query}"] = 0
                     logger.warning(f"Repair search failed for '{query}': {e}")
-            unique_results, filtered_out_count, ranked_count = _dedupe_rank_filter(
-                all_results,
-                core_queries,
-            )
+            (
+                unique_results,
+                gate_eligible_results,
+                rejected_results,
+                duplicate_merge_count,
+                ranked_count,
+            ) = _dedupe_assess_rank(all_results)
+            filtered_out_count = len([
+                result for result in rejected_results if not result.must_cite_override
+            ])
             raw_quality_gate = _evaluate_paper_quality_gate(
                 seed=seed,
                 domain=session.config.domain or "",
-                papers=unique_results,
+                papers=gate_eligible_results,
                 stage="literatureSearch.repaired",
                 extra_terms=core_queries,
+            )
+
+        if not raw_quality_gate.get("passed", False):
+            diagnostic_outputs = {
+                "searchQueries": search_queries,
+                "coreSearchQueries": core_queries,
+                "searchQueriesByRole": role_queries,
+                "queryResultCounts": query_result_counts,
+                "topicIntentProfile": profile.to_dict(),
+                "resultCountBeforeDedup": len(all_results),
+                "uniqueResultCount": ranked_count,
+                "duplicateMergeCount": duplicate_merge_count,
+                "evidenceTierCounts": {
+                    "direct": sum(
+                        result.evidence_tier == "direct" for result in unique_results
+                    ),
+                    "transferable": sum(
+                        result.evidence_tier == "transferable" for result in unique_results
+                    ),
+                    "rejected": len(rejected_results),
+                },
+                "rejectionReasonCounts": dict(Counter(
+                    result.rejection_reason for result in rejected_results
+                )),
+                "filteredOutCount": filtered_out_count,
+                "paperQualityGate": raw_quality_gate,
+                "repairAttempted": repair_attempted,
+                "repairQueries": repair_queries,
+            }
+            errors = "; ".join(raw_quality_gate.get("errors", [])[:4])
+            raise AwaitingLiteratureEvidenceError(
+                f"Literature evidence is insufficient before deep reading: {errors}",
+                inputs={
+                    "seedQuery": seed,
+                    "maxPapers": max_papers,
+                    "searchQueries": search_queries,
+                },
+                outputs=diagnostic_outputs,
             )
 
         if ranked_count and not unique_results:
@@ -4155,8 +4233,9 @@ class IdeaGenerationService:
         unique_results = unique_results[:max_papers]
         sources_used: List[str] = []
         for result in unique_results:
-            if result.source not in sources_used:
-                sources_used.append(result.source)
+            for source in result.retrieval_sources or [result.source]:
+                if source and source not in sources_used:
+                    sources_used.append(source)
 
         # Create RawPaper objects
         raw_papers: List[RawPaper] = []
@@ -4187,9 +4266,14 @@ class IdeaGenerationService:
                 semanticScholarId=s2_id,
                 citationCount=result.citation_count or 0,
                 abstract=result.abstract or "",
-                source=[result.source] if result.source else [],
+                source=list(result.retrieval_sources or ([result.source] if result.source else [])),
                 retrievalRoles=list(result.retrieval_roles),
                 matchedQueries=list(result.matched_queries),
+                evidenceTier=result.evidence_tier,
+                decisiveAnchors=list(result.decisive_anchors),
+                relevanceComponents=dict(result.relevance_components),
+                rejectionReason=result.rejection_reason,
+                mustCiteOverride=result.must_cite_override,
                 normalizedTitleHash=title_hash,
                 relevanceScore=min(1.0, max(0.0, base_score)),
             )
@@ -4237,6 +4321,18 @@ class IdeaGenerationService:
             "searchQueriesByRole": role_queries,
             "queryResultCounts": query_result_counts,
             "retrievalRoleCounts": retrieval_role_counts,
+            "topicIntentProfile": profile.to_dict(),
+            "resultCountBeforeDedup": len(all_results),
+            "uniqueResultCount": ranked_count,
+            "duplicateMergeCount": duplicate_merge_count,
+            "evidenceTierCounts": {
+                "direct": sum(result.evidence_tier == "direct" for result in unique_results),
+                "transferable": sum(result.evidence_tier == "transferable" for result in unique_results),
+                "rejected": len(rejected_results),
+            },
+            "rejectionReasonCounts": dict(Counter(
+                result.rejection_reason for result in rejected_results
+            )),
             "filteredOutCount": filtered_out_count,
             "minExternalRelevance": float(os.getenv("FAROS_MIN_EXTERNAL_RELEVANCE", "0.12")),
             "minLocalRelevance": float(os.getenv("FAROS_MIN_LOCAL_RELEVANCE", "0.28")),

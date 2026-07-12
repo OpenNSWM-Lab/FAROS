@@ -3,6 +3,8 @@ import threading
 import time
 from types import SimpleNamespace
 
+import pytest
+
 from app.models.idea import (
     BFTSConfig,
     BFTSHandoff,
@@ -13,11 +15,21 @@ from app.models.idea import (
     IdeaSessionConfig,
     PriorWorkComparison,
     ReasoningPathSeed,
+    StepResult,
     StructuredPaper,
+    WorkflowTrace,
 )
 import app.modules.idea.service as idea_service_module
 from app.modules.idea.service import IdeaGenerationService
-from app.storage.idea_storage import CandidateStorage, IdeaSessionStorage, generate_candidate_id
+from app.services.search_service import SearchResult
+from app.storage.idea_storage import (
+    CandidateStorage,
+    IdeaSessionStorage,
+    LiteratureGraphStorage,
+    LiteratureStorage,
+    RawPaperStorage,
+    generate_candidate_id,
+)
 
 
 def _candidate(candidate_id: str, session_id: str, *, title: str, novelty: float = 8.0) -> IdeaCandidate:
@@ -230,6 +242,227 @@ def test_core_search_queries_exclude_method_and_evaluation_only_roles(tmp_path):
         "Dream of the Red Chamber ending studies",
         "Hongloumeng narrative closure reconstruction",
     ]
+
+
+def test_literature_search_rejects_generic_cross_domain_results(monkeypatch, tmp_path):
+    service = object.__new__(IdeaGenerationService)
+    service.raw_paper_storage = RawPaperStorage(data_dir=str(tmp_path))
+    service.literature_storage = LiteratureStorage(data_dir=str(tmp_path))
+    service.graph_storage = LiteratureGraphStorage(data_dir=str(tmp_path))
+    service.graph_builder = idea_service_module.LiteratureGraphBuilder()
+    session = IdeaSession(
+        id="idea_literature_tiers",
+        config=IdeaSessionConfig(
+            seedQuery="预测红楼梦可能结局",
+            paperType="system",
+            maxPapers=24,
+        ),
+        trace=WorkflowTrace(
+            sessionId="idea_literature_tiers",
+            startedAt=idea_service_module._utcnow(),
+            steps=[
+                StepResult(
+                    name="expandQuery",
+                    status="ok",
+                    outputs={
+                        "englishSearchQueries": [
+                            "Literary analysis of Dream of the Red Chamber",
+                            "Computational prediction of Dream of the Red Chamber endings",
+                        ],
+                        "searchQueriesByRole": {
+                            "domain": ["Literary analysis of 'Dream of the Red Chamber'"],
+                            "task": ["Computational prediction of endings for 'Dream of the Red Chamber'"],
+                            "method": ["Narrative completion using character constraints"],
+                            "evaluation": ["Narrative coherence and character consistency evaluation"],
+                        },
+                    },
+                    startedAt=idea_service_module._utcnow(),
+                    endedAt=idea_service_module._utcnow(),
+                    durationSeconds=0.0,
+                )
+            ],
+        ),
+    )
+
+    papers = [
+        SearchResult(
+            title="Dream of the Red Chamber authorship and unfinished ending",
+            authors=[],
+            abstract="Computational evidence about Hongloumeng narrative closure.",
+            year=2024,
+            venue="test",
+            url="",
+            doi="10.1000/direct-1",
+            arxiv_id=None,
+            citation_count=1,
+            source="openalex",
+            relevance_score=0.9,
+        ),
+        SearchResult(
+            title="Narrative completion for unfinished novels",
+            authors=[],
+            abstract="Computational character constraints reconstruct plausible endings.",
+            year=2023,
+            venue="test",
+            url="",
+            doi="10.1000/method-1",
+            arxiv_id=None,
+            citation_count=1,
+            source="openalex",
+            relevance_score=0.9,
+        ),
+        SearchResult(
+            title="Evaluating narrative coherence and character consistency",
+            authors=[],
+            abstract="Computational evaluation metrics for generated novel endings.",
+            year=2023,
+            venue="test",
+            url="",
+            doi="10.1000/eval-1",
+            arxiv_id=None,
+            citation_count=1,
+            source="openalex",
+            relevance_score=0.9,
+        ),
+        SearchResult(
+            title="Hongloumeng character relationships and narrative structure",
+            authors=[],
+            abstract="Dream of the Red Chamber characters constrain narrative outcomes.",
+            year=2022,
+            venue="test",
+            url="",
+            doi="10.1000/direct-2",
+            arxiv_id=None,
+            citation_count=1,
+            source="openalex",
+            relevance_score=0.9,
+        ),
+        SearchResult(
+            title="Clinical time-series forecasting and analysis",
+            authors=[],
+            abstract="A web platform predicts patient outcomes with configurable models.",
+            year=2025,
+            venue="test",
+            url="",
+            doi="10.1000/clinical",
+            arxiv_id=None,
+            citation_count=0,
+            source="openalex",
+            relevance_score=0.9,
+        ),
+        SearchResult(
+            title="ChemEval: A chemical evaluation for language models",
+            authors=[],
+            abstract="A multi-level benchmark for chemistry question answering.",
+            year=2025,
+            venue="test",
+            url="",
+            doi="10.1000/chem",
+            arxiv_id=None,
+            citation_count=0,
+            source="openalex",
+            relevance_score=0.9,
+        ),
+    ]
+
+    class FakeSearchService:
+        def search(self, _query, limit=10):
+            return [paper for paper in papers[:limit]]
+
+    monkeypatch.setattr(
+        idea_service_module,
+        "get_search_service",
+        lambda: FakeSearchService(),
+    )
+
+    _, outputs, _ = service._step_literature_search(session)
+    stored = service.raw_paper_storage.list_by_session(session.id)
+
+    assert all(paper.evidenceTier in {"direct", "transferable"} for paper in stored)
+    assert not any("Clinical time-series" in paper.title for paper in stored)
+    assert not any("ChemEval" in paper.title for paper in stored)
+    assert outputs["evidenceTierCounts"]["rejected"] >= 2
+    assert outputs["duplicateMergeCount"] > 0
+    assert outputs["topicIntentProfile"]["coreAnchors"]
+
+
+def test_literature_search_pauses_weak_pool_before_deep_read(monkeypatch, tmp_path):
+    service = object.__new__(IdeaGenerationService)
+    service.raw_paper_storage = RawPaperStorage(data_dir=str(tmp_path))
+    service.literature_storage = LiteratureStorage(data_dir=str(tmp_path))
+    service.graph_storage = LiteratureGraphStorage(data_dir=str(tmp_path))
+    service.graph_builder = idea_service_module.LiteratureGraphBuilder()
+    session = IdeaSession(
+        id="idea_literature_waiting",
+        config=IdeaSessionConfig(seedQuery="预测红楼梦可能结局", maxPapers=20),
+        trace=WorkflowTrace(
+            sessionId="idea_literature_waiting",
+            startedAt=idea_service_module._utcnow(),
+            steps=[
+                StepResult(
+                    name="expandQuery",
+                    status="ok",
+                    outputs={
+                        "englishSearchQueries": ["Dream of the Red Chamber endings"],
+                        "searchQueriesByRole": {
+                            "domain": ["Literary analysis of 'Dream of the Red Chamber'"],
+                            "task": ["Computational prediction of endings for 'Dream of the Red Chamber'"],
+                            "method": ["Narrative completion using character constraints"],
+                            "evaluation": ["Narrative coherence evaluation"],
+                        },
+                    },
+                    startedAt=idea_service_module._utcnow(),
+                    endedAt=idea_service_module._utcnow(),
+                    durationSeconds=0.0,
+                )
+            ],
+        ),
+    )
+
+    distractors = [
+        SearchResult(
+            title="Clinical time-series forecasting and analysis",
+            authors=[],
+            abstract="Predicts patient outcomes.",
+            year=2025,
+            venue="test",
+            url="",
+            doi="10.1000/clinical-only",
+            arxiv_id=None,
+            citation_count=0,
+            source="openalex",
+            relevance_score=0.9,
+        ),
+        SearchResult(
+            title="ChemEval chemical evaluation",
+            authors=[],
+            abstract="Evaluates chemistry language models.",
+            year=2025,
+            venue="test",
+            url="",
+            doi="10.1000/chem-only",
+            arxiv_id=None,
+            citation_count=0,
+            source="openalex",
+            relevance_score=0.9,
+        ),
+    ]
+
+    class FakeSearchService:
+        def search(self, _query, limit=10):
+            return distractors[:limit]
+
+    monkeypatch.setattr(
+        idea_service_module,
+        "get_search_service",
+        lambda: FakeSearchService(),
+    )
+
+    with pytest.raises(idea_service_module.RecoverableIdeaError) as exc_info:
+        service._step_literature_search(session)
+
+    assert exc_info.value.resume_from == "literatureSearch"
+    assert service.raw_paper_storage.list_by_session(session.id) == []
 
 
 def test_get_candidates_defaults_to_final_candidate_ids(tmp_path):
