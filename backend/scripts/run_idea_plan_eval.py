@@ -40,6 +40,16 @@ SEEDS = [
         "baselineSeconds": 1439,
         "baselineNote": "previous run: final=2, evidence=0.95, candidates similar",
     },
+    {
+        "label": "D_cjk_named_work_negative_stress",
+        "seed": "预测红楼梦可能结局",
+        "domain": "",
+        "paperType": "system",
+        "maxCandidates": 3,
+        "baselineSeconds": 975,
+        "baselineNote": "negative pollution stress; awaiting_evidence is valid",
+        "negativeStress": True,
+    },
 ]
 
 
@@ -153,6 +163,89 @@ def candidate_quality(candidate):
     }
 
 
+def retrieval_quality(literature_outputs):
+    return {
+        "resultCountBeforeDedup": literature_outputs.get("resultCountBeforeDedup", 0),
+        "uniqueResultCount": literature_outputs.get("uniqueResultCount", 0),
+        "duplicateMergeCount": literature_outputs.get("duplicateMergeCount", 0),
+        "evidenceTierCounts": literature_outputs.get("evidenceTierCounts", {}),
+        "rejectionReasonCounts": literature_outputs.get("rejectionReasonCounts", {}),
+        "retrievalRoleCounts": literature_outputs.get("retrievalRoleCounts", {}),
+        "topicIntentProfile": literature_outputs.get("topicIntentProfile", {}),
+    }
+
+
+def freeze_checks(
+    *,
+    session,
+    spec,
+    literature_outputs,
+    novelty_outputs,
+    evidence_gate,
+    deep_read_limit,
+):
+    status_value = getattr(session.status, "value", str(session.status))
+    is_negative_stress = bool(spec.get("negativeStress", False))
+    raw_gate = literature_outputs.get("paperQualityGate", {})
+    return {
+        "positiveSeedCompleted": is_negative_stress or status_value == "completed",
+        "completionHasTwoIdeas": (
+            status_value != "completed" or len(session.finalCandidateIds or []) >= 2
+        ),
+        "waitingStateIsRecoverable": status_value in {
+            "completed",
+            "awaiting_evidence",
+            "awaiting_ideas",
+        },
+        "rawRoleCoverageEnabled": bool(
+            (raw_gate.get("roleCoverage") or {}).get("enabled", False)
+        ),
+        "structuredRoleCoverageEnabled": (
+            is_negative_stress and status_value == "awaiting_evidence"
+        ) or bool((evidence_gate.get("roleCoverage") or {}).get("enabled", False)),
+        "deepReadBounded": int(
+            novelty_outputs.get("deepReadRequestedCount", 0) or 0
+        ) <= int(deep_read_limit),
+    }
+
+
+def build_closure_report(summary):
+    hard_checks = [
+        check
+        for seed in summary.get("seeds", [])
+        for check in seed.get("freezeChecks", {}).values()
+    ]
+    return {
+        "decision": (
+            "freeze" if hard_checks and all(hard_checks) else "continue_closure"
+        ),
+        "technicalSeeds": [
+            {
+                "label": seed["label"],
+                "sessionId": seed.get("sessionId"),
+                "status": seed.get("status"),
+                "finalCandidateIds": seed.get("finalCandidateIds", []),
+                "performance": seed.get("performance", {}),
+                "retrievalQuality": seed.get("retrievalQuality", {}),
+                "freezeChecks": seed.get("freezeChecks", {}),
+            }
+            for seed in summary.get("seeds", [])
+        ],
+        "externalProviderIncidents": [
+            seed.get("sessionError")
+            for seed in summary.get("seeds", [])
+            if seed.get("sessionError")
+            and "provider" in seed.get("sessionError", "").lower()
+        ],
+        "remainingRisks": [
+            f"{seed['label']}:{name}"
+            for seed in summary.get("seeds", [])
+            for name, passed in seed.get("freezeChecks", {}).items()
+            if not passed
+        ],
+    }
+
+
 def main() -> None:
     summary_path = os.environ["FAROS_EVAL_SUMMARY"]
     summary_dir = os.path.dirname(os.path.abspath(summary_path))
@@ -210,7 +303,7 @@ def main() -> None:
             service.start_session(session.id)
             session = service.run_pipeline(session.id)
             item["ideaSeconds"] = round(time.perf_counter() - seed_start, 2)
-            item["status"] = str(session.status)
+            item["status"] = getattr(session.status, "value", str(session.status))
             item["sessionError"] = session.errorMessage
             item["finalCandidateIds"] = list(session.finalCandidateIds or [])
             item["hiddenCandidateIds"] = list(session.hiddenCandidateIds or [])
@@ -229,6 +322,7 @@ def main() -> None:
             rank_out = steps.get("rankCandidates", {}).get("outputs", {})
             evidence_out = steps.get("evidenceGate", {}).get("outputs", {})
             evidence_gate = evidence_out.get("evidenceGate", evidence_out)
+            literature_out = steps.get("literatureSearch", {}).get("outputs", {})
             repair_novelty_out = pick(evidence_out, ["repairReport", "noveltyOutputs"], {}) or {}
             quality_loop = quality_loop_summary(rank_out, session)
             review_usage = reviewer_usage(rank_out)
@@ -256,6 +350,17 @@ def main() -> None:
                 "regeneratedCandidateIds": rank_out.get("regeneratedCandidateIds"),
                 "reviewerUsage": review_usage,
             }
+            item["retrievalQuality"] = retrieval_quality(literature_out)
+            item["freezeChecks"] = freeze_checks(
+                session=session,
+                spec=spec,
+                literature_outputs=literature_out,
+                novelty_outputs=novelty_out,
+                evidence_gate=evidence_gate,
+                deep_read_limit=int(
+                    os.getenv("FAROS_IDEA_DEEP_READ_MAX_PAPERS", "24")
+                ),
+            )
             item["qualitySignals"] = {
                 "finalCandidateCount": len(session.finalCandidateIds or []),
                 "targetFinalCandidateCount": quality_loop.get("targetFinalCandidateCount"),
@@ -385,9 +490,27 @@ def main() -> None:
             json.dump(summary, f, ensure_ascii=False, indent=2, default=str)
 
     summary["finishedAt"] = utcnow()
+    closure_report = build_closure_report(summary)
+    report_path = os.path.join(summary_dir, "idea-closure-report.json")
+    summary["closureReport"] = report_path
     with open(summary_path, "w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=2, default=str)
-    print(json.dumps({"event": "eval_done", "summary": summary_path}, ensure_ascii=False), flush=True)
+    with open(report_path, "w", encoding="utf-8") as f:
+        json.dump(closure_report, f, ensure_ascii=False, indent=2, default=str)
+    print(
+        json.dumps(
+            {
+                "event": "eval_done",
+                "summary": summary_path,
+                "closureReport": report_path,
+                "decision": closure_report["decision"],
+            },
+            ensure_ascii=False,
+        ),
+        flush=True,
+    )
+    if closure_report["decision"] != "freeze":
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
