@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+import hashlib
 import re
 from typing import Iterable, Mapping, Sequence
 
@@ -67,6 +68,12 @@ class EvidenceAssessment:
     decisive_anchors: tuple[str, ...]
     score_components: Mapping[str, float]
     rejection_reason: str = ""
+
+
+@dataclass(frozen=True)
+class DedupeOutcome:
+    results: tuple[SearchResult, ...]
+    merge_count: int
 
 
 def _unique(values: Iterable[str]) -> tuple[str, ...]:
@@ -183,3 +190,60 @@ def assess_search_result(
         score_components=components,
         rejection_reason=rejection_reason,
     )
+
+
+def _identity_keys(result: SearchResult) -> tuple[str, ...]:
+    keys: list[str] = []
+    if result.doi:
+        keys.append(f"doi:{result.doi.lower().strip()}")
+    if result.arxiv_id:
+        keys.append(f"arxiv:{result.arxiv_id.lower().strip()}")
+    semantic_id = re.search(r"SemanticScholarID:(\w+)", result.url or "")
+    if semantic_id:
+        keys.append(f"s2:{semantic_id.group(1).lower()}")
+    normalized = re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "", result.title.lower())
+    keys.append("title:" + hashlib.sha256(normalized.encode("utf-8")).hexdigest())
+    return tuple(keys)
+
+
+def _append_unique(current: list[str], incoming: Iterable[str]) -> None:
+    for value in incoming:
+        if value and value not in current:
+            current.append(value)
+
+
+def _merge_result(target: SearchResult, incoming: SearchResult) -> None:
+    _append_unique(target.retrieval_roles, incoming.retrieval_roles)
+    _append_unique(target.matched_queries, incoming.matched_queries)
+    _append_unique(
+        target.retrieval_sources,
+        incoming.retrieval_sources or [incoming.source],
+    )
+    if len(incoming.abstract or "") > len(target.abstract or ""):
+        target.abstract = incoming.abstract
+    if not target.doi and incoming.doi:
+        target.doi = incoming.doi
+    if not target.arxiv_id and incoming.arxiv_id:
+        target.arxiv_id = incoming.arxiv_id
+    if not target.url and incoming.url:
+        target.url = incoming.url
+    target.relevance_score = max(target.relevance_score, incoming.relevance_score)
+    target.citation_count = max(target.citation_count or 0, incoming.citation_count or 0)
+
+
+def deduplicate_search_results(results: Sequence[SearchResult]) -> DedupeOutcome:
+    unique: list[SearchResult] = []
+    index: dict[str, SearchResult] = {}
+    merge_count = 0
+    for result in results:
+        keys = _identity_keys(result)
+        target = next((index[key] for key in keys if key in index), None)
+        if target is not None:
+            _merge_result(target, result)
+            merge_count += 1
+        else:
+            target = result
+            unique.append(target)
+        for key in (*_identity_keys(target), *keys):
+            index[key] = target
+    return DedupeOutcome(tuple(unique), merge_count)

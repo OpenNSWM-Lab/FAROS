@@ -105,6 +105,11 @@ class SearchResult:
     relevance_components: Dict[str, float] = field(default_factory=dict)
     rejection_reason: str = ""
     must_cite_override: bool = False
+    retrieval_sources: List[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if self.source and self.source not in self.retrieval_sources:
+            self.retrieval_sources.append(self.source)
 
 
 class SemanticScholarSearch:

@@ -423,6 +423,14 @@ class RawPaper(BaseModel):
     source: List[str] = Field(default_factory=list, description="List of sources: semantic_scholar, arxiv, local, openalex, crossref")
     retrievalRoles: List[str] = Field(default_factory=list)
     matchedQueries: List[str] = Field(default_factory=list)
+    evidenceTier: str = Field(
+        default="unclassified",
+        description="direct, transferable, rejected, unclassified",
+    )
+    decisiveAnchors: List[str] = Field(default_factory=list)
+    relevanceComponents: Dict[str, float] = Field(default_factory=dict)
+    rejectionReason: str = ""
+    mustCiteOverride: bool = False
     normalizedTitleHash: str = Field(default="", description="SHA256 of normalized title for dedup")
     references: List[str] = Field(default_factory=list, description="Paper IDs cited by this paper")
     citedBy: List[str] = Field(default_factory=list, description="Paper IDs citing this paper")
