@@ -100,6 +100,11 @@ class SearchResult:
     relevance_score: float = 0.0
     retrieval_roles: List[str] = field(default_factory=list)
     matched_queries: List[str] = field(default_factory=list)
+    evidence_tier: str = "unclassified"
+    decisive_anchors: List[str] = field(default_factory=list)
+    relevance_components: Dict[str, float] = field(default_factory=dict)
+    rejection_reason: str = ""
+    must_cite_override: bool = False
 
 
 class SemanticScholarSearch:
