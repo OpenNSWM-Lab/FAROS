@@ -10,7 +10,7 @@ import threading
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 
 from app.modules.idea.contracts import (
     IdeaSession,
@@ -5250,7 +5250,7 @@ class IdeaGenerationService:
         )
 
         # Enforce minimum 3 independent research opportunities for multi-direction exploration
-        opportunities = self._enforce_min_opportunities(
+        opportunities = _enforce_min_opportunities(
             opportunities=opportunities,
             seed=seed,
             paper_type=paper_type,
