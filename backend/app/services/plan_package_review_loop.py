@@ -6,7 +6,7 @@ import re
 from collections import OrderedDict
 from typing import Literal
 
-from app.models.plan_package import PlanReviewerIssue
+from app.models.plan_package import PlanPackage, PlanReviewerIssue
 
 
 IssueRoute = Literal[
@@ -144,3 +144,85 @@ def repair_stage_ids(
         if stage_id and stage_id not in selected:
             selected.append(stage_id)
     return selected
+
+
+def _gate_issues(package: PlanPackage) -> list[PlanReviewerIssue]:
+    issues: list[PlanReviewerIssue] = []
+    error_messages = set(package.qualityGate.errors)
+    for index, message in enumerate(
+        [*package.qualityGate.errors, *package.qualityGate.warnings]
+    ):
+        section, separator, detail = message.partition(":")
+        issues.append(
+            PlanReviewerIssue(
+                id=f"visible-{index}",
+                severity="blocking" if message in error_messages else "warning",
+                sectionPath=section.strip() if separator else "package",
+                message=detail.strip() if separator else message,
+            )
+        )
+    return issues
+
+
+def final_user_issues(package: PlanPackage) -> list[PlanReviewerIssue]:
+    issues: list[PlanReviewerIssue] = []
+    if package.metaReview:
+        issues.extend(package.metaReview.blockingIssues)
+        issues.extend(
+            issue
+            for issue in package.metaReview.warnings
+            if route_review_issue(issue)
+            in {"upstream_blocking", "user_decision_required"}
+        )
+    issues.extend(_gate_issues(package))
+    return dedupe_review_issues(
+        [
+            issue
+            for issue in issues
+            if route_review_issue(issue) != "diagnostic_only"
+            and (
+                issue.severity == "blocking"
+                or route_review_issue(issue)
+                in {"upstream_blocking", "user_decision_required"}
+            )
+        ]
+    )
+
+
+def user_visible_concerns(package: PlanPackage) -> list[str]:
+    routes = {route_review_issue(issue) for issue in final_user_issues(package)}
+    concerns: list[str] = []
+    if "upstream_blocking" in routes:
+        concerns.append(
+            "The upstream evidence trace or literature support is incomplete, "
+            "so this plan remains a draft."
+        )
+    if "user_decision_required" in routes:
+        concerns.append(
+            "A research-scope, dataset, or resource decision still requires "
+            "owner confirmation."
+        )
+    if "plan_repairable" in routes:
+        concerns.append(
+            "The plan could not fully resolve an experimental-specificity "
+            "requirement within the repair budget."
+        )
+    return concerns[:3]
+
+
+def required_user_actions(package: PlanPackage) -> list[str]:
+    routes = {route_review_issue(issue) for issue in final_user_issues(package)}
+    actions: list[str] = []
+    if "upstream_blocking" in routes:
+        actions.append(
+            "Complete the missing evidence selection or trace before approval."
+        )
+    if "user_decision_required" in routes:
+        actions.append(
+            "Confirm the unresolved scope, dataset, or resource constraint."
+        )
+    if "plan_repairable" in routes:
+        actions.append(
+            "Regenerate the affected plan section with additional constraints."
+        )
+    return actions[:3]

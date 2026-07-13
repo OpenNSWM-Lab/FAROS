@@ -16,6 +16,7 @@ from app.services.plan_package_review_loop import (
 from app.services.plan_package_reviewers import apply_review_to_quality_gate
 from app.services.plan_package_service import PlanPackageService
 from app.services.plan_package_validator import validate_plan_package
+from app.services.plan_package_views import build_plan_package_presentation
 
 
 def _issue(path, message, severity="blocking"):
@@ -216,3 +217,83 @@ def test_resolved_reviewer_issue_moves_to_revision_audit(monkeypatch, plan_packa
     assert old_message in json.dumps(
         plan_package.revisions[-1].patchSummary["reviewReportsBeforeRepair"]
     )
+
+
+def test_presentation_hides_internal_reviewer_diagnostics(plan_package):
+    diagnostic = _issue(
+        "reviewReports",
+        "LLM reviewer unavailable for MetricReviewer: provider timeout",
+        severity="warning",
+    )
+    plan_package.generation.warnings = ["segment_fallback:stage-2:TimeoutError"]
+    plan_package.qualityGate.warnings = [
+        "reviewReports: LLM reviewer unavailable for MetricReviewer"
+    ]
+    plan_package.metaReview = PlanMetaReview(
+        overallScore=0.8,
+        decision="revise",
+        warnings=[diagnostic],
+    )
+
+    presentation = build_plan_package_presentation(plan_package)
+    rendered = " ".join(
+        [
+            *presentation.reviewSummary.mainConcerns,
+            *presentation.reviewSummary.requiredFixes,
+            *presentation.evidenceSummary.weakPoints,
+            *presentation.nextActions,
+        ]
+    ).lower()
+
+    assert "metricreviewer" not in rendered
+    assert "timeout" not in rendered
+    assert "provider" not in rendered
+    assert "schema" not in rendered
+
+
+def test_presentation_consolidates_unresolved_user_actions(plan_package):
+    issues = [
+        _issue(
+            "evidenceTrace.pathSeedId",
+            "Required upstream evidence path is missing.",
+        ),
+        _issue(
+            "literatureSurvey",
+            "Evidence coverage is insufficient.",
+        ),
+        _issue(
+            "constants.resourceBudget",
+            "User must choose the compute budget.",
+        ),
+        _issue(
+            "stages[2].steps[0].expected[0].target",
+            "Metric target is generic.",
+        ),
+    ]
+    plan_package.metaReview = PlanMetaReview(
+        overallScore=0.4,
+        decision="revise",
+        blockingIssues=issues,
+    )
+
+    presentation = build_plan_package_presentation(plan_package)
+
+    assert len(presentation.reviewSummary.mainConcerns) == 3
+    assert len(presentation.reviewSummary.requiredFixes) == 3
+    assert len(set(presentation.reviewSummary.mainConcerns)) == 3
+
+
+def test_successful_presentation_has_no_review_problem_list(plan_package):
+    plan_package.qualityGate.agentApproved = True
+    plan_package.qualityGate.implementationReady = True
+    plan_package.qualityGate.errors = []
+    plan_package.qualityGate.warnings = []
+    plan_package.metaReview = PlanMetaReview(
+        overallScore=0.9,
+        decision="approve",
+    )
+
+    presentation = build_plan_package_presentation(plan_package)
+
+    assert presentation.reviewSummary.mainConcerns == []
+    assert presentation.reviewSummary.requiredFixes == []
