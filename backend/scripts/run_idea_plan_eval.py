@@ -10,6 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.models.idea import IdeaSessionConfig
 from app.modules.idea.service import IdeaGenerationService
 from app.services.plan_package_service import get_plan_package_service
+from app.services.plan_package_views import build_plan_package_presentation
 
 
 SEEDS = [
@@ -136,6 +137,61 @@ def null_paths(value, prefix=""):
         for index, item in enumerate(value):
             paths.extend(null_paths(item, f"{prefix}[{index}]"))
     return paths
+
+
+def plan_quality_summary(package, elapsed_seconds):
+    plan_owned = {
+        "researchQuestion": package.researchQuestion,
+        "hypothesis": package.hypothesis,
+        "constants": package.constants,
+        "stages": [stage.model_dump(mode="json") for stage in package.stages],
+    }
+    expected = [
+        item
+        for stage in plan_owned["stages"]
+        for step in stage.get("steps", [])
+        for item in step.get("expected", [])
+    ]
+    text = json.dumps(plan_owned, ensure_ascii=False).lower()
+    placeholders = [
+        value
+        for value in [
+            "specified before implementation",
+            "primary_metric",
+            "readiness",
+            "planned_metric",
+            "default plan step",
+        ]
+        if value in text
+    ]
+    segment_fallbacks = [
+        warning
+        for warning in package.generation.warnings
+        if warning.startswith("segment_fallback:")
+    ]
+    presentation = build_plan_package_presentation(package)
+    return {
+        "elapsedSeconds": round(float(elapsed_seconds), 3),
+        "status": str(
+            package.status.value
+            if hasattr(package.status, "value")
+            else package.status
+        ),
+        "fallbackUsed": package.generation.fallbackUsed,
+        "segmentFallbacks": segment_fallbacks,
+        "llmUsedSections": package.generation.llmUsedSections,
+        "repairRounds": package.generation.repairRounds,
+        "schemaRepairRounds": package.generation.schemaRepairRounds,
+        "llmReviewerUsed": package.generation.llmReviewerUsed,
+        "implementationReady": package.qualityGate.implementationReady,
+        "downstreamReady": package.qualityGate.downstreamReady,
+        "stageCount": len(package.stages),
+        "stepCount": sum(len(stage.steps) for stage in package.stages),
+        "expectedMetricCount": len(expected),
+        "placeholderValues": placeholders,
+        "criticalNullPaths": null_paths(plan_owned),
+        "userConcernCount": len(presentation.reviewSummary.mainConcerns),
+    }
 
 
 def candidate_quality(candidate):
@@ -418,9 +474,10 @@ def main() -> None:
                     reviewer_mode="hybrid",
                     max_repair_rounds=2,
                 )
+                plan_elapsed = time.perf_counter() - plan_start
                 item["planPackage"] = {
                     "packageId": package.packageId,
-                    "seconds": round(time.perf_counter() - plan_start, 2),
+                    "seconds": round(plan_elapsed, 2),
                     "schemaVersion": package.schemaVersion,
                     "status": str(package.status),
                     "qualityGate": package.qualityGate.model_dump()
@@ -461,6 +518,9 @@ def main() -> None:
                     if hasattr(package.generation, "model_dump")
                     else {},
                 }
+                item["planPackage"].update(
+                    plan_quality_summary(package, plan_elapsed)
+                )
             item["finishedAt"] = utcnow()
             print(
                 json.dumps(
