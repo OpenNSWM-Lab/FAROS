@@ -37,6 +37,13 @@ def test_hypothesis_requires_direction_measure_and_falsifier():
     ) is True
 
 
+def test_chinese_hypothesis_can_express_a_falsifiable_metric_direction():
+    assert hypothesis_is_falsifiable(
+        "相比基础模型，证据校验将提高回答正确率；"
+        "若预注册测试集上的主要指标未显著改善，则该假设不成立。"
+    ) is True
+
+
 def test_specificity_issues_point_to_exact_metric_path(plan_package):
     plan_package.stages[2].steps[0].expected[0].target = "better"
 

@@ -32,7 +32,7 @@ _MEASURABLE_TARGET = re.compile(
 )
 _DIRECTION = re.compile(
     r"(?:increase|decrease|improve|reduce|higher|lower|positive|negative|"
-    r"non[- ]?inferior|提升|降低|增加|减少|不劣)",
+    r"non[- ]?inferior|提升|提高|改善|增强|降低|增加|减少|优于|不劣)",
     re.IGNORECASE,
 )
 _FALSIFIER = re.compile(
