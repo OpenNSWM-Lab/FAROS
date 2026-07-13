@@ -10,8 +10,10 @@ Implements discriminative multi-criteria ranking with:
 
 import json
 import logging
+import os
 import random
 import hashlib
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
 
@@ -234,13 +236,22 @@ class RankingService:
         provider_name: str,
         model: str,
     ) -> List[RankingResult]:
-        """Rank using LLM-based scoring."""
-        client = get_provider_client(provider_name)
+        """Rank using LLM-based scoring — P1: parallelized with ThreadPoolExecutor.
+
+        Previously each candidate was scored sequentially. Now all candidates
+        are scored in parallel, controlled by FAROS_RANKING_CONCURRENCY (default 4).
+        """
         weights = PAPER_TYPE_WEIGHTS.get(paper_type, PAPER_TYPE_WEIGHTS["default"])
-        results = []
-        
-        for candidate in candidates:
+        max_workers = min(len(candidates), int(os.getenv("FAROS_RANKING_CONCURRENCY", "4")))
+
+        # Pre-compute indices to preserve ordering
+        results_map: Dict[int, RankingResult] = {}
+
+        def _score_one(idx: int, candidate: IdeaCandidate) -> Tuple[int, RankingResult]:
             try:
+                from app.llm.provider_client import get_provider_client, ChatMessage
+                client = get_provider_client(provider_name)
+
                 user_prompt = RANKING_USER_PROMPT.format(
                     paper_type=paper_type,
                     domain=domain or "general",
@@ -252,25 +263,49 @@ class RankingService:
                     ref_count=len(candidate.references),
                     has_experiments="Yes" if candidate.requiredExperiments else "No",
                 )
-                
+
                 messages = [
                     ChatMessage(role="system", content=RANKING_SYSTEM_PROMPT),
                     ChatMessage(role="user", content=user_prompt),
                 ]
-                
+
                 response = client.chat(messages, model=model, max_tokens=800)
-                
-                # Parse response
                 result = self._parse_llm_response(candidate.id, response.text, weights)
-                results.append(result)
-                
+                return idx, result
             except Exception as e:
                 logger.warning(f"Failed to score candidate {candidate.id}: {e}")
-                # Use heuristic for this candidate
                 heuristic_result = self._heuristic_score_single(candidate, seed_query, paper_type)
-                results.append(heuristic_result)
-        
-        return results
+                return idx, heuristic_result
+
+        if max_workers <= 1 or len(candidates) <= 1:
+            # Fall back to sequential for small batches
+            results = []
+            for i, candidate in enumerate(candidates):
+                _, result = _score_one(i, candidate)
+                results.append(result)
+            return results
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_idx: Dict[Any, int] = {}
+            for i, candidate in enumerate(candidates):
+                future = executor.submit(_score_one, i, candidate)
+                future_to_idx[future] = i
+
+            for future in as_completed(future_to_idx):
+                try:
+                    idx, result = future.result()
+                    results_map[idx] = result
+                except Exception as e:
+                    idx = future_to_idx[future]
+                    logger.warning(f"Ranking worker failed for candidate[{idx}]: {e}")
+                    # Use heuristic fallback for failed worker
+                    heuristic_result = self._heuristic_score_single(
+                        candidates[idx], seed_query, paper_type,
+                    )
+                    results_map[idx] = heuristic_result
+
+        # Preserve original order
+        return [results_map[i] for i in range(len(candidates))]
     
     def _parse_llm_response(
         self, candidate_id: str, response_text: str, weights: Dict[str, float]
