@@ -28,6 +28,7 @@ from app.models.plan_package import (
     PlanStep,
 )
 from app.services.plan_package_builder import build_contribution_statements, build_plan_package
+from app.services.plan_package_generation import generate_plan_segments
 from app.services.plan_package_llm_schema import llm_plan_output_schema_hint, validate_llm_plan_output
 from app.services.plan_package_plan_quality import (
     build_plan_blueprint,
@@ -1192,7 +1193,7 @@ class PlanPackageService:
         package.generation.repairRounds = 0
         package.generation.fallbackUsed = mode == "deterministic"
         package.generation.promptVersion = (
-            "plan-package-single-implementation-planner-v2"
+            "plan-package-segmented-implementation-planner-v1"
             if mode == "hybrid"
             else "plan-package-adapter-v1"
         )
@@ -1213,12 +1214,10 @@ class PlanPackageService:
 
         if mode == "hybrid":
             try:
-                self._apply_llm_plan_fields(
+                self._apply_segmented_llm_plan_fields(
                     package,
                     session,
-                    max_stages=max_stages,
                     max_steps_per_stage=max_steps_per_stage,
-                    max_repair_rounds=max_repair_rounds,
                 )
             except Exception as exc:
                 logger.warning("LLM plan field generation failed: %s", exc, exc_info=True)
@@ -1462,6 +1461,84 @@ class PlanPackageService:
 
         package.generation.schemaRepairRounds += schema_repair_rounds
         raise ValueError("LLM plan field generation failed validation: " + "; ".join(last_issues))
+
+    def _apply_segmented_llm_plan_fields(
+        self,
+        package: PlanPackage,
+        session: IdeaSession,
+        *,
+        max_steps_per_stage: int,
+    ) -> None:
+        client = get_provider_client(session.config.providerName)
+        scheduler = get_llm_task_scheduler()
+        package.generation.providerName = session.config.providerName
+        package.generation.model = session.config.model
+        package.generation.promptVersion = "plan-package-segmented-implementation-planner-v1"
+
+        def call_json(
+            segment_name: str,
+            prompt: str,
+            max_tokens: int,
+        ) -> Dict[str, Any]:
+            task_name = (
+                "plan_package_core"
+                if segment_name == "core"
+                else "plan_package_stage"
+            )
+            system_prompt = (
+                "Generate PlanPackage core JSON only."
+                if segment_name == "core"
+                else "Generate exactly one PlanPackage stage JSON only."
+            )
+            response = scheduler.run(
+                task_name,
+                lambda: client.chat(
+                    messages=[
+                        ChatMessage(
+                            role="system",
+                            content=(
+                                system_prompt
+                                + " Do not invent paper IDs, claim IDs, datasets, "
+                                "benchmark values, or executed results."
+                            ),
+                        ),
+                        ChatMessage(role="user", content=prompt),
+                    ],
+                    model=session.config.model,
+                    temperature=0.2,
+                    max_tokens=max_tokens,
+                    response_format={"type": "json_object"},
+                ),
+                timeout_seconds=_plan_llm_timeout_seconds(),
+            )
+            parsed = _extract_json(response.text or "")
+            if parsed is None:
+                raise ValueError(f"{segment_name} returned invalid JSON")
+            return parsed
+
+        result = generate_plan_segments(
+            package=package,
+            call_json=call_json,
+            max_steps_per_stage=max_steps_per_stage,
+        )
+        package.researchQuestion = result.research_question
+        package.hypothesis = result.hypothesis
+        package.constants.update(sanitize_constants(result.constants))
+        package.stages = result.stages
+        package.generation.llmUsedSections = (
+            ["implementationPlan"]
+            if result.core_used or result.llm_stage_ids
+            else []
+        )
+        package.generation.fallbackUsed = bool(
+            result.fallback_stage_ids or not result.core_used
+        )
+        existing_warnings = set(package.generation.warnings)
+        package.generation.warnings.extend(
+            warning
+            for warning in result.warnings
+            if warning not in existing_warnings
+        )
 
     def _apply_parsed_plan_fields(
         self,
