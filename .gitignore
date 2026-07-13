@@ -7,6 +7,7 @@ backend/tests/
 
 # Temp docs, backups, work logs
 docs/
+.worktrees/
 *.bak
 stop_dev.sh
 
