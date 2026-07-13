@@ -45,6 +45,7 @@ def route_review_issue(issue: PlanReviewerIssue) -> IssueRoute:
     if path.startswith(
         (
             "evidencetrace",
+            "upstream",
             "source.search",
             "source.path",
             "literaturesurvey",

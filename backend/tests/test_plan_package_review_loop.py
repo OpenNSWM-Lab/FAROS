@@ -297,3 +297,63 @@ def test_successful_presentation_has_no_review_problem_list(plan_package):
 
     assert presentation.reviewSummary.mainConcerns == []
     assert presentation.reviewSummary.requiredFixes == []
+
+
+def test_missing_upstream_trace_is_detected_before_plan_llm(plan_package):
+    plan_package.source.searchNodeId = None
+    plan_package.source.pathSeedId = None
+    plan_package.evidenceTrace.searchNodeId = None
+    plan_package.evidenceTrace.pathSeedId = None
+
+    blockers = PlanPackageService()._upstream_plan_blockers(plan_package)
+
+    assert "upstream evidence trace identity is incomplete" in blockers
+
+
+def test_upstream_blocker_skips_llm_reviewer(monkeypatch, plan_package):
+    plan_package.source.pathSeedId = None
+    plan_package.evidenceTrace.pathSeedId = None
+    service = PlanPackageService()
+    monkeypatch.setattr(
+        service,
+        "_run_llm_reviewers",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("LLM reviewer must not run")
+        ),
+    )
+
+    gate = service._apply_review_mode(
+        plan_package,
+        validate_plan_package(plan_package),
+        reviewer_mode="hybrid",
+    )
+
+    assert plan_package.generation.llmReviewerUsed is False
+    assert gate.implementationReady is False
+    assert any("upstream evidence trace" in item for item in gate.errors)
+
+
+def test_readiness_flags_obey_final_gate_invariants(plan_package):
+    gate = plan_package.qualityGate
+    gate.schemaValid = True
+    gate.evidenceValid = True
+    gate.topicRelevant = True
+    gate.citationFaithful = True
+    gate.planSpecific = True
+    gate.agentApproved = True
+    service = PlanPackageService()
+
+    reviewed_gate = service._apply_downstream_readiness(plan_package, gate)
+
+    assert reviewed_gate.downstreamReady == (
+        plan_package.downstreamReadiness.overallReady
+    )
+    assert reviewed_gate.implementationReady == bool(
+        plan_package.downstreamReadiness.overallReady
+        and reviewed_gate.schemaValid
+        and reviewed_gate.evidenceValid
+        and reviewed_gate.topicRelevant
+        and reviewed_gate.citationFaithful
+        and reviewed_gate.planSpecific
+        and reviewed_gate.agentApproved
+    )

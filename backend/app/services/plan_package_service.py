@@ -700,15 +700,68 @@ class PlanPackageService:
         reviewer_mode: str,
     ):
         mode = self._normalize_reviewer_mode(reviewer_mode)
+        upstream_blockers = self._upstream_plan_blockers(package)
+        for blocker in upstream_blockers:
+            message = f"upstream: {blocker}"
+            if message not in gate.errors:
+                gate.errors.append(message)
+            diagnostic = f"upstream_blocked:{blocker}"
+            if diagnostic not in package.generation.warnings:
+                package.generation.warnings.append(diagnostic)
         gate = apply_review_to_quality_gate(package, gate)
         package.qualityGate = gate
-        llm_reports = self._run_llm_reviewers(package, reviewer_mode=mode)
+        llm_reports = (
+            []
+            if upstream_blockers
+            else self._run_llm_reviewers(package, reviewer_mode=mode)
+        )
         if llm_reports:
             gate = apply_review_to_quality_gate(package, gate, extra_reports=llm_reports)
         gate = self._apply_downstream_readiness(package, gate)
         package.generation.reviewerMode = mode
         package.generation.llmReviewerUsed = self._llm_review_used(llm_reports)
         return gate
+
+    def _upstream_plan_blockers(self, package: PlanPackage) -> List[str]:
+        blockers: List[str] = []
+        if not all(
+            [
+                package.source.searchTreeId,
+                package.source.searchNodeId,
+                package.source.pathSeedId,
+                package.evidenceTrace.searchNodeId,
+                package.evidenceTrace.pathSeedId,
+            ]
+        ):
+            blockers.append("upstream evidence trace identity is incomplete")
+        if (
+            package.source.searchNodeId
+            and package.evidenceTrace.searchNodeId
+            and package.source.searchNodeId != package.evidenceTrace.searchNodeId
+        ):
+            blockers.append("source and evidence trace search nodes do not match")
+        if (
+            package.source.pathSeedId
+            and package.evidenceTrace.pathSeedId
+            and package.source.pathSeedId != package.evidenceTrace.pathSeedId
+        ):
+            blockers.append("source and evidence trace path seeds do not match")
+        if not package.literatureSurvey.papers:
+            blockers.append("investigated literature is empty")
+        selected_gap = next(
+            (
+                item
+                for item in package.gap.items
+                if item.id == package.gap.selectedGapId
+            ),
+            None,
+        )
+        if selected_gap is None or not (
+            selected_gap.supportedByPaperIds
+            or selected_gap.supportedByClaimIds
+        ):
+            blockers.append("selected GAP lacks upstream paper or claim support")
+        return blockers
 
     def _apply_downstream_readiness(self, package: PlanPackage, gate: Any):
         readiness = evaluate_downstream_readiness(package)
@@ -1248,7 +1301,8 @@ class PlanPackageService:
             "PlanPackage.literatureSurvey",
         ]
 
-        if mode == "hybrid":
+        upstream_blockers = self._upstream_plan_blockers(package)
+        if mode == "hybrid" and not upstream_blockers:
             try:
                 self._apply_segmented_llm_plan_fields(
                     package,
@@ -1259,6 +1313,12 @@ class PlanPackageService:
                 logger.warning("LLM plan field generation failed: %s", exc, exc_info=True)
                 generation_warnings.append(f"LLM plan field generation failed: {exc}")
                 package.generation.fallbackUsed = True
+        elif mode == "hybrid":
+            package.generation.fallbackUsed = True
+            generation_warnings.extend(
+                f"upstream_blocked:{blocker}"
+                for blocker in upstream_blockers
+            )
 
         package.contributionStatement = build_contribution_statements(
             candidate=candidate,
@@ -1269,8 +1329,12 @@ class PlanPackageService:
         package.schemaVersion = "plan-package/v4"
         package.qualityGate = validate_plan_package(package)
         package.qualityGate = self._apply_review_mode(package, package.qualityGate, reviewer_mode=reviewer_mode)
-        package.qualityGate.warnings.extend(generation_warnings)
-        package.generation.warnings.extend(generation_warnings)
+        existing_generation_warnings = set(package.generation.warnings)
+        package.generation.warnings.extend(
+            warning
+            for warning in generation_warnings
+            if warning not in existing_generation_warnings
+        )
         if mode == "hybrid":
             self._auto_repair_plan_from_review(
                 package,
