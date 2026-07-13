@@ -16,6 +16,7 @@ from app.models.plan_package import (
     PlanReviewerReport,
 )
 from app.services.plan_package_plan_quality import missing_plan_roles
+from app.services.plan_package_review_loop import route_review_issue
 from app.services.plan_package_specificity import (
     metric_target_is_concrete,
     plan_specificity_issues,
@@ -608,10 +609,12 @@ def apply_review_to_quality_gate(
     review_error_messages = [
         f"{issue.sectionPath}: {issue.message}" if issue.sectionPath else issue.message
         for issue in meta.blockingIssues
+        if route_review_issue(issue) != "diagnostic_only"
     ]
     review_warning_messages = [
         f"{issue.sectionPath}: {issue.message}" if issue.sectionPath else issue.message
         for issue in meta.warnings
+        if route_review_issue(issue) != "diagnostic_only"
     ]
     existing_errors = set(gate.errors)
     existing_warnings = set(gate.warnings)

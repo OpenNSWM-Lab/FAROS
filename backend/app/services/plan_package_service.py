@@ -28,7 +28,12 @@ from app.models.plan_package import (
     PlanStep,
 )
 from app.services.plan_package_builder import build_contribution_statements, build_plan_package
-from app.services.plan_package_generation import generate_plan_segments
+from app.services.plan_package_generation import (
+    PlanSegmentGenerationResult,
+    generate_plan_segments,
+    generate_stage_segment,
+    normalize_stage_graph,
+)
 from app.services.plan_package_llm_schema import llm_plan_output_schema_hint, validate_llm_plan_output
 from app.services.plan_package_plan_quality import (
     build_plan_blueprint,
@@ -38,6 +43,12 @@ from app.services.plan_package_plan_quality import (
 )
 from app.services.plan_package_readiness import evaluate_downstream_readiness
 from app.services.plan_package_revisor import build_plan_revision_patch
+from app.services.plan_package_review_loop import (
+    dedupe_review_issues,
+    repair_stage_ids,
+    repair_targets,
+    route_review_issue,
+)
 from app.services.plan_package_reviewers import apply_review_to_quality_gate
 from app.services.plan_package_validator import validate_plan_package
 from app.services.plan_package_views import build_plan_package_handoff, build_plan_package_presentation
@@ -527,38 +538,60 @@ class PlanPackageService:
     ) -> None:
         """Automatically repair plan-owned fields from reviewer findings."""
 
-        if max_repair_rounds <= 0:
-            return
-        for repair_index in range(max_repair_rounds):
+        repair_budget = min(max(0, max_repair_rounds), 2)
+        for repair_index in range(repair_budget):
             if package.qualityGate.agentApproved and package.qualityGate.implementationReady:
                 return
-            revision_patch = build_plan_revision_patch(
-                package,
-                include_feedback=False,
-                allow_narrative=False,
+            current_issues = dedupe_review_issues(
+                [
+                    *(
+                        package.metaReview.blockingIssues
+                        if package.metaReview
+                        else []
+                    ),
+                    *(package.metaReview.warnings if package.metaReview else []),
+                ]
             )
-            targets = self._normalize_revision_targets(revision_patch.changedSections) if revision_patch.changedSections else []
-            if not targets and not revision_patch.upstreamBlocked:
-                targets = self._infer_plan_repair_targets_from_review(package)
-            if revision_patch.upstreamBlocked:
-                message = "PlanPackage auto repair blocked by upstream issue: " + "; ".join(revision_patch.unresolvedIssues[:3])
+            if any(
+                route_review_issue(issue) == "upstream_blocking"
+                for issue in current_issues
+            ):
+                message = "review_repair_blocked:upstream"
                 if message not in package.generation.warnings:
                     package.generation.warnings.append(message)
-                if message not in package.qualityGate.warnings:
-                    package.qualityGate.warnings.append(message)
                 return
+            targets = repair_targets(current_issues)
             if not targets:
                 return
+            stage_ids = repair_stage_ids(
+                current_issues,
+                [stage.id for stage in package.stages],
+            )
+            if "stages" in targets and not stage_ids:
+                stage_ids = [stage.id for stage in package.stages]
+            reports_before_repair = [
+                report.model_dump(mode="json")
+                for report in package.reviewReports
+            ]
             try:
                 previous_repair_rounds = package.generation.repairRounds
-                self._apply_llm_plan_fields(
-                    package,
-                    session,
-                    max_stages=max_stages,
-                    max_steps_per_stage=max_steps_per_stage,
-                    max_repair_rounds=1,
-                    target_sections=targets,
-                )
+                core_targets = [target for target in targets if target != "stages"]
+                if core_targets:
+                    self._apply_llm_plan_fields(
+                        package,
+                        session,
+                        max_stages=max_stages,
+                        max_steps_per_stage=max_steps_per_stage,
+                        max_repair_rounds=1,
+                        target_sections=core_targets,
+                    )
+                if stage_ids:
+                    self._repair_llm_stage_fields(
+                        package,
+                        session,
+                        stage_ids=stage_ids,
+                        max_steps_per_stage=max_steps_per_stage,
+                    )
                 package.contributionStatement = build_contribution_statements(
                     candidate=self._candidate_from_package(package),
                     gap=package.gap,
@@ -571,10 +604,15 @@ class PlanPackageService:
                         parentPackageId=package.packageId,
                         changedSections=[*targets, "contributionStatement", "qualityGate", "reviewReports"],
                         feedbackIds=[],
-                        summary="Auto-repaired PlanPackage from reviewer findings.",
+                        summary="Auto-repaired internal reviewer findings.",
                         generationMode="hybrid",
                         repairRounds=max(0, package.generation.repairRounds - previous_repair_rounds),
-                        patchSummary=revision_patch.model_dump(),
+                        patchSummary={
+                            "repairIndex": repair_index + 1,
+                            "targets": targets,
+                            "stageIds": stage_ids,
+                            "reviewReportsBeforeRepair": reports_before_repair,
+                        },
                     )
                 )
                 package.qualityGate = validate_plan_package(package)
@@ -588,8 +626,6 @@ class PlanPackageService:
                 message = f"PlanPackage auto repair failed on round {repair_index + 1}: {exc}"
                 if message not in package.generation.warnings:
                     package.generation.warnings.append(message)
-                if message not in package.qualityGate.warnings:
-                    package.qualityGate.warnings.append(message)
                 return
 
     def _infer_plan_repair_targets_from_review(self, package: PlanPackage) -> List[str]:
@@ -1539,6 +1575,75 @@ class PlanPackageService:
             for warning in result.warnings
             if warning not in existing_warnings
         )
+
+    def _repair_llm_stage_fields(
+        self,
+        package: PlanPackage,
+        session: IdeaSession,
+        *,
+        stage_ids: List[str],
+        max_steps_per_stage: int,
+    ) -> None:
+        client = get_provider_client(session.config.providerName)
+        scheduler = get_llm_task_scheduler()
+
+        def call_json(
+            segment_name: str,
+            prompt: str,
+            max_tokens: int,
+        ) -> Dict[str, Any]:
+            response = scheduler.run(
+                "plan_package_stage_repair",
+                lambda: client.chat(
+                    messages=[
+                        ChatMessage(
+                            role="system",
+                            content=(
+                                "Repair one PlanPackage stage. Return JSON only and "
+                                "do not invent evidence, datasets, benchmark values, "
+                                "or executed results."
+                            ),
+                        ),
+                        ChatMessage(role="user", content=prompt),
+                    ],
+                    model=session.config.model,
+                    temperature=0.0,
+                    max_tokens=max_tokens,
+                    response_format={"type": "json_object"},
+                ),
+                timeout_seconds=_plan_llm_timeout_seconds(),
+            )
+            parsed = _extract_json(response.text or "")
+            if parsed is None:
+                raise ValueError(f"{segment_name} repair returned invalid JSON")
+            return parsed
+
+        core_result = PlanSegmentGenerationResult(
+            research_question=package.researchQuestion,
+            hypothesis=package.hypothesis,
+            constants=dict(package.constants),
+            stages=[stage.model_copy(deep=True) for stage in package.stages],
+            core_used=True,
+        )
+        replacements: Dict[str, PlanStage] = {}
+        for fallback_stage in package.stages:
+            if fallback_stage.id not in stage_ids:
+                continue
+            replacements[fallback_stage.id] = generate_stage_segment(
+                package=package,
+                fallback_stage=fallback_stage,
+                core_result=core_result,
+                call_json=call_json,
+                max_steps_per_stage=max_steps_per_stage,
+            )
+        if replacements:
+            package.stages = normalize_stage_graph(
+                [
+                    replacements.get(stage.id, stage).model_copy(deep=True)
+                    for stage in package.stages
+                ]
+            )
+            package.generation.repairRounds += 1
 
     def _apply_parsed_plan_fields(
         self,
