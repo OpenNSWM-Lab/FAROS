@@ -4,6 +4,7 @@ import re
 
 from app.models.plan_package import PlanOutputType, PlanPackage, PlanQualityGate
 from app.services.plan_package_plan_quality import missing_plan_roles
+from app.services.plan_package_specificity import plan_specificity_issues
 
 
 def _has_text(value: str | None) -> bool:
@@ -486,6 +487,11 @@ def validate_plan_package(package: PlanPackage) -> PlanQualityGate:
         raw_method = str(raw_candidate.get("proposedMethod") or "").strip()
         if raw_method and package.principle.mechanism and raw_method not in package.principle.mechanism:
             warnings.append("principle.mechanism differs from IdeaCandidate.proposedMethod adapter source")
+
+    warnings.extend(
+        f"specificity.{issue.sectionPath}: {issue.message}"
+        for issue in plan_specificity_issues(package)
+    )
 
     schema_valid = not schema_errors
     evidence_valid = not evidence_errors
