@@ -17,6 +17,7 @@ import os
 import re
 import ssl
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -962,64 +963,57 @@ class SearchService:
         sources: Optional[List[str]] = None
     ) -> List[SearchResult]:
         """
-        Search for papers across all available sources.
-        
+        Search for papers across all available sources **in parallel**.
+
         Args:
             query: Search query
             limit: Maximum results per source
-            sources: Optional list of sources to use ["semantic_scholar", "arxiv", "local"]
-            
+            sources: Optional list of sources to use
+
         Returns:
             Combined list of SearchResult objects, deduplicated by title
         """
-        all_results = []
+        all_results: List[SearchResult] = []
         sources = sources or ["semantic_scholar", "arxiv", "openalex", "cnki", "wanfang", "local"]
-        
-        # Try Semantic Scholar
-        if "semantic_scholar" in sources and self.semantic_scholar:
-            try:
-                results = self.semantic_scholar.search(query, limit)
-                all_results.extend(results)
-                logger.info(f"Semantic Scholar returned {len(results)} results")
-            except Exception as e:
-                logger.warning(f"Semantic Scholar search failed: {e}")
-        
-        # Try ArXiv
-        if "arxiv" in sources and self.arxiv:
-            try:
-                results = self.arxiv.search(query, limit)
-                all_results.extend(results)
-                logger.info(f"ArXiv returned {len(results)} results")
-            except Exception as e:
-                logger.warning(f"ArXiv search failed: {e}")
-        
-        # Try OpenAlex (free, no key required, indexes global papers)
-        if "openalex" in sources and self.openalex:
-            try:
-                results = self.openalex.search(query, limit)
-                all_results.extend(results)
-                logger.info(f"OpenAlex returned {len(results)} results")
-            except Exception as e:
-                logger.warning(f"OpenAlex search failed: {e}")
-        
-        # Try CNKI (requires API key, disabled if not configured)
-        if "cnki" in sources and self.cnki:
-            try:
-                results = self.cnki.search(query, limit)
-                all_results.extend(results)
-                logger.info(f"CNKI returned {len(results)} results")
-            except Exception as e:
-                logger.warning(f"CNKI search failed: {e}")
-        
-        # Try WanFang (requires API key, disabled if not configured)
-        if "wanfang" in sources and self.wanfang:
-            try:
-                results = self.wanfang.search(query, limit)
-                all_results.extend(results)
-                logger.info(f"WanFang returned {len(results)} results")
-            except Exception as e:
-                logger.warning(f"WanFang search failed: {e}")
-        
+
+        # Build parallel search tasks (exclude local corpus — it's a sync offline fallback)
+        parallel_sources = [s for s in sources if s != "local"]
+        source_map: Dict[str, Any] = {
+            "semantic_scholar": self.semantic_scholar,
+            "arxiv": self.arxiv,
+            "openalex": self.openalex,
+            "cnki": self.cnki,
+            "wanfang": self.wanfang,
+        }
+
+        search_tasks: List[tuple] = []
+        for source_name in parallel_sources:
+            searcher = source_map.get(source_name)
+            if searcher:
+                search_tasks.append((source_name, searcher))
+
+        if search_tasks:
+            # P0: Parallelize external search sources.
+            # Each source has its own rate-limit logic, so running them concurrently
+            # cuts wall-clock time from sum(intervals) to max(interval).
+            max_workers = min(len(search_tasks), int(os.getenv("FAROS_SEARCH_PARALLELISM", "5")))
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                future_to_source: Dict[Any, str] = {}
+                for source_name, searcher in search_tasks:
+                    future = executor.submit(
+                        self._safe_search_source, source_name, searcher, query, limit,
+                    )
+                    future_to_source[future] = source_name
+
+                for future in as_completed(future_to_source):
+                    source_name = future_to_source[future]
+                    try:
+                        results: List[SearchResult] = future.result()
+                        all_results.extend(results)
+                        logger.info(f"{source_name} returned {len(results)} results for '{query[:60]}'")
+                    except Exception as e:
+                        logger.warning(f"{source_name} search failed for '{query[:60]}': {e}")
+
         external_results_count = len(all_results)
 
         # Try local corpus only as a strict offline fallback by default. Mixing
@@ -1033,7 +1027,7 @@ class SearchService:
                 logger.info(f"Local corpus returned {len(results)} results")
             except Exception as e:
                 logger.warning(f"Local search failed: {e}")
-        
+
         # Deduplicate by normalized title
         seen_titles = set()
         unique_results = []
@@ -1042,8 +1036,18 @@ class SearchService:
             if normalized_title not in seen_titles:
                 seen_titles.add(normalized_title)
                 unique_results.append(result)
-        
+
         return unique_results[:limit * 2]  # Return up to 2x limit after dedup
+
+    @staticmethod
+    def _safe_search_source(
+        source_name: str,
+        searcher: Any,
+        query: str,
+        limit: int,
+    ) -> List[SearchResult]:
+        """Search a single source. Static so it is picklable for ThreadPoolExecutor."""
+        return searcher.search(query, limit)
 
 
 # Global service instance

@@ -1307,6 +1307,211 @@ def _ensure_gap_outputs(
     return clean_gap_analysis[:5], clean_prioritized[:5], clean_opportunities[:5]
 
 
+# Typed-fallback research opportunities for gap analysis diversity enforcement
+_TYPED_RESEARCH_OPPORTUNITIES = [
+    ("method", "Develop a novel algorithmic mechanism or architecture for {seed}"),
+    ("benchmark", "Build comprehensive evaluation benchmarks and protocols for {seed}"),
+    ("system", "Design an end-to-end system integrating {seed} into a practical pipeline"),
+    ("safety", "Improve robustness, safety, or failure analysis of {seed} methods"),
+    ("application", "Apply {seed} to a concrete high-value domain-specific scenario"),
+]
+
+
+def _enforce_min_opportunities(
+    *,
+    opportunities: List[str],
+    seed: str,
+    paper_type: str,
+    gap_analysis: List[Any],
+    min_count: int = 3,
+) -> List[str]:
+    """Ensure at least min_count independent research opportunities exist.
+
+    Uses lightweight n-gram Jaccard deduplication to detect and remove
+    semantically near-duplicate opportunities, then supplements with
+    typed fallbacks if the result still falls below min_count.
+    """
+    clean = [str(o).strip() for o in (opportunities or []) if str(o).strip()]
+    if len(clean) <= 1:
+        return _typed_opportunity_fallbacks(seed, paper_type, clean, min_count, gap_analysis)
+
+    # Deduplicate semantically similar opportunities
+    deduped = _deduplicate_opportunities(clean)
+    if len(deduped) >= min_count:
+        return deduped[:min_count]
+
+    # Supplement from gap_analysis content if available
+    from_gaps = []
+    for gap in (gap_analysis or [])[:5]:
+        if isinstance(gap, dict):
+            approaches = gap.get("approaches", [])
+            if isinstance(approaches, list):
+                for a in approaches[:2]:
+                    from_gaps.append(f"Explore {seed} via: {a}")
+
+    for candidate in from_gaps:
+        if len(deduped) >= min_count:
+            break
+        if not _is_similar_to_any(candidate, deduped):
+            deduped.append(candidate)
+
+    if len(deduped) >= min_count:
+        return deduped[:min_count]
+
+    # Fall back to typed opportunities
+    typed = _typed_opportunity_fallbacks(seed, paper_type, deduped, min_count, gap_analysis)
+    return typed[:min_count]
+
+
+def _typed_opportunity_fallbacks(
+    seed: str,
+    paper_type: str,
+    existing: List[str],
+    min_count: int,
+    gap_analysis: List[Any],
+) -> List[str]:
+    """Generate typed fallback research opportunities."""
+    result = list(existing)
+
+    # Derive gap-specific opportunities from the gap_analysis
+    gap_specific = []
+    for gap in (gap_analysis or []):
+        if isinstance(gap, dict):
+            gap_desc = str(gap.get("gap", "") or "").strip()
+            if gap_desc and len(gap_desc) > 10:
+                gap_specific.append(f"Address: {gap_desc[:120]}")
+    for gs in gap_specific:
+        if len(result) >= min_count:
+            break
+        if not _is_similar_to_any(gs, result):
+            result.append(gs)
+
+    # Reorder typed fallbacks based on paper_type priority
+    typed_items = list(_TYPED_RESEARCH_OPPORTUNITIES)
+    if paper_type in {"safety", "reliability"}:
+        typed_items = sorted(typed_items, key=lambda x: 0 if x[0] == "safety" else 1)
+    elif paper_type in {"benchmark", "evaluation"}:
+        typed_items = sorted(typed_items, key=lambda x: 0 if x[0] == "benchmark" else 1)
+    elif paper_type in {"system", "application"}:
+        typed_items = sorted(typed_items, key=lambda x: 0 if x[0] in ("system", "application") else 1)
+
+    for _, template in typed_items:
+        if len(result) >= min_count:
+            break
+        candidate = template.format(seed=seed)
+        if not _is_similar_to_any(candidate, result):
+            result.append(candidate)
+
+    return result[:max(min_count, len(result))]
+
+
+def _deduplicate_opportunities(items: List[str], threshold: float = 0.78) -> List[str]:
+    """Remove near-duplicate opportunities using n-gram Jaccard similarity."""
+    if len(items) <= 1:
+        return list(items)
+
+    def _ngrams(text: str, n: int = 3) -> set:
+        words = text.lower().split()
+        if len(words) <= n:
+            return set(words)
+        return {" ".join(words[i:i + n]) for i in range(len(words) - n + 1)}
+
+    kept: List[str] = [items[0]]
+    kept_ngrams = [_ngrams(items[0])]
+    for item in items[1:]:
+        item_ng = _ngrams(item)
+        is_dup = False
+        for kng in kept_ngrams:
+            if not item_ng or not kng:
+                continue
+            inter = len(item_ng & kng)
+            union = len(item_ng | kng)
+            if union > 0 and inter / union >= threshold:
+                is_dup = True
+                break
+        if not is_dup:
+            kept.append(item)
+            kept_ngrams.append(item_ng)
+    return kept
+
+
+def _is_similar_to_any(candidate: str, existing: List[str], threshold: float = 0.75) -> bool:
+    """Check if candidate is semantically similar to any existing item."""
+    if not existing:
+        return False
+
+    def _ngrams(text: str, n: int = 3) -> set:
+        words = text.lower().split()
+        if len(words) <= n:
+            return set(words)
+        return {" ".join(words[i:i + n]) for i in range(len(words) - n + 1)}
+
+    cand_ng = _ngrams(candidate)
+    if not cand_ng:
+        return False
+    for item in existing:
+        item_ng = _ngrams(item)
+        if not item_ng:
+            continue
+        inter = len(cand_ng & item_ng)
+        union = len(cand_ng | item_ng)
+        if union > 0 and inter / union >= threshold:
+            return True
+    return False
+
+
+def _deduplicate_research_directions_by_focus(
+    directions: List[Dict[str, Any]],
+    threshold: float = 0.78,
+) -> List[Dict[str, Any]]:
+    """Remove near-duplicate research directions using n-gram Jaccard on focus+rationale text.
+
+    Directions of the same type with highly overlapping focus/rationale are merged,
+    keeping the first (LLM-generated) one and discarding later near-duplicates.
+    """
+    if len(directions) <= 1:
+        return list(directions)
+
+    def _ngrams(text: str, n: int = 3) -> set:
+        words = text.lower().split()
+        if len(words) <= n:
+            return set(words)
+        return {" ".join(words[i:i + n]) for i in range(len(words) - n + 1)}
+
+    kept: List[Dict[str, Any]] = [directions[0]]
+    kept_texts: List[set] = [_ngrams(
+        f"{directions[0].get('focus', '')} {directions[0].get('rationale', '')}"
+    )]
+
+    for direction in directions[1:]:
+        text = f"{direction.get('focus', '')} {direction.get('rationale', '')}"
+        item_ng = _ngrams(text)
+        if not item_ng:
+            kept.append(direction)
+            kept_texts.append(item_ng)
+            continue
+
+        is_dup = False
+        for kng in kept_texts:
+            if not kng:
+                continue
+            inter = len(item_ng & kng)
+            union = len(item_ng | kng)
+            if union > 0 and inter / union >= threshold:
+                logger.debug(
+                    "Dropping near-duplicate research direction: %s (focus: %s)",
+                    direction.get("title", ""),
+                    direction.get("focus", "")[:80],
+                )
+                is_dup = True
+                break
+        if not is_dup:
+            kept.append(direction)
+            kept_texts.append(item_ng)
+
+    return kept
+
+
 def _gap_relevance_score(gap: Any, focus_terms: List[str]) -> float:
     text = " ".join([
         str(getattr(gap, "direction", "") or ""),
@@ -3994,7 +4199,8 @@ class IdeaGenerationService:
             user_prompt = prompts.EXPAND_QUERY_USER.format(
                 seed_query=seed,
                 paper_type=paper_type,
-                domain=domain
+                domain=domain,
+                literature_context="",  # P1: RAG-ready — populated on retry
             )
             is_cjk = bool(re.search(r'[\u4e00-\u9fff]', seed))
             if is_cjk:
@@ -4998,6 +5204,12 @@ class IdeaGenerationService:
         opportunities = []
 
         try:
+            # P1: Build RAG-enhanced literature context with gap signals
+            rag_context = self._build_rag_literature_context(session)
+            if rag_context:
+                # Merge RAG context into literature summary for richer prompts
+                lit_summary = f"{rag_context}\n\n---\n{lit_summary}"
+
             client = get_provider_client(session.config.providerName)
             user_prompt = prompts.GAP_ANALYSIS_USER.format(
                 seed_query=seed,
@@ -5037,6 +5249,14 @@ class IdeaGenerationService:
             seed_query=seed,
         )
 
+        # Enforce minimum 3 independent research opportunities for multi-direction exploration
+        opportunities = self._enforce_min_opportunities(
+            opportunities=opportunities,
+            seed=seed,
+            paper_type=paper_type,
+            gap_analysis=gap_analysis,
+        )
+
         inputs = {"topic": seed, "literatureCount": len(literature)}
         outputs = {
             # Phase 2 outputs
@@ -5068,8 +5288,11 @@ class IdeaGenerationService:
                 f"Theoretical foundations of {seed}",
             ],
             "researchOpportunities": [
-                f"Novel architectures for {seed}",
-                f"Efficient training methods for {seed}",
+                f"Novel architectures or algorithmic mechanisms for {seed}",
+                f"Comprehensive benchmarks and evaluation protocols for {seed}",
+                f"Robustness, safety, and failure analysis of {seed} methods",
+                f"End-to-end systems integrating {seed} into practical pipelines",
+                f"Domain-specific applications of {seed} with measurable outcomes",
             ],
         }
         return inputs, outputs, []
@@ -5200,35 +5423,48 @@ class IdeaGenerationService:
                     pruneDuplicateThreshold=bfts_config.pruneDuplicateThreshold,
                     scoreWeights=bfts_config.scoreWeights,
                 )
-                for index, direction in enumerate(research_directions):
-                    direction_seed_query = self._direction_seed_query(seed, direction)
-                    direction_literature_context = (
+
+                # P1: Parallel directional BFTS — run each direction's tree
+                # search concurrently using ThreadPoolExecutor.
+                import os as _os
+                max_dir_workers = min(
+                    len(research_directions),
+                    int(_os.getenv("FAROS_BFTS_DIRECTION_CONCURRENCY", "3"))
+                )
+
+                def _run_direction_tree(
+                    index: int,
+                    direction: Dict[str, Any],
+                ) -> Tuple[int, List[IdeaCandidate], Dict[str, Any]]:
+                    """Run one directional BFTS tree. Returns (index, candidates, summary)."""
+                    dir_seed_query = self._direction_seed_query(seed, direction)
+                    dir_lit_context = (
                         f"{literature_context}\n\n"
                         f"Research Direction: {direction.get('title', '')}\n"
                         f"Type: {direction.get('type', '')}\n"
                         f"Focus: {direction.get('focus', '')}\n"
                         f"Rationale: {direction.get('rationale', '')}"
                     )
-                    direction_path_seed = path_seeds[index % len(path_seeds)]
+                    dir_path_seed = path_seeds[index % len(path_seeds)]
+                    dir_candidates: List[IdeaCandidate] = []
+                    dir_summary: Dict[str, Any] = {**direction}
                     try:
                         tree = BFTSSearchTree(
                             session_id=session.id,
                             bfts_config=direction_config,
                             provider_name=session.config.providerName,
                             model=session.config.model,
-                            path_seeds=[direction_path_seed],
+                            path_seeds=[dir_path_seed],
                             structured_papers=structured_papers,
-                            literature_context=direction_literature_context,
-                            seed_query=direction_seed_query,
+                            literature_context=dir_lit_context,
+                            seed_query=dir_seed_query,
                             paper_type=f"{paper_type} / {direction.get('type', '')}",
                         )
-                        direction_candidates = tree.run()
-                        self._tag_candidates_with_research_direction(direction_candidates, direction)
-                        candidates.extend(direction_candidates)
-                        direction_summaries.append({
-                            **direction,
-                            "pathSeedId": direction_path_seed.seedId,
-                            "generatedCandidateCount": len(direction_candidates),
+                        dir_candidates = tree.run()
+                        self._tag_candidates_with_research_direction(dir_candidates, direction)
+                        dir_summary.update({
+                            "pathSeedId": dir_path_seed.seedId,
+                            "generatedCandidateCount": len(dir_candidates),
                         })
                     except Exception as direction_error:
                         logger.warning(
@@ -5236,12 +5472,45 @@ class IdeaGenerationService:
                             direction.get("id"),
                             direction_error,
                         )
-                        direction_summaries.append({
-                            **direction,
-                            "pathSeedId": direction_path_seed.seedId,
+                        dir_summary.update({
+                            "pathSeedId": dir_path_seed.seedId,
                             "generatedCandidateCount": 0,
                             "error": str(direction_error),
                         })
+                    return index, dir_candidates, dir_summary
+
+                from concurrent.futures import ThreadPoolExecutor, as_completed
+                dir_results_map: Dict[int, tuple] = {}
+
+                if max_dir_workers <= 1 or len(research_directions) <= 1:
+                    # Sequential fallback
+                    for idx, direction in enumerate(research_directions):
+                        idx, dir_cands, dir_summ = _run_direction_tree(idx, direction)
+                        dir_results_map[idx] = (dir_cands, dir_summ)
+                else:
+                    with ThreadPoolExecutor(max_workers=max_dir_workers) as executor:
+                        future_to_idx = {}
+                        for idx, direction in enumerate(research_directions):
+                            future = executor.submit(_run_direction_tree, idx, direction)
+                            future_to_idx[future] = idx
+                        for future in as_completed(future_to_idx):
+                            try:
+                                idx, dir_cands, dir_summ = future.result()
+                                dir_results_map[idx] = (dir_cands, dir_summ)
+                            except Exception as e:
+                                idx = future_to_idx[future]
+                                logger.warning(f"Direction BFTS worker failed for index {idx}: {e}")
+                                dir_results_map[idx] = ([], {
+                                    **research_directions[idx],
+                                    "error": str(e),
+                                    "generatedCandidateCount": 0,
+                                })
+
+                # Collect results in original order
+                for idx in range(len(research_directions)):
+                    dir_cands, dir_summ = dir_results_map.get(idx, ([], {}))
+                    candidates.extend(dir_cands)
+                    direction_summaries.append(dir_summ)
 
             used_directional_bfts = bool(candidates and research_directions)
             if not candidates:
@@ -5338,6 +5607,78 @@ class IdeaGenerationService:
                 f"    Baselines/metrics: {eval_str}"
             )
         return "\n\n".join(lines)
+
+    def _build_rag_context_for_prompt(
+        self, session: IdeaSession, limit: int = 5
+    ) -> str:
+        """P1: Build RAG context snippet for LLM prompts from top selected papers.
+
+        Extracts the most relevant structured papers for the session and formats
+        their titles, key claims, and open questions as context. Injected into
+        expandQuery/gapAnalysis prompts to improve domain precision.
+        """
+        try:
+            papers = self.structured_storage.list_by_session(session.id)
+            if not papers:
+                return ""
+        except Exception:
+            return ""
+
+        papers = sorted(
+            papers,
+            key=lambda p: getattr(p, 'relevanceScore', 0) or 0,
+            reverse=True,
+        )[:limit]
+        if not papers:
+            return ""
+
+        lines = ["Relevant Background Literature:"]
+        for i, sp in enumerate(papers):
+            title = (sp.title or "(untitled)")[:120]
+            year = sp.year or "N/A"
+            claims = ""
+            if sp.claims:
+                claims = "; ".join(c.text[:80] for c in sp.claims[:2])
+            lines.append(f"[{i+1}] {title} ({year}) — {claims}")
+        return "\n".join(lines)
+
+    def _build_rag_literature_context(self, session: IdeaSession) -> str:
+        """Build literature context with gap signals for gap analysis prompts.
+
+        P1: Enhanced version — includes limitations, open questions, and
+        contradictions from structured papers to provide richer context.
+        """
+        try:
+            papers = self.structured_storage.list_by_session(session.id)
+            if not papers:
+                return ""
+        except Exception:
+            return ""
+
+        papers = sorted(
+            papers,
+            key=lambda p: getattr(p, 'relevanceScore', 0) or 0,
+            reverse=True,
+        )[:6]
+        if not papers:
+            return ""
+
+        lines = ["Key Literature Context (with identified gaps):"]
+        for i, sp in enumerate(papers):
+            title = (sp.title or "(untitled)")[:120]
+            year = sp.year or "N/A"
+            parts = []
+            if sp.claims:
+                parts.append("Claims: " + "; ".join(c.text[:60] for c in sp.claims[:1]))
+            gaps = [
+                *getattr(sp, 'openQuestions', [])[:1],
+                *getattr(sp, 'limitations', [])[:1],
+                *getattr(sp, 'methodWeaknesses', [])[:1],
+            ]
+            if gaps:
+                parts.append("Gaps: " + "; ".join(str(g)[:80] for g in gaps))
+            lines.append(f"[{i+1}] {title} ({year})\n    " + " | ".join(parts))
+        return "\n".join(lines)
 
     def _direction_decomposition_enabled(self) -> bool:
         return _env_bool("FAROS_IDEA_DIRECTION_DECOMPOSITION", True)
@@ -5468,6 +5809,12 @@ class IdeaGenerationService:
             if len(directions) >= target:
                 break
 
+        # Semantic deduplication: remove directions whose focus/rationale
+        # is too similar (n-gram Jaccard >= 0.78) to an already-kept direction
+        directions = _deduplicate_research_directions_by_focus(directions)
+
+        # Ensure ≥3 directions by filling with typed fallbacks
+        filled_types: set[str] = {d["type"] for d in directions}
         if len(directions) < min(3, target):
             for fallback in self._fallback_seed_research_directions(
                 seed,
@@ -5476,8 +5823,9 @@ class IdeaGenerationService:
             ):
                 if len(directions) >= target:
                     break
-                if fallback["type"] in {direction["type"] for direction in directions}:
+                if fallback["type"] in filled_types:
                     continue
+                filled_types.add(fallback["type"])
                 directions.append(fallback)
         return directions[:target]
 
