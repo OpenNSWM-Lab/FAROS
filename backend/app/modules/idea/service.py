@@ -93,7 +93,7 @@ from app.modules.idea.evidence_relevance import (
 )
 from app.llm.provider_client import get_provider_client, ChatMessage, ProviderError
 from app.llm.task_scheduler import get_llm_task_scheduler
-from app.services.search_service import get_search_service, SearchResult, tokenize_topic_text
+from app.services.search_service import get_search_service, SearchResult
 from app.services.ranking_service import get_ranking_service
 from app.services import prompts
 import json
@@ -274,17 +274,19 @@ def _rank_results_for_topic(
     domain: str,
     search_queries: List[str],
 ) -> List[SearchResult]:
-    topic_text = " ".join([seed, domain, *search_queries]).lower()
-    tokens = tokenize_topic_text(topic_text)
+    topic_text = " ".join([seed, domain, *search_queries]).lower().replace("-", " ")
     stopwords = {
         "and", "the", "for", "with", "from", "that", "this", "into",
         "using", "based", "how", "can", "are", "what", "when", "where",
         "does", "retrieval", "augmented", "generation",
     }
     topic_terms = []
-    for token in tokens:
+    for token in _ascii_topic_tokens(topic_text):
         if token not in stopwords and token not in topic_terms:
             topic_terms.append(token)
+    for bg in _cjk_bigrams(topic_text):
+        if bg not in stopwords and bg not in topic_terms:
+            topic_terms.append(bg)
     signal_terms = [
         term for term in [
             "citation", "faithfulness", "faithful", "uncertainty", "gating",
@@ -355,6 +357,48 @@ def _repair_result_priority(result: SearchResult, paper_type: str) -> tuple:
     return (-survey_penalty, method_hits, float(result.relevance_score or 0.0))
 
 
+# ---------------------------------------------------------------------------
+# CJK bigram tokenizer — replaces whole-chunk CJK matching with 2-gram sliding
+# window so that terms like "边缘计算" yield "边缘", "计算" instead of one
+# opaque token. Also handles numeric-starting ASCII tokens like "0.8B".
+# ---------------------------------------------------------------------------
+
+_CJK_FUNC_CHARS = frozenset(
+    "的在和是了对为与从等及或但其这那它他我你把被让给向用以按经由据关于而则且也以可能将要会对就还"
+)
+
+
+def _cjk_bigrams(text: str) -> List[str]:
+    """Extract CJK 2-grams from *text* via a sliding window, filtering out
+    bigrams that contain common function characters.
+
+    Short runs (2-3 chars) without function characters are kept whole as they
+    are likely domain terms (e.g. "确定", "微调").
+    """
+    bigrams: List[str] = []
+    for cjk_run in re.findall(r"[\u4e00-\u9fff]+", text):
+        if 2 <= len(cjk_run) <= 3 and not any(ch in _CJK_FUNC_CHARS for ch in cjk_run):
+            if cjk_run not in bigrams:
+                bigrams.append(cjk_run)
+        for i in range(len(cjk_run) - 1):
+            bg = cjk_run[i : i + 2]
+            if any(ch in _CJK_FUNC_CHARS for ch in bg):
+                continue
+            if bg not in bigrams:
+                bigrams.append(bg)
+    return bigrams
+
+
+def _ascii_topic_tokens(text: str) -> List[str]:
+    """Extract ASCII tokens, allowing numeric-starting tokens like ``0.8b``."""
+    tokens: List[str] = []
+    for tok in re.findall(r"[a-zA-Z0-9][a-zA-Z0-9._]{2,}", text):
+        tok = tok.rstrip(".")
+        if tok:
+            tokens.append(tok)
+    return tokens
+
+
 def _topic_terms_from_seed(seed: Any, domain: Any = "", extra_terms: Optional[List[Any]] = None) -> List[str]:
     topic_text = " ".join([
         str(seed or ""),
@@ -370,11 +414,18 @@ def _topic_terms_from_seed(seed: Any, domain: Any = "", extra_terms: Optional[Li
         "是否", "如何", "研究", "方法", "模型", "系统",
     }
     terms: List[str] = []
-    for token in tokenize_topic_text(topic_text):
+    # ASCII tokens — allow numeric-starting (e.g. "0.8b", "8b")
+    for token in _ascii_topic_tokens(topic_text):
         if token in stopwords:
             continue
         if token not in terms:
             terms.append(token)
+    # CJK 2-grams — sliding-window bigrams replace whole-chunk matching
+    for bg in _cjk_bigrams(topic_text):
+        if bg in stopwords:
+            continue
+        if bg not in terms:
+            terms.append(bg)
     return terms[:32]
 
 
@@ -1630,9 +1681,10 @@ def _candidate_similarity_key(candidate: IdeaCandidate) -> set[str]:
     }
     tokens = {
         token
-        for token in tokenize_topic_text(text)
+        for token in _ascii_topic_tokens(text)
         if token not in stopwords
     }
+    tokens.update(bg for bg in _cjk_bigrams(text) if bg not in stopwords)
     alias_groups = [
         (
             ("引用忠实", "忠实性", "citation fidelity", "citation faithfulness", "faithful citation", "citation faithful"),

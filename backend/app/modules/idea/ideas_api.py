@@ -4,6 +4,8 @@ Idea Generation API Endpoints
 Provides endpoints for managing idea generation sessions.
 """
 
+import json
+import logging
 from typing import Optional, List
 from datetime import datetime
 from fastapi import APIRouter, HTTPException, status, BackgroundTasks, Query
@@ -1118,4 +1120,132 @@ async def select_candidate(
         ok=True,
         candidateId=request.candidateId,
         selectedCandidateId=request.candidateId,
+    )
+
+
+# =============================================================================
+# Seed Query Pre-Check Endpoint
+# =============================================================================
+
+
+class SeedCheckRequest(BaseModel):
+    """Request to pre-check a seed query before running the full pipeline."""
+    seedQuery: str = Field(..., min_length=3)
+
+
+class SeedCheckResponse(BaseModel):
+    """Response for seed query pre-check."""
+    paperCount: int
+    isSufficient: bool
+    threshold: int
+    topicTerms: List[str] = []
+    generalizedQuery: Optional[str] = None
+    suggestion: Optional[str] = None
+    topPaperTitles: List[str] = []
+
+
+@router.post(
+    "/seed-check",
+    response_model=SeedCheckResponse,
+    summary="Pre-check Seed Query",
+    description=(
+        "Quickly search for papers matching the seed query and assess whether "
+        "enough literature exists. If not, generate a generalized query suggestion."
+    ),
+)
+async def seed_check(request: SeedCheckRequest) -> SeedCheckResponse:
+    """Pre-check a seed query before committing to a full pipeline run."""
+    from app.services.search_service import get_search_service
+    from app.llm.provider_client import get_provider_client, ChatMessage
+    from app.core.settings import get_settings
+    from app.modules.idea.service import _topic_terms_from_seed
+
+    threshold = int(__import__("os").getenv("FAROS_PAPER_GATE_MIN_PAPERS", "4"))
+    seed = request.seedQuery.strip()
+    if len(seed) < 3:
+        return SeedCheckResponse(
+            paperCount=0,
+            isSufficient=False,
+            threshold=threshold,
+        )
+
+    # 1. Quick search across all sources
+    search_service = get_search_service()
+    try:
+        results = search_service.search(seed, limit=10)
+    except Exception as exc:
+        logger.warning("seed-check search failed: %s", exc)
+        results = []
+
+    paper_count = len(results)
+    topic_terms = _topic_terms_from_seed(seed)
+    top_titles = [getattr(r, "title", "") for r in results[:5]]
+
+    if paper_count >= threshold:
+        return SeedCheckResponse(
+            paperCount=paper_count,
+            isSufficient=True,
+            threshold=threshold,
+            topicTerms=topic_terms[:12],
+            topPaperTitles=top_titles,
+        )
+
+    # 2. Not enough papers — ask LLM to generalize the seed
+    settings = get_settings()
+    provider_name = settings.get_active_provider()
+    model_name = settings.get_active_model(provider_name)
+
+    generalize_prompt = (
+        "You are a research advisor helping a user refine their search query.\n"
+        "The user's query returned too few academic papers. "
+        "Generalize it into a broader but still relevant research topic.\n\n"
+        "Rules:\n"
+        "1. Keep the core research intent.\n"
+        "2. Replace niche tool names with their broader research area.\n"
+        "3. Replace specific numeric parameters with the general research question.\n"
+        "4. Output ONLY a single-line generalized query, nothing else.\n\n"
+        f"Original query: {seed}\n"
+        f"Papers found: {paper_count}\n"
+        f"Topic terms extracted: {topic_terms[:8]}\n\n"
+        "Generalized query:"
+    )
+
+    generalized_query = None
+    suggestion = None
+    try:
+        client = get_provider_client(provider_name)
+        response = client.chat(
+            [ChatMessage(role="user", content=generalize_prompt)],
+            model=model_name,
+            temperature=0.3,
+            max_tokens=120,
+        )
+        generalized_query = (response.text or "").strip().split("\n")[0].strip()
+        if generalized_query.startswith('"') and generalized_query.endswith('"'):
+            generalized_query = generalized_query[1:-1]
+        # Validate: don't return if it's too similar or empty
+        if not generalized_query or generalized_query.lower() == seed.lower():
+            generalized_query = None
+    except Exception as exc:
+        logger.warning("seed-check LLM generalization failed: %s", exc)
+
+    if generalized_query:
+        suggestion = (
+            f"Only {paper_count} papers found for this topic. "
+            f"Consider using the generalized query: \"{generalized_query}\""
+        )
+    else:
+        suggestion = (
+            f"Only {paper_count} papers found. "
+            "Try broadening your topic or using more general research terms."
+        )
+
+    return SeedCheckResponse(
+        paperCount=paper_count,
+        isSufficient=False,
+        threshold=threshold,
+        topicTerms=topic_terms[:12],
+        generalizedQuery=generalized_query,
+        suggestion=suggestion,
+        topPaperTitles=top_titles,
     )

@@ -18,7 +18,9 @@ import {
   FileText,
   Settings,
   ShieldCheck,
-  AlertTriangle
+  AlertTriangle,
+  Search,
+  Wand2,
 } from 'lucide-react'
 import { PAPER_TYPES, getPaperTypeById } from '@/lib/models/providers'
 import { summarizeEvidenceGate, type EvidenceGateSummary } from './evidenceGateSummary'
@@ -371,6 +373,15 @@ export function IdeaGenerationPanel({
   const [expandedCandidate, setExpandedCandidate] = useState<string | null>(null)
   const [expandedStep, setExpandedStep] = useState<number | null>(null)
   const [showDebugDetails, setShowDebugDetails] = useState(false)
+  const [seedCheckResult, setSeedCheckResult] = useState<{
+    paperCount: number
+    isSufficient: boolean
+    threshold: number
+    generalizedQuery?: string | null
+    suggestion?: string | null
+    topPaperTitles?: string[]
+  } | null>(null)
+  const [isCheckingSeed, setIsCheckingSeed] = useState(false)
   const evidenceSummary = useMemo(() => summarizeEvidenceGate(trace?.steps), [trace])
 
   useEffect(() => {
@@ -457,6 +468,25 @@ export function IdeaGenerationPanel({
       setProviderTestResult({ ok: false, error: 'Backend unreachable' })
     } finally {
       setIsTestingProvider(false)
+    }
+  }
+
+  const checkSeed = async () => {
+    if (!seedQuery.trim()) return
+    setIsCheckingSeed(true)
+    setSeedCheckResult(null)
+    try {
+      const response = await fetch(`${API_BASE}/api/v1/ideas/seed-check`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ seedQuery }),
+      })
+      if (!response.ok) throw new Error(`Check failed: ${response.status}`)
+      setSeedCheckResult(await response.json())
+    } catch (err) {
+      setSeedCheckResult(null)
+    } finally {
+      setIsCheckingSeed(false)
     }
   }
 
@@ -625,7 +655,70 @@ export function IdeaGenerationPanel({
         <CardContent className="space-y-4">
           <div className="space-y-2">
             <label className="text-sm font-medium">Research Topic / Seed Query</label>
-            <textarea value={seedQuery} onChange={(e) => setSeedQuery(e.target.value)} placeholder="e.g., graph neural networks for recommendation systems" className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm min-h-[80px] focus:ring-2 focus:ring-amber-500" disabled={isPolling} />
+            <textarea value={seedQuery} onChange={(e) => { setSeedQuery(e.target.value); setSeedCheckResult(null) }} placeholder="e.g., graph neural networks for recommendation systems" className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm min-h-[80px] focus:ring-2 focus:ring-amber-500" disabled={isPolling} />
+            <div className="flex items-center gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={checkSeed}
+                disabled={isPolling || isCheckingSeed || !seedQuery.trim()}
+              >
+                {isCheckingSeed ? <RefreshCw className="h-3.5 w-3.5 animate-spin mr-1.5" /> : <Search className="h-3.5 w-3.5 mr-1.5" />}
+                Check literature availability
+              </Button>
+            </div>
+            {seedCheckResult && (
+              <div className={`rounded-md border border-l-4 p-3 ${
+                seedCheckResult.isSufficient
+                  ? 'border-emerald-300 border-l-emerald-700 bg-emerald-50/80'
+                  : 'border-amber-300 border-l-amber-700 bg-amber-50/80'
+              }`}>
+                <div className="flex items-start gap-2">
+                  {seedCheckResult.isSufficient
+                    ? <CheckCircle2 className="h-4 w-4 mt-0.5 shrink-0 text-emerald-700" />
+                    : <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0 text-amber-700" />}
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-semibold text-slate-950">
+                      {seedCheckResult.isSufficient
+                        ? `${seedCheckResult.paperCount} papers found`
+                        : `Only ${seedCheckResult.paperCount} papers found (need ${seedCheckResult.threshold}+)`}
+                    </p>
+                    {seedCheckResult.suggestion && (
+                      <p className="mt-1 text-xs text-slate-700">{seedCheckResult.suggestion}</p>
+                    )}
+                    {seedCheckResult.generalizedQuery && (
+                      <div className="mt-2 flex flex-wrap items-center gap-2">
+                        <Badge variant="outline" className="border-amber-400 bg-white text-xs text-amber-800">
+                          <Wand2 className="h-3 w-3 mr-1" />
+                          Suggested: {seedCheckResult.generalizedQuery}
+                        </Badge>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="h-7 text-xs"
+                          onClick={() => {
+                            setSeedQuery(seedCheckResult.generalizedQuery!)
+                            setSeedCheckResult(null)
+                          }}
+                        >
+                          Use this query
+                        </Button>
+                      </div>
+                    )}
+                    {seedCheckResult.topPaperTitles && seedCheckResult.topPaperTitles.length > 0 && (
+                      <div className="mt-2 space-y-0.5">
+                        <p className="text-xs font-medium text-slate-600">Top results:</p>
+                        {seedCheckResult.topPaperTitles.slice(0, 3).map((title, i) => (
+                          <p key={i} className="text-xs text-slate-600 truncate">{i + 1}. {title}</p>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
           <div className="grid gap-4 md:grid-cols-2">
             <div className="space-y-2">
