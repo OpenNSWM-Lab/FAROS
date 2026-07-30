@@ -429,10 +429,8 @@ It is already usable as a runtime baseline for LLM-domain AutoResearch workflows
 # GitHub Stars
 
 <p align="center">
-  <a href="https://star-history.com/#OpenNSWM-Lab/FAROS&Date">
-    <img src="https://api.star-history.com/svg?repos=OpenNSWM-Lab/FAROS&type=Date&v=1" alt="Star History Chart" width="100%"/>
-  </a>
-</p>
-  <sub>Built with care for the research community.</sub>
+  <img src="https://api.star-history.com/svg?repos=OpenNSWM-Lab/FAROS&type=Date&v=2"
+       alt="Star History Chart"
+       width="100%">
 </p>
 
