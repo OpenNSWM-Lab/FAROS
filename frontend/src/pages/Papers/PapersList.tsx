@@ -1107,10 +1107,10 @@ export function PapersList() {
                     Outline
                   </Button>
                 )}
-                {(selectedPaper.status === 'created' || selectedPaper.status === 'failed') && (
+                {(selectedPaper.status === 'created' || selectedPaper.status === 'failed' || selectedPaper.status === 'completed') && (
                   <Button size="sm" onClick={generatePaper} disabled={generating} className="h-7 text-xs">
                     {generating ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <Code2 className="h-3 w-3 mr-1" />}
-                    Generate
+                    {selectedPaper.status === 'completed' ? 'Regenerate' : 'Generate'}
                   </Button>
                 )}
                 {selectedPaper.status === 'completed' && (

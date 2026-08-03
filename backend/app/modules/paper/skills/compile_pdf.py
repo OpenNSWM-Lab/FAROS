@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Tuple
 
 from app.modules.paper.storage import update_paper
 from .base import PaperSkillContext, PaperSkillResult
-from .utils import write_artifact
+from .utils import LATEX_MATH_ENVS, write_artifact
 
 
 STEP_ID = "09_compile_pdf"
@@ -83,20 +83,71 @@ def _iter_tex_files(latex_dir: str) -> List[str]:
 def _replace_unicode_latex_chars(content: str) -> Tuple[str, List[Dict[str, Any]]]:
     rewrites: List[Dict[str, Any]] = []
     out: List[str] = []
-    in_math = False
+    math_env_stack: List[str] = []
+    inline_math_stack: List[str] = []
     i = 0
     while i < len(content):
         ch = content[i]
+
+        if content.startswith(r"\[", i) or content.startswith(r"\(", i):
+            delimiter = content[i : i + 2]
+            inline_math_stack.append(delimiter)
+            out.append(delimiter)
+            i += 2
+            continue
+
+        if content.startswith(r"\]", i) or content.startswith(r"\)", i):
+            delimiter = content[i : i + 2]
+            opener = r"\[" if delimiter == r"\]" else r"\("
+            if opener in inline_math_stack:
+                for idx in range(len(inline_math_stack) - 1, -1, -1):
+                    if inline_math_stack[idx] == opener:
+                        del inline_math_stack[idx:]
+                        break
+            out.append(delimiter)
+            i += 2
+            continue
+
         if ch == "\\" and i + 1 < len(content):
+            match = re.match(r"\\(begin|end)\{([^}]+)\}", content[i:])
+            if match:
+                command, env_name = match.group(1), match.group(2)
+                out.append(match.group(0))
+                if command == "begin" and env_name in LATEX_MATH_ENVS:
+                    math_env_stack.append(env_name)
+                elif command == "end" and env_name in math_env_stack:
+                    for idx in range(len(math_env_stack) - 1, -1, -1):
+                        if math_env_stack[idx] == env_name:
+                            del math_env_stack[idx:]
+                            break
+                i += len(match.group(0))
+                continue
             out.append(ch)
             out.append(content[i + 1])
             i += 2
             continue
+
+        if content.startswith("$$", i):
+            delimiter = "$$"
+            if inline_math_stack and inline_math_stack[-1] == delimiter:
+                inline_math_stack.pop()
+            else:
+                inline_math_stack.append(delimiter)
+            out.append(delimiter)
+            i += 2
+            continue
+
         if ch == "$":
-            in_math = not in_math
+            delimiter = "$"
+            if inline_math_stack and inline_math_stack[-1] == delimiter:
+                inline_math_stack.pop()
+            else:
+                inline_math_stack.append(delimiter)
             out.append(ch)
             i += 1
             continue
+
+        in_math = bool(inline_math_stack or math_env_stack)
         if ch in UNICODE_LATEX_REPLACEMENTS:
             math_repl, text_repl = UNICODE_LATEX_REPLACEMENTS[ch]
             replacement = math_repl if in_math else text_repl

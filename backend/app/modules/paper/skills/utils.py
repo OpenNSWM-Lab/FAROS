@@ -9,6 +9,29 @@ from app.modules.paper.storage import get_paper_latex_dir, write_paper_file
 from .constants import MIN_ALGORITHMS, MIN_EQUATIONS, MIN_FIGURES, MIN_REFERENCES, MIN_TABLES, TEMPLATE_ROOT
 
 
+LATEX_MATH_ENVS = {
+    "align",
+    "align*",
+    "aligned",
+    "alignat",
+    "alignat*",
+    "displaymath",
+    "eqnarray",
+    "eqnarray*",
+    "equation",
+    "equation*",
+    "flalign",
+    "flalign*",
+    "gather",
+    "gather*",
+    "gathered",
+    "math",
+    "multline",
+    "multline*",
+    "split",
+}
+
+
 def ensure_artifacts_dir(paper_id: str) -> str:
     latex_dir = get_paper_latex_dir(paper_id)
     artifacts_dir = os.path.join(latex_dir, "artifacts")
@@ -507,8 +530,9 @@ def sanitize_latex_text_specials(content: str) -> str:
     specials = {"_": r"\_", "%": r"\%", "#": r"\#"}
     out: List[str] = []
     alignment_env_stack: List[str] = []
+    math_env_stack: List[str] = []
     i = 0
-    in_math = False
+    inline_math_stack: List[str] = []
 
     def copy_balanced_group(start: int) -> int:
         depth = 0
@@ -532,6 +556,25 @@ def sanitize_latex_text_specials(content: str) -> str:
     while i < len(content):
         ch = content[i]
 
+        if content.startswith(r"\[", i) or content.startswith(r"\(", i):
+            delimiter = content[i : i + 2]
+            inline_math_stack.append(delimiter)
+            out.append(delimiter)
+            i += 2
+            continue
+
+        if content.startswith(r"\]", i) or content.startswith(r"\)", i):
+            delimiter = content[i : i + 2]
+            opener = r"\[" if delimiter == r"\]" else r"\("
+            if opener in inline_math_stack:
+                for idx in range(len(inline_math_stack) - 1, -1, -1):
+                    if inline_math_stack[idx] == opener:
+                        del inline_math_stack[idx:]
+                        break
+            out.append(delimiter)
+            i += 2
+            continue
+
         if ch == "\\":
             match = re.match(r"\\([A-Za-z]+)\*?", content[i:])
             if match:
@@ -550,10 +593,17 @@ def sanitize_latex_text_specials(content: str) -> str:
                         i += len(env_match.group(0))
                         if command == "begin" and env_name in ampersand_alignment_envs:
                             alignment_env_stack.append(env_name)
+                        if command == "begin" and env_name in LATEX_MATH_ENVS:
+                            math_env_stack.append(env_name)
                         elif command == "end" and env_name in alignment_env_stack:
                             for idx in range(len(alignment_env_stack) - 1, -1, -1):
                                 if alignment_env_stack[idx] == env_name:
                                     del alignment_env_stack[idx:]
+                                    break
+                        if command == "end" and env_name in math_env_stack:
+                            for idx in range(len(math_env_stack) - 1, -1, -1):
+                                if math_env_stack[idx] == env_name:
+                                    del math_env_stack[idx:]
                                     break
                     continue
                 if command in skip_arg_commands:
@@ -588,12 +638,27 @@ def sanitize_latex_text_specials(content: str) -> str:
                 i += 1
             continue
 
+        if content.startswith("$$", i):
+            delimiter = "$$"
+            if inline_math_stack and inline_math_stack[-1] == delimiter:
+                inline_math_stack.pop()
+            else:
+                inline_math_stack.append(delimiter)
+            out.append(delimiter)
+            i += 2
+            continue
+
         if ch == "$":
-            in_math = not in_math
+            delimiter = "$"
+            if inline_math_stack and inline_math_stack[-1] == delimiter:
+                inline_math_stack.pop()
+            else:
+                inline_math_stack.append(delimiter)
             out.append(ch)
             i += 1
             continue
 
+        in_math = bool(inline_math_stack or math_env_stack)
         if not in_math and ch == "&" and not alignment_env_stack:
             out.append(r"\&")
             i += 1
@@ -725,29 +790,43 @@ def normalize_duplicate_latex_labels(
     seen: set[str] = set()
     rewrites: List[Dict[str, str]] = []
     normalized_sections: Dict[str, str] = {}
+    token_re = re.compile(r"\\(label|eqref|ref|autoref|pageref|cref|Cref)\{([^}]+)\}")
 
     for section_id, content in sections_content.items():
         counters: Dict[str, int] = {}
+        local_renames: Dict[str, str] = {}
 
-        def replace_label(match: re.Match[str]) -> str:
-            label = match.group(1)
-            if label not in seen:
-                seen.add(label)
+        def replace_token(match: re.Match[str]) -> str:
+            command, value = match.group(1), match.group(2)
+            if command == "label":
+                label = value
+                if label not in seen:
+                    seen.add(label)
+                    return match.group(0)
+
+                counters[label] = counters.get(label, 0) + 1
+                suffix = _clean_label_part(section_id)
+                replacement = f"{label}:{suffix}"
+                if counters[label] > 1:
+                    replacement = f"{replacement}-{counters[label]}"
+                while replacement in seen:
+                    counters[label] += 1
+                    replacement = f"{label}:{suffix}-{counters[label]}"
+                seen.add(replacement)
+                local_renames[label] = replacement
+                rewrites.append({"section": section_id, "from": label, "to": replacement})
+                return f"\\label{{{replacement}}}"
+
+            if not local_renames:
                 return match.group(0)
 
-            counters[label] = counters.get(label, 0) + 1
-            suffix = _clean_label_part(section_id)
-            replacement = f"{label}:{suffix}"
-            if counters[label] > 1:
-                replacement = f"{replacement}-{counters[label]}"
-            while replacement in seen:
-                counters[label] += 1
-                replacement = f"{label}:{suffix}-{counters[label]}"
-            seen.add(replacement)
-            rewrites.append({"section": section_id, "from": label, "to": replacement})
-            return f"\\label{{{replacement}}}"
+            parts = [part.strip() for part in value.split(",")]
+            rewritten = [local_renames.get(part, part) for part in parts]
+            if rewritten == parts:
+                return match.group(0)
+            return f"\\{command}{{{', '.join(rewritten)}}}"
 
-        normalized_sections[section_id] = re.sub(r"\\label\{([^}]+)\}", replace_label, content)
+        normalized_sections[section_id] = token_re.sub(replace_token, content)
 
     return normalized_sections, rewrites
 

@@ -3,7 +3,11 @@
 
 *.json
 backend/data/
-backend/tests/
+backend/tests/*
+!backend/tests/test_faros_smoke.py
+!backend/tests/test_paper_latex_safety.py
+!backend/tests/test_paper_prompt_formatting.py
+!backend/tests/test_release_smoke.py
 
 # Temp docs, backups, work logs
 docs/

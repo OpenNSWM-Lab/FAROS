@@ -21,7 +21,7 @@ from app.modules.platform.storage import create_experiment
 logger = logging.getLogger(__name__)
 
 # Absolute path to data directory for resolving project paths
-_BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+_BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 _DATA_DIR = os.path.join(_BASE_DIR, "data")
 
 

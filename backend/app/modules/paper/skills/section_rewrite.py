@@ -244,19 +244,23 @@ def rewrite_section(
     )
     rewritten, citation_rewrites = normalize_section_citations(rewritten, refs)
 
+    protection_errors: List[str] = []
     if preserve_citations:
         before_cites = set(_extract_citation_keys(current_content))
         after_cites = set(_extract_citation_keys(rewritten))
         missing_cites = sorted(before_cites - after_cites)
         if missing_cites:
-            warnings.append(f"Rewrite dropped citation keys: {', '.join(missing_cites[:8])}")
+            protection_errors.append(f"Rewrite dropped citation keys: {', '.join(missing_cites[:8])}")
 
     if preserve_figures:
         before_figures = set(_extract_includegraphics(current_content))
         after_figures = set(_extract_includegraphics(rewritten))
         missing_figures = sorted(before_figures - after_figures)
         if missing_figures:
-            warnings.append(f"Rewrite dropped figure paths: {', '.join(missing_figures[:5])}")
+            protection_errors.append(f"Rewrite dropped figure paths: {', '.join(missing_figures[:5])}")
+
+    if protection_errors:
+        raise ValueError("; ".join(protection_errors))
 
     timestamp = datetime.now(UTC).strftime("%Y%m%d%H%M%S")
     artifact_prefix = f"artifacts/section_rewrites/{safe_section_id}_{timestamp}"
