@@ -14,6 +14,74 @@ ROOT = Path(__file__).resolve().parents[2]
 EVAL_DIR = ROOT / "experiments" / "reviewx_eval"
 
 
+class ClaimExtractionRegressionTests(unittest.TestCase):
+    def test_escaped_percent_is_preserved_while_latex_comment_is_removed(self) -> None:
+        backend = ROOT / "backend"
+        if str(backend) not in sys.path:
+            sys.path.insert(0, str(backend))
+        from app.modules.review.claim_extractor import extract_claims
+
+        claims = extract_claims({
+            "paper": {"id": "paper_percent", "briefJson": {}},
+            "latexFiles": [{
+                "path": "main.tex",
+                "content": (
+                    "\\section{Results}\n"
+                    "We improve accuracy by 42\\% over the baseline. % internal note\n"
+                ),
+            }],
+        })
+
+        self.assertEqual(len(claims), 1)
+        self.assertEqual(claims[0].text, "We improve accuracy by 42% over the baseline.")
+        self.assertIn("numeric_claim", claims[0].riskHints)
+
+    def test_unescaped_percent_comment_drops_only_the_truncated_sentence(self) -> None:
+        backend = ROOT / "backend"
+        if str(backend) not in sys.path:
+            sys.path.insert(0, str(backend))
+        from app.modules.review.claim_extractor import extract_claims
+
+        claims = extract_claims({
+            "paper": {"id": "paper_comment", "briefJson": {}},
+            "latexFiles": [{
+                "path": "main.tex",
+                "content": (
+                    "\\section{Results}\n"
+                    "We propose a traceable evidence validation method for scientific review. "
+                    "We improve accuracy by 42% hidden comment\n"
+                ),
+            }],
+        })
+
+        self.assertEqual(
+            [claim.text for claim in claims],
+            ["We propose a traceable evidence validation method for scientific review."],
+        )
+
+    def test_academic_abbreviation_does_not_truncate_claim(self) -> None:
+        backend = ROOT / "backend"
+        if str(backend) not in sys.path:
+            sys.path.insert(0, str(backend))
+        from app.modules.review.claim_extractor import extract_claims
+
+        latex_sentence = (
+            "We improve accuracy by 4.7\\% where semantic nuance, e.g. statistical "
+            "significance vs. practical significance, changes the final label."
+        )
+        expected = latex_sentence.replace("\\%", "%")
+        claims = extract_claims({
+            "paper": {"id": "paper_abbreviation", "briefJson": {}},
+            "latexFiles": [{
+                "path": "main.tex",
+                "content": f"\\section{{Results}}\n{latex_sentence}\n",
+            }],
+        })
+
+        self.assertEqual([claim.text for claim in claims], [expected])
+        self.assertIn("numeric_claim", claims[0].riskHints)
+
+
 def write_jsonl(path: Path, rows: list[dict]) -> None:
     path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
 
