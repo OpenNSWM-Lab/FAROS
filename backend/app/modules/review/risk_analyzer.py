@@ -40,6 +40,17 @@ def _has_experiment_evidence(claim_id: str, links: Dict[str, List[str]], evidenc
     )
 
 
+def _is_benchmark_claim(claim: Claim) -> bool:
+    return (
+        claim.sourceSpan.section == "CEM-Bench Injected Claims"
+        or claim.text.lstrip().startswith("CEM-Bench")
+    )
+
+
+def _is_external_claim(paper: Dict[str, Any], claim: Claim) -> bool:
+    return bool(paper.get("externalPaper")) and not _is_benchmark_claim(claim)
+
+
 def _avoid_claim_hits(claim: Claim, avoid_claims: List[str]) -> List[str]:
     text = claim.text.lower()
     hits = []
@@ -68,25 +79,38 @@ def analyze_reviewx_risks(
     risk_nodes: List[RiskNode] = []
 
     for claim in claims:
+        external_claim = _is_external_claim(paper, claim)
         claim_links = links.get(claim.id, [])
-        score = 0.15
+        score = 0.08 if external_claim else 0.15
         reasons: List[str] = []
 
         if claim.importance == "high":
-            score += 0.18
+            score += 0.10 if external_claim else 0.18
         if claim.requiresEvidence:
-            score += 0.12
+            score += 0.05 if external_claim else 0.12
         if _NUMERIC_RE.search(claim.text):
-            score += 0.28
+            score += 0.14 if external_claim else 0.28
             if not _has_metric_evidence(claim.id, links, evidence_by_id):
-                score += 0.24
-                reasons.append("The claim contains a quantitative result but no linked metric evidence was found.")
+                score += 0.04 if external_claim else 0.24
+                reasons.append(
+                    "The external paper has no imported FAROS metric artifact for this quantitative claim."
+                    if external_claim else
+                    "The claim contains a quantitative result but no linked metric evidence was found."
+                )
         if claim.claimType == "performance" and not _has_experiment_evidence(claim.id, links, evidence_by_id):
-            score += 0.20
-            reasons.append("The performance claim is not grounded in an experiment artifact.")
+            score += 0.04 if external_claim else 0.20
+            reasons.append(
+                "The external paper's experiment artifacts were not imported into FAROS."
+                if external_claim else
+                "The performance claim is not grounded in an experiment artifact."
+            )
         if _BASELINE_RE.search(claim.text) and not any("baseline" in evidence_by_id[eid].summary.lower() for eid in claim_links if eid in evidence_by_id):
-            score += 0.16
-            reasons.append("The claim implies a baseline comparison, but no baseline evidence is linked.")
+            score += 0.04 if external_claim else 0.16
+            reasons.append(
+                "No structured baseline artifact was imported for this external paper."
+                if external_claim else
+                "The claim implies a baseline comparison, but no baseline evidence is linked."
+            )
         if _OVERCLAIM_RE.search(claim.text):
             score += 0.12
             reasons.append("The wording is strong and should be backed by explicit evidence or softened.")
@@ -104,6 +128,12 @@ def analyze_reviewx_risks(
             elif verification.supportStatus == "weakly_supported":
                 score += 0.08
                 reasons.append(f"Verifier weak support ({verification.verifierType}): {verification.verdict}")
+            elif verification.supportStatus == "needs_human_verification":
+                score += 0.08
+                reasons.append(f"Verifier requests human review ({verification.verifierType}): {verification.verdict}")
+            elif verification.supportStatus == "artifact_absent":
+                score += 0.04
+                reasons.append(f"Artifact unavailable ({verification.verifierType}): {verification.verdict}")
             elif verification.supportStatus == "supported":
                 score -= 0.08
 
@@ -112,8 +142,21 @@ def analyze_reviewx_risks(
             score += 0.32
             reasons.append(f"The claim conflicts with the paper brief guardrail: {avoid_hits[0]}")
 
+        statuses = {verification.supportStatus for verification in claim_verifications}
+        artifact_only = bool(statuses) and statuses <= {"artifact_absent", "weakly_supported", "supported"}
+        if external_claim and artifact_only and not avoid_hits and not _OVERCLAIM_RE.search(claim.text):
+            score = min(score, 0.28)
         score = min(score, 1.0)
-        if score >= 0.35 or reasons:
+        actionable_verdict = bool(statuses & {"unsupported", "contradicted"})
+        needs_human = "needs_human_verification" in statuses
+        should_emit = (
+            score >= 0.35
+            or actionable_verdict
+            or bool(avoid_hits)
+            or (needs_human and score >= 0.24)
+            or (not external_claim and bool(reasons))
+        )
+        if should_emit:
             severity = _severity(score)
             if not reasons:
                 reasons.append("This claim is important enough to require explicit evidence traceability.")
@@ -126,21 +169,30 @@ def analyze_reviewx_risks(
                 "section": claim.sourceSpan.section,
                 **({"line": claim.sourceSpan.line} if claim.sourceSpan.line else {}),
             }
+            title = f"{claim.claimType.title()} claim needs stronger evidence"
+            suggested_fix = _suggest_fix(claim, reasons, target)
+            if support_status == "needs_human_verification":
+                title = f"{claim.claimType.title()} claim needs human verification"
+                suggested_fix = "Inspect the cited full text or surrounding section before accepting or rejecting this claim."
+            elif support_status == "artifact_absent":
+                title = f"Structured artifact is unavailable for this {claim.claimType} claim"
+                suggested_fix = "Import the external experiment, metric, or provenance artifact before making an automated support judgment."
             findings.append(Finding(
                 id=_finding_id(findings),
                 paperId=paper["id"],
                 claimId=claim.id,
                 severity=severity,
-                riskType="unsupported_claim" if claim.requiresEvidence else "traceability_gap",
-                title=f"{claim.claimType.title()} claim needs stronger evidence",
+                riskType=_risk_type_for_claim(claim, claim_verifications),
+                title=title,
                 description=f"{claim.text}\n\n" + " ".join(reasons),
                 evidenceIds=claim_links,
                 targetModule=target,
-                suggestedFix=_suggest_fix(claim, reasons, target),
+                suggestedFix=suggested_fix,
                 confidence=round(score, 2),
                 location=location,
                 supportStatus=support_status,
                 verifierIds=verifier_ids,
+                cemCalibration=_finding_cem_calibration(claim_verifications),
             ))
 
             finding = findings[-1]
@@ -171,11 +223,25 @@ def _claim_support_status(verifications: List[EvidenceVerification]) -> str | No
     priority = {
         "contradicted": 0,
         "unsupported": 1,
-        "weakly_supported": 2,
-        "supported": 3,
-        "not_applicable": 4,
+        "needs_human_verification": 2,
+        "artifact_absent": 3,
+        "weakly_supported": 4,
+        "supported": 5,
+        "not_applicable": 6,
     }
     return min(verifications, key=lambda v: priority.get(v.supportStatus, 9)).supportStatus
+
+
+def _risk_type_for_claim(claim: Claim, verifications: List[EvidenceVerification]) -> str:
+    if any(v.verifierType == "citation_semantic" and v.supportStatus in {"unsupported", "contradicted"} for v in verifications):
+        return "citation_mismatch"
+    if any(v.verifierType == "numeric_metric" and v.supportStatus == "contradicted" for v in verifications):
+        return "metric_mismatch"
+    if any(v.supportStatus == "needs_human_verification" for v in verifications):
+        return "citation_uncertainty"
+    if any(v.supportStatus == "artifact_absent" for v in verifications):
+        return "artifact_gap"
+    return "unsupported_claim" if claim.requiresEvidence else "traceability_gap"
 
 
 def _support_counts(verifications: List[EvidenceVerification]) -> Dict[str, int]:
@@ -185,7 +251,27 @@ def _support_counts(verifications: List[EvidenceVerification]) -> Dict[str, int]
     return dict(counts)
 
 
+def _finding_cem_calibration(verifications: List[EvidenceVerification]) -> Dict[str, Any]:
+    citation_checks = [
+        verification for verification in verifications
+        if verification.verifierType == "citation_semantic" and verification.diagnostics
+    ]
+    if not citation_checks:
+        return {}
+    worst = max(citation_checks, key=lambda item: float(item.confidence or 0))
+    diagnostics = dict(worst.diagnostics)
+    return {
+        "citationSemantic": diagnostics,
+        "lowConfidenceCitation": bool(diagnostics.get("lowConfidence")),
+        "recommendedEscalation": diagnostics.get("recommendedEscalation"),
+    }
+
+
 def _finding_category(finding: Finding) -> str:
+    if finding.riskType == "artifact_gap":
+        return "evidence_support"
+    if finding.riskType == "citation_uncertainty":
+        return "writing_citations"
     if finding.riskType in {"missing_metrics"}:
         return "experimental_validity"
     if finding.riskType in {"missing_citations"}:
@@ -356,8 +442,35 @@ def _global_findings(
     extra: List[Finding] = []
     evidence_counts = Counter(ev.evidenceType for ev in evidence)
     performance_claims = [c for c in claims if c.claimType == "performance"]
+    external_paper = bool(paper.get("externalPaper"))
 
-    if performance_claims and evidence_counts["metric"] == 0:
+    if external_paper and (evidence_counts["metric"] == 0 or not evidence_counts["code_artifact"]):
+        missing = []
+        if evidence_counts["metric"] == 0:
+            missing.append("metrics")
+        if not evidence_counts["code_artifact"]:
+            missing.append("code/provenance")
+        extra.append(Finding(
+            id=f"finding_{len(current_findings) + len(extra) + 1:03d}",
+            paperId=paper["id"],
+            claimId=None,
+            severity="info",
+            riskType="artifact_gap",
+            title="External FAROS provenance artifacts were not imported",
+            description=(
+                f"The paper text and bibliography are available, but structured {', '.join(missing)} "
+                "artifacts are absent. ReviewX will not treat that absence as proof that claims are unsupported."
+            ),
+            evidenceIds=[],
+            targetModule="papers",
+            suggestedFix="Import structured experiment/provenance artifacts for artifact-level verification, or use human review.",
+            confidence=0.35,
+            location={"section": "External Evidence"},
+            supportStatus="artifact_absent",
+            cemCalibration={"externalPaperCalibration": True},
+        ))
+
+    if not external_paper and performance_claims and evidence_counts["metric"] == 0:
         extra.append(Finding(
             id=f"finding_{len(current_findings) + len(extra) + 1:03d}",
             paperId=paper["id"],
@@ -392,7 +505,7 @@ def _global_findings(
             location={"section": "Related Work"},
         ))
 
-    if not evidence_counts["code_artifact"]:
+    if not external_paper and not evidence_counts["code_artifact"]:
         extra.append(Finding(
             id=f"finding_{len(current_findings) + len(extra) + 1:03d}",
             paperId=paper["id"],

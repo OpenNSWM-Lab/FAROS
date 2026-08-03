@@ -41,7 +41,7 @@ def collect_reviewx_artifacts(paper_id: str) -> Dict[str, Any]:
         if file_info.get("isDir"):
             continue
         path = file_info.get("path", "")
-        if not (path.endswith(".tex") or path.endswith(".bib")):
+        if not path.endswith((".tex", ".bib", ".bbl")):
             continue
         content = read_paper_file(paper_id, path)
         if content:

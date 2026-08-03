@@ -37,6 +37,7 @@ def create_review(data: Dict[str, Any]) -> Dict[str, Any]:
         "model": data.get("model", "moonshot-v1-8k"),
         "reviewKind": data.get("reviewKind", "standard"),
         "budgetMode": data.get("budgetMode", "balanced"),
+        "ablationMode": data.get("ablationMode", "full"),
         "status": "pending",
         "scoreSuggestion": None,
         "jsonReport": None,

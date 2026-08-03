@@ -55,6 +55,7 @@ class EvidenceVerification:
     confidence: float
     expectedEvidence: List[str] = field(default_factory=list)
     observedEvidence: List[str] = field(default_factory=list)
+    diagnostics: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

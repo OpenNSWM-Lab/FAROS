@@ -187,6 +187,8 @@ interface ReviewXComparisonMetrics {
   majorCount?: number
   unsupportedCount?: number
   contradictedCount?: number
+  artifactAbsentCount?: number
+  needsHumanVerificationCount?: number
   weaklySupportedCount?: number
   supportedCount?: number
   coverage?: number
@@ -283,7 +285,13 @@ const severityText = (counts?: Record<string, number>) => {
 
 const supportText = (counts?: Record<string, number>) => {
   const c = counts || {}
-  return `U ${c.unsupported || 0} · W ${c.weakly_supported || 0} · S ${c.supported || 0} · C ${c.contradicted || 0}`
+  return `U ${c.unsupported || 0} · A ${c.artifact_absent || 0} · H ${c.needs_human_verification || 0} · W ${c.weakly_supported || 0} · S ${c.supported || 0} · C ${c.contradicted || 0}`
+}
+
+const supportStatusText = (status?: string) => {
+  if (status === 'artifact_absent') return 'Artifact absent'
+  if (status === 'needs_human_verification') return 'Needs human verification'
+  return status || ''
 }
 
 const moduleBadgeClass = (targetModule?: string) => {
@@ -598,6 +606,8 @@ export function ConsistencyChecker() {
     { key: 'blockerCount', label: 'Blockers', lowerIsBetter: true },
     { key: 'unsupportedCount', label: 'Unsupported', lowerIsBetter: true },
     { key: 'contradictedCount', label: 'Contradicted', lowerIsBetter: true },
+    { key: 'artifactAbsentCount', label: 'Artifact absent', lowerIsBetter: true },
+    { key: 'needsHumanVerificationCount', label: 'Needs human review', lowerIsBetter: true },
     { key: 'findingCount', label: 'Findings', lowerIsBetter: true },
     { key: 'coverage', label: 'Coverage', lowerIsBetter: false, percent: true },
     { key: 'meanMismatch', label: 'Mean Mismatch', lowerIsBetter: true },
@@ -922,7 +932,7 @@ export function ConsistencyChecker() {
                               </div>
                               <div className="mt-1 line-clamp-2 text-xs text-slate-700">{claim.text}</div>
                               <div className="mt-1 flex flex-wrap gap-1">
-                                {claim.supportStatus && <Badge variant="outline">Support: {claim.supportStatus}</Badge>}
+                                {claim.supportStatus && <Badge variant="outline">Support: {supportStatusText(claim.supportStatus)}</Badge>}
                                 {claim.rawMismatchScore !== undefined && claim.rawMismatchScore !== claim.mismatchScore && (
                                   <Badge variant="outline">Raw: {formatMetricValue(claim.rawMismatchScore)}</Badge>
                                 )}
@@ -1160,7 +1170,7 @@ export function ConsistencyChecker() {
                                   {item.targetModule || 'papers'}
                                 </span>
                                 {item.supportStatus && (
-                                  <Badge variant="outline">Support: {item.supportStatus}</Badge>
+                                  <Badge variant="outline">Support: {supportStatusText(item.supportStatus)}</Badge>
                                 )}
                               </div>
                               <div className="mt-2 text-sm font-medium text-slate-900">
@@ -1342,7 +1352,7 @@ export function ConsistencyChecker() {
                               <div className="mt-1 flex flex-wrap gap-1">
                                 {item.claimId && <Badge variant="outline">Claim: {item.claimId}</Badge>}
                                 {item.severity && <Badge variant="outline">{item.severity}</Badge>}
-                                {item.supportStatus && <Badge variant="outline">Support: {item.supportStatus}</Badge>}
+                                {item.supportStatus && <Badge variant="outline">Support: {supportStatusText(item.supportStatus)}</Badge>}
                                 {(item.drivers || []).map((driver) => (
                                   <Badge key={`${item.findingId}-${driver}`} variant="outline">{driver}</Badge>
                                 ))}
@@ -1565,7 +1575,7 @@ export function ConsistencyChecker() {
                                   <Badge variant="outline">Confidence: {Math.round(finding.confidence * 100)}%</Badge>
                                 )}
                                 {finding.supportStatus && (
-                                  <Badge variant="outline">Support: {finding.supportStatus}</Badge>
+                                  <Badge variant="outline">Support: {supportStatusText(finding.supportStatus)}</Badge>
                                 )}
                                 {finding.claimId && (
                                   <Badge variant="outline">Claim: {finding.claimId}</Badge>

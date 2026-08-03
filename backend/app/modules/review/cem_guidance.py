@@ -63,19 +63,32 @@ def build_cem_budget_plan(
         priority = _budget_priority(finding, mismatch, dimensions)
         allocation = _model_for_score(mismatch, "rules")
         selected = mode != "local_only" and priority >= threshold
+        drivers = _top_dimensions(dimensions)
+        if finding.cemCalibration.get("lowConfidenceCitation"):
+            drivers.append("low_confidence_citation")
+        if _has_high_stakes_citation_domain(finding):
+            drivers.append("high_stakes_citation_domain")
+        escalation_class = _escalation_class(finding)
         allocations.append({
             "findingId": finding.id,
             "claimId": finding.claimId,
             "priority": priority,
             "mismatchScore": round(mismatch, 3),
+            "escalationClass": escalation_class,
             "severity": finding.severity,
             "supportStatus": finding.supportStatus,
             "recommendedModel": allocation,
             "selected": selected,
-            "drivers": _top_dimensions(dimensions),
+            "drivers": drivers,
         })
 
-    allocations.sort(key=lambda item: (not item["selected"], -item["priority"], -item["mismatchScore"], item["findingId"]))
+    allocations.sort(key=lambda item: (
+        not item["selected"],
+        item["escalationClass"],
+        -item["priority"],
+        -item["mismatchScore"],
+        item["findingId"],
+    ))
     selected_allocations = [item for item in allocations if item["selected"]][:limit]
     selected_ids = {item["findingId"] for item in selected_allocations}
     for item in allocations:
@@ -85,7 +98,7 @@ def build_cem_budget_plan(
         "policy": "cem_mismatch_guided",
         "formula": (
             "priority(f)=0.55*mismatch(c)+0.25*confidence(f)+severity_bonus"
-            "+evidence_gap_bonus+contradiction_bonus"
+            "+evidence_gap_bonus+contradiction_bonus+low_confidence_citation_bonus"
         ),
         "thresholds": {
             "shallow": SHALLOW_THRESHOLD,
@@ -151,10 +164,15 @@ def _budget_priority(finding: Finding, mismatch: float, dimensions: Dict[str, An
     support_bonus = {
         "contradicted": 0.18,
         "unsupported": 0.12,
+        "needs_human_verification": 0.08,
+        "artifact_absent": 0.0,
         "weakly_supported": 0.05,
     }.get(finding.supportStatus or "", 0.0)
     evidence_gap = max(float(dimensions.get("coverage", 0.0)), float(dimensions.get("baseline", 0.0)))
     contradiction = max(float(dimensions.get("numeric", 0.0)), float(dimensions.get("guardrail", 0.0)))
+    citation_uncertainty_bonus = 0.1 if finding.cemCalibration.get("lowConfidenceCitation") else 0.0
+    citation_mismatch_bonus = 0.14 if finding.riskType == "citation_mismatch" else 0.0
+    high_stakes_domain_bonus = 0.22 if _has_high_stakes_citation_domain(finding) else 0.0
     priority = (
         0.55 * mismatch
         + 0.25 * float(finding.confidence or 0)
@@ -162,8 +180,37 @@ def _budget_priority(finding: Finding, mismatch: float, dimensions: Dict[str, An
         + 0.08 * evidence_gap
         + 0.10 * contradiction
         + support_bonus
+        + citation_uncertainty_bonus
+        + citation_mismatch_bonus
+        + high_stakes_domain_bonus
     )
     return round(min(1.0, priority), 3)
+
+
+def _escalation_class(finding: Finding) -> int:
+    if finding.riskType in {"citation_mismatch", "citation_uncertainty"}:
+        return 0
+    if finding.cemCalibration.get("lowConfidenceCitation"):
+        return 0
+    if finding.supportStatus == "contradicted" or finding.riskType == "metric_mismatch":
+        return 1
+    if finding.supportStatus == "artifact_absent" or finding.riskType == "artifact_gap":
+        return 3
+    return 2
+
+
+def _has_high_stakes_citation_domain(finding: Finding) -> bool:
+    citation = (finding.cemCalibration or {}).get("citationSemantic")
+    if not isinstance(citation, dict):
+        return False
+    terms = set(str(item).lower() for item in citation.get("claimDomainTerms", []) or [])
+    high_stakes = {
+        "clinical", "triage", "legal", "financial", "finance", "biomedical",
+        "medical", "healthcare", "fairness", "deployment", "autonomous",
+        "safety", "privacy", "security", "low-resource", "distribution",
+        "shift",
+    }
+    return bool(terms & high_stakes)
 
 
 def _top_dimensions(dimensions: Dict[str, Any]) -> List[str]:
