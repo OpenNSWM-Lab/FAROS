@@ -171,12 +171,26 @@ export function mapArtifactPreviewDTOToPreview(dto: ArtifactPreviewDTO): Artifac
 
 // Paper mappers
 export function mapPaperDTOToPaper(dto: PaperDTO): PaperDraft {
+  const sections = Array.isArray(dto.sections)
+    ? dto.sections
+    : Array.isArray(dto.outlineJson?.sections)
+      ? dto.outlineJson.sections
+      : []
+
+  const status = dto.status === 'completed'
+    ? 'final'
+    : dto.status === 'created' || dto.status === 'generating'
+      ? 'draft'
+      : dto.status === 'failed'
+        ? 'draft'
+        : dto.status ?? 'draft'
+
   return {
     id: dto.id,
     runId: dto.runId,
     title: dto.title,
-    authors: dto.authors,
-    sections: dto.sections.map(s => ({
+    authors: dto.authors ?? dto.outlineJson?.authors ?? [],
+    sections: sections.map(s => ({
       id: s.id,
       type: s.type,
       title: s.title,
@@ -184,9 +198,9 @@ export function mapPaperDTOToPaper(dto: PaperDTO): PaperDraft {
       order: s.order,
     })),
     bibliography: dto.bibliography,
-    createdAt: dto.createdAt,
-    updatedAt: dto.updatedAt,
-    status: dto.status,
+    createdAt: dto.createdAt ?? new Date(0).toISOString(),
+    updatedAt: dto.updatedAt ?? dto.createdAt ?? new Date(0).toISOString(),
+    status,
   }
 }
 
@@ -202,6 +216,13 @@ export function mapReviewFindingDTOToFinding(dto: ReviewFindingDTO): ReviewFindi
     title: dto.title,
     description: dto.description,
     evidence: dto.evidence,
+    riskType: dto.riskType,
+    claimId: dto.claimId,
+    evidenceIds: dto.evidenceIds,
+    targetModule: dto.targetModule,
+    confidence: dto.confidence,
+    supportStatus: dto.supportStatus,
+    verifierIds: dto.verifierIds,
     location: dto.location,
     suggestedFix: dto.suggestedFix,
   }

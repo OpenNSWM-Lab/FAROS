@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light" />
+    <title>ReviewX 人工标注</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main id="login-view" class="login-shell">
+      <section class="login-panel" aria-labelledby="login-title">
+        <div class="brand-mark">RX</div>
+        <h1 id="login-title">ReviewX 人工标注</h1>
+        <form id="login-form" class="login-form">
+          <label>
+            <span>标注员 ID</span>
+            <input id="annotator-id" name="annotatorId" autocomplete="username" maxlength="40" required />
+          </label>
+          <label>
+            <span>访问码</span>
+            <input id="access-code" name="accessCode" type="password" autocomplete="current-password" required />
+          </label>
+          <p id="login-error" class="form-error" role="alert"></p>
+          <button type="submit" class="primary-button">进入标注</button>
+        </form>
+      </section>
+    </main>
+
+    <main id="app-view" class="app-shell" hidden>
+      <header class="topbar">
+        <div class="brand-row">
+          <div class="brand-mark small">RX</div>
+          <div>
+            <h1>ReviewX 人工标注</h1>
+            <p id="annotator-label"></p>
+          </div>
+        </div>
+        <div class="header-actions">
+          <a class="quiet-button" href="/api/export.csv">导出 CSV</a>
+          <button id="logout-button" type="button" class="quiet-button">退出</button>
+        </div>
+      </header>
+
+      <section class="progress-band">
+        <div class="progress-copy">
+          <span id="progress-label">0 / 0</span>
+          <span id="save-state" aria-live="polite"></span>
+        </div>
+        <div class="progress-track" aria-hidden="true"><div id="progress-fill"></div></div>
+      </section>
+
+      <div class="workspace">
+        <aside class="task-pane">
+          <div class="task-toolbar">
+            <input id="task-search" type="search" placeholder="搜索任务" />
+            <select id="task-filter" aria-label="任务状态">
+              <option value="all">全部</option>
+              <option value="unrated">未标注</option>
+              <option value="draft">草稿</option>
+              <option value="completed">已完成</option>
+            </select>
+          </div>
+          <div id="task-list" class="task-list"></div>
+        </aside>
+
+        <section class="annotation-pane">
+          <div id="empty-state" class="empty-state">请选择一条标注任务</div>
+          <form id="annotation-form" hidden>
+            <div class="task-heading">
+              <div>
+                <span id="task-position" class="task-index"></span>
+                <h2 id="task-title"></h2>
+              </div>
+              <div id="task-badges" class="badge-row"></div>
+            </div>
+
+            <section class="content-section">
+              <h3>论文声明</h3>
+              <p id="claim-text" class="claim-text"></p>
+              <div class="source-line"><span id="claim-section"></span><span id="sample-id"></span></div>
+            </section>
+
+            <section class="content-section assessment-section">
+              <h3>ReviewX 审稿判断</h3>
+              <strong id="finding-title" class="finding-title"></strong>
+              <p id="finding-description" class="finding-description"></p>
+              <p id="reviewer-assessment"></p>
+            </section>
+
+            <section id="expert-question-section" class="content-section expert-section">
+              <h3>专家审稿问题</h3>
+              <p id="expert-question"></p>
+            </section>
+
+            <section id="author-answer-section" class="content-section answer-section">
+              <div class="section-heading-row">
+                <h3>作者回答</h3>
+                <span id="answerability-badge" class="badge"></span>
+              </div>
+              <p id="author-answer"></p>
+            </section>
+
+            <section id="reference-evidence-section" class="content-section evidence-section">
+              <h3>专家参考证据</h3>
+              <p id="reference-evidence"></p>
+            </section>
+
+            <section class="content-section fix-section">
+              <h3>修改建议</h3>
+              <p id="suggested-fix"></p>
+            </section>
+
+            <section class="rating-section" aria-labelledby="rating-title">
+              <h3 id="rating-title">评分</h3>
+              <div id="rating-fields"></div>
+            </section>
+
+            <fieldset class="coverage-section">
+              <legend>专家问题覆盖结论</legend>
+              <div id="coverage-fields" class="coverage-options"></div>
+            </fieldset>
+
+            <label class="notes-field">
+              <span>备注</span>
+              <textarea id="human-notes" rows="4" maxlength="5000"></textarea>
+            </label>
+
+            <p id="annotation-error" class="form-error" role="alert"></p>
+            <div class="form-actions">
+              <button id="save-button" type="button" class="quiet-button">保存</button>
+              <button id="save-next-button" type="submit" class="primary-button">保存并下一条</button>
+            </div>
+          </form>
+        </section>
+      </div>
+    </main>
+    <script src="/app.js" defer></script>
+  </body>
+</html>
