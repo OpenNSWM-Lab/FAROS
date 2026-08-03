@@ -45,6 +45,7 @@ class RunReviewXRequest(BaseModel):
     providerName: Optional[str] = None
     model: Optional[str] = None
     budgetMode: str = "balanced"
+    ablationMode: str = "full"
 
 
 class UpdateImprovementRequest(BaseModel):
@@ -115,6 +116,7 @@ def _reviewx_history_summary(review: Dict[str, Any]) -> Dict[str, Any]:
         "paperId": review.get("paperId"),
         "status": review.get("status"),
         "budgetMode": review.get("budgetMode", "balanced"),
+        "ablationMode": review.get("ablationMode", "full"),
         "providerName": review.get("providerName"),
         "model": review.get("model"),
         "scoreSuggestion": review.get("scoreSuggestion"),
@@ -149,6 +151,8 @@ def _reviewx_compare_metrics(review: Dict[str, Any]) -> Dict[str, Any]:
         "majorCount": severity_counts.get("major", 0),
         "unsupportedCount": support_counts.get("unsupported", 0),
         "contradictedCount": support_counts.get("contradicted", 0),
+        "artifactAbsentCount": support_counts.get("artifact_absent", 0),
+        "needsHumanVerificationCount": support_counts.get("needs_human_verification", 0),
         "weaklySupportedCount": support_counts.get("weakly_supported", 0),
         "supportedCount": support_counts.get("supported", 0),
         "coverage": summary.get("coverage", 0),
@@ -183,12 +187,21 @@ def _finding_summary(finding: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "id": finding.get("id"),
         "title": finding.get("title"),
+        "description": finding.get("description"),
         "severity": finding.get("severity"),
         "riskType": finding.get("riskType"),
         "claimId": finding.get("claimId"),
         "targetModule": finding.get("targetModule"),
         "supportStatus": finding.get("supportStatus"),
         "confidence": finding.get("confidence"),
+        "location": finding.get("location"),
+        "suggestedFix": finding.get("suggestedFix"),
+        "reviewerDecision": finding.get("reviewerDecision"),
+        "reviewerAssessment": finding.get("reviewerAssessment"),
+        "reviewerModel": finding.get("reviewerModel"),
+        "cemCalibration": finding.get("cemCalibration", {}),
+        "revisionStatus": finding.get("revisionStatus"),
+        "revisionRequestIds": finding.get("revisionRequestIds", []),
     }
 
 
@@ -206,6 +219,8 @@ def _reviewx_compare_payload(before: Dict[str, Any], after: Dict[str, Any]) -> D
         "majorCount",
         "unsupportedCount",
         "contradictedCount",
+        "artifactAbsentCount",
+        "needsHumanVerificationCount",
         "weaklySupportedCount",
         "supportedCount",
         "coverage",
@@ -231,6 +246,7 @@ def _reviewx_eval_record(review: Dict[str, Any]) -> Dict[str, Any]:
     model_trace = review.get("modelTrace") or {}
     mismatch_report = review.get("mismatchReport") or {}
     evidence_graph = review.get("evidenceGraph") or {}
+    llm_routing = model_trace.get("llmRouting", {}) if isinstance(model_trace, dict) else {}
     requests = _list_improvement_requests(review_id=review.get("id"))
     return {
         "schemaVersion": "reviewx_eval_v1",
@@ -239,12 +255,14 @@ def _reviewx_eval_record(review: Dict[str, Any]) -> Dict[str, Any]:
         "createdAt": review.get("createdAt"),
         "updatedAt": review.get("updatedAt"),
         "budgetMode": review.get("budgetMode", "balanced"),
+        "ablationMode": review.get("ablationMode", "full"),
         "providerName": review.get("providerName"),
         "model": review.get("model"),
         "scoreSuggestion": review.get("scoreSuggestion"),
         "summary": summary,
         "mismatchAggregate": mismatch_report.get("aggregate", summary.get("mismatch", {})),
         "claimScores": mismatch_report.get("claimScores", []),
+        "cemMethod": mismatch_report.get("method", {}),
         "graphStats": {
             "nodeCount": evidence_graph.get("nodeCount", 0),
             "edgeCount": evidence_graph.get("edgeCount", 0),
@@ -257,7 +275,11 @@ def _reviewx_eval_record(review: Dict[str, Any]) -> Dict[str, Any]:
             "localRulePasses": model_trace.get("localRulePasses", []),
             "llmCallCount": len(model_trace.get("llmCalls", []) or []),
             "estimatedTokenCost": model_trace.get("estimatedTokenCost", 0),
-            "llmRouting": model_trace.get("llmRouting", {}),
+            "budgetPolicy": llm_routing.get("budgetPolicy"),
+            "routingStrategy": llm_routing.get("routingStrategy"),
+            "selectedFindingIds": llm_routing.get("selectedFindingIds", []),
+            "selectedFindingCount": len(llm_routing.get("selectedFindingIds", []) or []),
+            "llmRouting": llm_routing,
         },
         "metrics": _reviewx_compare_metrics(review),
     }
@@ -336,6 +358,7 @@ async def run_reviewx_endpoint(req: RunReviewXRequest):
         "model": model,
         "reviewKind": "reviewx",
         "budgetMode": req.budgetMode,
+        "ablationMode": req.ablationMode,
     })
 
     try:

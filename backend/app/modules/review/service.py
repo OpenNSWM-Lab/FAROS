@@ -241,14 +241,33 @@ def generate_reviewx(review_id: str) -> Dict[str, Any]:
     update_review(review_id, {"status": "generating"})
 
     try:
+        ablation_mode = str(review.get("ablationMode") or "full")
+        ablations = {item.strip() for item in ablation_mode.split(",") if item.strip() and item.strip() != "full"}
         artifacts = collect_reviewx_artifacts(paper_id)
         claims = extract_claims(artifacts)
         evidence = build_evidence(artifacts)
         links = link_claims_to_evidence(claims, evidence)
-        verifications = verify_claim_evidence(paper, claims, evidence, links)
-        findings, risk_tree = analyze_reviewx_risks(paper, claims, evidence, links, verifications)
+        verifications = [] if "no_verifier" in ablations else verify_claim_evidence(
+            paper,
+            claims,
+            evidence,
+            links,
+            calibrate_external="no_external_calibration" not in ablations,
+        )
+        if "no_citation_semantic" in ablations:
+            verifications = [
+                verification for verification in verifications
+                if verification.verifierType != "citation_semantic"
+            ]
+        risk_paper = paper
+        if "no_external_calibration" in ablations and paper.get("externalPaper"):
+            risk_paper = {key: value for key, value in paper.items() if key != "externalPaper"}
+        findings, risk_tree = analyze_reviewx_risks(risk_paper, claims, evidence, links, verifications)
         preliminary_mismatch = build_mismatch_report(claims, evidence, links, verifications, findings)
-        risk_tree = annotate_risk_tree_with_mismatch(risk_tree, preliminary_mismatch)
+        if "no_risk_tree" in ablations:
+            risk_tree = []
+        else:
+            risk_tree = annotate_risk_tree_with_mismatch(risk_tree, preliminary_mismatch)
         settings = get_settings()
         provider_name = review.get("providerName") or settings.get_active_provider()
         model = review.get("model") or settings.get_active_model(provider_name)
@@ -262,11 +281,23 @@ def generate_reviewx(review_id: str) -> Dict[str, Any]:
             model=model,
             budget_mode=budget_mode,
             mismatch_report=preliminary_mismatch,
+            routing_strategy="severity" if "no_mismatch_routing" in ablations else "cem",
         )
-        revision_feedback = attach_revision_feedback(paper_id, findings)
+        if "no_llm_calibration" in ablations:
+            for finding in findings:
+                finding.reviewerDecision = None
+                finding.reviewerAssessment = None
+                finding.reviewerModel = None
+                finding.cemCalibration = {
+                    key: value
+                    for key, value in finding.cemCalibration.items()
+                    if not str(key).startswith("llm")
+                }
+        revision_feedback = {"matchedRequestCount": 0, "statusCounts": {}} if "no_revision_feedback" in ablations else attach_revision_feedback(paper_id, findings)
         action_items = findings_to_action_items(findings)
         mismatch_report = build_mismatch_report(claims, evidence, links, verifications, findings)
-        risk_tree = annotate_risk_tree_with_mismatch(risk_tree, mismatch_report)
+        if risk_tree:
+            risk_tree = annotate_risk_tree_with_mismatch(risk_tree, mismatch_report)
         evidence_graph = mismatch_report.get("graph", {})
 
         severity_counts: Dict[str, int] = {"blocker": 0, "major": 0, "minor": 0, "info": 0}
@@ -279,6 +310,8 @@ def generate_reviewx(review_id: str) -> Dict[str, Any]:
             support_counts[verification.supportStatus] = support_counts.get(verification.supportStatus, 0) + 1
         summary = {
             "mode": "reviewx_local_mvp",
+            "ablationMode": ablation_mode,
+            "ablations": sorted(ablations),
             "paperTitle": paper.get("title", "Untitled"),
             "claimCount": len(claims),
             "evidenceCount": len(evidence),
@@ -296,6 +329,7 @@ def generate_reviewx(review_id: str) -> Dict[str, Any]:
         }
         model_trace = {
             "routingMode": budget_mode,
+            "ablationMode": ablation_mode,
             "localRulePasses": [
                 "artifact_collection",
                 "claim_extraction",

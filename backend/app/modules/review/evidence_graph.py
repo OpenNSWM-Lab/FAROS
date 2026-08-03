@@ -13,6 +13,12 @@ _STOPWORDS = {
     "method", "approach", "framework", "system", "paper", "model", "models", "results",
 }
 _NUMERIC_RE = re.compile(r"\b\d+(\.\d+)?\s*(%|percent|x|times|k|ms|s|tokens?|accuracy|f1|auc)\b", re.IGNORECASE)
+_BIB_ENTRY_RE = re.compile(r"@\w+\s*\{\s*([^,\s]+)\s*,([\s\S]*?)\n\}", re.MULTILINE)
+_BIB_FIELD_RE = re.compile(r"(\w+)\s*=\s*[\{\"]([\s\S]*?)[\}\"]\s*,?", re.MULTILINE)
+_BBL_ENTRY_RE = re.compile(
+    r"\\bibitem(?:\[[\s\S]*?\])?\{([^}]+)\}([\s\S]*?)(?=\\bibitem|\\end\{thebibliography\})",
+    re.MULTILINE,
+)
 
 
 def _keywords(text: str) -> set[str]:
@@ -33,10 +39,68 @@ def _metric_entries(metrics: Any) -> Iterable[Dict[str, Any]]:
                 yield {"key": key, "value": value}
 
 
+def _bib_entries(content: str) -> Iterable[Dict[str, str]]:
+    for match in _BIB_ENTRY_RE.finditer(content):
+        key = match.group(1).strip()
+        body = match.group(2)
+        fields = {name.lower(): re.sub(r"\s+", " ", value).strip() for name, value in _BIB_FIELD_RE.findall(body)}
+        title = fields.get("title")
+        if not key or not title:
+            continue
+        yield {
+            "key": key,
+            "title": title,
+            "venue": fields.get("booktitle") or fields.get("journal") or "",
+            "year": fields.get("year") or "",
+            "author": fields.get("author") or "",
+            "abstract": fields.get("abstract") or "",
+            "note": fields.get("note") or "",
+            "url": fields.get("url") or "",
+            "doi": fields.get("doi") or "",
+            "keywords": fields.get("keywords") or fields.get("keyword") or "",
+        }
+
+
+def _clean_latex_text(value: str) -> str:
+    value = re.sub(r"\\(?:emph|textit|textbf|url|doi)\{([^{}]*)\}", r"\1", value)
+    value = re.sub(r"\\[A-Za-z]+(?:\[[^\]]*\])?", " ", value)
+    value = value.replace("{", "").replace("}", "").replace("~", " ")
+    return re.sub(r"\s+", " ", value).strip(" .,:;\n\t")
+
+
+def _bbl_entries(content: str) -> Iterable[Dict[str, str]]:
+    for match in _BBL_ENTRY_RE.finditer(content):
+        key = match.group(1).strip()
+        body = match.group(2)
+        blocks = re.split(r"\\newblock\s*", body)
+        if len(blocks) < 2:
+            continue
+        author = _clean_latex_text(blocks[0])
+        title = _clean_latex_text(blocks[1])
+        publication = _clean_latex_text(" ".join(blocks[2:]))
+        year_match = re.search(r"\b(?:19|20)\d{2}\b", publication)
+        url_match = re.search(r"\\url\{([^{}]+)\}", body)
+        if not key or not title:
+            continue
+        yield {
+            "key": key,
+            "title": title,
+            "venue": publication,
+            "year": year_match.group(0) if year_match else "",
+            "author": author,
+            "abstract": "",
+            "note": "Imported from compiled BibTeX .bbl output.",
+            "url": url_match.group(1).strip() if url_match else "",
+            "doi": "",
+            "keywords": "",
+        }
+
+
 def build_evidence(artifacts: Dict[str, Any]) -> List[Evidence]:
     paper = artifacts["paper"]
     paper_id = paper["id"]
     evidence: List[Evidence] = []
+    seen_citation_keys: set[str] = set()
 
     brief = paper.get("briefJson") or {}
     if isinstance(brief, dict):
@@ -63,7 +127,15 @@ def build_evidence(artifacts: Dict[str, Any]) -> List[Evidence]:
                 metadata={"field": "must_use_evidence", "index": idx},
             ))
 
-    for latex_file in artifacts.get("latexFiles", []):
+    latex_files = sorted(
+        artifacts.get("latexFiles", []),
+        key=lambda item: (
+            0 if str(item.get("path", "")).endswith(".bib") else
+            2 if str(item.get("path", "")).endswith(".bbl") else 1,
+            str(item.get("path", "")),
+        ),
+    )
+    for latex_file in latex_files:
         content = latex_file.get("content", "")
         citations = re.findall(r"\\cite[p|t]?\{([^}]+)\}", content)
         if citations:
@@ -77,7 +149,7 @@ def build_evidence(artifacts: Dict[str, Any]) -> List[Evidence]:
                 confidence=0.7,
                 metadata={"citationCount": len(citations), "sample": citations[:8]},
             ))
-        if "\\bibliography" in content or latex_file["path"].endswith(".bib"):
+        if "\\bibliography" in content or latex_file["path"].endswith((".bib", ".bbl")):
             evidence.append(Evidence(
                 id=f"evidence_{len(evidence) + 1:03d}",
                 paperId=paper_id,
@@ -87,6 +159,37 @@ def build_evidence(artifacts: Dict[str, Any]) -> List[Evidence]:
                 summary=f"Bibliography material is present in {latex_file['path']}.",
                 confidence=0.75,
             ))
+        if latex_file["path"].endswith((".bib", ".bbl")):
+            entries = _bib_entries(content) if latex_file["path"].endswith(".bib") else _bbl_entries(content)
+            for entry in entries:
+                normalized_key = entry["key"].strip().lower()
+                if normalized_key in seen_citation_keys:
+                    continue
+                seen_citation_keys.add(normalized_key)
+                evidence.append(Evidence(
+                    id=f"evidence_{len(evidence) + 1:03d}",
+                    paperId=paper_id,
+                    evidenceType="citation_entry",
+                    sourceModule="paper",
+                    sourcePath=f"{latex_file['path']}#{entry['key']}",
+                    summary=(
+                        f"{entry['key']}: {entry['title']}"
+                        + (f" ({entry['venue']}, {entry['year']})" if entry.get("venue") or entry.get("year") else "")
+                    ),
+                    confidence=0.82,
+                    metadata={
+                        "citationKey": entry["key"],
+                        "title": entry["title"],
+                        "venue": entry.get("venue", ""),
+                        "year": entry.get("year", ""),
+                        "author": entry.get("author", ""),
+                        "abstract": entry.get("abstract", ""),
+                        "note": entry.get("note", ""),
+                        "url": entry.get("url", ""),
+                        "doi": entry.get("doi", ""),
+                        "keywords": entry.get("keywords", ""),
+                    },
+                ))
 
     for exp in artifacts.get("experiments", []):
         record = exp.get("record") or {}

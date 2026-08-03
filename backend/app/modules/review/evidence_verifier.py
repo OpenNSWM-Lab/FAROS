@@ -15,8 +15,19 @@ from app.modules.review.reviewx_models import Claim, Evidence, EvidenceVerificat
 
 
 _NUMERIC_RE = re.compile(r"\b(\d+(?:\.\d+)?)\s*(%|percent|x|times|k|ms|s|tokens?|accuracy|f1|auc)?\b", re.IGNORECASE)
-_BASELINE_RE = re.compile(r"\b(baseline|ablation|compare|comparison|outperform|state-of-the-art|sota)\b", re.IGNORECASE)
+_BASELINE_RE = re.compile(r"\b(baselines?|ablation|compare|comparison|outperform|state-of-the-art|sota)\b", re.IGNORECASE)
 _CITATION_RE = re.compile(r"\\cite[p|t]?\{[^}]+\}")
+_DOMAIN_RISK_TERMS = {
+    "clinical", "triage", "legal", "financial", "finance", "risk", "scoring",
+    "fairness", "biomedical", "multilingual", "deployment", "autonomous",
+    "domain", "shift", "summarization", "medical", "healthcare", "safety",
+    "privacy", "security", "robustness", "low-resource", "low", "resource",
+    "distribution", "generalization", "generalizes", "out-of-domain",
+}
+_CITATION_GENERIC_TERMS = {
+    "framework", "method", "approach", "system", "model", "paper", "results",
+    "claim", "study", "work", "using", "based", "propose", "proposes",
+}
 
 
 def verify_claim_evidence(
@@ -24,8 +35,10 @@ def verify_claim_evidence(
     claims: List[Claim],
     evidence: List[Evidence],
     links: Dict[str, List[str]],
+    calibrate_external: bool = True,
 ) -> List[EvidenceVerification]:
     evidence_by_id = {ev.id: ev for ev in evidence}
+    citation_entries = _citation_entries_by_key(evidence)
     brief = paper.get("briefJson") or {}
     avoid_claims = brief.get("avoid_claims", []) if isinstance(brief, dict) else []
     verifications: List[EvidenceVerification] = []
@@ -34,6 +47,7 @@ def verify_claim_evidence(
         linked = [evidence_by_id[eid] for eid in links.get(claim.id, []) if eid in evidence_by_id]
         linked_ids = [ev.id for ev in linked]
         claim_numbers = _extract_numbers(claim.text)
+        citation_keys = _citation_keys_from_claim(claim)
 
         if claim_numbers:
             verifications.append(_verify_numeric_claim(paper["id"], claim, linked, claim_numbers, len(verifications)))
@@ -41,8 +55,24 @@ def verify_claim_evidence(
         if _BASELINE_RE.search(claim.text):
             verifications.append(_verify_baseline_claim(paper["id"], claim, linked, len(verifications)))
 
-        if claim.claimType in {"method", "performance"} and not _CITATION_RE.search(claim.text):
+        if citation_keys:
+            verifications.append(_verify_citation_semantics(
+                paper["id"],
+                claim,
+                citation_keys,
+                citation_entries,
+                len(verifications),
+            ))
+
+        if (
+            claim.claimType in {"method", "performance"}
+            or "citation_or_evidence_needed" in claim.riskHints
+        ) and not citation_keys and not _CITATION_RE.search(claim.text):
             verifications.append(_verify_citation_context(paper["id"], claim, linked, len(verifications)))
+
+        scope_guardrail = _verify_high_stakes_scope(paper["id"], claim, len(verifications))
+        if scope_guardrail:
+            verifications.append(scope_guardrail)
 
         guardrail = _verify_guardrail(paper["id"], claim, avoid_claims, len(verifications))
         if guardrail:
@@ -80,6 +110,66 @@ def verify_claim_evidence(
                 observedEvidence=[_evidence_label(ev) for ev in linked[:5]],
             ))
 
+    return _calibrate_external_verifications(paper, claims, verifications) if calibrate_external else verifications
+
+
+def _is_benchmark_claim(claim: Claim) -> bool:
+    return (
+        claim.sourceSpan.section == "CEM-Bench Injected Claims"
+        or claim.text.lstrip().startswith("CEM-Bench")
+    )
+
+
+def _calibrate_external_verifications(
+    paper: Dict[str, Any],
+    claims: List[Claim],
+    verifications: List[EvidenceVerification],
+) -> List[EvidenceVerification]:
+    """Separate absent FAROS artifacts from evidence that actually fails a claim."""
+    if not paper.get("externalPaper"):
+        return verifications
+
+    claims_by_id = {claim.id: claim for claim in claims}
+    artifact_verifiers = {"numeric_metric", "baseline_coverage", "general_evidence"}
+    for verification in verifications:
+        claim = claims_by_id.get(verification.claimId)
+        if not claim or _is_benchmark_claim(claim):
+            continue
+
+        original_status = verification.supportStatus
+        calibration_reason = None
+        if verification.verifierType in artifact_verifiers and original_status == "unsupported":
+            verification.supportStatus = "artifact_absent"
+            calibration_reason = "external_paper_has_no_faros_structured_artifact"
+        elif verification.verifierType == "citation_context" and original_status == "unsupported":
+            verification.supportStatus = "needs_human_verification"
+            calibration_reason = "sentence_level_citation_context_is_inconclusive"
+        elif verification.verifierType == "citation_semantic":
+            reasons = set(verification.diagnostics.get("mismatchReasons", []) or [])
+            if "missing_citation_metadata" in reasons:
+                verification.supportStatus = "artifact_absent"
+                calibration_reason = "cited_entry_metadata_is_unavailable"
+            elif original_status == "unsupported" and "domain_gap" not in reasons:
+                verification.supportStatus = "needs_human_verification"
+                calibration_reason = "lexical_mismatch_without_clear_domain_gap"
+            elif original_status == "weakly_supported" and verification.diagnostics.get("lowConfidence"):
+                verification.supportStatus = "needs_human_verification"
+                calibration_reason = "citation_entailment_requires_full_text_review"
+
+        if calibration_reason:
+            verification.diagnostics = {
+                **verification.diagnostics,
+                "externalCalibration": {
+                    "applied": True,
+                    "originalSupportStatus": original_status,
+                    "calibratedSupportStatus": verification.supportStatus,
+                    "reason": calibration_reason,
+                },
+            }
+            verification.verdict += (
+                f" External-paper calibration: {verification.supportStatus}; "
+                "absence of a FAROS-local artifact is not treated as proof that the claim is false."
+            )
     return verifications
 
 
@@ -95,6 +185,159 @@ def _extract_numbers(text: str) -> List[float]:
         except ValueError:
             continue
     return values
+
+
+def _citation_keys_from_claim(claim: Claim) -> List[str]:
+    keys = []
+    for hint in claim.riskHints:
+        if str(hint).startswith("citation_key:"):
+            key = str(hint).split(":", 1)[1].strip()
+            if key and key not in keys:
+                keys.append(key)
+    return keys
+
+
+def _citation_entries_by_key(evidence: List[Evidence]) -> Dict[str, Evidence]:
+    entries = {}
+    for ev in evidence:
+        if ev.evidenceType != "citation_entry":
+            continue
+        key = str(ev.metadata.get("citationKey") or "").strip()
+        if key:
+            entries[key] = ev
+    return entries
+
+
+def _verify_citation_semantics(
+    paper_id: str,
+    claim: Claim,
+    citation_keys: List[str],
+    citation_entries: Dict[str, Evidence],
+    index: int,
+) -> EvidenceVerification:
+    cited = [citation_entries[key] for key in citation_keys if key in citation_entries]
+    if not cited:
+        diagnostics = {
+            "citationKeys": citation_keys[:5],
+            "matchedCitationKeys": [],
+            "mismatchReasons": ["missing_citation_metadata"],
+            "lowConfidence": True,
+            "recommendedEscalation": "llm_citation_entailment",
+            "confidenceBasis": "citation command exists but no bibliography entry was resolved",
+        }
+        return EvidenceVerification(
+            id=_verification_id(index),
+            paperId=paper_id,
+            claimId=claim.id,
+            verifierType="citation_semantic",
+            supportStatus="unsupported",
+            verdict="The claim has citation commands, but ReviewX could not resolve the cited bibliography entries.",
+            evidenceIds=[],
+            confidence=0.74,
+            expectedEvidence=[f"resolved citation entry for {key}" for key in citation_keys[:5]],
+            observedEvidence=[],
+            diagnostics=diagnostics,
+        )
+
+    claim_keywords = set(_keywords(claim.text))
+    claim_domain_terms = claim_keywords & _DOMAIN_RISK_TERMS
+    citation_keywords = set()
+    observed = []
+    matched_keys = []
+    metadata_fields = set()
+    for ev in cited:
+        title = str(ev.metadata.get("title") or ev.summary)
+        venue = str(ev.metadata.get("venue") or "")
+        abstract = str(ev.metadata.get("abstract") or "")
+        note = str(ev.metadata.get("note") or "")
+        keywords = str(ev.metadata.get("keywords") or "")
+        doi = str(ev.metadata.get("doi") or "")
+        url = str(ev.metadata.get("url") or "")
+        citation_keywords.update(_keywords(f"{title} {venue} {abstract} {note} {keywords}"))
+        observed.append(_evidence_label(ev))
+        matched_keys.append(str(ev.metadata.get("citationKey") or ev.sourcePath.rsplit("#", 1)[-1]))
+        for field_name, value in {
+            "title": title,
+            "venue": venue,
+            "abstract": abstract,
+            "note": note,
+            "keywords": keywords,
+            "doi": doi,
+            "url": url,
+        }.items():
+            if value:
+                metadata_fields.add(field_name)
+
+    informative_claim_keywords = claim_keywords - _CITATION_GENERIC_TERMS
+    overlap = informative_claim_keywords & citation_keywords
+    citation_domain_terms = citation_keywords & _DOMAIN_RISK_TERMS
+    domain_gap_terms = claim_domain_terms - citation_domain_terms
+    overlap_ratio = round(len(overlap) / max(1, min(len(informative_claim_keywords), 12)), 3)
+    risky_domain_gap = bool(claim_domain_terms and not (claim_domain_terms & citation_keywords))
+    weak_overlap = len(overlap) < 2 and overlap_ratio < 0.24
+    metadata_richness = round(len(metadata_fields) / 7.0, 3)
+    mismatch_reasons = []
+    if risky_domain_gap:
+        mismatch_reasons.append("domain_gap")
+    if weak_overlap:
+        mismatch_reasons.append("low_lexical_overlap")
+    if "abstract" not in metadata_fields and "note" not in metadata_fields and weak_overlap:
+        mismatch_reasons.append("thin_citation_metadata")
+    low_confidence = bool(
+        not risky_domain_gap
+        and (weak_overlap or metadata_richness < 0.35 or len(overlap) < 3)
+    )
+    diagnostics = {
+        "citationKeys": citation_keys[:5],
+        "matchedCitationKeys": matched_keys[:5],
+        "claimDomainTerms": sorted(claim_domain_terms)[:12],
+        "citationDomainTerms": sorted(citation_domain_terms)[:12],
+        "domainGapTerms": sorted(domain_gap_terms)[:12],
+        "overlapTerms": sorted(overlap)[:12],
+        "overlapRatio": overlap_ratio,
+        "metadataFields": sorted(metadata_fields),
+        "metadataRichness": metadata_richness,
+        "mismatchReasons": mismatch_reasons,
+        "lowConfidence": low_confidence,
+        "recommendedEscalation": "llm_citation_entailment" if low_confidence else None,
+        "confidenceBasis": (
+            "clear domain gap" if risky_domain_gap
+            else "low topical overlap" if weak_overlap
+            else "topical overlap with citation metadata"
+        ),
+    }
+    if risky_domain_gap or weak_overlap:
+        return EvidenceVerification(
+            id=_verification_id(index),
+            paperId=paper_id,
+            claimId=claim.id,
+            verifierType="citation_semantic",
+            supportStatus="unsupported",
+            verdict=(
+                "The claim has a citation, but the cited bibliography metadata appears off-topic for the claim's "
+                f"semantic scope. reasons={mismatch_reasons}, "
+                f"domainGapTerms={sorted(domain_gap_terms)[:6]}, overlap={sorted(overlap)[:6]}"
+            ),
+            evidenceIds=[ev.id for ev in cited[:5]],
+            confidence=0.84 if risky_domain_gap else 0.64 if low_confidence else 0.7,
+            expectedEvidence=["citation whose title/topic directly supports the claim scope"],
+            observedEvidence=observed[:5],
+            diagnostics=diagnostics,
+        )
+
+    return EvidenceVerification(
+        id=_verification_id(index),
+        paperId=paper_id,
+        claimId=claim.id,
+        verifierType="citation_semantic",
+        supportStatus="weakly_supported",
+        verdict="The cited bibliography title has topical overlap with the claim, but full citation entailment still needs review.",
+        evidenceIds=[ev.id for ev in cited[:5]],
+        confidence=0.64,
+        expectedEvidence=["citation title/topic aligned with the claim scope"],
+        observedEvidence=observed[:5],
+        diagnostics=diagnostics,
+    )
 
 
 def _numeric_metric_value(ev: Evidence) -> Optional[float]:
@@ -273,6 +516,40 @@ def _verify_guardrail(
                 observedEvidence=[str(avoid)],
             )
     return None
+
+
+def _verify_high_stakes_scope(
+    paper_id: str,
+    claim: Claim,
+    index: int,
+) -> Optional[EvidenceVerification]:
+    """Flag deployment claims that explicitly waive domain-specific validation."""
+    text = claim.text.lower()
+    high_stakes = any(term in text for term in (
+        "clinical", "medical", "legal", "financial", "high-stakes", "autonomous deployment",
+    ))
+    waives_validation = bool(re.search(
+        r"\bwithout\s+(?:any\s+|additional\s+|further\s+)?(?:domain-specific\s+)?"
+        r"(?:evaluation|validation|testing)\b",
+        text,
+    ))
+    if not (high_stakes and waives_validation):
+        return None
+    return EvidenceVerification(
+        id=_verification_id(index),
+        paperId=paper_id,
+        claimId=claim.id,
+        verifierType="scope_guardrail",
+        supportStatus="unsupported",
+        verdict=(
+            "The claim extends to a high-stakes deployment domain while explicitly waiving "
+            "domain-specific evaluation or validation."
+        ),
+        evidenceIds=[],
+        confidence=0.9,
+        expectedEvidence=["domain-specific evaluation", "safety validation", "deployment limitations"],
+        observedEvidence=["explicit statement that further validation is unnecessary"],
+    )
 
 
 def _keywords(text: str) -> List[str]:

@@ -16,6 +16,8 @@ from app.modules.review.reviewx_models import Claim, Evidence, EvidenceVerificat
 _STATUS_SCORE = {
     "supported": 0.12,
     "weakly_supported": 0.48,
+    "artifact_absent": 0.22,
+    "needs_human_verification": 0.4,
     "unsupported": 0.82,
     "contradicted": 1.0,
     "not_applicable": 0.0,
@@ -62,6 +64,9 @@ def build_mismatch_report(
             "mismatchScore": score,
             "rawMismatchScore": raw_score,
             "supportStatus": _worst_support_status(claim_verifications),
+            "supportStatuses": sorted({
+                verification.supportStatus for verification in claim_verifications
+            }),
             "linkedEvidenceCount": len(linked_ids),
             "findingIds": [finding.id for finding in claim_findings],
             "verificationIds": [verification.id for verification in claim_verifications],
@@ -103,9 +108,14 @@ def _score_claim(
     dimensions: Dict[str, float] = {}
     reasons: List[str] = []
 
+    statuses = {verification.supportStatus for verification in verifications}
     if claim.requiresEvidence and not linked_ids:
-        dimensions["coverage"] = 0.9
-        reasons.append("requires_evidence_but_no_linked_artifact")
+        if "artifact_absent" in statuses and not (statuses & {"unsupported", "contradicted"}):
+            dimensions["coverage"] = 0.25
+            reasons.append("external_structured_artifact_absent")
+        else:
+            dimensions["coverage"] = 0.9
+            reasons.append("requires_evidence_but_no_linked_artifact")
     elif claim.requiresEvidence and linked_ids:
         dimensions["coverage"] = 0.2
     else:
@@ -115,7 +125,7 @@ def _score_claim(
         dimension = _VERIFIER_DIMENSION.get(verification.verifierType, verification.verifierType)
         value = _STATUS_SCORE.get(verification.supportStatus, 0.5) * verification.confidence
         dimensions[dimension] = max(dimensions.get(dimension, 0.0), round(value, 3))
-        if verification.supportStatus in {"unsupported", "contradicted"}:
+        if verification.supportStatus in {"unsupported", "contradicted", "needs_human_verification", "artifact_absent"}:
             reasons.append(f"{verification.verifierType}:{verification.supportStatus}")
 
     if findings:
@@ -187,9 +197,11 @@ def _worst_support_status(verifications: List[EvidenceVerification]) -> str | No
     priority = {
         "contradicted": 0,
         "unsupported": 1,
-        "weakly_supported": 2,
-        "supported": 3,
-        "not_applicable": 4,
+        "needs_human_verification": 2,
+        "artifact_absent": 3,
+        "weakly_supported": 4,
+        "supported": 5,
+        "not_applicable": 6,
     }
     return min(verifications, key=lambda item: priority.get(item.supportStatus, 9)).supportStatus
 
