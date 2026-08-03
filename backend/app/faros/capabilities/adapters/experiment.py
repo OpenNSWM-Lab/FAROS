@@ -367,6 +367,7 @@ class ExperimentCapability(BaseCapability):
             files=payload.get("files", []),
             event_message=provider_result.text,
             project_title_override=payload.get("projectTitle"),
+            provider_status=payload.get("experimentStatus"),
         )
 
     def _materialize_workspace(
@@ -375,6 +376,7 @@ class ExperimentCapability(BaseCapability):
         session_id: str | None, candidate_id: str | None,
         files: List[Dict[str, str]], event_message: str | None,
         project_title_override: str | None = None,
+        provider_status: str | None = None,
     ) -> CapabilityResult:
         init_db()
 
@@ -430,13 +432,19 @@ class ExperimentCapability(BaseCapability):
             except (json.JSONDecodeError, TypeError):
                 pass
 
+        execution_attempted = bool(exec_result.get("command"))
+        if execution_attempted:
+            experiment_status = "completed" if exec_result.get("exit_code") == 0 else "completed_with_errors"
+        else:
+            experiment_status = provider_status or "designed"
+
         # Create experiment record
         experiment = create_experiment({
             "name": f"{title} Experiment",
             "projectId": project_id,
             "description": description,
             "tags": ["faros", "llm", paper_type, f"lang:{language}"],
-            "status": "completed" if exec_result.get("exit_code") == 0 else "completed_with_errors",
+            "status": experiment_status,
         })
 
         # Generate MD report
@@ -460,12 +468,18 @@ class ExperimentCapability(BaseCapability):
         ]
         if agent_generated:
             events.append({"level": "info", "message": "AgentKernel code generation succeeded"})
-        events.append({
-            "level": "info",
-            "message": f"Execution: exit_code={exec_result.get('exit_code')}, "
-                       f"duration={exec_result.get('duration_seconds', 0):.1f}s, "
-                       f"metrics_count={len(metrics)}, figures_count={len(figures)}",
-        })
+        if execution_attempted:
+            events.append({
+                "level": "info",
+                "message": f"Execution: exit_code={exec_result.get('exit_code')}, "
+                           f"duration={exec_result.get('duration_seconds', 0):.1f}s, "
+                           f"metrics_count={len(metrics)}, figures_count={len(figures)}",
+            })
+        else:
+            events.append({
+                "level": "info",
+                "message": "Execution skipped because the workspace has no supported entrypoint",
+            })
 
         return CapabilityResult(
             status="completed",
@@ -483,6 +497,7 @@ class ExperimentCapability(BaseCapability):
                 "experimentDesign": experiment_design,
                 "reportMdPath": f"code_projects/{project_id}/repo/experiment_report.md",
                 "executionSummary": {
+                    "attempted": execution_attempted,
                     "exitCode": exec_result.get("exit_code"),
                     "durationSeconds": exec_result.get("duration_seconds"),
                     "command": exec_result.get("command"),

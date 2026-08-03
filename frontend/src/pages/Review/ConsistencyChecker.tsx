@@ -671,19 +671,18 @@ export function ConsistencyChecker() {
 
   return (
     <AppPageLayout
-      title="Consistency Checker"
-      subtitle="Validate research outputs for consistency and quality"
+      title="ReviewX Evidence Auditor"
+      subtitle="Trace claims to artifacts, evidence, and revision actions"
       icon={Shield}
       iconColor="orange"
       accentColor="orange"
-      headerViz="metricCapsules"
     >
       <div className="grid grid-cols-1 xl:grid-cols-[420px_minmax(0,1fr)] gap-6 items-start">
         <div className="space-y-6">
           <Card className="shadow-md">
             <CardHeader className="bg-gradient-to-r from-slate-50 to-white border-b">
-              <CardTitle className="text-xl">Run Consistency Check</CardTitle>
-              <CardDescription>Check citations, references, and formatting</CardDescription>
+              <CardTitle className="text-xl">Run ReviewX Audit</CardTitle>
+              <CardDescription>Audit claims against citations and generated artifacts</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4 pt-6">
               <div className="space-y-2">

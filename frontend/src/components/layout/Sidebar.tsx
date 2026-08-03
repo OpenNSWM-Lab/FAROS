@@ -29,26 +29,28 @@ const navigation = [
 
 export function Sidebar() {
   return (
-    <aside className="w-64 border-r bg-muted/40">
-      <div className="flex h-14 items-center border-b px-4">
-        <AppLogo size="sm" variant="full" />
+    <aside className="w-16 shrink-0 border-r bg-muted/40 sm:w-64">
+      <div className="flex h-14 items-center justify-center border-b px-2 sm:justify-start sm:px-4">
+        <AppLogo size="sm" variant="icon" className="sm:hidden" />
+        <AppLogo size="sm" variant="full" className="hidden sm:flex" />
       </div>
-      <nav className="flex flex-col gap-1 p-4">
+      <nav className="flex flex-col gap-1 p-2 sm:p-4">
         {navigation.map((item) => (
           <NavLink
             key={item.name}
             to={item.href}
+            title={item.name}
             className={({ isActive }) =>
               cn(
-                'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
+                'flex items-center justify-center gap-3 rounded-md px-2 py-2 text-sm font-medium transition-colors sm:justify-start sm:px-3',
                 isActive
                   ? 'bg-primary text-primary-foreground'
                   : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
               )
             }
           >
-            <item.icon className="h-5 w-5" />
-            {item.name}
+            <item.icon className="h-5 w-5 shrink-0" />
+            <span className="hidden sm:inline">{item.name}</span>
           </NavLink>
         ))}
       </nav>

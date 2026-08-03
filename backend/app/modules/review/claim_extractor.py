@@ -23,14 +23,18 @@ _CLAIM_PATTERNS = [
     r"\bwe (introduce|propose|present|develop|design|show|demonstrate|achieve|outperform|improve|reduce)\b",
     r"\bour (method|approach|framework|system|model|algorithm)\b",
     r"\b(up to|at least|more than|less than|significant|state-of-the-art|sota)\b",
-    r"\b\d+(\.\d+)?\s*(%|percent|x|times|k|ms|s|tokens?)\b",
+    r"\b\d+(\.\d+)?\s*(%|percent|x|times|k|ms|s|tokens?)(?=\W|$)",
     r"\b(no|without)\s+(degrading|sacrificing|reducing|hurting)\b",
     _EVIDENCE_ASSERTION_PATTERN,
 ]
 _CLAIM_RE = re.compile("|".join(_CLAIM_PATTERNS), re.IGNORECASE)
-_NUMERIC_RE = re.compile(r"\b\d+(\.\d+)?\s*(%|percent|x|times|k|ms|s|tokens?|accuracy|f1|auc)\b", re.IGNORECASE)
+_NUMERIC_RE = re.compile(
+    r"\b\d+(\.\d+)?\s*(%|percent|x|times|k|ms|s|tokens?|accuracy|f1|auc)(?=\W|$)",
+    re.IGNORECASE,
+)
 _CITATION_RE = re.compile(r"\\cite[p|t]?\{[^}]+\}")
 _SECTION_RE = re.compile(r"\\section\*?\{([^}]+)\}|\\subsection\*?\{([^}]+)\}", re.IGNORECASE)
+_ABBREVIATION_RE = re.compile(r"\b(?:e\.g|i\.e|vs|etc|et al|fig|eq|sec|dr|prof)\.", re.IGNORECASE)
 _MAX_CLAIMS = 40
 _HIGH_STAKES_RE = re.compile(
     r"\b(clinical|medical|legal|high-stakes|safe deployment|unseen|distribution shift|"
@@ -40,7 +44,14 @@ _HIGH_STAKES_RE = re.compile(
 
 
 def _clean_latex(text: str) -> str:
-    text = re.sub(r"%.*", "", text)
+    comment = re.search(r"(?<!\\)%", text)
+    if comment:
+        prefix = text[:comment.start()].rstrip()
+        if prefix and prefix[-1] not in ".!?":
+            boundary = max(prefix.rfind("."), prefix.rfind("!"), prefix.rfind("?"))
+            prefix = prefix[:boundary + 1] if boundary >= 0 else ""
+        text = prefix
+    text = text.replace(r"\%", "%")
     text = re.sub(r"\\(emph|textbf|textit)\{([^}]*)\}", r"\2", text)
     text = re.sub(r"\\[a-zA-Z]+\*?(?:\[[^\]]*\])?(?:\{[^}]*\})?", " ", text)
     text = text.replace("~", " ")
@@ -48,8 +59,9 @@ def _clean_latex(text: str) -> str:
 
 
 def _split_sentences(text: str) -> Iterable[str]:
-    for part in re.split(r"(?<=[.!?])\s+", text):
-        sentence = part.strip()
+    protected = _ABBREVIATION_RE.sub(lambda match: match.group(0).replace(".", "\x00"), text)
+    for part in re.split(r"(?<=[.!?])\s+", protected):
+        sentence = part.replace("\x00", ".").strip()
         if 40 <= len(sentence) <= 450:
             yield sentence
 
