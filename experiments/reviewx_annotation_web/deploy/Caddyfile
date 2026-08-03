@@ -1,0 +1,34 @@
+faros-reviewx.47-115-175-11.sslip.io {
+	encode zstd gzip
+	reverse_proxy 127.0.0.1:8088
+
+	tls {
+		issuer acme {
+			disable_http_challenge
+		}
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		-Server
+	}
+
+	log {
+		output file /var/log/caddy/reviewx-annotation-access.log
+		format console
+	}
+}
+
+http://:6236 {
+	encode zstd gzip
+	reverse_proxy 127.0.0.1:8088
+
+	header {
+		-Server
+	}
+
+	log {
+		output file /var/log/caddy/reviewx-annotation-http-access.log
+		format console
+	}
+}

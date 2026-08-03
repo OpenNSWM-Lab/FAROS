@@ -1,0 +1,57 @@
+{
+  "schemaVersion": "reviewx_comparison_protocol_v1",
+  "dataset": "PeerQA development",
+  "heldOutLocked": true,
+  "providerName": "qwen",
+  "model": "qwen-max",
+  "temperature": 0.2,
+  "repetitions": 3,
+  "budget": {
+    "maxTotalTokensPerPaper": 4000,
+    "pilotToleranceFraction": 0.15,
+    "reviewxBalancedPilotTokens": 3394,
+    "singlePromptPilotTokens": 3209,
+    "pilotRelativeDifference": 0.0545
+  },
+  "methods": [
+    {
+      "id": "reviewx_balanced_qwen_matched_budget",
+      "runner": "experiments/reviewx_eval/run_eval.py",
+      "maxEstimatedTokens": 4000
+    },
+    {
+      "id": "qwen_single_prompt_matched_budget",
+      "runner": "experiments/reviewx_eval/baselines/single_prompt_qwen.py",
+      "contextStrategy": "section_stratified_v1",
+      "maxInputChars": 8000,
+      "maxOutputTokens": 1800,
+      "maxTotalTokens": 4000,
+      "maxFindings": 6,
+      "responseFormat": "json_object"
+    },
+    {
+      "id": "qwen_structured_rubric_matched_budget",
+      "runner": "experiments/reviewx_eval/baselines/structured_rubric_qwen.py",
+      "reviewStrategy": "six_dimension_rubric_v1",
+      "contextStrategy": "section_stratified_v1",
+      "maxInputChars": 8000,
+      "maxOutputTokens": 1800,
+      "maxTotalTokens": 4000,
+      "maxFindings": 6,
+      "responseFormat": "json_object"
+    }
+  ],
+  "primaryHumanMetrics": [
+    "expertQuestionCoverage",
+    "correctness",
+    "actionability",
+    "evidenceAgreement"
+  ],
+  "secondaryMetrics": [
+    "exactQuoteGroundedRate",
+    "findingCount",
+    "latencyMs",
+    "totalTokens"
+  ],
+  "warning": "Automatic lexical alignment is candidate generation only and must not be reported as expert recall."
+}

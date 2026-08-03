@@ -1,6 +1,12 @@
 outputs/
+external_data/
+cem_bench/generated/
+cem_bench/*_generated/
+cem_bench/v2_*/
 reviewx_eval.jsonl
 *_runs.jsonl
 scores.json
 scores.csv
 !gold_schema.json
+!experiment_matrices/
+!experiment_matrices/*.json
