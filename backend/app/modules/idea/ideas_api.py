@@ -6,7 +6,7 @@ Provides endpoints for managing idea generation sessions.
 
 from typing import Optional, List
 from datetime import datetime
-from fastapi import APIRouter, HTTPException, status, BackgroundTasks
+from fastapi import APIRouter, HTTPException, status, BackgroundTasks, Query
 from pydantic import BaseModel, Field
 
 from app.modules.idea.contracts import (
@@ -69,6 +69,10 @@ class SessionResponse(BaseModel):
     endedAt: Optional[str] = None
     duration: Optional[int] = None
     candidateIds: List[str] = []
+    finalCandidateIds: List[str] = []
+    hiddenCandidateIds: List[str] = []
+    rejectedCandidateIds: List[str] = []
+    qualityLoopSummary: dict = {}
     selectedCandidateId: Optional[str] = None
     errorMessage: Optional[str] = None
 
@@ -145,6 +149,8 @@ class CandidatesResponse(BaseModel):
     """Response for candidates list."""
     candidates: List[CandidateResponse]
     total: int
+    view: str = "final"
+    allCandidateCount: int = 0
 
 
 class SelectCandidateRequest(BaseModel):
@@ -299,6 +305,10 @@ def _session_to_response(session: IdeaSession) -> SessionResponse:
         endedAt=session.endedAt.isoformat() if session.endedAt else None,
         duration=session.duration,
         candidateIds=session.candidateIds,
+        finalCandidateIds=getattr(session, "finalCandidateIds", []),
+        hiddenCandidateIds=getattr(session, "hiddenCandidateIds", []),
+        rejectedCandidateIds=getattr(session, "rejectedCandidateIds", []),
+        qualityLoopSummary=getattr(session, "qualityLoopSummary", {}),
         selectedCandidateId=session.selectedCandidateId,
         errorMessage=session.errorMessage,
     )
@@ -488,6 +498,29 @@ async def cancel_session(session_id: str) -> SessionResponse:
         )
 
 
+@router.post(
+    "/sessions/{session_id}/revalidate-final-candidates",
+    response_model=SessionResponse,
+    summary="Revalidate Final Idea Candidates",
+    description=(
+        "Run current hard quality gates on an existing idea session and update "
+        "the user-facing final candidate shortlist without new LLM calls."
+    )
+)
+async def revalidate_final_candidates(session_id: str) -> SessionResponse:
+    """Revalidate final candidates for old sessions after gate upgrades."""
+    service = get_idea_service()
+
+    try:
+        session = service.revalidate_final_candidates(session_id)
+        return _session_to_response(session)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e),
+        )
+
+
 @router.get(
     "/sessions/{session_id}/trace",
     response_model=TraceResponse,
@@ -580,7 +613,14 @@ async def get_session_literature(session_id: str) -> LiteratureResponse:
     summary="Get Session Candidates",
     description="Get candidate ideas for a session."
 )
-async def get_session_candidates(session_id: str) -> CandidatesResponse:
+async def get_session_candidates(
+    session_id: str,
+    view: str = Query(
+        "final",
+        pattern="^(final|debug|all)$",
+        description="final returns user-facing shortlisted candidates; debug/all returns every generated candidate.",
+    ),
+) -> CandidatesResponse:
     """Get candidates for a session."""
     service = get_idea_service()
     
@@ -591,10 +631,13 @@ async def get_session_candidates(session_id: str) -> CandidatesResponse:
             detail=f"Session {session_id} not found"
         )
     
-    candidates = service.get_candidates(session_id)
+    candidates = service.get_candidates(session_id, view=view)
+    all_candidate_count = len(service.get_candidates(session_id, view="debug"))
     return CandidatesResponse(
         candidates=[_candidate_to_response(c) for c in candidates],
         total=len(candidates),
+        view=view,
+        allCandidateCount=all_candidate_count,
     )
 
 

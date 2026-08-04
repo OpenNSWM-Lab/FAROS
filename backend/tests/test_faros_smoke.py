@@ -107,9 +107,21 @@ def test_faros_metadata_endpoints_return_assets():
 
     profiles = client.get('/api/faros/profiles')
     assert profiles.status_code == 200
-    profile_ids = {item['id'] for item in profiles.json()['profiles']}
+    profile_rows = profiles.json()['profiles']
+    profile_ids = {item['id'] for item in profile_rows}
     assert 'faros_llm' in profile_ids
     assert 'faros_hybrid' in profile_ids
+    challenge_profile = next(item for item in profile_rows if item['id'] == 'faros_llm')
+    assert {
+        binding['provider']
+        for binding in challenge_profile['capability_bindings'].values()
+        if binding['provider_type'] == 'llm'
+    } == {'qwen'}
+    assert {
+        binding['preferred_provider']
+        for binding in challenge_profile['agent_bindings'].values()
+        if binding['provider_type'] == 'llm'
+    } == {'qwen'}
 
     agents = client.get('/api/faros/agents')
     assert agents.status_code == 200
@@ -459,7 +471,8 @@ def test_agent_executor_uses_execution_file_backend_for_experiment(tmp_path: Pat
         ),
     )
     result = executor.execute(plan)
-    assert result.outputs['experimentStatus'] == 'completed'
+    assert result.outputs['experimentStatus'] == 'designed'
+    assert result.outputs['executionSummary']['attempted'] is False
     assert result.outputs['projectTitle'] == 'External Experiment [python]'
     assert result.events[0]['message'] == 'external execution backend completed'
     assert result.verification['providerType'] == 'execution'

@@ -13,10 +13,14 @@ You will receive a reasoning path seed (a chain of related concepts / entities)
 and a set of selected literature papers.
 
 Your task is to propose a concrete, novel research idea that:
-1. Is grounded in the path seed (uses the entities / relations described)
-2. Is clearly differentiated from existing literature
-3. Has a specific, testable hypothesis
-4. Is feasible within academic lab resources
+1. Directly addresses the Research Topic, including its scenario and constraints
+2. Is grounded in the path seed (uses the entities / relations described)
+3. Is clearly differentiated from existing literature
+4. Has a specific, testable hypothesis
+5. Is feasible within academic lab resources
+
+Reject topic drift: do not turn a narrow topic into a merely adjacent efficiency,
+retrieval, benchmark, or multimodal idea unless that directly serves the Research Topic.
 
 Respond in JSON format with the following fields:
 {{
@@ -50,7 +54,8 @@ Path Steps:
 {rationale}
 
 Generate ONE seed research idea based on this path seed.
-The idea should be novel, feasible, and clearly different from the listed literature.
+The idea should be novel, feasible, clearly different from the listed literature,
+and directly faithful to the Research Topic above.
 Respond in the JSON format described in the system prompt."""
 
 
