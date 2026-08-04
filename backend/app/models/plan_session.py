@@ -135,7 +135,6 @@ class PlanSession(BaseModel):
     duration: Optional[int] = None
     candidateIds: List[str] = Field(default_factory=list)
     selectedCandidateId: Optional[str] = None
-    resultingPlanId: Optional[str] = None
     trace: Optional[PlanWorkflowTrace] = None
     errorMessage: Optional[str] = None
 
@@ -145,12 +144,3 @@ class PlanSession(BaseModel):
             PlanSessionStatus.FAILED,
             PlanSessionStatus.CANCELLED,
         )
-
-
-class SelectedPlan(BaseModel):
-    """Record of a plan selection linking CandidatePlan to ResearchPlan."""
-    id: str
-    sessionId: str
-    candidateId: str
-    researchPlanId: str
-    createdAt: datetime = Field(default_factory=datetime.utcnow)

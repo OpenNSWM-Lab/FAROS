@@ -2,10 +2,10 @@
 Run Domain Model
 
 Scientific Responsibility:
-- Represent one concrete execution instance of a ResearchPlan
+- Represent one concrete execution instance of a PlanPackage
 - Enforce lifecycle state machine (pending → running → completed/failed/cancelled)
 - Maintain immutability after completion (append-only)
-- Link to ResearchPlan for scientific context
+- Link to PlanPackage for scientific context
 - Reference artifacts without owning them
 
 A Run answers:
@@ -49,7 +49,7 @@ class RunType(str, Enum):
     """
     Execution mode.
     
-    Plan: Structured execution following ResearchPlan
+    Plan: Structured execution following PlanPackage
     Idea: Exploratory execution without formal plan
     """
     PLAN = "plan"
@@ -61,7 +61,7 @@ class RunConfig(BaseModel):
     Compute policy and execution parameters.
     
     Specifies HOW the execution will run (resources, model, etc).
-    This is separate from WHAT is being tested (ResearchPlan).
+    This is separate from WHAT is being tested (PlanPackage).
     """
     # Compute Resources
     model: str = Field(
@@ -161,14 +161,14 @@ class Run(BaseModel):
     """
     Immutable execution instance record.
     
-    Represents ONE execution of a ResearchPlan.
+    Represents ONE execution of a PlanPackage.
     Once completed/failed, cannot be modified (scientific integrity).
     """
     # Identity & Linkage
     id: str = Field(..., description="Unique run identifier (UUID)")
     planId: Optional[str] = Field(
         None,
-        description="ResearchPlan ID (if this run executes a formal plan)"
+        description="PlanPackage ID (if this run executes a formal plan)"
     )
     
     # Lifecycle

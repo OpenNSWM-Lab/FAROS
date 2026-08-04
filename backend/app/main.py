@@ -5,6 +5,11 @@ system-level health endpoints, and registers grouped domain routers.
 All feature work should happen inside `app.modules`.
 """
 
+# Load .env before any other imports so that environment variables
+# are available when settings / provider configs are first read.
+from dotenv import load_dotenv as _load_dotenv
+_load_dotenv()
+
 import os as _os
 import logging
 from contextlib import asynccontextmanager

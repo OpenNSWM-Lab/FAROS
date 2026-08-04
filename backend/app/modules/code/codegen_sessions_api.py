@@ -113,6 +113,8 @@ async def create_codegen_session(req: CreateSessionRequest):
                 description=ctx["abstract"][:500],
                 language=req.language,
                 framework=req.framework,
+                source_idea_session_id=ctx.get("planSessionId"),
+                source_candidate_id=ctx.get("candidateId"),
             )
             project_id = project.id
 

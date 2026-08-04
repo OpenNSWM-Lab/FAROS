@@ -3,16 +3,20 @@ Search Service for Literature Discovery
 
 Provides multiple search backends:
 1. Semantic Scholar API (free, no key required for basic usage)
-2. Local corpus search (for offline/testing)
-3. ArXiv API (free, no key required)
+2. ArXiv API (free, no key required)
+3. OpenAlex API (free, no key required, indexes 250M+ global papers)
+4. CNKI / WanFang (requires API key, for Chinese academic papers)
+5. Local corpus search (for offline/testing)
 
 Falls back gracefully when APIs are unavailable.
 """
 
-import logging
-import time
 import json
+import logging
+import os
 import re
+import ssl
+import time
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 from datetime import datetime
@@ -21,6 +25,43 @@ import urllib.parse
 import urllib.error
 
 logger = logging.getLogger(__name__)
+
+
+def _build_ssl_context() -> ssl.SSLContext:
+    """Use certifi when available because some Windows Python installs lack CA paths."""
+    try:
+        import certifi  # type: ignore
+
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        return ssl.create_default_context()
+
+
+_SSL_CONTEXT = _build_ssl_context()
+_INSECURE_SSL_CONTEXT = ssl._create_unverified_context()
+_USER_AGENT = os.getenv(
+    "FAROS_PAPER_SEARCH_USER_AGENT",
+    "FAROS/0.1 literature-search",
+)
+
+
+def _urlopen(
+    request: urllib.request.Request,
+    timeout: int,
+    *,
+    context: ssl.SSLContext = _SSL_CONTEXT,
+):
+    """Open URLs with a stable TLS context and a consistent user agent."""
+    if not request.has_header("User-agent"):
+        request.add_header("User-Agent", _USER_AGENT)
+    return urllib.request.urlopen(request, timeout=timeout, context=context)
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
 @dataclass
@@ -51,7 +92,10 @@ class SemanticScholarSearch:
     def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key
         self.last_request_time = 0
-        self.min_request_interval = 1.0  # Rate limiting
+        self.disabled_until = 0.0
+        # Unauthenticated free tier is 100 requests / 5 minutes. Keep a small
+        # margin so multi-query idea sessions do not immediately hit 429.
+        self.min_request_interval = 1.0 if api_key else 3.2
     
     def _rate_limit(self):
         """Ensure we don't exceed rate limits."""
@@ -62,29 +106,46 @@ class SemanticScholarSearch:
     
     def _make_request(self, endpoint: str, params: Dict[str, Any]) -> Optional[Dict]:
         """Make a request to Semantic Scholar API."""
+        if time.time() < self.disabled_until:
+            logger.info("Semantic Scholar temporarily disabled after a recent connection failure")
+            return None
+
         self._rate_limit()
         
         url = f"{self.BASE_URL}/{endpoint}"
         query_string = urllib.parse.urlencode(params)
         full_url = f"{url}?{query_string}"
         
-        headers = {"Accept": "application/json"}
+        headers = {"Accept": "application/json", "User-Agent": _USER_AGENT}
         if self.api_key:
             headers["x-api-key"] = self.api_key
-        
-        try:
-            request = urllib.request.Request(full_url, headers=headers)
-            with urllib.request.urlopen(request, timeout=30) as response:
-                return json.loads(response.read().decode('utf-8'))
-        except urllib.error.HTTPError as e:
-            logger.warning(f"Semantic Scholar API error: {e.code} - {e.reason}")
-            return None
-        except urllib.error.URLError as e:
-            logger.warning(f"Semantic Scholar connection error: {e.reason}")
-            return None
-        except Exception as e:
-            logger.warning(f"Semantic Scholar request failed: {e}")
-            return None
+
+        for attempt in range(2):
+            try:
+                request = urllib.request.Request(full_url, headers=headers)
+                with _urlopen(request, timeout=30) as response:
+                    return json.loads(response.read().decode('utf-8'))
+            except urllib.error.HTTPError as e:
+                if e.code == 429 and attempt == 0:
+                    retry_after = e.headers.get("Retry-After")
+                    try:
+                        delay = float(retry_after) if retry_after else self.min_request_interval * 2
+                    except ValueError:
+                        delay = self.min_request_interval * 2
+                    logger.warning("Semantic Scholar rate limited; retrying in %.1fs", delay)
+                    time.sleep(delay)
+                    continue
+                logger.warning(f"Semantic Scholar API error: {e.code} - {e.reason}")
+                return None
+            except urllib.error.URLError as e:
+                logger.warning(f"Semantic Scholar connection error: {e.reason}")
+                self.disabled_until = time.time() + 120
+                return None
+            except Exception as e:
+                logger.warning(f"Semantic Scholar request failed: {e}")
+                self.disabled_until = time.time() + 120
+                return None
+        return None
     
     def search(self, query: str, limit: int = 10, year_range: Optional[tuple] = None) -> List[SearchResult]:
         """
@@ -142,7 +203,8 @@ class ArxivSearch:
     Completely free, no API key required.
     """
     
-    BASE_URL = "http://export.arxiv.org/api/query"
+    BASE_URL = "https://export.arxiv.org/api/query"
+    HTTP_FALLBACK_URL = "http://export.arxiv.org/api/query"
     
     def __init__(self):
         self.last_request_time = 0
@@ -206,6 +268,70 @@ class ArxivSearch:
                 ))
         
         return results
+
+    def _build_query_variants(self, query: str) -> List[str]:
+        """Build arXiv query variants from strict to broad."""
+        raw = " ".join(query.split())
+        normalized = raw.lower()
+        variants: List[str] = []
+
+        phrase_parts: List[str] = []
+        consumed_terms: set[str] = set()
+        known_phrases = [
+            "retrieval augmented generation",
+            "large language model",
+            "uncertainty quantification",
+            "citation faithfulness",
+            "chain of thought",
+        ]
+        for phrase in known_phrases:
+            if phrase in normalized:
+                phrase_parts.append(f'all:"{phrase}"')
+                consumed_terms.update(phrase.split())
+
+        tokens = re.findall(r"[a-zA-Z][a-zA-Z0-9-]{2,}|[\u4e00-\u9fff]+", normalized)
+        stopwords = {
+            "and", "the", "for", "with", "from", "that", "this", "into",
+            "using", "based", "how", "can", "are", "what", "when", "where",
+            "does", "improve", "improving", "generation",
+        }
+        signal_priority = [
+            "faithfulness", "citation", "uncertainty", "hallucination",
+            "grounding", "factuality", "attribution", "calibration",
+            "retrieval", "augmented", "gating", "confidence",
+        ]
+        unique_tokens: List[str] = []
+        for token in tokens:
+            if token in stopwords or token in consumed_terms:
+                continue
+            if token not in unique_tokens:
+                unique_tokens.append(token)
+
+        ranked_tokens = sorted(
+            unique_tokens,
+            key=lambda token: (
+                signal_priority.index(token) if token in signal_priority else len(signal_priority),
+                unique_tokens.index(token),
+            ),
+        )
+
+        if phrase_parts:
+            for token_count in (1, 2):
+                selected = ranked_tokens[:token_count]
+                if selected:
+                    variants.append(" AND ".join(phrase_parts + [f"all:{token}" for token in selected]))
+            variants.append(" AND ".join(phrase_parts))
+
+        if ranked_tokens:
+            variants.append(" AND ".join(f"all:{token}" for token in ranked_tokens[:4]))
+
+        variants.append(f"all:{raw}")
+
+        deduped: List[str] = []
+        for variant in variants:
+            if variant and variant not in deduped:
+                deduped.append(variant)
+        return deduped
     
     def search(self, query: str, limit: int = 10, categories: Optional[List[str]] = None) -> List[SearchResult]:
         """
@@ -221,30 +347,60 @@ class ArxivSearch:
         """
         self._rate_limit()
         
-        # Build search query
-        search_query = f"all:{query}"
-        if categories:
-            cat_query = " OR ".join([f"cat:{cat}" for cat in categories])
-            search_query = f"({search_query}) AND ({cat_query})"
-        
-        params = {
-            "search_query": search_query,
-            "start": 0,
-            "max_results": min(limit, 100),
-            "sortBy": "relevance",
-            "sortOrder": "descending"
-        }
-        
-        url = f"{self.BASE_URL}?{urllib.parse.urlencode(params)}"
-        
-        try:
-            request = urllib.request.Request(url)
-            with urllib.request.urlopen(request, timeout=30) as response:
-                xml_text = response.read().decode('utf-8')
-                return self._parse_arxiv_response(xml_text)
-        except Exception as e:
-            logger.warning(f"ArXiv search failed: {e}")
-            return []
+        last_error: Optional[Exception] = None
+        for variant in self._build_query_variants(query):
+            search_query = variant
+            if categories:
+                cat_query = " OR ".join([f"cat:{cat}" for cat in categories])
+                search_query = f"({search_query}) AND ({cat_query})"
+
+            params = {
+                "search_query": search_query,
+                "start": 0,
+                "max_results": min(limit, 100),
+                "sortBy": "relevance",
+                "sortOrder": "descending"
+            }
+
+            query_string = urllib.parse.urlencode(params)
+            urls = [
+                f"{self.BASE_URL}?{query_string}",
+                f"{self.HTTP_FALLBACK_URL}?{query_string}",
+            ]
+
+            for attempt, url in enumerate(urls, start=1):
+                try:
+                    request = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
+                    with _urlopen(request, timeout=30) as response:
+                        xml_text = response.read().decode('utf-8')
+                        results = self._parse_arxiv_response(xml_text)
+                        if results:
+                            return results
+                except Exception as e:
+                    last_error = e
+                    if (
+                        url.startswith("https://")
+                        and _env_bool("FAROS_ALLOW_INSECURE_ARXIV_SSL", True)
+                        and "CERTIFICATE_VERIFY_FAILED" in str(e)
+                    ):
+                        try:
+                            request = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
+                            with _urlopen(request, timeout=30, context=_INSECURE_SSL_CONTEXT) as response:
+                                xml_text = response.read().decode('utf-8')
+                                results = self._parse_arxiv_response(xml_text)
+                                if results:
+                                    logger.warning(
+                                        "ArXiv HTTPS succeeded with insecure TLS fallback; "
+                                        "fix local CA certificates for production use."
+                                    )
+                                    return results
+                        except Exception as fallback_error:
+                            last_error = fallback_error
+                    logger.warning("ArXiv search attempt %s failed: %s", attempt, e)
+                    time.sleep(1.0)
+
+        logger.warning(f"ArXiv search failed or returned no results: {last_error}")
+        return []
 
 
 class LocalCorpusSearch:
@@ -345,6 +501,51 @@ class LocalCorpusSearch:
             "venue": "arXiv",
             "arxiv_id": "2001.08361",
             "keywords": ["scaling laws", "language model", "compute", "training", "neural network"]
+        },
+        {
+            "title": "Highly accurate protein structure prediction with AlphaFold",
+            "authors": ["John Jumper", "Richard Evans", "Alexander Pritzel", "Tim Green"],
+            "abstract": "Here we present the most accurate version of our protein structure prediction system, AlphaFold, and show that it predicts protein structure with near-experimental accuracy. We use a neural network architecture based on attention and evolutionary constraints.",
+            "year": 2021,
+            "venue": "Nature",
+            "arxiv_id": None,
+            "keywords": ["alphafold", "protein structure", "bioinformatics", "ai for science", "prediction"]
+        },
+        {
+            "title": "Denoising Diffusion Probabilistic Models",
+            "authors": ["Jonathan Ho", "Ajay Jain", "Pieter Abbeel"],
+            "abstract": "We present high quality image synthesis results using diffusion probabilistic models, a class of latent variable models inspired by considerations from nonequilibrium thermodynamics.",
+            "year": 2020,
+            "venue": "NeurIPS",
+            "arxiv_id": "2006.11239",
+            "keywords": ["diffusion model", "generative model", "image synthesis", "thermodynamics", "denoising"]
+        },
+        {
+            "title": "Graph Attention Networks",
+            "authors": ["Petar Velickovic", "Guillem Cucurull", "Arantxa Casanova", "Adriana Romero"],
+            "abstract": "We present graph attention networks (GATs), novel neural network architectures that operate on graph-structured data, leveraging masked self-attentional layers to address the shortcomings of prior methods based on graph convolutions.",
+            "year": 2018,
+            "venue": "ICLR",
+            "arxiv_id": "1710.10903",
+            "keywords": ["graph neural network", "attention", "graph", "node classification", "representation learning"]
+        },
+        {
+            "title": "Causal Inference in Statistics: A Primer",
+            "authors": ["Judea Pearl", "Madelyn Glymour", "Nicholas P. Jewell"],
+            "abstract": "Causal inference is a rapidly growing research field with applications in science, engineering, business, medicine, and public policy. This primer provides an introduction to the foundational concepts and methods of causal inference from statistical data.",
+            "year": 2016,
+            "venue": "Wiley",
+            "arxiv_id": None,
+            "keywords": ["causal inference", "statistics", "do-calculus", "confounding", "intervention"]
+        },
+        {
+            "title": "The AI Scientist: Towards Fully Automated Open-Ended Scientific Discovery",
+            "authors": ["Chris Lu", "Cong Lu", "Tianyu Wang", "Jeff Clune"],
+            "abstract": "We propose a comprehensive system for fully automated scientific discovery, that leverages large language models to generate novel research ideas, write code, run experiments, and produce full research papers without human intervention.",
+            "year": 2024,
+            "venue": "arXiv",
+            "arxiv_id": "2408.06292",
+            "keywords": ["ai scientist", "automated discovery", "research automation", "llm", "scientific discovery"]
         }
     ]
     
@@ -366,24 +567,73 @@ class LocalCorpusSearch:
             except Exception as e:
                 logger.warning(f"Failed to load corpus from {corpus_path}: {e}")
     
+    def _query_terms(self, query: str) -> List[str]:
+        """Extract topic-bearing query terms for strict offline fallback search."""
+        normalized = query.lower().replace("-", " ")
+        if "rag" in normalized:
+            normalized = f"{normalized} retrieval augmented generation"
+        stopwords = {
+            "and", "the", "for", "with", "from", "that", "this", "into",
+            "using", "based", "how", "can", "are", "what", "when", "where",
+            "does", "method", "methods", "approach", "paper", "study",
+            "research", "improve", "improving", "generation", "language",
+            "model", "models", "large", "learning", "neural",
+        }
+        terms: List[str] = []
+        for token in re.findall(r"[a-zA-Z][a-zA-Z0-9]{2,}|[\u4e00-\u9fff]+", normalized):
+            if token in stopwords:
+                continue
+            if token not in terms:
+                terms.append(token)
+        return terms
+
     def _compute_relevance(self, paper: Dict, query: str) -> float:
-        """Compute simple relevance score based on keyword matching."""
-        query_terms = set(query.lower().split())
-        
-        # Check title
-        title_terms = set(paper.get("title", "").lower().split())
-        title_overlap = len(query_terms & title_terms) / max(len(query_terms), 1)
-        
-        # Check keywords
-        keywords = set(k.lower() for k in paper.get("keywords", []))
-        keyword_overlap = len(query_terms & keywords) / max(len(query_terms), 1)
-        
-        # Check abstract
-        abstract_terms = set(paper.get("abstract", "").lower().split())
-        abstract_overlap = len(query_terms & abstract_terms) / max(len(query_terms), 1)
-        
-        # Weighted combination
-        return 0.4 * title_overlap + 0.3 * keyword_overlap + 0.3 * abstract_overlap
+        """Compute strict local relevance so generic sample papers do not pollute evidence."""
+        query_terms = set(self._query_terms(query))
+        if not query_terms:
+            return 0.0
+
+        title = paper.get("title", "").lower().replace("-", " ")
+        abstract = paper.get("abstract", "").lower().replace("-", " ")
+        keywords_text = " ".join(str(k).lower().replace("-", " ") for k in paper.get("keywords", []))
+        title_terms = set(re.findall(r"[a-zA-Z][a-zA-Z0-9]{2,}|[\u4e00-\u9fff]+", title))
+        keyword_terms = set(re.findall(r"[a-zA-Z][a-zA-Z0-9]{2,}|[\u4e00-\u9fff]+", keywords_text))
+        abstract_terms = set(re.findall(r"[a-zA-Z][a-zA-Z0-9]{2,}|[\u4e00-\u9fff]+", abstract))
+
+        title_hits = len(query_terms & title_terms)
+        keyword_hits = len(query_terms & keyword_terms)
+        abstract_hits = len(query_terms & abstract_terms)
+        total_hits = title_hits + keyword_hits + abstract_hits
+        if total_hits == 0:
+            return 0.0
+
+        denominator = max(len(query_terms), 1)
+        title_overlap = title_hits / denominator
+        keyword_overlap = keyword_hits / denominator
+        abstract_overlap = abstract_hits / denominator
+
+        phrase_bonus = 0.0
+        combined_text = f"{title} {abstract} {keywords_text}"
+        for phrase in [
+            "retrieval augmented generation",
+            "citation faithfulness",
+            "uncertainty estimation",
+            "hallucination detection",
+            "human feedback",
+        ]:
+            if phrase in query.lower().replace("-", " ") and phrase in combined_text:
+                phrase_bonus += 0.12
+
+        score = 0.45 * title_overlap + 0.35 * keyword_overlap + 0.20 * abstract_overlap + phrase_bonus
+
+        # If a local paper only matches generic remnants, cap it below the default threshold.
+        strong_query_terms = query_terms - {
+            "retrieval", "augmented", "transformer", "attention", "data", "task", "tasks",
+        }
+        strong_hits = len(strong_query_terms & (title_terms | keyword_terms | abstract_terms))
+        if strong_query_terms and strong_hits == 0:
+            return min(score, 0.09)
+        return min(score, 1.0)
     
     def search(self, query: str, limit: int = 10) -> List[SearchResult]:
         """
@@ -396,10 +646,11 @@ class LocalCorpusSearch:
         Returns:
             List of SearchResult objects
         """
+        min_relevance = float(os.getenv("FAROS_LOCAL_MIN_RELEVANCE", "0.18"))
         scored_papers = []
         for paper in self.papers:
             score = self._compute_relevance(paper, query)
-            if score > 0:
+            if score >= min_relevance:
                 scored_papers.append((score, paper))
         
         # Sort by relevance
@@ -424,6 +675,212 @@ class LocalCorpusSearch:
         return results
 
 
+class OpenAlexSearch:
+    """OpenAlex academic search adapter (free, no API key required).
+
+    OpenAlex indexes 250M+ works from all disciplines worldwide, including
+    Chinese academic papers with English metadata. It is the recommended
+    replacement for the deprecated Microsoft Academic Graph.
+
+    A ``mailto`` parameter is optional but recommended for the "polite pool"
+    with higher rate limits. Set ``OPENALEX_MAILTO`` in the environment.
+    """
+
+    BASE_URL = "https://api.openalex.org/works"
+
+    def __init__(self, mailto: Optional[str] = None):
+        self.mailto = mailto or os.getenv("OPENALEX_MAILTO", "")
+        self._last_request_time = 0.0
+        self._rate_limit_interval = 1.0  # polite pool: 1 req/sec
+        self._disabled_until: float = 0.0
+
+    def _rate_limit(self):
+        """Enforce a minimum interval between requests."""
+        elapsed = time.time() - self._last_request_time
+        if elapsed < self._rate_limit_interval:
+            time.sleep(self._rate_limit_interval - elapsed)
+        self._last_request_time = time.time()
+
+    def search(
+        self,
+        query: str,
+        limit: int = 10,
+        year_range: Optional[tuple] = None,
+    ) -> List[SearchResult]:
+        """Search OpenAlex for papers matching ``query``.
+
+        Args:
+            query: Search query (English recommended for best results).
+            limit: Maximum number of results.
+            year_range: Optional (start_year, end_year) tuple.
+        """
+        if time.time() < self._disabled_until:
+            return []
+
+        self._rate_limit()
+
+        params: Dict[str, str] = {
+            "search": query,
+            "per-page": str(min(limit, 25)),
+        }
+        if self.mailto:
+            params["mailto"] = self.mailto
+
+        # Build filter string for year range
+        filters = []
+        if year_range:
+            filters.append(f"from_publication_date:{year_range[0]}-01-01")
+            filters.append(f"to_publication_date:{year_range[1]}-12-31")
+        if filters:
+            params["filter"] = ",".join(filters)
+
+        url = f"{self.BASE_URL}?{urllib.parse.urlencode(params)}"
+
+        try:
+            request = urllib.request.Request(url)
+            with _urlopen(request, timeout=30) as resp:
+                raw = resp.read().decode("utf-8")
+            data = json.loads(raw)
+        except urllib.error.HTTPError as e:
+            if e.code == 429:
+                cooldown = 60
+                self._disabled_until = time.time() + cooldown
+                logger.warning(f"OpenAlex rate limited (429), cooling down {cooldown}s")
+            else:
+                logger.warning(f"OpenAlex HTTP error: {e.code}")
+            return []
+        except Exception as e:
+            logger.warning(f"OpenAlex search failed: {e}")
+            self._disabled_until = time.time() + 30
+            return []
+
+        results = []
+        for work in data.get("results", []):
+            title = work.get("title") or work.get("display_name") or ""
+            if not title:
+                continue
+
+            abstract = self._parse_abstract(work.get("abstract_inverted_index"))
+
+            authors: List[str] = []
+            for authorship in work.get("authorships", [])[:10]:
+                author = authorship.get("author", {})
+                name = author.get("display_name", "")
+                if name:
+                    authors.append(name)
+
+            year = work.get("publication_year")
+
+            venue = None
+            primary_location = work.get("primary_location") or {}
+            source_obj = primary_location.get("source") or {}
+            if source_obj:
+                venue = source_obj.get("display_name")
+
+            doi = work.get("doi") or ""
+            if doi and doi.startswith("https://doi.org/"):
+                doi = doi[len("https://doi.org/"):]
+
+            url_val = work.get("id") or work.get("doi") or ""
+            citation_count = work.get("cited_by_count")
+
+            results.append(SearchResult(
+                title=title,
+                authors=authors,
+                abstract=abstract,
+                year=year,
+                venue=venue,
+                url=url_val,
+                doi=doi or None,
+                arxiv_id=None,
+                citation_count=citation_count,
+                source="openalex",
+                relevance_score=float(work.get("relevance_score") or 0.0),
+            ))
+
+        return results[:limit]
+
+    @staticmethod
+    def _parse_abstract(inverted_index: Optional[Dict]) -> str:
+        """Reconstruct abstract text from OpenAlex inverted-index format."""
+        if not inverted_index or not isinstance(inverted_index, dict):
+            return ""
+        word_positions: List[tuple] = []
+        for word, positions in inverted_index.items():
+            for pos in positions:
+                word_positions.append((pos, word))
+        word_positions.sort()
+        return " ".join(w for _, w in word_positions)
+
+
+class CNKISearch:
+    """CNKI (中国知网) search adapter.
+
+    Requires API credentials. Configure via environment variables:
+    - ``CNKI_API_KEY``: API key from CNKI developer portal
+    - ``CNKI_API_URL``: Custom API endpoint (optional)
+
+    Note: CNKI API requires institutional subscription.
+    Register at https://dev.cnki.net/ for API access.
+    When no API key is configured, the adapter is silently disabled.
+    """
+
+    def __init__(self, api_key: Optional[str] = None, api_url: Optional[str] = None):
+        self.api_key = api_key or os.getenv("CNKI_API_KEY")
+        self.api_url = api_url or os.getenv(
+            "CNKI_API_URL", "https://api.cnki.net/search"
+        )
+        self._enabled = bool(self.api_key)
+        if not self._enabled:
+            logger.info("CNKISearch: No API key (set CNKI_API_KEY). Adapter disabled.")
+
+    def search(self, query: str, limit: int = 10) -> List[SearchResult]:
+        if not self._enabled:
+            return []
+        # TODO: Implement CNKI API integration when credentials are available.
+        # Expected flow:
+        #   1. POST to self.api_url with {"query": query, "limit": limit}
+        #   2. Add Authorization header: f"Bearer {self.api_key}"
+        #   3. Parse response JSON into SearchResult objects
+        #   4. Set source="cnki" for each result
+        logger.warning("CNKISearch: search() not yet implemented (needs API key)")
+        return []
+
+
+class WanFangSearch:
+    """万方数据 (WanFang Data) search adapter.
+
+    Requires API credentials. Configure via environment variables:
+    - ``WANFANG_API_KEY``: API key from WanFang developer portal
+    - ``WANFANG_API_URL``: Custom API endpoint (optional)
+
+    Note: WanFang API requires registration.
+    Register at https://developer.wanfangdata.com.cn/ for API access.
+    When no API key is configured, the adapter is silently disabled.
+    """
+
+    def __init__(self, api_key: Optional[str] = None, api_url: Optional[str] = None):
+        self.api_key = api_key or os.getenv("WANFANG_API_KEY")
+        self.api_url = api_url or os.getenv(
+            "WANFANG_API_URL", "https://api.wanfangdata.com.cn/search"
+        )
+        self._enabled = bool(self.api_key)
+        if not self._enabled:
+            logger.info("WanFangSearch: No API key (set WANFANG_API_KEY). Adapter disabled.")
+
+    def search(self, query: str, limit: int = 10) -> List[SearchResult]:
+        if not self._enabled:
+            return []
+        # TODO: Implement WanFang API integration when credentials are available.
+        # Expected flow:
+        #   1. POST to self.api_url with {"query": query, "limit": limit}
+        #   2. Add Authorization header: f"Bearer {self.api_key}"
+        #   3. Parse response JSON into SearchResult objects
+        #   4. Set source="wanfang" for each result
+        logger.warning("WanFangSearch: search() not yet implemented (needs API key)")
+        return []
+
+
 class SearchService:
     """
     Unified search service with fallback support.
@@ -431,7 +888,9 @@ class SearchService:
     Tries multiple backends in order:
     1. Semantic Scholar (if available)
     2. ArXiv (always available)
-    3. Local corpus (always available)
+    3. OpenAlex (free, no key required, indexes global papers)
+    4. CNKI / WanFang (if API keys configured)
+    5. Local corpus (offline fallback only)
     """
     
     def __init__(
@@ -440,10 +899,16 @@ class SearchService:
         local_corpus_path: Optional[str] = None,
         use_semantic_scholar: bool = True,
         use_arxiv: bool = True,
-        use_local: bool = True
+        use_local: bool = True,
+        use_openalex: bool = True,
+        use_cnki: bool = True,
+        use_wanfang: bool = True,
     ):
         self.semantic_scholar = SemanticScholarSearch(semantic_scholar_key) if use_semantic_scholar else None
         self.arxiv = ArxivSearch() if use_arxiv else None
+        self.openalex = OpenAlexSearch() if use_openalex else None
+        self.cnki = CNKISearch() if use_cnki else None
+        self.wanfang = WanFangSearch() if use_wanfang else None
         self.local = LocalCorpusSearch(local_corpus_path) if use_local else None
     
     def search(
@@ -464,7 +929,7 @@ class SearchService:
             Combined list of SearchResult objects, deduplicated by title
         """
         all_results = []
-        sources = sources or ["semantic_scholar", "arxiv", "local"]
+        sources = sources or ["semantic_scholar", "arxiv", "openalex", "cnki", "wanfang", "local"]
         
         # Try Semantic Scholar
         if "semantic_scholar" in sources and self.semantic_scholar:
@@ -484,8 +949,40 @@ class SearchService:
             except Exception as e:
                 logger.warning(f"ArXiv search failed: {e}")
         
-        # Try local corpus
-        if "local" in sources and self.local:
+        # Try OpenAlex (free, no key required, indexes global papers)
+        if "openalex" in sources and self.openalex:
+            try:
+                results = self.openalex.search(query, limit)
+                all_results.extend(results)
+                logger.info(f"OpenAlex returned {len(results)} results")
+            except Exception as e:
+                logger.warning(f"OpenAlex search failed: {e}")
+        
+        # Try CNKI (requires API key, disabled if not configured)
+        if "cnki" in sources and self.cnki:
+            try:
+                results = self.cnki.search(query, limit)
+                all_results.extend(results)
+                logger.info(f"CNKI returned {len(results)} results")
+            except Exception as e:
+                logger.warning(f"CNKI search failed: {e}")
+        
+        # Try WanFang (requires API key, disabled if not configured)
+        if "wanfang" in sources and self.wanfang:
+            try:
+                results = self.wanfang.search(query, limit)
+                all_results.extend(results)
+                logger.info(f"WanFang returned {len(results)} results")
+            except Exception as e:
+                logger.warning(f"WanFang search failed: {e}")
+        
+        external_results_count = len(all_results)
+
+        # Try local corpus only as a strict offline fallback by default. Mixing
+        # generic sample papers into successful external search results can
+        # derail downstream gap/principle generation.
+        include_local_with_external = _env_bool("FAROS_INCLUDE_LOCAL_WITH_EXTERNAL", False)
+        if "local" in sources and self.local and (external_results_count == 0 or include_local_with_external):
             try:
                 results = self.local.search(query, limit)
                 all_results.extend(results)
@@ -513,5 +1010,17 @@ def get_search_service() -> SearchService:
     """Get or create search service instance."""
     global _search_service
     if _search_service is None:
-        _search_service = SearchService()
+        semantic_scholar_key = (
+            os.getenv("SEMANTIC_SCHOLAR_API_KEY")
+            or os.getenv("S2_API_KEY")
+            or None
+        )
+        local_corpus_path = os.getenv("FAROS_LOCAL_CORPUS_PATH") or None
+        _search_service = SearchService(
+            semantic_scholar_key=semantic_scholar_key,
+            local_corpus_path=local_corpus_path,
+            use_openalex=_env_bool("FAROS_USE_OPENALEX", True),
+            use_cnki=_env_bool("FAROS_USE_CNKI", True),
+            use_wanfang=_env_bool("FAROS_USE_WANFANG", True),
+        )
     return _search_service

@@ -23,7 +23,7 @@ class RunCreate(BaseModel):
     """
     planId: Optional[str] = Field(
         None,
-        description="ResearchPlan ID (if executing a formal plan)"
+        description="PlanPackage ID (if executing a formal plan)"
     )
     type: RunType = Field(
         default=RunType.PLAN,

@@ -39,7 +39,8 @@ router = APIRouter(prefix="/code/jobs", tags=["code_jobs"])
 
 class CreateJobRequest(BaseModel):
     """Request to create a job."""
-    sessionId: str = Field(..., description="Code session ID")
+    sessionId: Optional[str] = Field(None, description="Code session ID (legacy)")
+    projectId: Optional[str] = Field(None, description="Code project ID (V2)")
     candidateId: Optional[str] = Field(None, description="Candidate ID (optional)")
     mode: str = Field(default="quick", description="Execution mode: quick or debug")
     command: str = Field(..., description="Command to execute")
@@ -51,23 +52,24 @@ class CreateJobRequest(BaseModel):
 class JobResponse(BaseModel):
     """Job response."""
     id: str
-    sessionId: str
-    candidateId: Optional[str]
+    sessionId: Optional[str] = None
+    projectId: Optional[str] = None
+    candidateId: Optional[str] = None
     status: str
     mode: str
     command: str
-    envVars: Optional[dict]
-    cwdRel: Optional[str]
+    envVars: Optional[dict] = None
+    cwdRel: Optional[str] = None
     timeoutSec: int
-    workspacePath: Optional[str]
-    pid: Optional[int]
-    exitCode: Optional[int]
-    stdoutPath: Optional[str]
-    stderrPath: Optional[str]
+    workspacePath: Optional[str] = None
+    pid: Optional[int] = None
+    exitCode: Optional[int] = None
+    stdoutPath: Optional[str] = None
+    stderrPath: Optional[str] = None
     createdAt: str
-    startedAt: Optional[str]
-    endedAt: Optional[str]
-    durationSec: Optional[int]
+    startedAt: Optional[str] = None
+    endedAt: Optional[str] = None
+    durationSec: Optional[int] = None
 
 
 class JobListResponse(BaseModel):
@@ -109,10 +111,11 @@ def job_to_response(job: CodeJob) -> JobResponse:
             env_vars = json.loads(job.env_vars)
         except:
             pass
-    
+
     return JobResponse(
         id=job.id,
         sessionId=job.session_id,
+        projectId=job.project_id,
         candidateId=job.candidate_id,
         status=job.status.value if isinstance(job.status, JobStatus) else job.status,
         mode=job.mode,
@@ -221,15 +224,30 @@ async def create_job(
     request: CreateJobRequest,
     db: Session = Depends(get_session),
 ) -> JobResponse:
-    """Create a new job."""
-    # Verify session exists
-    code_session = crud.get_code_session(db, request.sessionId)
-    if not code_session:
+    """Create a new job (supports both legacy session and new project-based)."""
+    # Validate: must have sessionId or projectId
+    if not request.sessionId and not request.projectId:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Session not found: {request.sessionId}"
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Either sessionId or projectId is required"
         )
-    
+
+    # Verify session or project exists
+    if request.sessionId:
+        code_session = crud.get_code_session(db, request.sessionId)
+        if not code_session:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session not found: {request.sessionId}"
+            )
+    if request.projectId:
+        project = crud.get_project_v2(db, request.projectId)
+        if not project:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Project not found: {request.projectId}"
+            )
+
     # Verify candidate if provided
     candidate = None
     if request.candidateId:
@@ -239,7 +257,7 @@ async def create_job(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Candidate not found: {request.candidateId}"
             )
-    
+
     # Check command safety
     runner = get_job_runner()
     is_safe, reason = runner.is_command_safe(request.command)
@@ -248,12 +266,13 @@ async def create_job(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Unsafe command blocked: {reason}"
         )
-    
+
     # Create job in DB
     env_vars_json = json.dumps(request.envVars) if request.envVars else None
-    
+
     job = crud.create_job(db, crud.CodeJobCreate(
         session_id=request.sessionId,
+        project_id=request.projectId,
         candidate_id=request.candidateId,
         mode=request.mode,
         command=request.command,
@@ -261,7 +280,7 @@ async def create_job(
         cwd_rel=request.cwdRel,
         timeout_sec=request.timeoutSec,
     ))
-    
+
     return job_to_response(job)
 
 
@@ -616,3 +635,40 @@ async def get_job_evaluation(
         scores=scores,
         createdAt=eval_report.created_at.isoformat() if eval_report.created_at else "",
     )
+
+
+@router.delete(
+    "/{job_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete Job",
+)
+async def delete_job_endpoint(
+    job_id: str,
+    db: Session = Depends(get_session),
+):
+    """Delete a job and its associated artifacts, eval reports, and pipeline files."""
+    job = crud.get_job(db, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
+
+    # Clean up pipeline files on disk
+    if job.project_id and job.workspace_path:
+        import glob as _glob
+        repo_dir = job.workspace_path
+        patterns = ["pipeline_results.json", "pipeline_step_*.json"]
+        for pattern in patterns:
+            for f in _glob.glob(os.path.join(repo_dir, pattern)):
+                try:
+                    os.remove(f)
+                except OSError:
+                    pass
+
+    # Clean up artifact files on disk
+    if job.stdout_path and os.path.exists(job.stdout_path):
+        try: os.remove(job.stdout_path)
+        except OSError: pass
+    if job.stderr_path and os.path.exists(job.stderr_path):
+        try: os.remove(job.stderr_path)
+        except OSError: pass
+
+    crud.delete_job(db, job_id)

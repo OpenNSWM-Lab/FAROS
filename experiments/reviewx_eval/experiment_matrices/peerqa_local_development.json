@@ -1,0 +1,13 @@
+{
+  "schemaVersion": "reviewx_method_matrix_v1",
+  "methods": [
+    {
+      "id": "reviewx_local_full",
+      "kind": "reviewx",
+      "budgetMode": "local_only",
+      "ablationMode": "full",
+      "repetitions": 1,
+      "notes": "PeerQA development-set local baseline; no LLM calls."
+    }
+  ]
+}

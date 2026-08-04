@@ -1,7 +1,7 @@
 import { useEffect, useRef, useCallback, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Graph } from '@antv/g6'
-import { mockBlueprint } from '@/pages/Code/blueprintMockData'
+import type { ExperimentBlueprint } from '@/pages/Code/blueprintMockData'
 
 const STATUS_COLORS: Record<string, { fill: string; stroke: string; badge: string; text: string }> = {
   pending:  { fill: '#f1f5f9', stroke: '#94a3b8', badge: '#94a3b8', text: '#475569' },
@@ -68,11 +68,13 @@ function InfoPanel({ data }: { data: Record<string, unknown> }) {
 }
 
 interface BlueprintGraphProps {
+  blueprint: ExperimentBlueprint
   height?: number | string
   onNodeClick?: (nodeId: string) => void
+  packageId?: string
 }
 
-export function BlueprintGraph({ height = '100%', onNodeClick }: BlueprintGraphProps) {
+export function BlueprintGraph({ blueprint, height = '100%', onNodeClick, packageId }: BlueprintGraphProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const graphRef = useRef<Graph | null>(null)
   const navigate = useNavigate()
@@ -83,7 +85,7 @@ export function BlueprintGraph({ height = '100%', onNodeClick }: BlueprintGraphP
 
     const container = containerRef.current
 
-    const nodes = mockBlueprint.nodes.map((n) => {
+    const nodes = blueprint.nodes.map((n) => {
       const isHeader = n.id.startsWith('stage-')
       const status = n.status ?? 'pending'
       const colors = STATUS_COLORS[status] ?? STATUS_COLORS.pending
@@ -121,8 +123,8 @@ export function BlueprintGraph({ height = '100%', onNodeClick }: BlueprintGraphP
       }
     })
 
-    const edges = mockBlueprint.edges.map((e) => {
-      const targetNode = mockBlueprint.nodes.find(n => n.id === e.target)
+    const edges = blueprint.edges.map((e) => {
+      const targetNode = blueprint.nodes.find(n => n.id === e.target)
       const targetStatus = targetNode?.status ?? 'pending'
 
       return {
@@ -178,7 +180,7 @@ export function BlueprintGraph({ height = '100%', onNodeClick }: BlueprintGraphP
         if (onNodeClick) {
           onNodeClick(nodeId)
         } else {
-          navigate(`/code/blueprint/step/${nodeId}`)
+          navigate(`/code/blueprint/step/${nodeId}?packageId=${packageId || blueprint.id}`)
         }
       }
     })
@@ -186,7 +188,7 @@ export function BlueprintGraph({ height = '100%', onNodeClick }: BlueprintGraphP
     graph.on('node:pointerenter', (evt: any) => {
       const nodeId = evt?.target?.id
       if (nodeId) {
-        const node = mockBlueprint.nodes.find(n => n.id === nodeId)
+        const node = blueprint.nodes.find(n => n.id === nodeId)
         if (node) {
           setHoveredData({
             label: node.label,
