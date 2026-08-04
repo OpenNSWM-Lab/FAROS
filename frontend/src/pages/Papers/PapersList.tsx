@@ -77,6 +77,7 @@ interface SelectedFigure {
 interface PaperRecord {
   id: string
   title: string
+  authors?: string[]
   paperType: string
   targetVenue?: string
   status: string

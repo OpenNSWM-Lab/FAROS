@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.modules.paper.storage import (
     create_paper,
+    get_paper,
     get_selected_figures,
     remove_selected_figure,
     select_figure_for_paper,
@@ -160,6 +161,7 @@ def test_paper_selected_figures_storage_round_trip():
 
     remove_selected_figure(paper["id"], figure["id"])
     assert get_selected_figures(paper["id"]) == []
+    assert figure["id"] in get_paper(paper["id"])["figureIds"]
 
 
 def test_paper_section_write_dispatches_to_specialized_writers():
