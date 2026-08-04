@@ -13,7 +13,9 @@ import asyncio
 import logging
 import os
 import re
+import shlex
 import shutil
+import sys
 import time
 from pathlib import Path
 from typing import Optional
@@ -121,6 +123,7 @@ class SubprocessSandbox(SandboxBackend):
 
         timeout = min(timeout, self._max_timeout)
         start = time.monotonic()
+        execution_command = self._resolve_python_command(command)
 
         # Build environment
         proc_env = os.environ.copy()
@@ -130,7 +133,7 @@ class SubprocessSandbox(SandboxBackend):
 
         try:
             proc = await asyncio.create_subprocess_shell(
-                command,
+                execution_command,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=workspace,
@@ -155,7 +158,7 @@ class SubprocessSandbox(SandboxBackend):
                     stderr=f"Command timed out after {timeout}s",
                     duration_ms=duration_ms,
                     timed_out=True,
-                    command=command,
+                    command=execution_command,
                 )
 
             duration_ms = int((time.monotonic() - start) * 1000)
@@ -169,7 +172,7 @@ class SubprocessSandbox(SandboxBackend):
                 stderr=stderr,
                 duration_ms=duration_ms,
                 timed_out=False,
-                command=command,
+                command=execution_command,
             )
 
         except FileNotFoundError:
@@ -179,7 +182,7 @@ class SubprocessSandbox(SandboxBackend):
                 stdout="",
                 stderr=f"Command not found or executable missing: {command[:120]}",
                 duration_ms=duration_ms,
-                command=command,
+                command=execution_command,
             )
         except Exception as exc:
             duration_ms = int((time.monotonic() - start) * 1000)
@@ -189,7 +192,7 @@ class SubprocessSandbox(SandboxBackend):
                 stdout="",
                 stderr=f"Execution error: {exc}",
                 duration_ms=duration_ms,
-                command=command,
+                command=execution_command,
             )
 
     async def read_file(self, sandbox_id: str, path: str) -> str:
@@ -237,6 +240,18 @@ class SubprocessSandbox(SandboxBackend):
         return True, ""
 
     # ---- helpers ----
+
+    @staticmethod
+    def _resolve_python_command(command: str) -> str:
+        """Use the active interpreter when the host has no ``python`` alias."""
+        if shutil.which("python"):
+            return command
+        return re.sub(
+            r"^(\s*)python(?=\s|$)",
+            lambda match: f"{match.group(1)}{shlex.quote(sys.executable)}",
+            command,
+            count=1,
+        )
 
     @staticmethod
     def _copy_workspace(source: str, dest: str) -> None:
