@@ -2,7 +2,9 @@ import asyncio
 import json
 import logging
 import os
+import shlex
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, List
@@ -21,7 +23,7 @@ from app.modules.platform.storage import create_experiment
 logger = logging.getLogger(__name__)
 
 # Absolute path to data directory for resolving project paths
-_BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+_BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 _DATA_DIR = os.path.join(_BASE_DIR, "data")
 
 
@@ -79,7 +81,7 @@ class ExperimentCapability(BaseCapability):
             {"path": "configs/experiment.json", "content": json.dumps(config_json, indent=2)},
             {"path": "src/main.py", "content": main_py},
             {"path": "src/pipeline.py", "content": "# Experiment pipeline — extend with custom logic\n"},
-            {"path": "scripts/run.sh", "content": "#!/usr/bin/env bash\nset -e\npython src/main.py\n"},
+            {"path": "scripts/run.sh", "content": "#!/usr/bin/env bash\nset -e\npython3 src/main.py\n"},
             {"path": "tests/test_smoke.py", "content": "from src.main import main\n\n\ndef test_main_runs():\n    assert main() is not None\n"},
         ]
 
@@ -147,7 +149,7 @@ class ExperimentCapability(BaseCapability):
             logger.warning("No main.py found for project %s — cannot execute", project_id)
             return result
 
-        command = f"python {os.path.relpath(main_path, repo_dir)}"
+        command = f"{shlex.quote(sys.executable)} {shlex.quote(os.path.relpath(main_path, repo_dir))}"
         result["command"] = command
 
         # Try sandbox execution first
@@ -207,7 +209,7 @@ class ExperimentCapability(BaseCapability):
         start = time.time()
         try:
             proc = subprocess.run(
-                ["python", main_path],
+                [sys.executable, main_path],
                 capture_output=True,
                 text=True,
                 timeout=600,
