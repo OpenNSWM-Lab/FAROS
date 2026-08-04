@@ -48,6 +48,47 @@ PAPER_TYPES = [
 VENUES = ["icml", "neurips", "iclr", "acl", "generic", "challenge_cup"]
 
 
+def _build_sections_for_fallback_pdf(
+    outline: Dict[str, Any],
+    paper_id: str,
+    files: List[Dict[str, Any]],
+    read_paper_file,
+) -> List[Dict[str, str]]:
+    sections_content: Dict[str, str] = {}
+    file_section_ids: List[str] = []
+    for file in files:
+        path = file.get("path", "")
+        if path.startswith("sections/") and path.endswith(".tex"):
+            section_id = os.path.basename(path)[:-4]
+            file_section_ids.append(section_id)
+            sections_content[section_id] = read_paper_file(paper_id, path) or ""
+
+    sections_for_pdf: List[Dict[str, str]] = []
+    seen = set()
+    for section in outline.get("sections") or []:
+        if not isinstance(section, dict):
+            continue
+        section_id = str(section.get("id") or "").strip()
+        if not section_id or section_id in seen:
+            continue
+        seen.add(section_id)
+        sections_for_pdf.append({
+            "title": section.get("title") or section_id,
+            "content": sections_content.get(section_id, ""),
+        })
+
+    for section_id in file_section_ids:
+        if section_id in seen:
+            continue
+        seen.add(section_id)
+        sections_for_pdf.append({
+            "title": section_id.capitalize(),
+            "content": sections_content.get(section_id, ""),
+        })
+
+    return sections_for_pdf
+
+
 class CreatePaperRequest(BaseModel):
     title: str = "Untitled Paper"
     paperType: str = "algorithm"
@@ -93,8 +134,9 @@ class UpdatePaperOutlineRequest(BaseModel):
 class UpdatePaperContextRequest(BaseModel):
     planLinkId: Optional[str] = None
     projectId: Optional[str] = None
-    experimentIds: List[str] = Field(default_factory=list)
-    runIds: List[str] = Field(default_factory=list)
+    authors: Optional[List[str]] = None
+    experimentIds: Optional[List[str]] = None
+    runIds: Optional[List[str]] = None
     notes: Optional[str] = None
 
 
@@ -177,13 +219,7 @@ async def update_paper_context_endpoint(paper_id: str, req: UpdatePaperContextRe
     record = _get_paper(paper_id)
     if not record:
         raise HTTPException(status_code=404, detail=f"Paper '{paper_id}' not found")
-    updates = {
-        "planLinkId": req.planLinkId,
-        "projectId": req.projectId,
-        "experimentIds": req.experimentIds,
-        "runIds": req.runIds,
-        "notes": req.notes,
-    }
+    updates = req.model_dump(exclude_unset=True)
     return _update_paper(paper_id, updates)
 
 
@@ -563,21 +599,13 @@ async def render_paper_pdf_endpoint(paper_id: str):
             
             outline = paper.get("outlineJson", {
                 "title": paper.get("title", "Untitled Paper"),
-                "authors": ["Anonymous"],
+                "authors": paper.get("authors") or ["Anonymous"],
                 "abstract": "",
                 "sections": [],
                 "references": []
             })
             
-            sections = []
-            sections_content = {}
             files = list_paper_files(paper_id)
-            for file in files:
-                if file.get("path", "").startswith("sections/") and file.get("path", "").endswith(".tex"):
-                    section_id = os.path.basename(file["path"])[:-4]
-                    content = read_paper_file(paper_id, file["path"]) or ""
-                    sections.append({"id": section_id, "title": section_id.capitalize()})
-                    sections_content[section_id] = content
             
             if os.path.isdir(figures_dir):
                 for fname in sorted(os.listdir(figures_dir)):
@@ -593,14 +621,11 @@ async def render_paper_pdf_endpoint(paper_id: str):
                         })
             figure_entries = dedupe_figure_entries(figure_entries)
             
-            sections_for_pdf = [
-                {"title": s.get("title", s["id"]), "content": sections_content.get(s["id"], "")}
-                for s in sections
-            ]
+            sections_for_pdf = _build_sections_for_fallback_pdf(outline, paper_id, files, read_paper_file)
             render_paper_pdf(
                 output_path=pdf_path,
                 title=outline.get("title", paper.get("title", "Untitled")),
-                authors=outline.get("authors", ["Anonymous"]),
+                authors=outline.get("authors") or paper.get("authors") or ["Anonymous"],
                 abstract=outline.get("abstract", ""),
                 sections=sections_for_pdf,
                 references=outline.get("references", []),

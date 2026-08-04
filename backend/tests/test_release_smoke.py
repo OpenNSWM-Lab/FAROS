@@ -349,6 +349,8 @@ def test_latex_templates_include_section_input_anchor():
 def test_challenge_cup_template_supports_generated_table_commands():
     template = (TEMPLATE_ROOT / "challenge_cup" / "main.tex").read_text(encoding="utf-8")
 
+    assert r"\documentclass[UTF8,12pt]{ctexart}" in template
+    assert "CJKutf8" not in template
     assert r"\usepackage{booktabs}" in template
     assert r"\usepackage{longtable}" in template
     assert r"\usepackage{multirow}" in template

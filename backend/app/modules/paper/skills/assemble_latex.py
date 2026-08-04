@@ -78,7 +78,7 @@ def run(ctx: PaperSkillContext) -> PaperSkillResult:
             write_paper_file(ctx.paper_id, f"sections/{section_id}.tex", normalized_content)
             sections_content[section_id] = normalized_content
 
-    outline = {**outline, "authors": normalize_paper_authors(ctx.paper.get("authors"))}
+    outline = {**outline, "authors": normalize_paper_authors(ctx.paper.get("authors") or outline.get("authors"))}
     main_tex = build_main_tex(outline, sections, ctx.venue)
     write_paper_file(ctx.paper_id, "main.tex", main_tex)
 
@@ -89,7 +89,8 @@ def run(ctx: PaperSkillContext) -> PaperSkillResult:
     readme_content += f"**Paper type:** {ctx.paper_type}  \n"
     readme_content += f"**Target venue:** {ctx.venue_cfg['name']}  \n\n"
     readme_content += "## Build Instructions\n\n"
-    readme_content += "```bash\n# Option 1: latexmk (recommended)\nlatexmk -pdf main.tex\n\n"
+    latexmk_command = "latexmk -xelatex main.tex" if ctx.venue == "challenge_cup" else "latexmk -pdf main.tex"
+    readme_content += f"```bash\n# Option 1: latexmk (recommended)\n{latexmk_command}\n\n"
     readme_content += "# Option 2: manual\npdflatex main.tex\nbibtex main\npdflatex main.tex\npdflatex main.tex\n```\n\n"
     readme_content += "## Structure\n\n```\n"
     readme_content += "main.tex          # Main document\n"

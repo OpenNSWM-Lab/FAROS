@@ -31,6 +31,7 @@ def _normalize_record(record: Dict[str, Any]) -> Dict[str, Any]:
     record.setdefault("experimentIds", [])
     record.setdefault("figureIds", [])
     record.setdefault("selectedFigures", [])
+    record.setdefault("selectedFiguresExplicit", False)
     record.setdefault("runIds", [])
     record.setdefault("authors", [])
     record.setdefault("logs", [])
@@ -60,6 +61,7 @@ def create_paper(data: Dict[str, Any]) -> Dict[str, Any]:
         "experimentIds": data.get("experimentIds", []),
         "figureIds": data.get("figureIds", []),
         "selectedFigures": data.get("selectedFigures", []),
+        "selectedFiguresExplicit": data.get("selectedFiguresExplicit", False),
         "runIds": data.get("runIds", []),
         "providerName": data.get("providerName", "moonshot"),
         "model": data.get("model", "moonshot-v1-8k"),
@@ -251,7 +253,11 @@ def update_selected_figures(paper_id: str, figures: List[Dict[str, Any]]) -> Opt
     if not paper:
         return None
     figure_ids = list(dict.fromkeys([*paper.get("figureIds", []), *(fig["figureId"] for fig in normalized)]))
-    return update_paper(paper_id, {"selectedFigures": normalized, "figureIds": figure_ids})
+    return update_paper(paper_id, {
+        "selectedFigures": normalized,
+        "selectedFiguresExplicit": True,
+        "figureIds": figure_ids,
+    })
 
 
 def select_figure_for_paper(
@@ -290,7 +296,11 @@ def remove_selected_figure(paper_id: str, figure_id: str) -> Optional[Dict[str, 
         if isinstance(item, dict) and str(item.get("figureId") or item.get("id")) != str(figure_id)
     ]
     figure_ids = [fid for fid in paper.get("figureIds", []) if str(fid) != str(figure_id)]
-    return update_paper(paper_id, {"selectedFigures": selected, "figureIds": figure_ids})
+    return update_paper(paper_id, {
+        "selectedFigures": selected,
+        "selectedFiguresExplicit": True,
+        "figureIds": figure_ids,
+    })
 
 
 def add_log(paper_id: str, message: str):

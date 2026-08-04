@@ -67,7 +67,7 @@ REQUIRED_PACKAGE_RULES: Tuple[Tuple[str, str, str], ...] = (
     (r"\\begin\{adjustbox\}", r"\usepackage{adjustbox}", "adjustbox"),
     (r"\\begin\{landscape\}", r"\usepackage{pdflscape}", "pdflscape"),
     (r"\\ding\b", r"\usepackage{pifont}", "pifont"),
-    (r"\\(rowcolor|cellcolor|columncolor)\b", r"\usepackage[table]{xcolor}", "xcolor-table"),
+    (r"\\(rowcolor|cellcolor|columncolor)\b", r"\usepackage[table]{xcolor}", "xcolor"),
 )
 
 
@@ -272,6 +272,24 @@ def _ensure_required_packages(
     return normalized, rewrites
 
 
+def _ensure_xcolor_table_option(main_tex: str, combined_tex: str) -> Tuple[str, List[Dict[str, Any]]]:
+    if not re.search(r"\\(rowcolor|cellcolor|columncolor)\b", combined_tex):
+        return main_tex, []
+
+    match = re.search(r"\\usepackage(?:\[([^\]]*)\])?\{([^}]*\bxcolor\b[^}]*)\}", main_tex)
+    if not match:
+        return main_tex, []
+
+    options = [item.strip() for item in (match.group(1) or "").split(",") if item.strip()]
+    if "table" in options:
+        return main_tex, []
+
+    options.append("table")
+    replacement = f"\\usepackage[{','.join(options)}]{{{match.group(2)}}}"
+    normalized = main_tex[: match.start()] + replacement + main_tex[match.end():]
+    return normalized, [{"kind": "package_option", "from": match.group(0), "to": replacement}]
+
+
 def preflight_latex_project(latex_dir: str) -> List[Dict[str, Any]]:
     """Apply deterministic LaTeX fixes before latexmk compilation."""
     rewrites: List[Dict[str, Any]] = []
@@ -288,6 +306,11 @@ def preflight_latex_project(latex_dir: str) -> List[Dict[str, Any]]:
     main_path = os.path.join(latex_dir, "main.tex")
     if main_path in file_contents:
         combined_tex = "\n".join(file_contents.values())
+        main_tex, xcolor_rewrites = _ensure_xcolor_table_option(file_contents[main_path], combined_tex)
+        if xcolor_rewrites:
+            file_contents[main_path] = main_tex
+            for rewrite in xcolor_rewrites:
+                rewrites.append({"file": "main.tex", **rewrite})
         main_tex, package_rewrites = _ensure_required_packages(file_contents[main_path], combined_tex)
         if package_rewrites:
             file_contents[main_path] = main_tex

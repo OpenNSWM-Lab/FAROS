@@ -218,6 +218,13 @@ def get_linked_figure_entries(
     entries: List[Dict[str, Any]] = []
     paper_id = paper.get("id")
 
+    if paper.get("selectedFiguresExplicit") or paper.get("selectedFigures"):
+        return load_selected_figure_entries(
+            paper,
+            ensure_copied=ensure_copied,
+            max_figures=max_figures,
+        )
+
     selected_entries = load_selected_figure_entries(
         paper,
         ensure_copied=ensure_copied,

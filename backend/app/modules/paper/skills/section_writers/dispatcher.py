@@ -39,6 +39,21 @@ def classify_section(section: Dict[str, Any]) -> str:
     text = _section_text(section)
     normalized = re.sub(r"[^a-z0-9]+", " ", text)
 
+    if any(kw in text for kw in ["引言", "绪论", "研究背景与意义", "背景与意义"]):
+        return "introduction"
+    if any(kw in text for kw in ["相关工作", "文献综述", "国内外研究现状", "研究现状"]):
+        return "related_work"
+    if any(kw in text for kw in ["预备知识", "问题定义", "符号说明", "理论基础"]):
+        return "background"
+    if any(kw in text for kw in ["实验", "结果", "评估", "验证", "测试", "数据集", "指标", "基线"]):
+        return "experiments"
+    if any(kw in text for kw in ["方法", "方案", "算法", "模型", "系统设计", "总体设计", "实现", "技术路线"]):
+        return "method"
+    if any(kw in text for kw in ["分析", "讨论", "消融", "局限", "案例", "敏感性"]):
+        return "analysis"
+    if any(kw in text for kw in ["结论", "总结", "展望"]):
+        return "conclusion"
+
     if any(kw in normalized for kw in ["intro", "motivation", "overview and contribution"]):
         return "introduction"
     if any(kw in normalized for kw in ["related work", "literature", "prior work", "comparison to prior"]):

@@ -117,7 +117,7 @@ def _normalize_sections(sections: Any) -> List[Dict[str, Any]]:
 def _normalize_outline(outline: Dict[str, Any], ctx: PaperSkillContext) -> Dict[str, Any]:
     normalized = dict(outline)
     normalized["title"] = str(normalized.get("title") or ctx.paper.get("title") or "Untitled Paper").strip()
-    normalized["authors"] = normalize_paper_authors(ctx.paper.get("authors"))
+    normalized["authors"] = normalize_paper_authors(ctx.paper.get("authors") or normalized.get("authors"))
     normalized["abstract"] = str(normalized.get("abstract") or "").strip()
     normalized["sections"] = _normalize_sections(normalized.get("sections"))
     normalized["references"] = normalized.get("references") if isinstance(normalized.get("references"), list) else []
