@@ -12,6 +12,7 @@ def run(ctx: PaperSkillContext) -> PaperSkillResult:
     summary_lines = [
         "# Collect Context",
         f"plan_context: {'yes' if context['plan_context'] != 'N/A' else 'no'}",
+        f"plan_evidence: {'yes' if context['plan_evidence'] != 'N/A' else 'no'}",
         f"project_summary: {'yes' if context['project_summary'] != 'N/A' else 'no'}",
         f"metrics_summary: {'yes' if context['metrics_summary'] != 'N/A' else 'no'}",
         f"runs_summary: {'yes' if context['runs_summary'] != 'N/A' else 'no'}",

@@ -30,6 +30,10 @@ from app.modules.paper.storage import (
     update_paper as _update_paper, list_paper_files as _list_paper_files,
     read_paper_file as _read_paper_file, write_paper_file as _write_paper_file,
     create_paper_zip, get_paper_latex_dir, add_log as _add_log,
+    get_selected_figures as _get_selected_figures,
+    remove_selected_figure as _remove_selected_figure,
+    select_figure_for_paper as _select_figure_for_paper,
+    update_selected_figures as _update_selected_figures,
 )
 
 logger = logging.getLogger(__name__)
@@ -41,7 +45,48 @@ PAPER_TYPES = [
 ]
 
 
-VENUES = ["icml", "neurips", "iclr", "acl", "generic"]
+VENUES = ["icml", "neurips", "iclr", "acl", "generic", "challenge_cup"]
+
+
+def _build_sections_for_fallback_pdf(
+    outline: Dict[str, Any],
+    paper_id: str,
+    files: List[Dict[str, Any]],
+    read_paper_file,
+) -> List[Dict[str, str]]:
+    sections_content: Dict[str, str] = {}
+    file_section_ids: List[str] = []
+    for file in files:
+        path = file.get("path", "")
+        if path.startswith("sections/") and path.endswith(".tex"):
+            section_id = os.path.basename(path)[:-4]
+            file_section_ids.append(section_id)
+            sections_content[section_id] = read_paper_file(paper_id, path) or ""
+
+    sections_for_pdf: List[Dict[str, str]] = []
+    seen = set()
+    for section in outline.get("sections") or []:
+        if not isinstance(section, dict):
+            continue
+        section_id = str(section.get("id") or "").strip()
+        if not section_id or section_id in seen:
+            continue
+        seen.add(section_id)
+        sections_for_pdf.append({
+            "title": section.get("title") or section_id,
+            "content": sections_content.get(section_id, ""),
+        })
+
+    for section_id in file_section_ids:
+        if section_id in seen:
+            continue
+        seen.add(section_id)
+        sections_for_pdf.append({
+            "title": section_id.capitalize(),
+            "content": sections_content.get(section_id, ""),
+        })
+
+    return sections_for_pdf
 
 
 class CreatePaperRequest(BaseModel):
@@ -50,6 +95,7 @@ class CreatePaperRequest(BaseModel):
     targetVenue: str = "generic"
     planLinkId: Optional[str] = None
     projectId: Optional[str] = None
+    authors: List[str] = Field(default_factory=list)
     experimentIds: List[str] = Field(default_factory=list)
     figureIds: List[str] = Field(default_factory=list)
     runIds: List[str] = Field(default_factory=list)
@@ -68,17 +114,63 @@ class GeneratePaperBriefRequest(BaseModel):
     force: bool = True
 
 
+class CollectPaperEvidenceRequest(BaseModel):
+    force: bool = True
+
+
 class UpdatePaperBriefRequest(BaseModel):
     briefJson: Optional[Dict[str, Any]] = None
     briefUserEdits: Optional[str] = None
 
 
+class GeneratePaperOutlineRequest(BaseModel):
+    force: bool = True
+
+
+class UpdatePaperOutlineRequest(BaseModel):
+    outlineJson: Dict[str, Any]
+
+
 class UpdatePaperContextRequest(BaseModel):
     planLinkId: Optional[str] = None
     projectId: Optional[str] = None
-    experimentIds: List[str] = Field(default_factory=list)
-    runIds: List[str] = Field(default_factory=list)
+    authors: Optional[List[str]] = None
+    experimentIds: Optional[List[str]] = None
+    runIds: Optional[List[str]] = None
     notes: Optional[str] = None
+
+
+class SelectedFigureRequest(BaseModel):
+    figureId: str
+    title: Optional[str] = None
+    caption: Optional[str] = None
+    targetSection: Optional[str] = None
+    label: Optional[str] = None
+    path: Optional[str] = None
+    include: bool = True
+    notes: Optional[str] = None
+
+
+class SelectFigureRequest(BaseModel):
+    title: Optional[str] = None
+    caption: Optional[str] = None
+    targetSection: Optional[str] = None
+    label: Optional[str] = None
+    path: Optional[str] = None
+    include: bool = True
+    notes: Optional[str] = None
+
+
+class UpdateSelectedFiguresRequest(BaseModel):
+    figures: List[SelectedFigureRequest] = Field(default_factory=list)
+
+
+class RewriteSectionRequest(BaseModel):
+    instruction: Optional[str] = None
+    mode: str = "improve"
+    preserveCitations: bool = True
+    preserveFigures: bool = True
+    targetLength: Optional[int] = None
 
 
 @router.get("/types")
@@ -127,14 +219,34 @@ async def update_paper_context_endpoint(paper_id: str, req: UpdatePaperContextRe
     record = _get_paper(paper_id)
     if not record:
         raise HTTPException(status_code=404, detail=f"Paper '{paper_id}' not found")
-    updates = {
-        "planLinkId": req.planLinkId,
-        "projectId": req.projectId,
-        "experimentIds": req.experimentIds,
-        "runIds": req.runIds,
-        "notes": req.notes,
-    }
+    updates = req.model_dump(exclude_unset=True)
     return _update_paper(paper_id, updates)
+
+
+@router.get("/{paper_id}/evidence", status_code=status.HTTP_200_OK)
+async def get_paper_evidence_endpoint(paper_id: str):
+    record = _get_paper(paper_id)
+    if not record:
+        raise HTTPException(status_code=404, detail=f"Paper '{paper_id}' not found")
+    return {
+        "paperId": paper_id,
+        "evidence": record.get("evidenceJson"),
+        "evidenceStatus": record.get("evidenceStatus", "missing"),
+    }
+
+
+@router.post("/{paper_id}/evidence/collect", status_code=status.HTTP_200_OK)
+async def collect_paper_evidence_endpoint(paper_id: str, req: CollectPaperEvidenceRequest):
+    record = _get_paper(paper_id)
+    if not record:
+        raise HTTPException(status_code=404, detail=f"Paper '{paper_id}' not found")
+    try:
+        from app.modules.paper.service import collect_paper_evidence
+
+        return collect_paper_evidence(paper_id, force=req.force)
+    except Exception as exc:
+        logger.error(f"Paper evidence collection failed: {exc}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc)[:500]) from exc
 
 
 @router.get("/{paper_id}/brief", status_code=status.HTTP_200_OK)
@@ -195,6 +307,54 @@ async def generate_paper_brief_endpoint(paper_id: str, req: GeneratePaperBriefRe
     }
 
 
+@router.get("/{paper_id}/outline", status_code=status.HTTP_200_OK)
+async def get_paper_outline_endpoint(paper_id: str):
+    record = _get_paper(paper_id)
+    if not record:
+        raise HTTPException(status_code=404, detail=f"Paper '{paper_id}' not found")
+    return {
+        "paperId": paper_id,
+        "outline": record.get("outlineJson"),
+        "outlineStatus": record.get("outlineStatus", "missing"),
+    }
+
+
+@router.patch("/{paper_id}/outline", status_code=status.HTTP_200_OK)
+async def update_paper_outline_endpoint(paper_id: str, req: UpdatePaperOutlineRequest):
+    record = _get_paper(paper_id)
+    if not record:
+        raise HTTPException(status_code=404, detail=f"Paper '{paper_id}' not found")
+    updated = _update_paper(paper_id, {
+        "outlineJson": req.outlineJson,
+        "outlineStatus": "user_edited",
+    })
+    return {
+        "paperId": paper_id,
+        "outline": updated.get("outlineJson") if updated else req.outlineJson,
+        "outlineStatus": updated.get("outlineStatus", "user_edited") if updated else "user_edited",
+    }
+
+
+@router.post("/{paper_id}/outline/generate", status_code=status.HTTP_200_OK)
+async def generate_paper_outline_endpoint(paper_id: str, req: GeneratePaperOutlineRequest):
+    record = _get_paper(paper_id)
+    if not record:
+        raise HTTPException(status_code=404, detail=f"Paper '{paper_id}' not found")
+    if record.get("status") == "generating":
+        raise HTTPException(status_code=409, detail="Paper generation already in progress")
+    try:
+        from app.modules.paper.service import generate_paper_outline
+        updated = generate_paper_outline(paper_id, force=req.force)
+    except Exception as exc:
+        logger.error(f"Paper outline generation failed: {exc}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc)[:500]) from exc
+    return {
+        "paperId": paper_id,
+        "outline": updated.get("outlineJson"),
+        "outlineStatus": updated.get("outlineStatus", "missing"),
+    }
+
+
 @router.post("/{paper_id}/generate", status_code=status.HTTP_202_ACCEPTED)
 async def generate_paper_endpoint(paper_id: str):
     record = _get_paper(paper_id)
@@ -247,6 +407,34 @@ async def save_paper_file(paper_id: str, req: SaveFileRequest):
     return {"paperId": paper_id, "path": req.path, "saved": True, "size": len(req.content)}
 
 
+@router.post("/{paper_id}/sections/{section_id}/rewrite", status_code=status.HTTP_200_OK)
+async def rewrite_paper_section_endpoint(paper_id: str, section_id: str, req: RewriteSectionRequest):
+    """Rewrite one generated section without regenerating the whole paper."""
+    record = _get_paper(paper_id)
+    if not record:
+        raise HTTPException(status_code=404, detail=f"Paper '{paper_id}' not found")
+    if record.get("status") == "generating":
+        raise HTTPException(status_code=409, detail="Paper generation already in progress")
+    try:
+        from app.modules.paper.service import rewrite_paper_section
+        return rewrite_paper_section(
+            paper_id,
+            section_id,
+            instruction=req.instruction or "",
+            mode=req.mode,
+            preserve_citations=req.preserveCitations,
+            preserve_figures=req.preserveFigures,
+            target_length=req.targetLength,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error(f"Paper section rewrite failed: {exc}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc)[:500]) from exc
+
+
 
 
 @router.get("/{paper_id}/pdf")
@@ -292,6 +480,8 @@ class AddFigureRequest(BaseModel):
 @router.post("/{paper_id}/figures", status_code=status.HTTP_201_CREATED)
 async def add_figure_to_paper_endpoint(paper_id: str, req: AddFigureRequest):
     """Add a figure from experiments to a paper's LaTeX figures folder."""
+    if not _get_paper(paper_id):
+        raise HTTPException(status_code=404, detail=f"Paper '{paper_id}' not found")
     from app.modules.paper.storage import copy_figure_to_paper
     result = copy_figure_to_paper(paper_id, req.figureId)
     if not result:
@@ -299,12 +489,69 @@ async def add_figure_to_paper_endpoint(paper_id: str, req: AddFigureRequest):
     return result
 
 
+@router.get("/{paper_id}/selected-figures")
+async def list_selected_figures_endpoint(paper_id: str):
+    """List user-selected paper figures used by brief, outline, and section prompts."""
+    if not _get_paper(paper_id):
+        raise HTTPException(status_code=404, detail=f"Paper '{paper_id}' not found")
+    figures = _get_selected_figures(paper_id)
+    return {"paperId": paper_id, "figures": figures, "total": len(figures)}
+
+
+@router.patch("/{paper_id}/selected-figures")
+async def update_selected_figures_endpoint(paper_id: str, req: UpdateSelectedFiguresRequest):
+    """Replace selected figure metadata for a paper."""
+    if not _get_paper(paper_id):
+        raise HTTPException(status_code=404, detail=f"Paper '{paper_id}' not found")
+    updated = _update_selected_figures(
+        paper_id,
+        [figure.model_dump(exclude_none=True) for figure in req.figures],
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail=f"Paper '{paper_id}' not found")
+    figures = _get_selected_figures(paper_id)
+    return {"paperId": paper_id, "figures": figures, "total": len(figures)}
+
+
+@router.post("/{paper_id}/figures/{figure_id}/select", status_code=status.HTTP_200_OK)
+async def select_figure_endpoint(paper_id: str, figure_id: str, req: Optional[SelectFigureRequest] = None):
+    """Select a copied figure for use in paper generation prompts."""
+    if not _get_paper(paper_id):
+        raise HTTPException(status_code=404, detail=f"Paper '{paper_id}' not found")
+    metadata = req.model_dump(exclude_none=True) if req else {}
+    selected = _select_figure_for_paper(paper_id, figure_id, metadata)
+    if not selected:
+        raise HTTPException(status_code=404, detail=f"Figure '{figure_id}' not found")
+    figures = _get_selected_figures(paper_id)
+    return {"paperId": paper_id, "figure": selected, "figures": figures, "total": len(figures)}
+
+
+@router.delete("/{paper_id}/figures/{figure_id}/select", status_code=status.HTTP_200_OK)
+async def remove_selected_figure_endpoint(paper_id: str, figure_id: str):
+    """Remove a figure from the selected paper figure set."""
+    if not _get_paper(paper_id):
+        raise HTTPException(status_code=404, detail=f"Paper '{paper_id}' not found")
+    updated = _remove_selected_figure(paper_id, figure_id)
+    if not updated:
+        raise HTTPException(status_code=404, detail=f"Paper '{paper_id}' not found")
+    figures = _get_selected_figures(paper_id)
+    return {"paperId": paper_id, "figures": figures, "total": len(figures)}
+
+
 @router.get("/{paper_id}/figures")
 async def list_paper_figures_endpoint(paper_id: str):
     """List all figures associated with a paper."""
+    if not _get_paper(paper_id):
+        raise HTTPException(status_code=404, detail=f"Paper '{paper_id}' not found")
     from app.modules.paper.storage import get_paper_figures
     figures = get_paper_figures(paper_id)
-    return {"paperId": paper_id, "figures": figures, "total": len(figures)}
+    selected_figures = _get_selected_figures(paper_id)
+    return {
+        "paperId": paper_id,
+        "figures": figures,
+        "selectedFigures": selected_figures,
+        "total": len(figures),
+    }
 
 
 @router.get("/figures/{figure_id}/latex-ref")
@@ -352,21 +599,13 @@ async def render_paper_pdf_endpoint(paper_id: str):
             
             outline = paper.get("outlineJson", {
                 "title": paper.get("title", "Untitled Paper"),
-                "authors": ["Anonymous"],
+                "authors": paper.get("authors") or ["Anonymous"],
                 "abstract": "",
                 "sections": [],
                 "references": []
             })
             
-            sections = []
-            sections_content = {}
             files = list_paper_files(paper_id)
-            for file in files:
-                if file.get("path", "").startswith("sections/") and file.get("path", "").endswith(".tex"):
-                    section_id = os.path.basename(file["path"])[:-4]
-                    content = read_paper_file(paper_id, file["path"]) or ""
-                    sections.append({"id": section_id, "title": section_id.capitalize()})
-                    sections_content[section_id] = content
             
             if os.path.isdir(figures_dir):
                 for fname in sorted(os.listdir(figures_dir)):
@@ -382,14 +621,11 @@ async def render_paper_pdf_endpoint(paper_id: str):
                         })
             figure_entries = dedupe_figure_entries(figure_entries)
             
-            sections_for_pdf = [
-                {"title": s.get("title", s["id"]), "content": sections_content.get(s["id"], "")}
-                for s in sections
-            ]
+            sections_for_pdf = _build_sections_for_fallback_pdf(outline, paper_id, files, read_paper_file)
             render_paper_pdf(
                 output_path=pdf_path,
                 title=outline.get("title", paper.get("title", "Untitled")),
-                authors=outline.get("authors", ["Anonymous"]),
+                authors=outline.get("authors") or paper.get("authors") or ["Anonymous"],
                 abstract=outline.get("abstract", ""),
                 sections=sections_for_pdf,
                 references=outline.get("references", []),
