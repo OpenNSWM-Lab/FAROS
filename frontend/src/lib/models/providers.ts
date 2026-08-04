@@ -254,6 +254,55 @@ export const LLM_PROVIDERS: ProviderInfo[] = [
     ]
   },
   {
+    id: 'bailian',
+    name: 'Bailian (阿里云百炼)',
+    models: [
+      // Qwen3.7 (最新旗舰)
+      { id: 'qwen3.7-max', name: 'Qwen3.7 Max', provider: 'bailian', contextWindow: 262144, description: 'Qwen3.7 旗舰，最强推理与创作' },
+      { id: 'qwen3.7-plus', name: 'Qwen3.7 Plus', provider: 'bailian', contextWindow: 262144, description: 'Qwen3.7 高性能版' },
+      // Qwen3.6
+      { id: 'qwen3.6-max-preview', name: 'Qwen3.6 Max Preview', provider: 'bailian', contextWindow: 262144, description: 'Qwen3.6 旗舰预览' },
+      { id: 'qwen3.6-plus', name: 'Qwen3.6 Plus', provider: 'bailian', contextWindow: 262144, description: 'Qwen3.6 高性能版' },
+      { id: 'qwen3.6-flash', name: 'Qwen3.6 Flash', provider: 'bailian', contextWindow: 262144, description: 'Qwen3.6 极速版' },
+      // Qwen3.5
+      { id: 'qwen3.5-plus', name: 'Qwen3.5 Plus', provider: 'bailian', contextWindow: 131072, description: 'Qwen3.5 高性能版' },
+      { id: 'qwen3.5-flash', name: 'Qwen3.5 Flash', provider: 'bailian', contextWindow: 131072, description: 'Qwen3.5 极速版' },
+      // Qwen3 系列
+      { id: 'qwen3-max', name: 'Qwen3 Max', provider: 'bailian', contextWindow: 131072, description: 'Qwen3 旗舰模型' },
+      { id: 'qwen3-plus', name: 'Qwen3 Plus', provider: 'bailian', contextWindow: 131072, description: 'Qwen3 高性能版' },
+      { id: 'qwen3-235b-a22b-instruct-2507', name: 'Qwen3 235B Instruct', provider: 'bailian', contextWindow: 131072, description: 'Qwen3 235B 指令版' },
+      { id: 'qwen3-coder-plus', name: 'Qwen3 Coder Plus', provider: 'bailian', contextWindow: 131072, description: 'Qwen3 代码专用' },
+      { id: 'qwen3-coder-flash', name: 'Qwen3 Coder Flash', provider: 'bailian', contextWindow: 131072, description: 'Qwen3 代码极速版' },
+      // Qwen 经典系列
+      { id: 'qwen-max', name: 'Qwen Max', provider: 'bailian', contextWindow: 30000, description: '通义千问旗舰' },
+      { id: 'qwen-plus', name: 'Qwen Plus', provider: 'bailian', contextWindow: 131072, description: '通义千问高性能' },
+      { id: 'qwen-turbo', name: 'Qwen Turbo', provider: 'bailian', contextWindow: 1000000, description: '通义千问极速，1M上下文' },
+      { id: 'qwen-long', name: 'Qwen Long', provider: 'bailian', contextWindow: 10000000, description: '超长上下文，支持千万token' },
+      { id: 'qwen-flash', name: 'Qwen Flash', provider: 'bailian', contextWindow: 131072, description: '极速轻量版' },
+      // 推理模型
+      { id: 'qwq-plus', name: 'QwQ Plus', provider: 'bailian', contextWindow: 131072, description: '深度推理模型' },
+      { id: 'qvq-max', name: 'QvQ Max', provider: 'bailian', contextWindow: 131072, description: '视觉推理旗舰' },
+      // DeepSeek 系列
+      { id: 'deepseek-v3.2', name: 'DeepSeek V3.2', provider: 'bailian', contextWindow: 131072, description: 'DeepSeek 最新版' },
+      { id: 'deepseek-v3.1', name: 'DeepSeek V3.1', provider: 'bailian', contextWindow: 131072, description: 'DeepSeek V3.1' },
+      { id: 'deepseek-v3', name: 'DeepSeek V3', provider: 'bailian', contextWindow: 65536, description: 'DeepSeek V3' },
+      { id: 'deepseek-r1', name: 'DeepSeek R1', provider: 'bailian', contextWindow: 65536, description: 'DeepSeek 推理模型' },
+      { id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro', provider: 'bailian', contextWindow: 131072, description: 'DeepSeek V4 旗舰' },
+      { id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash', provider: 'bailian', contextWindow: 131072, description: 'DeepSeek V4 极速' },
+      // GLM 系列
+      { id: 'glm-5.2', name: 'GLM-5.2', provider: 'bailian', contextWindow: 131072, description: '智谱最新旗舰' },
+      { id: 'glm-5.1', name: 'GLM-5.1', provider: 'bailian', contextWindow: 131072, description: '智谱GLM-5.1' },
+      { id: 'glm-4.7', name: 'GLM-4.7', provider: 'bailian', contextWindow: 131072, description: '智谱GLM-4.7' },
+      // Kimi 系列
+      { id: 'kimi-k2.6', name: 'Kimi K2.6', provider: 'bailian', contextWindow: 262144, description: '月之暗面 Kimi 最新' },
+      { id: 'kimi-k2.5', name: 'Kimi K2.5', provider: 'bailian', contextWindow: 262144, description: '月之暗面 Kimi K2.5' },
+      { id: 'kimi-k2-thinking', name: 'Kimi K2 Thinking', provider: 'bailian', contextWindow: 262144, description: 'Kimi 深度推理' },
+      // MiniMax 系列
+      { id: 'MiniMax-M3', name: 'MiniMax-M3', provider: 'bailian', contextWindow: 204800, description: 'MiniMax 最新旗舰' },
+      { id: 'MiniMax-M2.5', name: 'MiniMax-M2.5', provider: 'bailian', contextWindow: 204800, description: 'MiniMax 推理模型' },
+    ]
+  },
+  {
     id: 'mistral',
     name: 'Mistral AI',
     models: [

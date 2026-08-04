@@ -176,8 +176,9 @@ export function useRunConsistencyCheck() {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: (paperId: string) => api.runConsistencyCheck(paperId),
-    onSuccess: (_data, paperId) => {
+    mutationFn: (input: string | { paperId: string; budgetMode?: string }) => api.runConsistencyCheck(input),
+    onSuccess: (_data, input) => {
+      const paperId = typeof input === 'string' ? input : input.paperId
       queryClient.invalidateQueries({ queryKey: queryKeys.reviewFindings(paperId) })
     },
   })

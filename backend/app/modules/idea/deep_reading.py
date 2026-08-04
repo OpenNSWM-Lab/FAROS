@@ -14,6 +14,8 @@ import logging
 import json
 import uuid
 import re as _re
+import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Any, Optional
 
 from app.models.idea import (
@@ -32,13 +34,47 @@ from app.models.idea import (
     FrontierSignal,
 )
 from app.llm.provider_client import get_provider_client, ChatMessage, ProviderError
+from app.llm.task_scheduler import get_llm_task_scheduler
 from app.services import prompts
 
 logger = logging.getLogger(__name__)
 
 
+def _as_text_list(value: Any, *, limit: int = 8) -> List[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list):
+        value = [value]
+    items = [str(item).strip() for item in value if str(item).strip()]
+    return list(dict.fromkeys(items))[:limit]
+
+
 class DeepReader:
     """Stateless deep reader for structured paper extraction."""
+
+    def _get_concurrency(self, paper_count: int) -> int:
+        """Return bounded DeepReader concurrency for LLM I/O."""
+        try:
+            configured = int(os.getenv("FAROS_DEEP_READER_CONCURRENCY", "2"))
+        except ValueError:
+            configured = 2
+        return max(1, min(8, configured, max(1, paper_count)))
+
+    def _extract_with_fallback(
+        self,
+        session: IdeaSession,
+        paper: RawPaper,
+    ) -> StructuredPaper:
+        try:
+            return self._extract_single(session, paper)
+        except Exception as e:
+            logger.warning(
+                "LLM extraction failed for %s (%s), using heuristic fallback",
+                paper.id, e,
+            )
+            return self._extract_heuristic(session.id, paper)
 
     def extract_structured_papers(
         self,
@@ -63,21 +99,31 @@ class DeepReader:
             logger.warning("No selected papers to deep-read")
             return []
 
-        structured_papers: List[StructuredPaper] = []
-        for paper in selected_papers:
-            try:
-                sp = self._extract_single(session, paper)
-            except Exception as e:
-                logger.warning(
-                    "LLM extraction failed for %s (%s), using heuristic fallback",
-                    paper.id, e,
-                )
-                sp = self._extract_heuristic(session.id, paper)
-            structured_papers.append(sp)
+        concurrency = self._get_concurrency(len(selected_papers))
+        if concurrency <= 1 or len(selected_papers) <= 1:
+            structured_papers = [
+                self._extract_with_fallback(session, paper)
+                for paper in selected_papers
+            ]
+        else:
+            indexed_results: Dict[int, StructuredPaper] = {}
+            with ThreadPoolExecutor(max_workers=concurrency) as executor:
+                futures = {
+                    executor.submit(self._extract_with_fallback, session, paper): index
+                    for index, paper in enumerate(selected_papers)
+                }
+                for future in as_completed(futures):
+                    indexed_results[futures[future]] = future.result()
+            structured_papers = [
+                indexed_results[index]
+                for index in range(len(selected_papers))
+                if index in indexed_results
+            ]
 
         logger.info(
-            "Deep-read %d papers: %d llm, %d heuristic",
+            "Deep-read %d papers with concurrency=%d: %d llm, %d heuristic",
             len(structured_papers),
+            concurrency,
             sum(1 for s in structured_papers if s.extractionMethod == "llm"),
             sum(1 for s in structured_papers if s.extractionMethod == "heuristic"),
         )
@@ -103,8 +149,11 @@ class DeepReader:
             ChatMessage(role="user", content=user_prompt),
         ]
 
-        response = client.chat(
-            messages, model=session.config.model, max_tokens=2000
+        response = get_llm_task_scheduler().run(
+            "deep_reader",
+            lambda: client.chat(
+                messages, model=session.config.model, max_tokens=2000
+            ),
         )
 
         try:
@@ -168,11 +217,20 @@ class DeepReader:
 
         summary = data.get("summary", "")
 
-        # Parse extra fields from LLM response
-        datasets = data.get("datasets", [])
-        metrics = data.get("metrics", [])
-        limitations = data.get("limitations", [])
-        baselines = data.get("baselines", [])
+        # Parse extra fields from LLM response. These are the main idea cut-in
+        # points used downstream, so keep them explicit and backward compatible.
+        datasets = _as_text_list(data.get("datasets", []), limit=10)
+        metrics = _as_text_list(data.get("metrics", []), limit=10)
+        limitations = _as_text_list(data.get("limitations", []), limit=10)
+        baselines = _as_text_list(data.get("baselines", []), limit=10)
+        open_questions = _as_text_list(data.get("openQuestions", []), limit=10)
+        failed_assumptions = _as_text_list(data.get("failedAssumptions", []), limit=10)
+        method_weaknesses = _as_text_list(data.get("methodWeaknesses", []), limit=10)
+        missing_evaluation = _as_text_list(data.get("missingEvaluation", []), limit=10)
+        baseline_methods = _as_text_list(data.get("baselineMethods", []), limit=10)
+        recommended_metrics = _as_text_list(data.get("recommendedMetrics", []), limit=10)
+        baselines = list(dict.fromkeys([*baselines, *baseline_methods]))
+        metrics = list(dict.fromkeys([*metrics, *recommended_metrics]))
 
         return StructuredPaper(
             id=paper.id,
@@ -192,6 +250,12 @@ class DeepReader:
             metrics=metrics,
             limitations=limitations,
             baselines=baselines,
+            openQuestions=open_questions,
+            failedAssumptions=failed_assumptions,
+            methodWeaknesses=method_weaknesses,
+            missingEvaluation=missing_evaluation,
+            baselineMethods=baseline_methods,
+            recommendedMetrics=recommended_metrics,
             noveltyEvidence=novelty_evidence,
             summary=summary,
             extractionMethod="llm",
@@ -277,6 +341,12 @@ class DeepReader:
             metrics=[],
             limitations=[],
             baselines=[],
+            openQuestions=[],
+            failedAssumptions=[],
+            methodWeaknesses=[],
+            missingEvaluation=[],
+            baselineMethods=[],
+            recommendedMetrics=[],
             noveltyEvidence=[],
             summary=abstract[:300] if abstract else "",
             extractionMethod="heuristic",
@@ -364,6 +434,37 @@ class DeepReader:
                             entityHints=ne.entityHints,
                             confidence=ne.confidence,
                         ))
+
+            cut_in_sources = [
+                ("open_question", sp.openQuestions, 0.72),
+                ("failed_assumption", sp.failedAssumptions, 0.68),
+                ("method_weakness", sp.methodWeaknesses, 0.70),
+                ("missing_evaluation", sp.missingEvaluation, 0.75),
+                ("limitation", sp.limitations, 0.70),
+            ]
+            for source_type, items, confidence in cut_in_sources:
+                for item in items[:3]:
+                    text = str(item).strip()
+                    if not text:
+                        continue
+                    gaps.append(GapEvidence(
+                        direction=text,
+                        evidence=f"{source_type} extracted from '{sp.title}'.",
+                        paperIds=[sp.rawPaperId or sp.id],
+                        clusterIds=[],
+                        entityHints=[],
+                        confidence=confidence,
+                    ))
+
+        deduped_gaps: List[GapEvidence] = []
+        seen_gap_keys = set()
+        for gap in gaps:
+            key = (gap.direction.lower().strip(), tuple(gap.paperIds))
+            if key in seen_gap_keys:
+                continue
+            seen_gap_keys.add(key)
+            deduped_gaps.append(gap)
+        gaps = deduped_gaps[:25]
 
         # Novelty evidence aggregation: use the NoveltyEvidence objects directly
         all_evidence: List[NoveltyEvidence] = []

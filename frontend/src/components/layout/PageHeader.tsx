@@ -73,8 +73,8 @@ export function PageHeader({
       )}
 
       <div className={`relative bg-gradient-to-r ${colors.accent} p-[2px] rounded-lg mb-6`}>
-        <div className="bg-white rounded-lg p-6">
-          <div className="flex items-start justify-between">
+        <div className="rounded-lg bg-white p-4 sm:p-6">
+          <div className="flex flex-col items-start gap-4 md:flex-row md:justify-between">
             <div className="flex items-start gap-4 flex-1 min-w-0">
               {Icon && (
                 <div className={`h-12 w-12 rounded-xl ${colors.iconBg} flex items-center justify-center flex-shrink-0`}>
@@ -82,18 +82,18 @@ export function PageHeader({
                 </div>
               )}
               <div className="flex-1 min-w-0">
-                <h1 className="text-4xl font-bold text-slate-900 mb-2 tracking-tight leading-tight">
+                <h1 className="mb-2 text-2xl font-bold leading-tight text-slate-900 sm:text-4xl">
                   {title}
                 </h1>
                 {subtitle && (
-                  <p className="text-lg text-slate-600 leading-relaxed">
+                  <p className="text-base leading-relaxed text-slate-600 sm:text-lg">
                     {subtitle}
                   </p>
                 )}
               </div>
             </div>
 
-            <div className="flex items-center gap-4 ml-6 flex-shrink-0">
+            <div className="flex max-w-full shrink-0 flex-wrap items-center gap-4 md:ml-6">
               {headerViz && (
                 <HeaderViz variant={headerViz} data={headerVizData} />
               )}

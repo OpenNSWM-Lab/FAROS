@@ -169,6 +169,19 @@ export interface ReviewFinding {
   description: string;
   evidence?: string;
   suggestedFix?: string;
+  riskType?: string;
+  claimId?: string;
+  evidenceIds?: string[];
+  targetModule?: string;
+  confidence?: number;
+  supportStatus?: string;
+  verifierIds?: string[];
+  reviewerDecision?: string;
+  reviewerAssessment?: string;
+  reviewerModel?: string;
+  cemCalibration?: Record<string, unknown>;
+  revisionRequestIds?: string[];
+  revisionStatus?: string;
   relatedRunId?: string;
   relatedArtifactId?: string;
   location?: {
