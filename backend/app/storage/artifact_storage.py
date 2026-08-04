@@ -82,7 +82,7 @@ class ArtifactStorage:
         with open(temp_path, 'w', encoding='utf-8') as f:
             json.dump(artifact_dict, f, indent=2, default=str)
         
-        temp_path.rename(artifact_path)
+        temp_path.replace(artifact_path)
         
         return artifact
     

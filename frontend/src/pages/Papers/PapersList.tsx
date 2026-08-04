@@ -3,7 +3,7 @@ import { AppPageLayout } from '@/components/layout/AppPageLayout'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
-import { BookOpen, Plus, Download, Code2, Loader2, RefreshCw, Save, Eye, Copy, CheckCircle, ImagePlus } from 'lucide-react'
+import { BookOpen, Plus, Download, Code2, Loader2, RefreshCw, Save, Eye, Copy, CheckCircle, ImagePlus, FileText } from 'lucide-react'
 import { LLM_PROVIDERS, getModelsByProvider } from '@/lib/models/providers'
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || ''
@@ -17,6 +17,19 @@ interface TemplateInfo {
 }
 
 const VENUES = ['icml', 'neurips', 'iclr', 'acl', 'generic']
+
+interface PaperBrief {
+  research_question?: string
+  core_claim?: string
+  paper_angle?: string
+  target_audience?: string
+  contributions?: unknown[]
+  must_use_evidence?: unknown[]
+  must_use_figures?: unknown[]
+  avoid_claims?: unknown[]
+  section_priorities?: Record<string, unknown>
+  [key: string]: unknown
+}
 
 interface PaperRecord {
   id: string
@@ -32,6 +45,9 @@ interface PaperRecord {
   providerName: string
   model: string
   pdfAvailable?: boolean
+  briefJson?: PaperBrief | null
+  briefUserEdits?: string
+  briefStatus?: string
   outlineJson?: Record<string, unknown>
   evidenceGates?: Record<string, unknown>
   sectionCount?: number
@@ -146,10 +162,14 @@ export function PapersList() {
   const [newProjectId, setNewProjectId] = useState('')
   const [newRunIds, setNewRunIds] = useState<string[]>([])
   const [newExperimentIds, setNewExperimentIds] = useState<string[]>([])
+  const [newNotes, setNewNotes] = useState('')
   const [contextProjectId, setContextProjectId] = useState('')
   const [contextRunIds, setContextRunIds] = useState<string[]>([])
   const [contextExperimentIds, setContextExperimentIds] = useState<string[]>([])
   const [savingContext, setSavingContext] = useState(false)
+  const [briefUserEdits, setBriefUserEdits] = useState('')
+  const [generatingBrief, setGeneratingBrief] = useState(false)
+  const [savingBrief, setSavingBrief] = useState(false)
 
   const fetchPapers = useCallback(async () => {
     try {
@@ -353,6 +373,7 @@ export function PapersList() {
     setContextProjectId(selectedPaper?.projectId || '')
     setContextRunIds(selectedPaper?.runIds || [])
     setContextExperimentIds(selectedPaper?.experimentIds || [])
+    setBriefUserEdits(selectedPaper?.briefUserEdits || '')
   }, [selectedPaper])
 
   const selectPaper = async (p: PaperRecord) => {
@@ -449,6 +470,54 @@ export function PapersList() {
     finally { setSavingContext(false) }
   }
 
+  const generateBrief = async () => {
+    if (!selectedPaper) return
+    setGeneratingBrief(true)
+    try {
+      const resp = await fetch(`${API_BASE}/api/v1/papers/${selectedPaper.id}/brief/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ briefUserEdits, force: true }),
+      })
+      if (resp.ok) {
+        const data = await resp.json()
+        const updated = {
+          ...selectedPaper,
+          briefJson: data.brief,
+          briefUserEdits: data.briefUserEdits || '',
+          briefStatus: data.briefStatus,
+        }
+        setSelectedPaper(updated)
+        setBriefUserEdits(data.briefUserEdits || '')
+        await fetchPapers()
+      }
+    } catch (err) { console.error(err) }
+    finally { setGeneratingBrief(false) }
+  }
+
+  const saveBrief = async () => {
+    if (!selectedPaper) return
+    setSavingBrief(true)
+    try {
+      const resp = await fetch(`${API_BASE}/api/v1/papers/${selectedPaper.id}/brief`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ briefUserEdits }),
+      })
+      if (resp.ok) {
+        const data = await resp.json()
+        setSelectedPaper({
+          ...selectedPaper,
+          briefJson: data.brief,
+          briefUserEdits: data.briefUserEdits || '',
+          briefStatus: data.briefStatus,
+        })
+        await fetchPapers()
+      }
+    } catch (err) { console.error(err) }
+    finally { setSavingBrief(false) }
+  }
+
   const createPaper = async () => {
     setCreating(true)
     try {
@@ -464,6 +533,7 @@ export function PapersList() {
           projectId: newProjectId || undefined,
           runIds: newRunIds,
           experimentIds: newExperimentIds,
+          notes: newNotes || undefined,
         }),
       })
       if (resp.ok) {
@@ -521,6 +591,19 @@ export function PapersList() {
     finally { setGenerating(false); fetchPapers() }
   }
 
+  const brief = selectedPaper?.briefJson || null
+  const briefItems = (items: unknown): string[] => {
+    if (!Array.isArray(items)) return []
+    return items.map(item => {
+      if (typeof item === 'string') return item
+      if (item && typeof item === 'object') {
+        const obj = item as Record<string, unknown>
+        return [obj.label, obj.path, obj.caption, obj.target_section].filter(Boolean).join(' | ')
+      }
+      return String(item)
+    }).filter(Boolean)
+  }
+
   const allFiles = paperFiles.filter(f => !f.isDir)
   const isEditable = selectedFile.endsWith('.tex') || selectedFile.endsWith('.bib') || selectedFile.endsWith('.md')
 
@@ -572,6 +655,13 @@ export function PapersList() {
                   <option value="">No linked project</option>
                   {projects.map(project => <option key={project.id} value={project.id}>{project.title} ({project.id})</option>)}
                 </select>
+                <textarea
+                  className="w-full border rounded px-2 py-1.5 text-xs resize-none"
+                  rows={3}
+                  placeholder="Writing intent / notes"
+                  value={newNotes}
+                  onChange={e => setNewNotes(e.target.value)}
+                />
                 <div className="space-y-1">
                   <div className="text-[11px] font-medium text-muted-foreground">Link runs</div>
                   <div className="max-h-24 overflow-y-auto border rounded p-1 space-y-1">
@@ -656,6 +746,12 @@ export function PapersList() {
                     <option value="">{applyingTemplate ? 'Applying...' : 'Apply Template'}</option>
                     {templates.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
                   </select>
+                )}
+                {selectedPaper.status !== 'generating' && (
+                  <Button size="sm" variant="outline" onClick={generateBrief} disabled={generatingBrief} className="h-7 text-xs">
+                    {generatingBrief ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <FileText className="h-3 w-3 mr-1" />}
+                    Brief
+                  </Button>
                 )}
                 {(selectedPaper.status === 'created' || selectedPaper.status === 'failed') && (
                   <Button size="sm" onClick={generatePaper} disabled={generating} className="h-7 text-xs">
@@ -961,6 +1057,81 @@ export function PapersList() {
                         ))}
                       </div>
                     )}
+                  </div>
+                </div>
+
+                {/* Writing Brief */}
+                <div className="border rounded-lg bg-white overflow-hidden">
+                  <div className="px-3 py-1.5 border-b bg-slate-50 flex items-center justify-between">
+                    <div className="text-xs font-medium text-muted-foreground flex items-center gap-1">
+                      <FileText className="h-3 w-3" /> Writing Brief
+                    </div>
+                    <Badge variant="outline" className="text-[10px]">{selectedPaper.briefStatus || 'missing'}</Badge>
+                  </div>
+                  <div className="p-2 space-y-2 text-xs text-muted-foreground">
+                    {brief ? (
+                      <div className="space-y-2">
+                        <div>
+                          <div className="font-medium text-slate-700">Research question</div>
+                          <div className="mt-0.5 text-[11px]">{brief.research_question || 'N/A'}</div>
+                        </div>
+                        <div>
+                          <div className="font-medium text-slate-700">Core claim</div>
+                          <div className="mt-0.5 text-[11px]">{brief.core_claim || 'N/A'}</div>
+                        </div>
+                        {briefItems(brief.contributions).length > 0 && (
+                          <div>
+                            <div className="font-medium text-slate-700">Contributions</div>
+                            <ul className="mt-0.5 list-disc pl-4 space-y-0.5 text-[11px]">
+                              {briefItems(brief.contributions).slice(0, 4).map((item, idx) => <li key={idx}>{item}</li>)}
+                            </ul>
+                          </div>
+                        )}
+                        {briefItems(brief.must_use_evidence).length > 0 && (
+                          <div>
+                            <div className="font-medium text-slate-700">Evidence</div>
+                            <ul className="mt-0.5 list-disc pl-4 space-y-0.5 text-[11px]">
+                              {briefItems(brief.must_use_evidence).slice(0, 4).map((item, idx) => <li key={idx}>{item}</li>)}
+                            </ul>
+                          </div>
+                        )}
+                        {briefItems(brief.must_use_figures).length > 0 && (
+                          <div>
+                            <div className="font-medium text-slate-700">Figures</div>
+                            <ul className="mt-0.5 list-disc pl-4 space-y-0.5 text-[11px]">
+                              {briefItems(brief.must_use_figures).slice(0, 4).map((item, idx) => <li key={idx}>{item}</li>)}
+                            </ul>
+                          </div>
+                        )}
+                        {briefItems(brief.avoid_claims).length > 0 && (
+                          <div>
+                            <div className="font-medium text-slate-700">Avoid</div>
+                            <ul className="mt-0.5 list-disc pl-4 space-y-0.5 text-[11px]">
+                              {briefItems(brief.avoid_claims).slice(0, 3).map((item, idx) => <li key={idx}>{item}</li>)}
+                            </ul>
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="rounded border border-dashed p-2 text-[11px]">No brief generated</div>
+                    )}
+                    <textarea
+                      className="w-full border rounded px-2 py-1.5 text-xs resize-none"
+                      rows={4}
+                      placeholder="Additional writing instructions"
+                      value={briefUserEdits}
+                      onChange={e => setBriefUserEdits(e.target.value)}
+                    />
+                    <div className="grid grid-cols-2 gap-2">
+                      <Button size="sm" variant="outline" onClick={saveBrief} disabled={savingBrief} className="h-7 text-xs">
+                        {savingBrief ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <Save className="h-3 w-3 mr-1" />}
+                        Save
+                      </Button>
+                      <Button size="sm" variant="secondary" onClick={generateBrief} disabled={generatingBrief} className="h-7 text-xs">
+                        {generatingBrief ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <RefreshCw className="h-3 w-3 mr-1" />}
+                        Generate
+                      </Button>
+                    </div>
                   </div>
                 </div>
 

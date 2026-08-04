@@ -106,10 +106,10 @@ class ProviderClient:
         max_tokens: int = 1024,
         **kwargs,
     ) -> ChatResponse:
-        litellm = self._get_litellm()
         api_config = self._get_api_config()
-        model_string = self._get_model_string(model)
+        model_name = model or self.settings.get_active_model(self.provider_name)
         messages_dict = [{"role": m.role, "content": m.content} for m in messages]
+        api_format = getattr(self.config, "api_format", "openai")
 
         start_time = time.time()
         retries = 0
@@ -117,16 +117,14 @@ class ProviderClient:
 
         while retries <= self.settings.MAX_RETRIES:
             try:
-                response = litellm.completion(
-                    model=model_string,
-                    messages=messages_dict,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    api_key=api_config["api_key"],
-                    api_base=api_config["api_base"],
-                    timeout=api_config["timeout"],
-                    **kwargs,
-                )
+                if api_format == "openai":
+                    response = self._chat_via_openai_sdk(
+                        api_config, model_name, messages_dict, temperature, max_tokens, **kwargs
+                    )
+                else:
+                    response = self._chat_via_litellm(
+                        api_config, model_name, messages_dict, temperature, max_tokens, **kwargs
+                    )
 
                 latency_ms = int((time.time() - start_time) * 1000)
                 choice = response.choices[0]
@@ -142,7 +140,7 @@ class ProviderClient:
                     usage=usage,
                     latency_ms=latency_ms,
                     raw_provider=self.provider_name,
-                    model=model or self.settings.get_active_model(self.provider_name),
+                    model=model_name,
                     finish_reason=choice.finish_reason,
                 )
             except Exception as e:
@@ -165,6 +163,56 @@ class ProviderClient:
             f"Provider '{self.provider_name}' request failed: {error_msg}",
             self.provider_name,
             502,
+        )
+
+    def _chat_via_openai_sdk(
+        self,
+        api_config: Dict[str, Any],
+        model_name: str,
+        messages_dict: List[Dict[str, str]],
+        temperature: float,
+        max_tokens: int,
+        **kwargs,
+    ):
+        """Use the openai SDK directly — avoids litellm's httpx issues on Windows."""
+        from openai import OpenAI
+
+        client = OpenAI(
+            api_key=api_config["api_key"],
+            base_url=api_config["api_base"],
+            timeout=api_config["timeout"],
+        )
+        # Merge extra arguments while respecting the SDK's parameter names
+        extra = {k: v for k, v in kwargs.items() if k not in ("api_key", "api_base", "timeout")}
+        return client.chat.completions.create(
+            model=model_name,
+            messages=messages_dict,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            **extra,
+        )
+
+    def _chat_via_litellm(
+        self,
+        api_config: Dict[str, Any],
+        model_name: str,
+        messages_dict: List[Dict[str, str]],
+        temperature: float,
+        max_tokens: int,
+        **kwargs,
+    ):
+        """Fallback to litellm for non-openai providers (e.g., anthropic-format)."""
+        litellm = self._get_litellm()
+        model_string = self._get_model_string(model_name)
+        return litellm.completion(
+            model=model_string,
+            messages=messages_dict,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            api_key=api_config["api_key"],
+            api_base=api_config["api_base"],
+            timeout=api_config["timeout"],
+            **kwargs,
         )
 
     def test_connection(self, prompt: str = "Say OK", max_tokens: int = 32) -> ChatResponse:

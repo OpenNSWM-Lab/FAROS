@@ -32,6 +32,9 @@ def _normalize_record(record: Dict[str, Any]) -> Dict[str, Any]:
     record.setdefault("runIds", [])
     record.setdefault("logs", [])
     record.setdefault("pdfAvailable", False)
+    record.setdefault("briefJson", None)
+    record.setdefault("briefUserEdits", "")
+    record.setdefault("briefStatus", "missing")
     return record
 
 
@@ -52,6 +55,9 @@ def create_paper(data: Dict[str, Any]) -> Dict[str, Any]:
         "providerName": data.get("providerName", "moonshot"),
         "model": data.get("model", "moonshot-v1-8k"),
         "notes": data.get("notes"),
+        "briefJson": data.get("briefJson"),
+        "briefUserEdits": data.get("briefUserEdits", ""),
+        "briefStatus": data.get("briefStatus", "missing"),
         "outlineJson": None,
         "pdfAvailable": False,
         "logs": [],

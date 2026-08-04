@@ -1,1 +1,0 @@
-Tool-generated scaffold for Interpretable replay flow via Concept Bottlenecks (generic).
