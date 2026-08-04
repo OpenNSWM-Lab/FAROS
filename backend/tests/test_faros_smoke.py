@@ -441,7 +441,6 @@ def test_agent_executor_uses_execution_file_backend_for_experiment(tmp_path: Pat
             'projectTitle': 'External Experiment [python]',
             'files': [
                 {'path': 'README.md', 'content': '# External Experiment\n'},
-                {'path': 'src/main.py', 'content': 'print("external execution backend completed")\n'},
                 {'path': 'scripts/run.sh', 'content': '#!/usr/bin/env bash\necho external\n'},
             ],
             'experimentStatus': 'designed',

@@ -42,8 +42,10 @@ class FakeClient:
 
     def __init__(self, text: str):
         self.text = text
+        self.messages = []
 
     def chat(self, messages, **kwargs):
+        self.messages = messages
         return FakeChatResponse(self.text)
 
 
@@ -102,6 +104,27 @@ def test_section_rewrite_preserve_options_block_dropped_citations_and_figures():
         rewrite_section(ctx, "method", preserve_citations=True, preserve_figures=True)
 
     assert read_paper_file(paper["id"], "sections/method.tex") == original
+
+
+def test_section_rewrite_sends_the_complete_section_to_the_model():
+    paper = create_paper({
+        "title": "Long rewrite paper",
+        "outlineJson": {
+            "title": "Long rewrite paper",
+            "abstract": "Abstract",
+            "sections": [{"id": "method", "title": "Method", "minWords": 200}],
+            "references": [],
+        },
+    })
+    tail_marker = "TAIL_MARKER_MUST_REACH_MODEL"
+    original = r"\section{Method}" + "\n" + ("Long section content. " * 500) + tail_marker
+    write_paper_file(paper["id"], "sections/method.tex", original)
+    client = FakeClient(r"\section{Method} Complete rewritten section.")
+    ctx = _ctx_for_paper(paper, client)
+
+    rewrite_section(ctx, "method", preserve_citations=False, preserve_figures=False)
+
+    assert tail_marker in client.messages[0].content
 
 
 def test_duplicate_label_rewrite_updates_later_refs_in_same_section():

@@ -295,11 +295,9 @@ def remove_selected_figure(paper_id: str, figure_id: str) -> Optional[Dict[str, 
         item for item in (paper.get("selectedFigures", []) or [])
         if isinstance(item, dict) and str(item.get("figureId") or item.get("id")) != str(figure_id)
     ]
-    figure_ids = [fid for fid in paper.get("figureIds", []) if str(fid) != str(figure_id)]
     return update_paper(paper_id, {
         "selectedFigures": selected,
         "selectedFiguresExplicit": True,
-        "figureIds": figure_ids,
     })
 
 

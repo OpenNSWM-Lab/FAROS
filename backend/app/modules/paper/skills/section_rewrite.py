@@ -203,7 +203,7 @@ def rewrite_section(
         runs_data=context.get("runs_summary", "N/A")[:1200],
         section_figures=json.dumps(section_figures, ensure_ascii=False)[:1200] if section_figures else "N/A",
         refs_summary=refs_summary or "N/A",
-        current_content=current_content[:9000],
+        current_content=current_content,
         section_title=section_title,
         preserve_citations="yes" if preserve_citations else "no",
         preserve_figures="yes" if preserve_figures else "no",
