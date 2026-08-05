@@ -292,3 +292,5 @@ export interface SystemMetrics {
   };
   timestamp: string;
 }
+
+export * from './scientificResearch';

@@ -8,6 +8,11 @@ backend/tests/*
 !backend/tests/test_paper_latex_safety.py
 !backend/tests/test_paper_prompt_formatting.py
 !backend/tests/test_release_smoke.py
+!backend/tests/test_scientific_research_contracts.py
+!backend/tests/fixtures/
+!backend/tests/fixtures/scientific_research/
+!backend/tests/fixtures/scientific_research/*.json
+!backend/tests/fixtures/scientific_research/README.md
 
 # Temp docs, backups, work logs
 docs/
@@ -31,6 +36,9 @@ downloads/
 eggs/
 .eggs/
 lib/
+!frontend/src/lib/
+!frontend/src/lib/types/
+!frontend/src/lib/types/scientificResearch.ts
 lib64/
 parts/
 sdist/
@@ -57,6 +65,7 @@ ipython_config.py
 /.dev/
 backend/.venv/
 backend/data/**/__pycache__/
+/backend/app/data/code_projects/
 
 # LaTeX build artifacts (paper generation)
 *.aux
@@ -78,6 +87,7 @@ latexmkrc
 
 # Node / frontend
 node_modules/
+/frontend/node_modules
 /.pnp
 .pnp.js
 dist/

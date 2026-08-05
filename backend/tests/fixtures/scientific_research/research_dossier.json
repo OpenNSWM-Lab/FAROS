@@ -1,0 +1,94 @@
+{
+  "schemaVersion": "scientific-research/v1",
+  "runId": "run_demo_001",
+  "questionId": "question_demo_001",
+  "problemFrame": {
+    "originalQuestion": "How can evidence-grounded agents reduce unsupported scientific claims?",
+    "scopedQuestion": "Does claim-level evidence binding reduce unsupported claims in generated research reports?",
+    "definitions": {"unsupported claim": "A claim without a resolvable citation or experiment reference."},
+    "observableVariables": ["unsupported_claim_rate", "citation_precision"],
+    "assumptions": ["Claims can be segmented consistently"],
+    "outOfScope": ["Wet-lab validation"],
+    "subQuestions": ["Which binding checks are deterministic?"]
+  },
+  "evidenceMap": {
+    "consensus": ["Traceable evidence improves auditability"],
+    "disputedClaims": ["LLM self-review alone is sufficient"],
+    "supportingEvidence": [{
+      "id": "ev_support_001",
+      "title": "Claim-level evidence fixture",
+      "summary": "A primary-source fixture supporting traceable claim bindings.",
+      "stance": "support",
+      "sourceType": "paper",
+      "source": "fixture",
+      "authors": ["FAROS Team"],
+      "year": 2026,
+      "evidenceTier": "primary",
+      "relevanceScore": 0.92,
+      "verified": true,
+      "claimIds": ["claim_001"],
+      "metadata": {}
+    }],
+    "counterEvidence": [],
+    "contextualEvidence": [],
+    "unresolvedGaps": ["Generalization across scientific domains"]
+  },
+  "hypotheses": [{
+    "id": "hypothesis_001",
+    "statement": "Claim-level evidence binding lowers the unsupported-claim rate.",
+    "rationale": "Unresolved claims can be rejected before publication.",
+    "derivationTrace": ["problem_frame", "ev_support_001"],
+    "supportingEvidenceIds": ["ev_support_001"],
+    "counterEvidenceIds": [],
+    "falsificationCriteria": ["No reduction against the unbound baseline"],
+    "confounders": ["Reviewer disagreement"],
+    "alternativeExplanations": ["Longer prompts alone improve quality"],
+    "scores": {"novelty": 0.7, "feasibility": 0.9},
+    "confidence": 0.72
+  }],
+  "researchPlan": {
+    "objective": "Compare bound and unbound report generation on the same questions.",
+    "steps": [{
+      "id": "step_001",
+      "order": 1,
+      "title": "Run controlled comparison",
+      "objective": "Measure claim support under identical generation settings.",
+      "inputs": ["question set", "evidence corpus"],
+      "tools": ["FAROS Code"],
+      "method": ["Fix seeds", "Generate both conditions", "Score claims"],
+      "outputs": ["metrics.json", "run.log"],
+      "metrics": ["unsupported_claim_rate", "citation_precision"],
+      "stopConditions": ["All configured questions finish or retry budget is exhausted"],
+      "dependencies": [],
+      "risks": ["Evidence coverage differs by domain"]
+    }],
+    "requiredData": ["scientific questions", "verified evidence"],
+    "requiredResources": ["LLM provider", "evaluation runtime"],
+    "expectedOutcomes": ["A reproducible comparison"],
+    "constraints": ["Same provider and decoding settings"],
+    "ethics": ["Do not present generated claims as expert advice"],
+    "executionClass": "computational_ready"
+  },
+  "uncertainties": ["External validity remains unmeasured"],
+  "generationTrace": {
+    "providerName": "fixture-provider",
+    "model": "fixture-model",
+    "localRulePasses": ["evidence_reference_check"],
+    "llmCalls": [{"stage": "hypothesis_generation", "requestId": "fixture-call-1"}],
+    "warnings": [],
+    "cacheHits": 0,
+    "estimatedTokenCost": 1500,
+    "startedAt": "2026-08-05T08:01:00Z",
+    "endedAt": "2026-08-05T08:02:00Z"
+  },
+  "artifactRefs": [{
+    "id": "artifact_dossier_001",
+    "kind": "idea",
+    "sourceModule": "idea",
+    "uri": "artifacts/run_demo_001/research_dossier.json",
+    "contentHash": "sha256:fixture-dossier",
+    "version": "1",
+    "createdAt": "2026-08-05T08:02:00Z",
+    "metadata": {}
+  }]
+}
