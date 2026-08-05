@@ -1,0 +1,32 @@
+{
+  "schemaVersion": "scientific-research/v1",
+  "runId": "run_demo_001",
+  "questionId": "question_demo_001",
+  "title": "Evidence Binding for Auditable Scientific Agents",
+  "problemAndScope": "We evaluate claim-level binding in a controlled computational setting.",
+  "currentEvidence": "Prior evidence supports traceability as an audit mechanism.",
+  "openGaps": "Generalization across domains remains open.",
+  "candidateHypotheses": "Binding reduces unsupported claims relative to an unbound baseline.",
+  "falsificationAndResearchPlan": "Use paired runs and reject the hypothesis if no reduction is observed.",
+  "executionStatusAndResults": "The fixture run executed and produced an unsupported-claim rate of 0.12.",
+  "limitationsAndUncertainty": "The demonstration uses a small fixture and is not a competition result.",
+  "citations": [],
+  "claimBindings": [{
+    "id": "claim_001",
+    "text": "The fixture run produced an unsupported-claim rate of 0.12.",
+    "sourcePath": "executionStatusAndResults",
+    "evidenceIds": [],
+    "metricRefs": ["artifact_metrics_001:unsupported_claim_rate"],
+    "supportStatus": "supported"
+  }],
+  "artifactRefs": [{
+    "id": "artifact_paper_001",
+    "kind": "paper",
+    "sourceModule": "paper",
+    "uri": "artifacts/run_demo_001/narrative.md",
+    "contentHash": "sha256:fixture-paper",
+    "version": "1",
+    "createdAt": "2026-08-05T08:12:00Z",
+    "metadata": {}
+  }]
+}

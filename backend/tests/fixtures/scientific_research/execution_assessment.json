@@ -1,0 +1,20 @@
+{
+  "schemaVersion": "scientific-research/v1",
+  "runId": "run_demo_001",
+  "questionId": "question_demo_001",
+  "planPackageId": "plan_demo_001",
+  "executionClass": "computational_ready",
+  "feasibilityScore": 0.9,
+  "rationale": "Inputs, metrics, baseline, and runtime are available.",
+  "availableInputs": ["question set", "evidence corpus"],
+  "missingInputs": [],
+  "toolsAndEnvironment": ["Python 3.11", "FAROS runner"],
+  "validationMetrics": ["unsupported_claim_rate", "citation_precision"],
+  "stopConditions": ["Retry budget exhausted"],
+  "safetyConstraints": ["No network writes outside configured artifact storage"],
+  "estimatedRuntimeSeconds": 300,
+  "estimatedCost": 2.5,
+  "status": "ready",
+  "warnings": [],
+  "artifactRefs": []
+}
