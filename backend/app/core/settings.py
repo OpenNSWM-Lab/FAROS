@@ -222,7 +222,7 @@ class Settings(BaseModel):
         "novita": ProviderConfig(
             base_url_env="NOVITA_BASE_URL",
             api_key_env="NOVITA_API_KEY",
-            default_model="deepseek/deepseek-v3",
+            default_model="moonshotai/kimi-k3",
             api_format="openai",
             timeout=120,
             extra_headers={}
