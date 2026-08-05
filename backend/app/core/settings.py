@@ -219,6 +219,14 @@ class Settings(BaseModel):
             timeout=120,
             extra_headers={}
         ),
+        "novita": ProviderConfig(
+            base_url_env="NOVITA_BASE_URL",
+            api_key_env="NOVITA_API_KEY",
+            default_model="deepseek/deepseek-v3",
+            api_format="openai",
+            timeout=120,
+            extra_headers={}
+        ),
     })
 
     # Runtime overrides (set via API, persisted to JSON)
@@ -383,6 +391,7 @@ class Settings(BaseModel):
             "qwen": "https://dashscope.aliyuncs.com/compatible-mode/v1",
             "bigmodel": "https://open.bigmodel.cn/api/paas/v4",
             "minimax": "https://api.minimaxi.com/anthropic",
+            "novita": "https://api.novita.ai/openai/v1",
         }
         return defaults.get(provider_name, "")
 

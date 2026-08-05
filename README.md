@@ -292,7 +292,7 @@ If needed, set `VITE_API_BASE_URL` for the frontend.
 
 ## 🔐 Provider Configuration
 
-The backend supports multiple providers, including `minimax`.
+The backend supports multiple providers, including `minimax` and `novita`.
 
 Configuration is loaded from:
 1. environment variables defined in `backend/app/core/settings.py`
