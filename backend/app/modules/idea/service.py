@@ -3407,7 +3407,7 @@ class IdeaGenerationService:
             )
         return (
             candidate.overallScore >= 6.0
-            and candidate.referenceSupport >= 4.3
+            and candidate.referenceSupport >= 3.5
         )
 
     def _candidate_direction_type(self, candidate: Optional[IdeaCandidate]) -> str:
@@ -7513,7 +7513,7 @@ class IdeaGenerationService:
                 blocking.append("No valid evidence IDs are available for this candidate.")
                 repair.append("Bind the candidate to supporting papers, claims, KG entities, path seeds, or probe papers.")
                 score -= 2.0
-            if candidate.referenceSupport < 4.5:
+            if candidate.referenceSupport < 3.5:
                 blocking.append("Reference support score is below the handoff threshold.")
                 repair.append("Strengthen the evidence grounding before exposing this candidate.")
                 score -= 1.0
@@ -7985,7 +7985,7 @@ class IdeaGenerationService:
                 not blocking
                 and all(report.get("passed", False) for report in reviewer_reports)
                 and candidate.overallScore >= 6.0
-                and candidate.referenceSupport >= 4.5
+                and candidate.referenceSupport >= 3.5
             )
             summary = "Idea review gate passed." if passed else "Idea review gate requires regeneration or another candidate."
             if warnings:
