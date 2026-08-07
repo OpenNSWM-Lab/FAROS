@@ -1,0 +1,31 @@
+[Unit]
+Description=ReviewX human annotation web service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=reviewx-annotation
+Group=reviewx-annotation
+WorkingDirectory=/opt/reviewx-annotation
+EnvironmentFile=/etc/reviewx-annotation.env
+ExecStart=/usr/bin/python3 /opt/reviewx-annotation/server.py --host 127.0.0.1 --port 8088 --db /var/lib/reviewx-annotation/annotations.db --tasks /opt/reviewx-annotation/tasks.csv --static-dir /opt/reviewx-annotation/static
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/reviewx-annotation
+MemoryMax=192M
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target

@@ -2,7 +2,9 @@ import asyncio
 import json
 import logging
 import os
+import shlex
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, List
@@ -21,7 +23,7 @@ from app.modules.platform.storage import create_experiment
 logger = logging.getLogger(__name__)
 
 # Absolute path to data directory for resolving project paths
-_BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+_BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 _DATA_DIR = os.path.join(_BASE_DIR, "data")
 
 
@@ -79,7 +81,7 @@ class ExperimentCapability(BaseCapability):
             {"path": "configs/experiment.json", "content": json.dumps(config_json, indent=2)},
             {"path": "src/main.py", "content": main_py},
             {"path": "src/pipeline.py", "content": "# Experiment pipeline — extend with custom logic\n"},
-            {"path": "scripts/run.sh", "content": "#!/usr/bin/env bash\nset -e\npython src/main.py\n"},
+            {"path": "scripts/run.sh", "content": "#!/usr/bin/env bash\nset -e\npython3 src/main.py\n"},
             {"path": "tests/test_smoke.py", "content": "from src.main import main\n\n\ndef test_main_runs():\n    assert main() is not None\n"},
         ]
 
@@ -147,7 +149,7 @@ class ExperimentCapability(BaseCapability):
             logger.warning("No main.py found for project %s — cannot execute", project_id)
             return result
 
-        command = f"python {os.path.relpath(main_path, repo_dir)}"
+        command = f"{shlex.quote(sys.executable)} {shlex.quote(os.path.relpath(main_path, repo_dir))}"
         result["command"] = command
 
         # Try sandbox execution first
@@ -207,7 +209,7 @@ class ExperimentCapability(BaseCapability):
         start = time.time()
         try:
             proc = subprocess.run(
-                ["python", main_path],
+                [sys.executable, main_path],
                 capture_output=True,
                 text=True,
                 timeout=600,
@@ -367,6 +369,7 @@ class ExperimentCapability(BaseCapability):
             files=payload.get("files", []),
             event_message=provider_result.text,
             project_title_override=payload.get("projectTitle"),
+            provider_status=payload.get("experimentStatus"),
         )
 
     def _materialize_workspace(
@@ -375,6 +378,7 @@ class ExperimentCapability(BaseCapability):
         session_id: str | None, candidate_id: str | None,
         files: List[Dict[str, str]], event_message: str | None,
         project_title_override: str | None = None,
+        provider_status: str | None = None,
     ) -> CapabilityResult:
         init_db()
 
@@ -430,13 +434,19 @@ class ExperimentCapability(BaseCapability):
             except (json.JSONDecodeError, TypeError):
                 pass
 
+        execution_attempted = bool(exec_result.get("command"))
+        if execution_attempted:
+            experiment_status = "completed" if exec_result.get("exit_code") == 0 else "completed_with_errors"
+        else:
+            experiment_status = provider_status or "designed"
+
         # Create experiment record
         experiment = create_experiment({
             "name": f"{title} Experiment",
             "projectId": project_id,
             "description": description,
             "tags": ["faros", "llm", paper_type, f"lang:{language}"],
-            "status": "completed" if exec_result.get("exit_code") == 0 else "completed_with_errors",
+            "status": experiment_status,
         })
 
         # Generate MD report
@@ -460,12 +470,18 @@ class ExperimentCapability(BaseCapability):
         ]
         if agent_generated:
             events.append({"level": "info", "message": "AgentKernel code generation succeeded"})
-        events.append({
-            "level": "info",
-            "message": f"Execution: exit_code={exec_result.get('exit_code')}, "
-                       f"duration={exec_result.get('duration_seconds', 0):.1f}s, "
-                       f"metrics_count={len(metrics)}, figures_count={len(figures)}",
-        })
+        if execution_attempted:
+            events.append({
+                "level": "info",
+                "message": f"Execution: exit_code={exec_result.get('exit_code')}, "
+                           f"duration={exec_result.get('duration_seconds', 0):.1f}s, "
+                           f"metrics_count={len(metrics)}, figures_count={len(figures)}",
+            })
+        else:
+            events.append({
+                "level": "info",
+                "message": "Execution skipped because the workspace has no supported entrypoint",
+            })
 
         return CapabilityResult(
             status="completed",
@@ -483,6 +499,7 @@ class ExperimentCapability(BaseCapability):
                 "experimentDesign": experiment_design,
                 "reportMdPath": f"code_projects/{project_id}/repo/experiment_report.md",
                 "executionSummary": {
+                    "attempted": execution_attempted,
                     "exitCode": exec_result.get("exit_code"),
                     "durationSeconds": exec_result.get("duration_seconds"),
                     "command": exec_result.get("command"),

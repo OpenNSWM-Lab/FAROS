@@ -1,25 +1,30 @@
 {
   "id": "faros_llm",
-  "name": "FAROS-LLM",
-  "version": "0.2.0",
-  "description": "LLM-backed FAROS profile using existing provider settings and module implementations.",
+  "name": "FAROS Qwen Runtime",
+  "version": "0.3.0",
+  "description": "Qwen-backed FAROS profile for the Alibaba Bailian AI Scientist challenge workflow.",
   "capability_bindings": {
     "idea_refinement": {
       "provider_type": "llm",
-      "provider": "minimax",
-      "model": "MiniMax-M2.5",
+      "provider": "qwen",
+      "model": "qwen-max",
+      "options": {}
+    },
+    "experiment": {
+      "provider_type": "execution",
+      "provider": "local-executor",
       "options": {}
     },
     "paper_drafting": {
       "provider_type": "llm",
-      "provider": "minimax",
-      "model": "MiniMax-M2.5",
+      "provider": "qwen",
+      "model": "qwen-max",
       "options": {}
     },
     "reviewer_simulation": {
       "provider_type": "llm",
-      "provider": "minimax",
-      "model": "MiniMax-M2.5",
+      "provider": "qwen",
+      "model": "qwen-max",
       "options": {}
     }
   },
@@ -27,8 +32,8 @@
     "researcher": {
       "agent_id": "researcher",
       "provider_type": "llm",
-      "preferred_provider": "minimax",
-      "preferred_model": "MiniMax-M2.5",
+      "preferred_provider": "qwen",
+      "preferred_model": "qwen-max",
       "skill_overrides": [
         "literature-grounding",
         "idea-analysis"
@@ -37,9 +42,8 @@
     },
     "experimenter": {
       "agent_id": "experimenter",
-      "provider_type": "llm",
-      "preferred_provider": "minimax",
-      "preferred_model": "MiniMax-M2.5",
+      "provider_type": "execution",
+      "preferred_provider": "local-executor",
       "skill_overrides": [
         "experiment-scaffold",
         "artifact-packaging"
@@ -49,8 +53,8 @@
     "writer": {
       "agent_id": "writer",
       "provider_type": "llm",
-      "preferred_provider": "minimax",
-      "preferred_model": "MiniMax-M2.5",
+      "preferred_provider": "qwen",
+      "preferred_model": "qwen-max",
       "skill_overrides": [
         "paper-outline",
         "section-drafting",
@@ -61,8 +65,8 @@
     "reviewer": {
       "agent_id": "reviewer",
       "provider_type": "llm",
-      "preferred_provider": "minimax",
-      "preferred_model": "MiniMax-M2.5",
+      "preferred_provider": "qwen",
+      "preferred_model": "qwen-max",
       "skill_overrides": [
         "review-critique",
         "consistency-audit"

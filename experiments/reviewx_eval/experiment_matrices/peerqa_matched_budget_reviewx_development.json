@@ -1,0 +1,16 @@
+{
+  "schemaVersion": "reviewx_method_matrix_v1",
+  "methods": [
+    {
+      "id": "reviewx_balanced_qwen_matched_budget",
+      "kind": "reviewx",
+      "budgetMode": "balanced",
+      "ablationMode": "full",
+      "providerName": "qwen",
+      "model": "qwen-max",
+      "repetitions": 3,
+      "maxEstimatedTokens": 4000,
+      "notes": "PeerQA development only. Token cap calibrated against the section-stratified single-prompt baseline."
+    }
+  ]
+}

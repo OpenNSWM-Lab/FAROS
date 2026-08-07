@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+from pathlib import Path
 from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException
@@ -13,15 +14,16 @@ from app.modules.paper.storage import add_log, get_paper, get_paper_latex_dir, u
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/templates", tags=["templates"])
 
-_BACKEND_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-_TEMPLATES_DIR = os.path.join(_BACKEND_ROOT, "templates", "latex")
+_BACKEND_ROOT = Path(__file__).resolve().parents[3]
+_TEMPLATES_DIR = _BACKEND_ROOT / "templates" / "latex"
+_PROMPT_GUIDE_FILENAMES = {"style_guide.md", "writing_guide.md", "prompt_guide.md"}
 
 
 def _load_registry() -> list:
-    path = os.path.join(_TEMPLATES_DIR, "templates.json")
-    if not os.path.isfile(path):
+    path = _TEMPLATES_DIR / "templates.json"
+    if not path.is_file():
         return []
-    with open(path) as handle:
+    with path.open(encoding="utf-8") as handle:
         return json.load(handle)
 
 
@@ -109,6 +111,18 @@ async def apply_template(req: ApplyTemplateRequest) -> ApplyTemplateResponse:
         "Task Definition": "%%TASK_DEFINITION%%",
         "Error Analysis": "%%ERROR_ANALYSIS%%",
         "Conclusion": "%%CONCLUSION%%",
+        "待研究问题": "%%PROBLEM_STATEMENT%%",
+        "解决思路": "%%RATIONALE%%",
+        "必要的技术手段": "%%TECHNICAL_DETAILS%%",
+        "数据集": "%%DATASETS%%",
+        "Source": "%%SOURCE%%",
+        "Target": "%%TARGET%%",
+        "标题": "%%PAPER_TITLE%%",
+        "摘要": "%%PAPER_ABSTRACT%%",
+        "方法论": "%%METHODS%%",
+        "实验设计": "%%EXPERIMENTS%%",
+        "实验结果": "%%RESULTS%%",
+        "参考论文": "%%REFERENCES%%",
     }
     section_inputs = []
     for section_name in template.get("sections", []):
@@ -136,10 +150,22 @@ async def apply_template(req: ApplyTemplateRequest) -> ApplyTemplateResponse:
         "%%ERROR_ANALYSIS%%": "TODO: Write error analysis.",
         "%%TASK_DEFINITION%%": "TODO: Write task definition.",
         "%%CONCLUSION%%": "TODO: Write conclusion.",
+        "%%PROBLEM_STATEMENT%%": "TODO: 明确指出当前领域存在的具体局限性。",
+        "%%RATIONALE%%": "TODO: 基于逻辑推理阐述创新点，并展示从证据到假设的推导链条。",
+        "%%TECHNICAL_DETAILS%%": "TODO: 列出验证假设所需的统计、机器学习、深度学习或实验技术栈。",
+        "%%DATASETS%%": "TODO: 填写来源合规、真实可核查的数据集及其许可、规模和变量说明。",
+        "%%SOURCE%%": "TODO: 描述假设推演依据的历史数据、公开统计、既有实验结果或真实文献证据。",
+        "%%TARGET%%": "TODO: 描述验证实验拟采集的数据特征、样本范围、变量、采集频率、伦理与隐私约束。",
+        "%%PAPER_TITLE%%": title,
+        "%%PAPER_ABSTRACT%%": "TODO: 用中文撰写包含背景、方法、预期结果和意义的完整摘要。",
+        "%%METHODS%%": "TODO: 写出具体实施步骤，包括模型架构、变量定义、实验流程和质量控制。",
+        "%%REFERENCES%%": "TODO: 列出真实可核查参考论文，并在 refs.bib 中维护 BibTeX 条目。",
     }
 
     files_written = 0
     for filename in os.listdir(template_dir):
+        if filename in _PROMPT_GUIDE_FILENAMES:
+            continue
         source = os.path.join(template_dir, filename)
         if not os.path.isfile(source):
             continue

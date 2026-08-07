@@ -1,0 +1,20 @@
+{
+  "schemaVersion": "scientific-research/v1",
+  "runId": "run_demo_001",
+  "question": {
+    "id": "question_demo_001",
+    "text": "How can evidence-grounded agents reduce unsupported scientific claims?",
+    "language": "en",
+    "domainHint": "AI for science",
+    "constraints": ["Use verifiable sources", "Report uncertainty"],
+    "source": "contract fixture",
+    "metadata": {"benchmarkGroup": "demo"}
+  },
+  "mode": "deep",
+  "status": "running",
+  "providerName": "fixture-provider",
+  "model": "fixture-model",
+  "createdAt": "2026-08-05T08:00:00Z",
+  "updatedAt": "2026-08-05T08:01:00Z",
+  "artifactRefs": []
+}

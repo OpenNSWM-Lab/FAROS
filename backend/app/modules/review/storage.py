@@ -7,6 +7,7 @@ from app.storage.review_storage import (
     get_review,
     list_improvement_requests,
     list_reviews,
+    update_improvement_request,
     update_review,
 )
 
@@ -19,5 +20,6 @@ __all__ = [
     "list_paper_files",
     "list_reviews",
     "read_paper_file",
+    "update_improvement_request",
     "update_review",
 ]
