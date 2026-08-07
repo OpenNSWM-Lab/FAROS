@@ -1,0 +1,19 @@
+{
+  "schemaVersion": "reviewx_method_matrix_v1",
+  "methods": [
+    {
+      "id": "reviewx_local_full",
+      "kind": "reviewx",
+      "budgetMode": "local_only",
+      "ablationMode": "full",
+      "repetitions": 1
+    },
+    {
+      "id": "reviewx_local_no_verifier",
+      "kind": "reviewx",
+      "budgetMode": "local_only",
+      "ablationMode": "no_verifier",
+      "repetitions": 1
+    }
+  ]
+}

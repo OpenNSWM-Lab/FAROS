@@ -41,7 +41,7 @@ export interface ApiClient {
   // Review
   getReviewFindings(paperId: string): Promise<ReviewFinding[]>
   getReviewerSimulations(paperId: string): Promise<ReviewerSimulation[]>
-  runConsistencyCheck(paperId: string): Promise<ReviewFinding[]>
+  runConsistencyCheck(input: string | { paperId: string; budgetMode?: string }): Promise<ReviewFinding[]>
   runReviewerSimulation(paperId: string, profile: string): Promise<ReviewerSimulation>
 
   // System

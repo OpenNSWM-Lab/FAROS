@@ -1,0 +1,15 @@
+{
+  "schemaVersion": "scientific-research/v1",
+  "batchId": "batch_demo_001",
+  "questionSetId": "question_set_demo_001",
+  "questionIds": ["question_demo_001", "question_demo_002"],
+  "childRunIds": ["run_demo_001"],
+  "chunkSize": 1,
+  "concurrency": 1,
+  "status": "running",
+  "progress": 0.5,
+  "failedQuestionIds": [],
+  "configHash": "sha256:fixture-config",
+  "createdAt": "2026-08-05T08:00:00Z",
+  "updatedAt": "2026-08-05T08:15:00Z"
+}
