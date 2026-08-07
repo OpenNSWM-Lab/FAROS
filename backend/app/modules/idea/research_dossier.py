@@ -203,8 +203,16 @@ def _candidate_to_hypothesis(
     if not falsification_criteria:
         falsification_criteria.append("Experimental results fail to support the predicted outcome")
 
-    # Confounders from risks
-    confounders = [r.risk for r in candidate.risks]
+    # Confounders from risks; fallback to derived confounders
+    confounders = [r.risk for r in candidate.risks] if candidate.risks else []
+    if not confounders:
+        # Derive confounders from hypothesis and experiment context
+        confounders = [
+            "Data quality and coverage may bias results",
+            "Selection bias in chosen benchmarks or datasets",
+        ]
+        if candidate.hypothesisStatement:
+            confounders.append(f"Confounding variables in experimental setup for: {candidate.hypothesisStatement[:100]}")
 
     # Alternative explanations
     alternative_explanations: List[str] = []
@@ -390,7 +398,7 @@ def build_research_dossier(
     if question is None:
         question = ScientificQuestion(
             id=qid,
-            text=session.seedQuery,
+            text=session.config.seedQuery if hasattr(session, 'config') and hasattr(session.config, 'seedQuery') else (session.seedQuery if hasattr(session, 'seedQuery') else str(getattr(session, 'seed', ''))),
             domainHint=session.config.domain if session.config else None,
             constraints=session.config.constraints if session.config else [],
         )
@@ -402,7 +410,7 @@ def build_research_dossier(
     all_evidence = _deduplicate_evidence(
         _literature_to_evidence_records(literature)
     )
-    supporting, counter, context = _classify_evidence_by_relevance(literature, session.seedQuery)
+    supporting, counter, context = _classify_evidence_by_relevance(literature, session.config.seedQuery if hasattr(session, 'config') and hasattr(session.config, 'seedQuery') else (session.seedQuery if hasattr(session, 'seedQuery') else str(getattr(session, 'seed', ''))))
 
     # Deduplicate each bucket
     supporting = _deduplicate_evidence(supporting)
