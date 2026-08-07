@@ -4,9 +4,9 @@
 
 - Branch: `devtzb_idea`
 - Base `origin/devtzb` commit: `960c5eb`
-- Head commit: `f387695`
+- Head commit: `7285fb3`
 - Owner: `devtzb`
-- Handoff time: `2026-08-07 12:00 CST`
+- Handoff time: `2026-08-07 14:15 CST`
 
 ## Delivered Capability
 
@@ -40,8 +40,8 @@ The Idea module accepts any `ScientificQuestion` and produces a contract-complia
 - Degraded and failure states:
   - `NO_API` — no LLM provider configured; skip LLM-dependent steps, cap confidence at 0.3
   - `SEARCH_FAILURE` — all search sources returned 0 results; use local corpus only, cap at 0.2
-  - `INSUFFICIENT_EVIDENCE` — fewer than 3 evidence records; mark evidence gaps, cap at 0.4
-  - `TOPIC_DRIFT` — seed topic lost during generation; fall back to typed directions, cap at 0.3
+  - `INSUFFICIENT_EVIDENCE` — fewer than 3 evidence records; mark evidence gaps, cap at 0.5
+  - `TOPIC_DRIFT` — seed topic lost during generation; fall back to typed directions, cap at 0.4
 
 ## Verification
 
@@ -52,13 +52,15 @@ cd backend && .venv/Scripts/python.exe -m pytest \
   tests/test_idea_problem_framing.py \
   tests/test_idea_evidence_gate_contract.py \
   tests/test_idea_falsifiability.py \
+  tests/test_idea_degraded_fixtures.py \
   -v --tb=short
 
-============================= 52 passed in 2.80s ==============================
+============================= 61 passed in 3.20s ==============================
 ```
 
 - Independent demo input: `POST /api/v1/ideas/dossier` with `sessionId` from a completed idea session
 - Independent demo output: `ResearchDossier` JSON (validated against contract schema)
+- Independent verification result: **11/11 ALL PASS** (≥2 hypotheses, ≥1 counter evidence, ProblemFrame valid, ResearchPlan valid, Qwen trace, scores in [0,1], falsification criteria, confounders, success fixture, degraded fixture, contract tests)
 - Live API required: `yes` — Qwen via OpenAI-compatible endpoint (api.silra.cn)
 - Runtime and estimated cost: ~3-5 min per deep-mode run (63+ LLM calls, 140+ search calls); coverage mode ~30-60s
 
@@ -78,7 +80,7 @@ cd backend && .venv/Scripts/python.exe -m pytest \
 
 ## Evidence for Challenge Cup
 
-- Screenshot/data table to retain: 52-test pass output + ResearchDossier JSON sample
+- Screenshot/data table to retain: 61-test pass output + ResearchDossier JSON sample + 11/11 verification checklist
 - Traceable innovation claim supported: "Idea module outputs contract-compliant ResearchDossier with evidence-classified hypotheses, falsification criteria, and budget-graded degradation states"
 - Result is real, simulated, or planned: `real` — tests use real Pydantic validation against frozen contract schema; LLM-dependent steps tested with mock fixtures
 

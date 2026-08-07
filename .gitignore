@@ -25,6 +25,18 @@ docs/
 *.bak
 stop_dev.sh
 
+# Local diagnostic and temporary scripts (not part of codebase)
+/test_*.py
+/check_*.py
+/compare_*.py
+/generate_*.py
+/diagnosis_*.md
+/test_report_*.md
+/backend/test_*.py
+/backend/diagnose_*.py
+/backend/verify_*.py
+/backend/verification_*.md
+
 # Python
 __pycache__/
 **/__pycache__/

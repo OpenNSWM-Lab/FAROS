@@ -24,6 +24,7 @@ import {
 } from 'lucide-react'
 import { PAPER_TYPES, getPaperTypeById } from '@/lib/models/providers'
 import { summarizeEvidenceGate, type EvidenceGateSummary } from './evidenceGateSummary'
+import { DossierViewer } from './DossierViewer'
 
 interface IdeaSession {
   id: string
@@ -967,6 +968,11 @@ export function IdeaGenerationPanel({
             </div>
           </CardContent>
         </Card>
+      )}
+
+      {/* Research Dossier Viewer */}
+      {session && (session.status === 'completed' || session.status === 'awaiting_evidence' || session.status === 'awaiting_ideas') && (
+        <DossierViewer sessionId={session.id} />
       )}
 
       {/* Module Navigation Links */}

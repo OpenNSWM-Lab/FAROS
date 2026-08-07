@@ -1349,3 +1349,107 @@ def diff_dossiers(request: DiffDossiersRequest):
         raise HTTPException(status_code=422, detail=f"Invalid dossier: {e}")
 
     return _diff(v1, v2)
+
+
+# ---------------------------------------------------------------------------
+# Child Run: accept Review finding, create v2 session from parent
+# ---------------------------------------------------------------------------
+
+class CreateChildRunRequest(BaseModel):
+    """Request to create a child run from a parent session and review findings."""
+    parentSessionId: str = Field(..., description="Parent idea session ID")
+    findings: List[Dict[str, Any]] = Field(..., description="Review findings (list of finding dicts with at least 'description' field)")
+    mode: Optional[str] = Field(default=None, description="Override mode: 'deep' or 'coverage'. Defaults to parent's mode.")
+
+
+class CreateChildRunResponse(BaseModel):
+    """Response containing the child run and new session info."""
+    childRunId: str
+    parentRunId: str
+    newSessionId: str
+    findingsCount: int
+    status: str
+
+
+@router.post(
+    "/dossier/child-run",
+    summary="Create a child run from a parent session and review findings",
+)
+def create_child_run(request: CreateChildRunRequest):
+    """
+    Accept Review findings and create a child ScientificQuestionRun.
+
+    This implements P0 task #8: "Accept Review finding, create child run."
+    The child run inherits the parent's question and mode, with parentRunId
+    set to the parent's run ID. A new idea session is created so the pipeline
+    can be re-run with the review feedback incorporated.
+    """
+    from app.contracts import RunMode, RunStatus, ScientificQuestion, ScientificQuestionRun
+    from app.modules.idea.research_dossier import create_child_run as _create_child_run
+
+    service = get_idea_service()
+
+    # 1. Get parent session
+    parent_session = service.session_storage.get(request.parentSessionId)
+    if not parent_session:
+        raise HTTPException(status_code=404, detail=f"Parent session {request.parentSessionId} not found")
+
+    # 2. Build parent ScientificQuestionRun
+    parent_mode = RunMode.DEEP
+    if request.mode:
+        parent_mode = RunMode.DEEP if request.mode == "deep" else RunMode.COVERAGE
+    elif hasattr(parent_session.config, 'mode') and parent_session.config.mode:
+        parent_mode = RunMode.DEEP if parent_session.config.mode == "deep" else RunMode.COVERAGE
+
+    seed_query = (parent_session.config.seedQuery if hasattr(parent_session, 'config') and hasattr(parent_session.config, 'seedQuery')
+                  else getattr(parent_session, 'seedQuery', getattr(parent_session, 'seed', '')))
+
+    parent_question = ScientificQuestion(
+        id=f"q_{request.parentSessionId}",
+        text=seed_query,
+        domainHint=getattr(parent_session.config, 'domain', None),
+    )
+
+    parent_run = ScientificQuestionRun(
+        runId=f"run_{request.parentSessionId}",
+        question=parent_question,
+        mode=parent_mode,
+        status=RunStatus.COMPLETED,
+        providerName=getattr(parent_session.config, 'providerName', None),
+        model=getattr(parent_session.config, 'model', None),
+    )
+
+    # 3. Create child run
+    child_run = _create_child_run(parent_run=parent_run, findings=request.findings)
+
+    # 4. Create new idea session from parent config
+    new_config = IdeaSessionConfig(
+        providerName=parent_session.config.providerName,
+        model=parent_session.config.model,
+        seedQuery=seed_query,
+        paperType=getattr(parent_session.config, 'paperType', 'full'),
+        maxCandidates=getattr(parent_session.config, 'maxCandidates', 10),
+        maxPapers=getattr(parent_session.config, 'maxPapers', 50),
+        domain=getattr(parent_session.config, 'domain', None),
+        constraints=getattr(parent_session.config, 'constraints', None),
+        mustCiteList=getattr(parent_session.config, 'mustCiteList', []),
+        searchBudget=getattr(parent_session.config, 'searchBudget', 30),
+        maxReviewIterations=getattr(parent_session.config, 'maxReviewIterations', 2),
+    )
+
+    new_session = service.create_session(new_config)
+
+    # 5. Store review findings in session qualityLoopSummary for the pipeline to use
+    new_session.qualityLoopSummary['parentSessionId'] = request.parentSessionId
+    new_session.qualityLoopSummary['parentRunId'] = parent_run.runId
+    new_session.qualityLoopSummary['childRunId'] = child_run.runId
+    new_session.qualityLoopSummary['reviewFindings'] = request.findings
+    service.session_storage.update(new_session)
+
+    return CreateChildRunResponse(
+        childRunId=child_run.runId,
+        parentRunId=parent_run.runId,
+        newSessionId=new_session.id,
+        findingsCount=len(request.findings),
+        status="created",
+    )
