@@ -6,7 +6,7 @@ Provides endpoints for managing idea generation sessions.
 
 import json
 import logging
-from typing import Optional, List
+from typing import Any, Dict, Optional, List
 from datetime import datetime
 from fastapi import APIRouter, HTTPException, status, BackgroundTasks, Query
 from pydantic import BaseModel, Field
@@ -1249,3 +1249,103 @@ async def seed_check(request: SeedCheckRequest) -> SeedCheckResponse:
         suggestion=suggestion,
         topPaperTitles=top_titles,
     )
+
+
+# =============================================================================
+# Research Dossier Endpoints (Public Contract)
+# =============================================================================
+
+class BuildDossierRequest(BaseModel):
+    """Request to build a ResearchDossier from an existing session."""
+    sessionId: str = Field(..., description="Idea session ID")
+    runId: Optional[str] = Field(default=None, description="Override run ID")
+    mode: str = Field(default="deep", description="coverage or deep")
+    questionId: Optional[str] = Field(default=None)
+    questionText: Optional[str] = Field(default=None)
+    domainHint: Optional[str] = None
+
+
+class BuildDossierResponse(BaseModel):
+    """Response containing the built ResearchDossier."""
+    dossier: Dict[str, Any]
+    degradationState: Optional[Dict[str, Any]] = None
+
+
+@router.post(
+    "/dossier",
+    response_model=BuildDossierResponse,
+    summary="Build a ResearchDossier from a completed session",
+)
+def build_dossier(request: BuildDossierRequest):
+    """Build a contract-compliant ResearchDossier from an idea session."""
+    from app.contracts import RunMode, ScientificQuestion
+    from app.modules.idea.research_dossier import build_research_dossier
+    from app.modules.idea.budget_modes import BudgetConfig, detect_degradation
+
+    service = get_idea_service()
+    session = service.session_storage.get(request.sessionId)
+    if not session:
+        raise HTTPException(status_code=404, detail=f"Session {request.sessionId} not found")
+
+    candidates = service.get_candidates(request.sessionId)
+    literature = service.get_literature(request.sessionId)
+
+    if not candidates:
+        raise HTTPException(status_code=400, detail="Session has no candidates")
+
+    mode = RunMode.DEEP if request.mode == "deep" else RunMode.COVERAGE
+    budget = BudgetConfig.from_mode(mode)
+
+    # Build question
+    question = None
+    if request.questionText:
+        question = ScientificQuestion(
+            id=request.questionId or f"question_{request.sessionId}",
+            text=request.questionText,
+            domainHint=request.domainHint,
+        )
+
+    # Detect degradation
+    degradation = detect_degradation(
+        api_available=True,
+        search_result_count=len(literature),
+        min_evidence_threshold=3,
+    )
+
+    dossier = build_research_dossier(
+        session=session,
+        candidates=candidates,
+        literature=literature,
+        question=question,
+        run_id=request.runId,
+        mode=mode,
+    )
+
+    return BuildDossierResponse(
+        dossier=dossier.model_dump(mode="json"),
+        degradationState=degradation.to_dict() if degradation.is_degraded else None,
+    )
+
+
+class DiffDossiersRequest(BaseModel):
+    """Request to diff two dossier versions."""
+    v1: Dict[str, Any] = Field(..., description="First dossier version (JSON)")
+    v2: Dict[str, Any] = Field(..., description="Second dossier version (JSON)")
+
+
+@router.post(
+    "/dossier/diff",
+    summary="Compute v1/v2 diff between two dossier versions",
+)
+def diff_dossiers(request: DiffDossiersRequest):
+    """Compute a structured diff between two ResearchDossier versions."""
+    from app.contracts import ResearchDossier
+    from app.modules.idea.research_dossier import diff_dossiers as _diff
+
+    try:
+        v1 = ResearchDossier.model_validate(request.v1)
+        v2 = ResearchDossier.model_validate(request.v2)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Invalid dossier: {e}")
+
+    return _diff(v1, v2)
