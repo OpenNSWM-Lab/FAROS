@@ -13,6 +13,7 @@ backend/tests/*
 !backend/tests/test_idea_problem_framing.py
 !backend/tests/test_idea_evidence_gate_contract.py
 !backend/tests/test_idea_falsifiability.py
+!backend/tests/test_idea_degraded_fixtures.py
 !backend/tests/fixtures/
 !backend/tests/fixtures/scientific_research/
 !backend/tests/fixtures/scientific_research/*.json
