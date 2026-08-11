@@ -328,10 +328,9 @@ def assess_execution(
     explicit = _explicit_class(data)
     execution_class: ExecutionClass
     signals: list[str] = []
-    if explicit:
-        execution_class = explicit
-        signals.append(f"upstream executionClass={explicit.value}")
-    elif _contains(text, _SIGNALS[ExecutionClass.ETHICS_REVIEW_REQUIRED]):
+    # Hard safety/proof signals are derived from the full task and must not be
+    # weakened by an optimistic upstream executionClass declaration.
+    if _contains(text, _SIGNALS[ExecutionClass.ETHICS_REVIEW_REQUIRED]):
         execution_class = ExecutionClass.ETHICS_REVIEW_REQUIRED
         missing.append("documented ethics approval and data-governance clearance")
         safety.append("Do not process human or sensitive data before ethics and privacy approval.")
@@ -344,6 +343,9 @@ def assess_execution(
         execution_class = ExecutionClass.PROOF_REQUIRED
         missing.append("formal proof strategy or proof-assistant specification")
         signals.append("theorem/proof signal detected")
+    elif explicit:
+        execution_class = explicit
+        signals.append(f"upstream executionClass={explicit.value}")
     elif _contains(text, _SIGNALS[ExecutionClass.SIMULATION_READY]):
         execution_class = ExecutionClass.SIMULATION_READY
         signals.append("simulation or parameter-sweep method detected")
@@ -364,6 +366,11 @@ def assess_execution(
 
     available = _unique(available)
     missing = _unique(missing)
+    if explicit and explicit != execution_class:
+        warnings.append(
+            f"Upstream executionClass={explicit.value} was overridden by "
+            f"the stricter detected class {execution_class.value}."
+        )
     if not metrics:
         warnings.append("No explicit validation metrics were found.")
     if not stop_conditions:
