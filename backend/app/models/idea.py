@@ -23,6 +23,8 @@ class IdeaSessionStatus(str, Enum):
     """Idea session lifecycle states."""
     PENDING = "pending"
     RUNNING = "running"
+    AWAITING_EVIDENCE = "awaiting_evidence"
+    AWAITING_IDEAS = "awaiting_ideas"
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
@@ -81,7 +83,7 @@ class IdeaSessionConfig(BaseModel):
         description="Optional search budget for BFTS; defaults to maxPapers if unset"
     )
     maxReviewIterations: int = Field(
-        default=2,
+        default=3,
         ge=1,
         le=5,
         description="Maximum internal idea reviewer repair iterations before final handoff"
@@ -126,6 +128,10 @@ class IdeaSession(BaseModel):
     endedAt: Optional[datetime] = None
     trace: Optional[WorkflowTrace] = None
     candidateIds: List[str] = Field(default_factory=list)
+    finalCandidateIds: List[str] = Field(default_factory=list)
+    hiddenCandidateIds: List[str] = Field(default_factory=list)
+    rejectedCandidateIds: List[str] = Field(default_factory=list)
+    qualityLoopSummary: Dict[str, Any] = Field(default_factory=dict)
     selectedCandidateId: Optional[str] = None
     errorMessage: Optional[str] = None
     
@@ -415,6 +421,16 @@ class RawPaper(BaseModel):
     citationCount: int = 0
     abstract: str = ""
     source: List[str] = Field(default_factory=list, description="List of sources: semantic_scholar, arxiv, local, openalex, crossref")
+    retrievalRoles: List[str] = Field(default_factory=list)
+    matchedQueries: List[str] = Field(default_factory=list)
+    evidenceTier: str = Field(
+        default="unclassified",
+        description="direct, transferable, rejected, unclassified",
+    )
+    decisiveAnchors: List[str] = Field(default_factory=list)
+    relevanceComponents: Dict[str, float] = Field(default_factory=dict)
+    rejectionReason: str = ""
+    mustCiteOverride: bool = False
     normalizedTitleHash: str = Field(default="", description="SHA256 of normalized title for dedup")
     references: List[str] = Field(default_factory=list, description="Paper IDs cited by this paper")
     citedBy: List[str] = Field(default_factory=list, description="Paper IDs citing this paper")
@@ -553,6 +569,12 @@ class StructuredPaper(BaseModel):
     metrics: List[str] = Field(default_factory=list)
     limitations: List[str] = Field(default_factory=list)
     baselines: List[str] = Field(default_factory=list)
+    openQuestions: List[str] = Field(default_factory=list, description="Unresolved questions explicitly surfaced by the paper")
+    failedAssumptions: List[str] = Field(default_factory=list, description="Assumptions that may fail or remain unvalidated")
+    methodWeaknesses: List[str] = Field(default_factory=list, description="Weaknesses of the paper's proposed method")
+    missingEvaluation: List[str] = Field(default_factory=list, description="Evaluation settings, datasets, metrics, or ablations missing from the paper")
+    baselineMethods: List[str] = Field(default_factory=list, description="Baseline methods useful for downstream planning")
+    recommendedMetrics: List[str] = Field(default_factory=list, description="Metrics recommended for ideas addressing this paper's gaps")
     contradictions: List[ContradictionMention] = Field(default_factory=list)
     noveltyEvidence: List[NoveltyEvidence] = Field(default_factory=list)
     summary: str = ""
@@ -849,7 +871,7 @@ class LiteratureProbeQuery(BaseModel):
     """Targeted literature search query for idea validation (PDF v5 section 7.8)."""
     nodeId: str
     query: str
-    intent: str = Field(..., description="closest_prior | missing_baseline | dataset_check | contradiction_check | feasibility_check")
+    intent: str = Field(..., description="closest_prior | missing_baseline | dataset_check | metric_check | contradiction_check | feasibility_check")
     maxPapers: int = Field(default=8, ge=1, le=50)
     model_config = ConfigDict(frozen=True)
 

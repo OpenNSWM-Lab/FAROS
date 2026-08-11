@@ -14,6 +14,7 @@ Reference: AI-Scientist-v2 ai_scientist/treesearch/bfts_utils.py
 import heapq
 import logging
 import re
+import math
 from collections import defaultdict
 from typing import List, Optional, Set, Tuple, Dict, Any
 from datetime import UTC, datetime
@@ -33,6 +34,7 @@ from app.models.idea import (
     IdeaSearchEdge,
     IdeaSearchReport,
     generate_search_tree_id,
+    _compute_title_hash,
 )
 from app.modules.idea.storage import generate_candidate_id
 from app.modules.idea.reflection_loop import ReflectionLoop, FINALIZE_IDEA_DESC
@@ -51,6 +53,61 @@ DEFAULT_WEIGHTS = {
     "evidenceSupport": 0.10,
     "graphGrounding": 0.10,
 }
+
+# --- P0: Semantic token-overlap helpers (replaces keyword heuristics) ---
+
+_STOPWORDS: Set[str] = {
+    "the", "a", "an", "and", "or", "of", "in", "to", "for", "with",
+    "on", "at", "by", "from", "that", "this", "it", "is", "are", "be",
+    "we", "our", "can", "has", "have", "not", "but", "as", "its",
+    "using", "based", "approach", "method", "model", "proposed",
+    "novel", "new", "improve", "via", "towards", "beyond",
+}
+
+def _token_ngrams(text: str, n: int = 2) -> Set[str]:
+    """Extract overlapping n-gram token sets from text for semantic comparison."""
+    tokens = re.findall(r"[a-zA-Z][a-zA-Z0-9]{2,}|[\u4e00-\u9fff]+", text.lower())
+    tokens = [t for t in tokens if t not in _STOPWORDS]
+    if not tokens:
+        return set()
+    ngrams: Set[str] = set()
+    for i in range(len(tokens) - n + 1):
+        ngrams.add(" ".join(tokens[i:i + n]))
+    # Also include unigrams for fallback coverage
+    if n == 2:
+        ngrams.update(tokens)
+    return ngrams
+
+
+def _semantic_overlap(text_a: str, text_b: str) -> float:
+    """Compute semantic overlap score (0-1) using 2-gram token Jaccard.
+
+    This is a fast, deterministic proxy for semantic similarity that works
+    across languages (CJK + English) and requires no embedding model.
+
+    Returns a float in [0, 1].
+    """
+    if not text_a or not text_b:
+        return 0.0
+    ng_a = _token_ngrams(text_a)
+    ng_b = _token_ngrams(text_b)
+    if not ng_a or not ng_b:
+        return 0.0
+    intersection = len(ng_a & ng_b)
+    union = len(ng_a | ng_b)
+    return intersection / union if union > 0 else 0.0
+
+
+def _normalized_hypothesis(node: Any) -> str:
+    """Extract a normalized text representation of the idea for scoring."""
+    parts = []
+    if node.title:
+        parts.append(node.title)
+    if node.hypothesis:
+        parts.append(node.hypothesis)
+    if node.abstract:
+        parts.append(node.abstract[:300])
+    return " ".join(parts)
 
 
 def _build_literature_context(structured_papers: List[StructuredPaper], limit: int = 8) -> str:
@@ -76,6 +133,8 @@ def _path_seed_to_idea_node(
     literature_context: str,
     provider_name: str,
     model: str,
+    seed_query: str = "",
+    paper_type: str = "algorithm",
     max_reflection_rounds: int = 2,
 ) -> Optional[IdeaNode]:
     """Convert a ReasoningPathSeed into an initialized IdeaNode via LLM.
@@ -93,10 +152,16 @@ def _path_seed_to_idea_node(
         steps_text = ""
         for i, step in enumerate(seed.steps[:5]):
             steps_text += f"  Step {i+1}: {step.description} (type: {step.stepType})\\n"
+        if seed.sourcePaperIds:
+            steps_text += f"  Source papers: {', '.join(seed.sourcePaperIds[:8])}\\n"
+        if seed.linkedGapIds:
+            steps_text += "  Linked gaps:\\n"
+            for gap in seed.linkedGapIds[:5]:
+                steps_text += f"    - {gap}\\n"
 
         user_prompt = BFTS_SEED_USER.format(
-            seed_query=seed.sessionId or "research",  # fallback
-            paper_type="algorithm",  # default; overridden by caller context
+            seed_query=seed_query or seed.sessionId or "research",
+            paper_type=paper_type or "algorithm",
             template_type=seed.templateType or "generic",
             anchor_entities=", ".join(seed.anchorEntityIds[:5]) or "(none)",
             path_steps=steps_text or "  (no steps defined)",
@@ -350,6 +415,11 @@ class BFTSSearchTree:
         self.seed_query = seed_query
         self.paper_type = paper_type
         self.structured_papers = structured_papers  # Stored for literature probe context
+        self._seed_prior_by_id = {
+            seed.seedId: (seed.scores or seed.initialScores)
+            for seed in path_seeds
+            if seed.seedId and (seed.scores or seed.initialScores)
+        }
 
         # Tree storage
         self.nodes: List[IdeaNode] = []
@@ -392,6 +462,8 @@ class BFTSSearchTree:
                 literature_context=literature_context,
                 provider_name=self.provider_name,
                 model=self.model,
+                seed_query=self.seed_query,
+                paper_type=self.paper_type,
                 max_reflection_rounds=1,  # Just initialize, no deep reflection yet
             )
             if node:
@@ -450,6 +522,13 @@ class BFTSSearchTree:
 
                 child = self._expand_node(parent, max_reflection)
                 if child:
+                    # P0: dedup pruning — skip near-duplicate ideas
+                    if self._is_duplicate(child):
+                        child.status = "pruned"
+                        self.nodes.append(child)  # keep for tracking
+                        parent.isExpanded = True
+                        continue
+
                     self._add_child(parent, child)
                     expansion_count += 1
 
@@ -544,105 +623,304 @@ class BFTSSearchTree:
             self._beam, (-child.combinedScore, child.nodeId, child.depth)
         )
 
-    def _run_literature_probe(self, node: IdeaNode) -> Optional[Any]:
-        """Run a simplified literature probe to find closest prior work (PDF v5 section 7.8).
+    def _is_duplicate(self, new_node: IdeaNode) -> bool:
+        """P0: Check if new_node is a near-duplicate of any existing node.
 
-        Uses Step 3 structured papers as the search corpus (MVP stub — full external
-        search via SearchService comes in MVP3). Creates LiteratureProbeResult +
-        GraphPatch and persists both.
-
-        Returns the LiteratureProbeResult if any matching papers found, None otherwise.
+        Uses n-gram Jaccard similarity on title+hypothesis. Skips the node
+        if similarity exceeds pruneDuplicateThreshold (default 0.82).
         """
-        if not self.structured_papers:
-            return None
+        threshold = getattr(self.config, 'pruneDuplicateThreshold', 0.82) or 0.82
+        new_text = _normalized_hypothesis(new_node)
+        if not new_text:
+            return False
 
+        existing_nodes = [n for n in self.nodes if n.nodeId != new_node.nodeId]
+        for existing in existing_nodes:
+            existing_text = _normalized_hypothesis(existing)
+            if not existing_text:
+                continue
+            sim = _semantic_overlap(new_text, existing_text)
+            if sim > threshold:
+                logger.info(
+                    f"BFTS: pruning duplicate node (sim={sim:.3f} > "
+                    f"threshold={threshold}): '{new_node.title[:50] if new_node.title else '?'}...'"
+                )
+                return True
+        return False
+
+    def _probe_topic_terms(self, node: IdeaNode) -> List[str]:
+        """Extract topic-bearing terms for targeted literature probes."""
+        text = " ".join([
+            self.seed_query or "",
+            node.title or "",
+            node.hypothesis or "",
+            node.abstract or "",
+        ]).lower().replace("-", " ")
+        stopwords = {
+            "about", "after", "against", "algorithm", "analysis", "approach",
+            "based", "between", "could", "from", "high", "idea", "improve",
+            "method", "model", "paper", "research", "should", "study", "that",
+            "their", "there", "this", "using", "with", "without", "would",
+        }
+        terms = [
+            token for token in re.findall(r"[a-zA-Z][a-zA-Z0-9]{2,}", text)
+            if token not in stopwords
+        ]
+        return list(dict.fromkeys(terms))[:12]
+
+    def _build_probe_specs(self, node: IdeaNode) -> List[Dict[str, str]]:
+        """Build the targeted external probe queries for one BFTS node."""
+        topic = " ".join(self._probe_topic_terms(node)[:8]) or node.title or self.seed_query or "research idea"
+        base = f"{self.seed_query} {node.title} {node.hypothesis}".strip()
+        return [
+            {
+                "intent": "closest_prior",
+                "patchType": "new_prior_work",
+                "query": f"{base} closest prior work related method {topic}".strip(),
+            },
+            {
+                "intent": "contradiction_check",
+                "patchType": "contradiction",
+                "query": f"{base} contradiction failure negative result limitation {topic}".strip(),
+            },
+            {
+                "intent": "missing_baseline",
+                "patchType": "new_baseline",
+                "query": f"{base} baseline comparison method benchmark {topic}".strip(),
+            },
+            {
+                "intent": "dataset_check",
+                "patchType": "dataset",
+                "query": f"{base} dataset benchmark corpus evaluation setting {topic}".strip(),
+            },
+            {
+                "intent": "metric_check",
+                "patchType": "metric",
+                "query": f"{base} metric evaluation measure score {topic}".strip(),
+            },
+        ]
+
+    def _probe_result_is_relevant(self, result: Any, topic_terms: Set[str], *, intent: str) -> bool:
+        """Strict relevance filter so fallback/local generic papers do not pollute probes."""
+        text = f"{getattr(result, 'title', '')} {getattr(result, 'abstract', '')}".lower()
+        overlap = sum(1 for term in topic_terms if term and term in text)
+        source = getattr(result, "source", "")
+        score = float(getattr(result, "relevance_score", 0.0) or 0.0)
+        intent_terms = {
+            "contradiction_check": ["contradiction", "failure", "negative", "limitation", "risk"],
+            "missing_baseline": ["baseline", "comparison", "benchmark"],
+            "dataset_check": ["dataset", "benchmark", "corpus", "evaluation"],
+            "metric_check": ["metric", "measure", "score", "evaluation", "faithfulness"],
+            "closest_prior": ["prior", "method", "approach", "related"],
+        }.get(intent, [])
+        intent_hit = any(term in text for term in intent_terms)
+        if source == "local":
+            return overlap >= 2 and (score >= 0.45 or intent_hit)
+        return overlap >= 1 or score >= 0.35 or intent_hit
+
+    def _search_result_to_raw_paper(self, result: Any, raw_storage: Any) -> Optional[Any]:
+        """Persist a SearchResult as RawPaper, deduped by normalized title hash."""
+        from app.models.idea import RawPaper
+        from app.storage.idea_storage import generate_raw_paper_id
+
+        title = str(getattr(result, "title", "") or "").strip()
+        if not title:
+            return None
+        title_hash = _compute_title_hash(title)
         try:
-            from app.storage.idea_storage import get_probe_literature_storage, get_graph_patch_storage
+            for existing in raw_storage.list_by_session(self.session_id):
+                if existing.normalizedTitleHash == title_hash:
+                    return existing
+        except Exception:
+            pass
+
+        raw_paper = RawPaper(
+            id=generate_raw_paper_id(),
+            sessionId=self.session_id,
+            title=title,
+            authors=list(getattr(result, "authors", []) or []),
+            year=getattr(result, "year", None),
+            venue=getattr(result, "venue", None) or "",
+            url=getattr(result, "url", None) or "",
+            doi=getattr(result, "doi", None),
+            arxivId=getattr(result, "arxiv_id", None),
+            citationCount=int(getattr(result, "citation_count", 0) or 0),
+            abstract=getattr(result, "abstract", "") or "",
+            source=[getattr(result, "source", "external") or "external"],
+            normalizedTitleHash=title_hash,
+            retrievalScore=float(getattr(result, "relevance_score", 0.0) or 0.0),
+            relevanceScore=float(getattr(result, "relevance_score", 0.0) or 0.0),
+        )
+        try:
+            return raw_storage.create(raw_paper)
+        except ValueError:
+            return raw_storage.get(raw_paper.id)
+
+    def _structured_probe_matches(self, node: IdeaNode, *, intent: str, limit: int = 5) -> List[Any]:
+        """Fallback to Step 3 structured papers when external search is unavailable."""
+        topic_terms = set(self._probe_topic_terms(node))
+        matches = []
+        for sp in self.structured_papers:
+            text_parts = [
+                sp.title,
+                sp.abstract,
+                " ".join(sp.limitations),
+                " ".join(sp.openQuestions),
+                " ".join(sp.failedAssumptions),
+                " ".join(sp.methodWeaknesses),
+                " ".join(sp.missingEvaluation),
+                " ".join(sp.baselines),
+                " ".join(sp.baselineMethods),
+                " ".join(sp.datasets),
+                " ".join(sp.metrics),
+                " ".join(sp.recommendedMetrics),
+                " ".join(contradiction.description for contradiction in sp.contradictions),
+            ]
+            text = " ".join(text_parts).lower()
+            overlap = sum(1 for term in topic_terms if term in text)
+            intent_hit = (
+                (intent == "contradiction_check" and (sp.contradictions or any("fail" in item.lower() for item in [*sp.limitations, *sp.failedAssumptions, *sp.methodWeaknesses])))
+                or (intent == "missing_baseline" and (sp.baselines or sp.baselineMethods))
+                or (intent == "dataset_check" and sp.datasets)
+                or (intent == "metric_check" and (sp.metrics or sp.recommendedMetrics or sp.missingEvaluation))
+                or intent == "closest_prior"
+            )
+            if overlap >= 2 and intent_hit:
+                matches.append(sp)
+        return matches[:limit]
+
+    def _run_literature_probe(self, node: IdeaNode) -> Optional[Any]:
+        """Run targeted Step 5 literature probes for one BFTS child node.
+
+        Probe 2.0 uses external SearchService for closest-prior, contradiction,
+        baseline, dataset, and metric checks. Step 3 structured papers remain a
+        strict fallback, not the primary corpus.
+        """
+        try:
+            from app.storage.idea_storage import (
+                get_probe_literature_storage,
+                get_graph_patch_storage,
+                get_raw_paper_storage,
+            )
             from app.models.idea import (
                 LiteratureProbeQuery, LiteratureProbeResult, GraphPatch,
                 generate_probe_result_id, generate_graph_patch_id,
             )
 
-            # Build probe query from node title + hypothesis
-            idea_text = f"{node.title} {node.hypothesis}".lower()
-            idea_keywords = set(
-                w for w in idea_text.replace(',', ' ').split()
-                if len(w) > 3 and w not in ('this', 'that', 'the', 'and', 'for', 'with', 'from')
-            )
-
-            # Search structured papers for keyword matches
-            matched_papers: List[Any] = []
-            for sp in self.structured_papers:
-                paper_text = f"{sp.title} {sp.abstract}".lower()
-                match_count = sum(1 for kw in idea_keywords if kw in paper_text)
-                if match_count >= 2:  # At least 2 keyword matches
-                    matched_papers.append(sp)
-
-            if not matched_papers:
+            probe_budget = max(0, int(self.config.maxLiteratureProbes or 0))
+            if probe_budget <= 0:
                 return None
 
-            # Build probe query
-            probe_query = LiteratureProbeQuery(
-                nodeId=node.nodeId,
-                query=" ".join(sorted(idea_keywords)[:8]),
-                intent="closest_prior",
-                maxPapers=8,
-            )
-
-            # Get raw papers from storage for the result
-            from app.storage.idea_storage import get_raw_paper_storage
-            raw_storage = get_raw_paper_storage()
-            raw_papers_for_result = []
-            for sp in matched_papers[:8]:
-                rp = raw_storage.get(sp.rawPaperId) or raw_storage.get(sp.id)
-                if rp:
-                    raw_papers_for_result.append(rp)
-
-            # Create LiteratureProbeResult
-            probe_result = LiteratureProbeResult(
-                id=generate_probe_result_id(),
-                nodeId=node.nodeId,
-                sessionId=self.session_id,
-                query=probe_query,
-                papers=raw_papers_for_result,
-                closestPriorWorkIds=[sp.id for sp in matched_papers[:3]],
-                summary=f"Found {len(matched_papers)} papers with keyword overlap. "
-                       f"Top matches: {', '.join(sp.title[:60] for sp in matched_papers[:3])}.",
-                noveltyRisk=max(0.0, min(1.0, 1.0 - len(matched_papers) / max(1, len(self.structured_papers)))),
-                shouldUpdateGraph=len(matched_papers) > 0,
-            )
-
-            # Persist probe result
             probe_storage = get_probe_literature_storage()
-            probe_storage.create(probe_result)
-            if probe_result.id not in node.literatureProbeIds:
-                node.literatureProbeIds.append(probe_result.id)
-
-            # Create GraphPatch
-            graph_patch = GraphPatch(
-                id=generate_graph_patch_id(),
-                sessionId=self.session_id,
-                sourceNodeId=node.nodeId,
-                patchType="new_prior_work",
-                addedPaperIds=[sp.id for sp in matched_papers[:5]],
-                affectedNodeIds=[node.nodeId],
-                summary=f"Literature probe found {len(matched_papers)} closest prior work papers for node {node.nodeId}.",
-            )
-
-            # Persist graph patch
             patch_storage = get_graph_patch_storage()
-            patch_storage.create(graph_patch)
+            raw_storage = get_raw_paper_storage()
+            search_service = get_search_service()
+            topic_terms = set(self._probe_topic_terms(node))
+            specs = self._build_probe_specs(node)[:probe_budget]
+            primary_result = None
 
-            # Update node with probe/patch IDs
-            node.graphPatchIds.append(graph_patch.id)
+            for spec in specs:
+                intent = spec["intent"]
+                patch_type = spec["patchType"]
+                query = spec["query"]
+                max_papers = 8 if intent == "closest_prior" else 6
+                raw_papers_for_result: List[Any] = []
+                structured_matches = []
 
-            logger.info(
-                f"BFTS probe: node {node.nodeId} — "
-                f"found {len(matched_papers)} prior work papers, "
-                f"patch {graph_patch.id}"
-            )
+                try:
+                    search_results = search_service.search(
+                        query,
+                        limit=max_papers,
+                        sources=["semantic_scholar", "arxiv", "local"],
+                    )
+                except Exception as exc:
+                    logger.warning("BFTS targeted probe search failed for %s: %s", intent, exc)
+                    search_results = []
 
-            return probe_result
+                for result in search_results:
+                    if not self._probe_result_is_relevant(result, topic_terms, intent=intent):
+                        continue
+                    raw_paper = self._search_result_to_raw_paper(result, raw_storage)
+                    if raw_paper:
+                        raw_papers_for_result.append(raw_paper)
+                    if len(raw_papers_for_result) >= max_papers:
+                        break
+
+                if not raw_papers_for_result:
+                    structured_matches = self._structured_probe_matches(node, intent=intent, limit=max_papers)
+                    for sp in structured_matches:
+                        raw_paper = raw_storage.get(sp.rawPaperId) or raw_storage.get(sp.id)
+                        if raw_paper:
+                            raw_papers_for_result.append(raw_paper)
+
+                if not raw_papers_for_result and not structured_matches:
+                    continue
+
+                paper_ids = list(dict.fromkeys(
+                    [paper.id for paper in raw_papers_for_result]
+                    + [sp.id for sp in structured_matches]
+                ))
+                if not paper_ids:
+                    continue
+
+                closest_ids = paper_ids[:3] if intent == "closest_prior" else []
+                contradiction_ids = paper_ids[:3] if intent == "contradiction_check" else []
+                baseline_ids = paper_ids[:3] if intent == "missing_baseline" else []
+                novelty_risk = 0.35
+                if intent == "closest_prior":
+                    novelty_risk = min(1.0, 0.25 + 0.12 * len(paper_ids))
+                elif intent == "contradiction_check":
+                    novelty_risk = min(1.0, 0.45 + 0.08 * len(paper_ids))
+
+                probe_query = LiteratureProbeQuery(
+                    nodeId=node.nodeId,
+                    query=query,
+                    intent=intent,
+                    maxPapers=max_papers,
+                )
+                probe_result = LiteratureProbeResult(
+                    id=generate_probe_result_id(),
+                    nodeId=node.nodeId,
+                    sessionId=self.session_id,
+                    query=probe_query,
+                    papers=raw_papers_for_result,
+                    closestPriorWorkIds=closest_ids,
+                    contradictionPaperIds=contradiction_ids,
+                    baselinePaperIds=baseline_ids,
+                    summary=(
+                        f"{intent} probe found {len(paper_ids)} relevant papers. "
+                        f"Top matches: {', '.join((paper.title or paper.id)[:60] for paper in raw_papers_for_result[:3])}."
+                    ),
+                    noveltyRisk=novelty_risk,
+                    shouldUpdateGraph=True,
+                )
+                probe_storage.create(probe_result)
+                if probe_result.id not in node.literatureProbeIds:
+                    node.literatureProbeIds.append(probe_result.id)
+                if primary_result is None:
+                    primary_result = probe_result
+
+                graph_patch = GraphPatch(
+                    id=generate_graph_patch_id(),
+                    sessionId=self.session_id,
+                    sourceNodeId=node.nodeId,
+                    patchType=patch_type,
+                    addedPaperIds=paper_ids[:8],
+                    affectedNodeIds=[node.nodeId],
+                    summary=f"{intent} probe added {len(paper_ids)} papers for node {node.nodeId}.",
+                )
+                patch_storage.create(graph_patch)
+                if graph_patch.id not in node.graphPatchIds:
+                    node.graphPatchIds.append(graph_patch.id)
+
+            if primary_result:
+                logger.info(
+                    "BFTS targeted probes: node %s produced %d probe results and %d graph patches",
+                    node.nodeId,
+                    len(node.literatureProbeIds),
+                    len(node.graphPatchIds),
+                )
+            return primary_result
 
         except Exception as e:
             logger.warning(f"BFTS literature probe failed for node {node.nodeId}: {e}")
@@ -694,55 +972,93 @@ class BFTSSearchTree:
         ) * 10.0  # Scale back to 0-10
 
     def _estimate_novelty(self, node: IdeaNode, prior: float) -> float:
-        """Estimate novelty: heuristic based on hypothesis text."""
-        import re
-        # Check for novel-sounding keywords
-        novel_kw = ["novel", "new", "unexplored", "first", "towards", "beyond"]
-        hyp = (node.hypothesis or "").lower()
-        title = (node.title or "").lower()
-        kw_score = sum(1 for kw in novel_kw if kw in hyp or kw in title)
-        text_score = min(1.0, kw_score / 3.0)
-        return min(10.0, max(0.0, (prior + text_score) * 5.0))
+        """Estimate novelty: semantic overlap with seed_query (lower overlap = more novel).
+
+        P0 improvement: replaces keyword matching ("novel", "new", ...) with
+        n-gram semantic overlap against the seed. Lower overlap means the idea
+        spans vocabulary not already in the query — a proxy for genuine novelty.
+        """
+        seed_text = self.seed_query or ""
+        idea_text = _normalized_hypothesis(node)
+        overlap = _semantic_overlap(seed_text, idea_text)
+
+        # Score inversion: high overlap → low novelty, low overlap → high novelty
+        # Map [0, 1] overlap → [2, 10] novelty (anchored at 6 for moderate overlap ~0.4)
+        novelty_from_overlap = max(2.0, min(10.0, 10.0 - overlap * 8.0))
+
+        # Blend with path-seed prior (30% prior, 70% overlap-based)
+        return 0.3 * (prior * 10.0) + 0.7 * novelty_from_overlap
 
     def _estimate_feasibility(self, node: IdeaNode, prior: float) -> float:
-        """Estimate feasibility: based on experiment count and concreteness."""
+        """Estimate feasibility: experiment concreteness + literature grounding.
+
+        P0 improvement: adds literature probe evidence (actual paper support)
+        alongside experiment count.
+        """
         exp_count = len(node.experiments or [])
-        has_concrete_experiments = exp_count >= 1
         score = prior * 10.0
-        if has_concrete_experiments:
-            score += min(2.0, exp_count * 0.5)
+        if exp_count >= 2:
+            score += 2.5
+        elif exp_count >= 1:
+            score += 1.5
+        # Bonus for literature-probe backing (evidence from actual papers)
+        if node.literatureProbeIds:
+            score += min(1.5, len(node.literatureProbeIds) * 0.3)
         return min(10.0, max(0.0, score))
 
     def _estimate_impact(self, node: IdeaNode) -> float:
-        """Estimate impact: based on hypothesis ambition."""
-        hyp = (node.hypothesis or "").lower()
-        impact_kw = ["improving", "outperforms", "state-of-the-art", "SOTA", "significant"]
-        kw_score = sum(1 for kw in impact_kw if kw in hyp)
-        return min(10.0, 5.0 + kw_score * 1.5)
+        """Estimate impact: hypothesis specificity and reference depth.
+
+        P0 improvement: replaces keyword matching ("improving", "SOTA", ...)
+        with a composite of semantic clarity and citation anchoring.
+        """
+        hyp = (node.hypothesis or "")
+        hyp_len = len(hyp.split())
+        # Longer, more detailed hypotheses tend to be more impactful
+        length_score = min(1.0, hyp_len / 60.0) * 3.0
+        # References indicate domain grounding
+        ref_count = len(node.references or []) if hasattr(node, 'references') else 0
+        ref_score = min(2.0, ref_count * 0.4)
+        # Base
+        return min(10.0, 5.0 + length_score + ref_score)
 
     def _estimate_specificity(self, node: IdeaNode) -> float:
-        """Estimate specificity: 0-1, based on title concreteness."""
+        """Estimate specificity: concept density in title and hypothesis.
+
+        P0 improvement: replaces capital-letter heuristic with n-gram
+        concept density — counts unique semantic tokens normalized by length.
+        """
         title = node.title or ""
-        # Count specific nouns / named entities (heuristic)
-        words = re.findall(r'\b[A-Z][a-z]{2,}\b', title)
-        return min(1.0, len(words) / 5.0)
+        hyp = node.hypothesis or ""
+        combined = f"{title} {hyp}"
+        tokens = re.findall(r"[a-zA-Z][a-zA-Z0-9]{2,}|[\u4e00-\u9fff]+", combined.lower())
+        unique_meaningful = {t for t in tokens if t not in _STOPWORDS}
+        density = len(unique_meaningful) / max(1, len(tokens)) if tokens else 0
+        return min(1.0, density * 1.5)
 
     def _estimate_evidence_support(self, node: IdeaNode) -> float:
-        """Estimate evidence support: 0-1, based on reflection rounds and search results."""
-        # More reflection rounds = more literature grounding
-        return min(1.0, node.reflectionRounds / max(1, self.config.maxReflectionRounds))
+        """Estimate evidence support from path seed prior plus reflection/probe evidence."""
+        score = min(1.0, node.reflectionRounds / max(1, self.config.maxReflectionRounds))
+        if node.sourceSeedId:
+            prior = self._get_seed_prior(node.sourceSeedId)
+            if prior:
+                score = max(score, prior.evidencePrior)
+        if node.literatureProbeIds:
+            score = min(1.0, score + 0.15)
+        return score
 
     def _estimate_graph_grounding(self, node: IdeaNode) -> float:
         """Estimate graph grounding: 0-1, based on source seed."""
         if node.sourceSeedId:
+            prior = self._get_seed_prior(node.sourceSeedId)
+            if prior:
+                return max(0.3, prior.graphAlignmentPrior)
             return 0.7  # Has a reasoning path seed backing
         return 0.3
 
     def _get_seed_prior(self, seed_id: str) -> Optional[Any]:
         """Get PathSeedScores prior for a seed."""
-        # This requires access to path_seed storage
-        # For now, return None (use defaults)
-        return None
+        return self._seed_prior_by_id.get(seed_id)
 
     def _get_literature_context_for_node(self, node: IdeaNode) -> str:
         """Get literature context string for a node's reflection loop."""

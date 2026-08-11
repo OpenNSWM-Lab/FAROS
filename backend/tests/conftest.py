@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.plan_package_test_data import make_plan_package
+
 
 # Ensure the backend package is importable
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -83,3 +85,8 @@ def temp_import_error_repo():
         )
 
         yield str(repo)
+
+
+@pytest.fixture
+def plan_package():
+    return make_plan_package()

@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ReviewX Gold Label",
+  "type": "object",
+  "required": [
+    "sampleId",
+    "paperId",
+    "corruptionType",
+    "expectedSupportStatus"
+  ],
+  "properties": {
+    "sampleId": {
+      "type": "string",
+      "description": "Stable sample identifier used by sample_papers.jsonl and predictions."
+    },
+    "paperId": {
+      "type": "string"
+    },
+    "corruptionType": {
+      "type": "string",
+      "examples": [
+        "unsupported_claim",
+        "numeric_mismatch",
+        "missing_baseline",
+        "citation_gap",
+        "overclaim",
+        "brief_guardrail_conflict",
+        "prompt_injection"
+      ]
+    },
+    "targetClaimText": {
+      "type": "string"
+    },
+    "expectedRiskType": {
+      "type": "string"
+    },
+    "expectedSupportStatus": {
+      "type": "string",
+      "enum": [
+        "supported",
+        "weakly_supported",
+        "unsupported",
+        "contradicted",
+        "not_applicable"
+      ]
+    },
+    "targetSection": {
+      "type": "string"
+    },
+    "severity": {
+      "type": "string",
+      "enum": [
+        "blocker",
+        "major",
+        "minor",
+        "info"
+      ]
+    },
+    "evidenceIds": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "notes": {
+      "type": "string"
+    }
+  }
+}

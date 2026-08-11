@@ -1,0 +1,35 @@
+{
+  "schemaVersion": "scientific-research/v1",
+  "runId": "run_demo_001",
+  "questionId": "question_demo_001",
+  "codeRunId": "code_run_demo_001",
+  "status": "executed",
+  "dataHashes": {"questions.csv": "sha256:fixture-data"},
+  "environmentHash": "sha256:fixture-environment",
+  "codeHash": "sha256:fixture-code",
+  "method": "Paired comparison with fixed seeds.",
+  "baseline": "Generation without claim-level evidence binding.",
+  "metrics": [{
+    "name": "unsupported_claim_rate",
+    "value": 0.12,
+    "unit": "ratio",
+    "definition": "Unsupported claims divided by all factual claims.",
+    "split": "demo",
+    "sourcePath": "artifacts/code_run_demo_001/metrics.json"
+  }],
+  "logRefs": ["artifacts/code_run_demo_001/run.log"],
+  "artifactRefs": [{
+    "id": "artifact_metrics_001",
+    "kind": "metric",
+    "sourceModule": "code",
+    "uri": "artifacts/code_run_demo_001/metrics.json",
+    "contentHash": "sha256:fixture-metrics",
+    "version": "1",
+    "createdAt": "2026-08-05T08:10:00Z",
+    "metadata": {}
+  }],
+  "supportedClaims": ["claim_001"],
+  "unsupportedClaims": [],
+  "failures": [],
+  "durationSeconds": 287.4
+}

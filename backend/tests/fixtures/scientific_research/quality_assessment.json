@@ -1,0 +1,27 @@
+{
+  "schemaVersion": "scientific-research/v1",
+  "runId": "run_demo_001",
+  "questionId": "question_demo_001",
+  "gateStatus": "warn",
+  "dimensionScores": {
+    "evidence_grounding": 0.85,
+    "falsifiability": 0.9,
+    "reproducibility": 0.82,
+    "claim_support": 0.88
+  },
+  "findings": [{
+    "id": "finding_001",
+    "code": "LIMITED_EXTERNAL_VALIDITY",
+    "severity": "major",
+    "targetModule": "paper",
+    "fieldPath": "limitationsAndUncertainty",
+    "evidenceIds": [],
+    "description": "The result is demonstrated only on the fixture set.",
+    "suggestedFix": "Run the frozen multi-domain evaluation set and report confidence intervals."
+  }],
+  "ruleTrace": [{"rule": "executed_claim_has_metric", "status": "pass"}],
+  "llmTrace": [{"stage": "semantic_review", "requestId": "fixture-review-1"}],
+  "uncertainty": "The quality score is illustrative until human calibration is complete.",
+  "configVersion": "review-rubric/v1",
+  "reviewedAt": "2026-08-05T08:15:00Z"
+}

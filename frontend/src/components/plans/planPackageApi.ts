@@ -320,6 +320,8 @@ export interface PlanReadableStep {
   method: string
   outputs: Array<Record<string, string>>
   expected: Array<Record<string, string>>
+  inputFrom?: string[]
+  evidenceRefs?: PlanEvidenceRef[]
 }
 
 export interface PlanReadableStage {

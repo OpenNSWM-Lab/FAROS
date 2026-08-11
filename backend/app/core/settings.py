@@ -195,6 +195,14 @@ class Settings(BaseModel):
             timeout=300,
             extra_headers={}
         ),
+        "bailian": ProviderConfig(
+            base_url_env="BAILIAN_BASE_URL",
+            api_key_env="BAILIAN_API_KEY",
+            default_model="qwen-plus",
+            api_format="openai",
+            timeout=300,
+            extra_headers={}
+        ),
         "bigmodel": ProviderConfig(
             base_url_env="BIGMODEL_BASE_URL",
             api_key_env="BIGMODEL_API_KEY",

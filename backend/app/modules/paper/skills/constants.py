@@ -7,6 +7,7 @@ VENUE_CONFIGS = {
     "iclr": {"name": "ICLR", "bibstyle": "iclr2025_conference", "docclass_opts": ""},
     "acl": {"name": "ACL", "bibstyle": "acl_natbib", "docclass_opts": ""},
     "generic": {"name": "Generic", "bibstyle": "plainnat", "docclass_opts": "12pt"},
+    "challenge_cup": {"name": "挑战杯模版", "bibstyle": "plainnat", "docclass_opts": "12pt"},
 }
 
 PAPER_TYPES = [

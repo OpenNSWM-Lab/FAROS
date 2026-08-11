@@ -1,0 +1,25 @@
+{
+  "schemaVersion": "scientific-research/v1",
+  "questionSetId": "question_set_demo_001",
+  "name": "Contract fixture questions",
+  "version": "1",
+  "source": "FAROS contract tests",
+  "contentHash": "sha256:fixture-question-set",
+  "questions": [{
+    "id": "question_demo_001",
+    "text": "How can evidence-grounded agents reduce unsupported scientific claims?",
+    "language": "en",
+    "domainHint": "AI for science",
+    "constraints": ["Use verifiable sources"],
+    "source": "contract fixture",
+    "metadata": {}
+  }, {
+    "id": "question_demo_002",
+    "text": "How should uncertainty be propagated across a scientific workflow?",
+    "language": "en",
+    "domainHint": "AI for science",
+    "constraints": ["Keep module-level provenance"],
+    "source": "contract fixture",
+    "metadata": {}
+  }]
+}

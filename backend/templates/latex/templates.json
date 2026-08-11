@@ -33,5 +33,25 @@
     "description": "Clean fallback article template",
     "sections": ["Introduction", "Related Work", "Method", "Experiments", "Results", "Conclusion"],
     "bibStyle": "plainnat"
+  },
+  {
+    "id": "challenge_cup",
+    "name": "挑战杯模版",
+    "description": "中文科学假设与研究计划模板，覆盖问题、思路、技术、数据、实验和参考文献字段",
+    "sections": [
+      "待研究问题",
+      "解决思路",
+      "必要的技术手段",
+      "数据集",
+      "Source",
+      "Target",
+      "标题",
+      "摘要",
+      "方法论",
+      "实验设计",
+      "实验结果",
+      "参考论文"
+    ],
+    "bibStyle": "plainnat"
   }
 ]

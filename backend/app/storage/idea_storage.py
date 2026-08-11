@@ -5,6 +5,7 @@ Provides file-based storage for idea sessions, literature items, and candidates.
 Follows append-only pattern for scientific integrity.
 """
 
+import hashlib
 import json
 import os
 import time
@@ -358,6 +359,18 @@ class RawPaperStorage:
 
         return paper
 
+    def update(self, paper: RawPaper) -> RawPaper:
+        """Atomically update an existing raw paper."""
+        path = self._get_path(paper.id)
+        if not path.exists():
+            raise ValueError(f"RawPaper {paper.id} not found")
+
+        data = paper.model_dump()
+        data['createdAt'] = data['createdAt'].isoformat() if isinstance(data['createdAt'], datetime) else data['createdAt']
+        _write_json_atomic(path, data, default=str)
+
+        return paper
+
     def get(self, paper_id: str) -> Optional[RawPaper]:
         """Get raw paper by ID."""
         path = self._get_path(paper_id)
@@ -510,6 +523,289 @@ class StructuredPaperStorage:
         return sorted(papers, key=lambda p: p.createdAt, reverse=True)
 
 
+def _normalize_cache_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, list):
+        value = " ".join(str(item) for item in value)
+    return " ".join(str(value).lower().split())
+
+
+class StructuredPaperCacheStorage:
+    """Global trusted cache for DeepReader StructuredPaper outputs.
+
+    The cache stores LLM-derived paper understanding as an invalidatable
+    derivative of raw paper text. Callers must still validate schema/prompt
+    versions and ignore suspect entries.
+    """
+
+    def __init__(self, data_dir: str = "data"):
+        self.base_path = Path(data_dir) / "cache" / "structured_papers"
+        self.base_path.mkdir(parents=True, exist_ok=True)
+
+    def raw_paper_identity(self, raw_paper: RawPaper) -> Dict[str, Any]:
+        for kind, value in [
+            ("doi", raw_paper.doi),
+            ("arxivId", raw_paper.arxivId),
+            ("semanticScholarId", raw_paper.semanticScholarId),
+            ("openalexId", raw_paper.openalexId),
+        ]:
+            normalized = _normalize_cache_text(value)
+            if normalized:
+                return {"kind": kind, "value": normalized}
+
+        title = _normalize_cache_text(raw_paper.title)
+        if title:
+            return {
+                "kind": "title_year",
+                "title": title,
+                "year": raw_paper.year,
+            }
+
+        return {
+            "kind": "metadata_fingerprint",
+            "abstract": _normalize_cache_text(raw_paper.abstract)[:500],
+            "url": _normalize_cache_text(raw_paper.url),
+        }
+
+    def raw_paper_hash(self, raw_paper: RawPaper) -> str:
+        payload = self.raw_paper_identity(raw_paper)
+        serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+    def cache_key_for_hash(self, raw_paper_hash: str) -> str:
+        return f"spc_{raw_paper_hash[:24]}"
+
+    def cache_key_for_raw_paper(self, raw_paper: RawPaper) -> str:
+        return self.cache_key_for_hash(self.raw_paper_hash(raw_paper))
+
+    def _get_path(self, cache_key: str) -> Path:
+        return self.base_path / f"{cache_key}.json"
+
+    def _source_trace(self, structured_paper: StructuredPaper) -> Dict[str, Any]:
+        return {
+            "claims": [
+                {
+                    "claimId": claim.claimId,
+                    "text": claim.text,
+                    "snippet": claim.evidenceSpan,
+                }
+                for claim in structured_paper.claims
+                if claim.evidenceSpan
+            ],
+            "limitations": [
+                {"text": item, "snippet": item}
+                for item in structured_paper.limitations
+                if item
+            ],
+            "methodWeaknesses": [
+                {"text": item, "snippet": item}
+                for item in structured_paper.methodWeaknesses
+                if item
+            ],
+            "missingEvaluation": [
+                {"text": item, "snippet": item}
+                for item in structured_paper.missingEvaluation
+                if item
+            ],
+            "baselineMethods": [
+                {"text": item, "snippet": item}
+                for item in structured_paper.baselineMethods
+                if item
+            ],
+            "recommendedMetrics": [
+                {"text": item, "snippet": item}
+                for item in structured_paper.recommendedMetrics
+                if item
+            ],
+        }
+
+    def put(
+        self,
+        *,
+        raw_paper: RawPaper,
+        structured_paper: StructuredPaper,
+        schema_version: str,
+        prompt_version: str,
+        model: str,
+    ) -> str:
+        raw_hash = self.raw_paper_hash(raw_paper)
+        cache_key = self.cache_key_for_hash(raw_hash)
+        now = datetime.now().isoformat()
+        data = {
+            "cacheKey": cache_key,
+            "rawPaperHash": raw_hash,
+            "rawPaperIdentity": {
+                "cacheIdentity": self.raw_paper_identity(raw_paper),
+                "title": raw_paper.title,
+                "doi": raw_paper.doi,
+                "arxivId": raw_paper.arxivId,
+                "semanticScholarId": raw_paper.semanticScholarId,
+                "openalexId": raw_paper.openalexId,
+                "url": raw_paper.url,
+            },
+            "schemaVersion": schema_version,
+            "promptVersion": prompt_version,
+            "model": model,
+            "status": "valid",
+            "confidence": structured_paper.extractionConfidence,
+            "sourceTrace": self._source_trace(structured_paper),
+            "structuredPaper": structured_paper.model_dump(),
+            "createdAt": now,
+            "updatedAt": now,
+        }
+        structured = data["structuredPaper"]
+        if structured.get("createdAt") and isinstance(structured["createdAt"], datetime):
+            structured["createdAt"] = structured["createdAt"].isoformat()
+        _write_json_atomic(self._get_path(cache_key), data, default=str)
+        return cache_key
+
+    def get_entry(self, cache_key: str) -> Optional[Dict[str, Any]]:
+        path = self._get_path(cache_key)
+        if not path.exists():
+            return None
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+
+    def get_valid(
+        self,
+        *,
+        raw_paper: RawPaper,
+        schema_version: str,
+        prompt_version: str,
+        model: str,
+    ) -> Optional[Dict[str, Any]]:
+        cache_key = self.cache_key_for_raw_paper(raw_paper)
+        data = self.get_entry(cache_key)
+        if not data:
+            return None
+        if data.get("status") != "valid":
+            return None
+        if data.get("rawPaperHash") != self.raw_paper_hash(raw_paper):
+            return None
+        if data.get("schemaVersion") != schema_version:
+            return None
+        if data.get("promptVersion") != prompt_version:
+            return None
+        if data.get("model") != model:
+            return None
+        return data
+
+    def mark_status(self, cache_key: str, status: str, *, reason: str = "") -> None:
+        data = self.get_entry(cache_key)
+        if not data:
+            return
+        data["status"] = status
+        data["statusReason"] = reason
+        data["updatedAt"] = datetime.now().isoformat()
+        _write_json_atomic(self._get_path(cache_key), data, default=str)
+
+
+class LLMTaskCacheStorage:
+    """Content-addressed cache for deterministic LLM subtask outputs."""
+
+    def __init__(self, data_dir: str = "data"):
+        self.base_path = Path(data_dir) / "cache" / "llm_tasks"
+        self.base_path.mkdir(parents=True, exist_ok=True)
+
+    def input_hash(self, payload: Dict[str, Any]) -> str:
+        serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+        return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+    def cache_key(
+        self,
+        *,
+        task_type: str,
+        prompt_version: str,
+        model: str,
+        input_hash: str,
+    ) -> str:
+        key_payload = json.dumps({
+            "taskType": task_type,
+            "promptVersion": prompt_version,
+            "model": model,
+            "inputHash": input_hash,
+        }, sort_keys=True)
+        return f"llmt_{hashlib.sha256(key_payload.encode('utf-8')).hexdigest()[:24]}"
+
+    def _get_path(self, cache_key: str) -> Path:
+        return self.base_path / f"{cache_key}.json"
+
+    def get_valid(
+        self,
+        *,
+        task_type: str,
+        prompt_version: str,
+        model: str,
+        input_payload: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        input_hash = self.input_hash(input_payload)
+        cache_key = self.cache_key(
+            task_type=task_type,
+            prompt_version=prompt_version,
+            model=model,
+            input_hash=input_hash,
+        )
+        path = self._get_path(cache_key)
+        if not path.exists():
+            return None
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if data.get("status") != "valid":
+            return None
+        if data.get("taskType") != task_type:
+            return None
+        if data.get("promptVersion") != prompt_version:
+            return None
+        if data.get("model") != model:
+            return None
+        if data.get("inputHash") != input_hash:
+            return None
+        return data
+
+    def put(
+        self,
+        *,
+        task_type: str,
+        prompt_version: str,
+        model: str,
+        input_payload: Dict[str, Any],
+        result: Dict[str, Any],
+    ) -> str:
+        input_hash = self.input_hash(input_payload)
+        cache_key = self.cache_key(
+            task_type=task_type,
+            prompt_version=prompt_version,
+            model=model,
+            input_hash=input_hash,
+        )
+        now = datetime.now().isoformat()
+        data = {
+            "cacheKey": cache_key,
+            "taskType": task_type,
+            "promptVersion": prompt_version,
+            "model": model,
+            "inputHash": input_hash,
+            "status": "valid",
+            "result": result,
+            "createdAt": now,
+            "updatedAt": now,
+        }
+        _write_json_atomic(self._get_path(cache_key), data, default=str)
+        return cache_key
+
+    def mark_status(self, cache_key: str, status: str, *, reason: str = "") -> None:
+        path = self._get_path(cache_key)
+        if not path.exists():
+            return
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        data["status"] = status
+        data["statusReason"] = reason
+        data["updatedAt"] = datetime.now().isoformat()
+        _write_json_atomic(path, data, default=str)
+
+
 # =============================================================================
 # Dual-Graph Storage: LiteratureMap Storage
 # =============================================================================
@@ -635,6 +931,8 @@ class HandoffStorage:
 _raw_paper_storage: Optional[RawPaperStorage] = None
 _graph_storage: Optional[LiteratureGraphStorage] = None
 _structured_storage: Optional[StructuredPaperStorage] = None
+_structured_cache_storage: Optional[StructuredPaperCacheStorage] = None
+_llm_task_cache_storage: Optional[LLMTaskCacheStorage] = None
 _map_storage: Optional[LiteratureMapStorage] = None
 _handoff_storage: Optional[HandoffStorage] = None
 
@@ -658,6 +956,20 @@ def get_structured_paper_storage() -> StructuredPaperStorage:
     if _structured_storage is None:
         _structured_storage = StructuredPaperStorage(_get_data_dir())
     return _structured_storage
+
+
+def get_structured_paper_cache_storage() -> StructuredPaperCacheStorage:
+    global _structured_cache_storage
+    if _structured_cache_storage is None:
+        _structured_cache_storage = StructuredPaperCacheStorage(_get_data_dir())
+    return _structured_cache_storage
+
+
+def get_llm_task_cache_storage() -> LLMTaskCacheStorage:
+    global _llm_task_cache_storage
+    if _llm_task_cache_storage is None:
+        _llm_task_cache_storage = LLMTaskCacheStorage(_get_data_dir())
+    return _llm_task_cache_storage
 
 
 def get_literature_map_storage() -> LiteratureMapStorage:

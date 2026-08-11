@@ -42,6 +42,7 @@ from app.models.plan_package import (
     PlanStep,
 )
 from app.services.plan_package_templates import get_plan_template
+from app.services.plan_package_specificity import hypothesis_is_falsifiable
 from app.storage.plan_package_storage import generate_plan_package_id
 
 
@@ -165,6 +166,296 @@ def _paper_relevance(
     else:
         reason = "No visible overlap with the selected idea topic anchors."
     return round(score, 3), signals[:12], reason
+
+
+def _clean_metric_name(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"\s+", " ", text)
+    text = text.strip(" .;:,")
+    lowered = text.lower()
+    if not text:
+        return ""
+    if len(text) > 72:
+        return ""
+    if len(text.split()) > 7:
+        return ""
+    if lowered.startswith(("the paper claims", "this paper claims", "we show", "we demonstrate")):
+        return ""
+    if any(marker in lowered for marker in [" q/v ", "attention projection", "vendi score"]):
+        return ""
+    return text
+
+
+def _metric_topic_score(metric: str, anchors: List[str]) -> float:
+    if not metric:
+        return 0.0
+    lowered = metric.lower().replace("-", " ")
+    metric_tokens = {
+        token
+        for token in re.findall(r"[a-zA-Z][a-zA-Z0-9]{2,}|[\u4e00-\u9fff]{2,}", lowered)
+        if token not in _RELEVANCE_STOPWORDS
+    }
+    anchor_hits = sum(1 for anchor in anchors[:18] if anchor in lowered)
+    scientific_metric_hits = sum(
+        1
+        for keyword in [
+            "accuracy", "faithfulness", "faithful", "citation", "refusal", "abstention",
+            "traceability", "provenance", "hallucination", "robustness", "latency",
+            "cost", "precision", "recall", "auc", "f1", "score",
+        ]
+        if keyword in lowered
+    )
+    if anchor_hits:
+        return min(1.0, 0.45 + 0.2 * anchor_hits + 0.1 * scientific_metric_hits)
+    if metric_tokens and any(token in anchors for token in metric_tokens):
+        return 0.55
+    return min(0.4, 0.12 * scientific_metric_hits)
+
+
+def _extract_metric_names_from_text(text: str) -> List[str]:
+    lowered = (text or "").lower().replace("-", " ")
+    candidates: List[str] = []
+    phrase_map = [
+        ("citation faithfulness", "citation faithfulness"),
+        ("citation fidelity", "citation faithfulness"),
+        ("attribution precision", "attribution precision"),
+        ("refusal accuracy", "refusal accuracy"),
+        ("abstention accuracy", "refusal accuracy"),
+        ("evidence traceability", "evidence traceability"),
+        ("traceability score", "evidence traceability"),
+        ("hallucination rate", "hallucination rate"),
+        ("citation correctness", "citation correctness"),
+        ("answer accuracy", "answer accuracy"),
+        ("precision", "precision"),
+        ("recall", "recall"),
+        ("f1", "F1"),
+        ("latency", "latency"),
+        ("throughput", "throughput"),
+        ("cost", "cost"),
+        ("robustness", "robustness"),
+    ]
+    for needle, metric in phrase_map:
+        if needle in lowered and metric not in candidates:
+            candidates.append(metric)
+    return candidates
+
+
+def _planned_validation_metrics(
+    *,
+    candidate: IdeaCandidate,
+    literature_survey: PlanLiteratureSurvey,
+    literature_map: Optional[LiteratureMap],
+    template_metrics: List[str],
+    limit: int = 8,
+) -> List[str]:
+    anchors = _topic_anchors(candidate, literature_map)
+    metrics: List[str] = []
+
+    def add(value: Any, *, require_relevance: bool = False) -> None:
+        metric = _clean_metric_name(value)
+        if not metric:
+            return
+        if require_relevance and _metric_topic_score(metric, anchors) < 0.45:
+            return
+        if metric not in metrics:
+            metrics.append(metric)
+
+    for metric in candidate.expectedMetrics:
+        add(metric)
+    for experiment in [*(candidate.experimentSpecs or []), *(candidate.requiredExperiments or [])]:
+        for metric in experiment.metrics:
+            add(metric)
+
+    if not metrics:
+        relevant_papers = []
+        for paper in literature_survey.papers:
+            score, _, _ = _paper_relevance(
+                title=paper.title,
+                summary=paper.summary,
+                methods=paper.methods,
+                findings=paper.findings,
+                limitations=paper.limitations,
+                claims=paper.claims,
+                anchors=anchors,
+            )
+            if score >= 0.45:
+                relevant_papers.append(paper)
+        for paper in relevant_papers:
+            for claim in paper.claims[:4]:
+                claim_type = str(claim.get("claimType", "")).lower() if isinstance(claim, dict) else ""
+                text = str(claim.get("text", "")) if isinstance(claim, dict) else str(claim)
+                if claim_type == "metric":
+                    extracted = _extract_metric_names_from_text(text)
+                    for metric in extracted:
+                        add(metric, require_relevance=True)
+
+    if not metrics and _seed_mentions_rag_safety_text(" ".join(anchors)):
+        for metric in ["citation faithfulness", "refusal accuracy", "evidence traceability"]:
+            add(metric)
+    if not metrics:
+        for metric in template_metrics:
+            add(metric)
+    return metrics[:limit] or ["primary_metric"]
+
+
+def _planned_metric_target(metric: str) -> str:
+    lowered = metric.lower()
+    if any(
+        term in lowered
+        for term in ["latency", "cost", "error", "failure", "violation", "hallucination"]
+    ):
+        return "<= strongest baseline under the same evaluation protocol"
+    if any(
+        term in lowered
+        for term in [
+            "agreement",
+            "accuracy",
+            "faithfulness",
+            "coverage",
+            "recall",
+            "precision",
+            "score",
+            "rate",
+            "throughput",
+        ]
+    ):
+        return ">= strongest baseline with a positive mean delta on the preregistered split"
+    return "mean_delta versus strongest baseline must be positive on the preregistered primary evaluation"
+
+
+def _planned_baseline_methods(
+    candidate: IdeaCandidate,
+    literature_survey: PlanLiteratureSurvey,
+) -> List[str]:
+    names: List[str] = []
+    for prior in candidate.closestPriorWork or []:
+        name = _first_text_value(
+            _get(prior, "method", ""),
+            _get(prior, "name", ""),
+            _get(prior, "title", ""),
+        )
+        if name:
+            names.append(name)
+
+    for paper in sorted(
+        literature_survey.papers,
+        key=lambda item: item.relevanceScore,
+        reverse=True,
+    ):
+        paper_names: List[str] = []
+        for method in paper.methods:
+            name = _first_text_value(
+                _get(method, "name", ""),
+                _get(method, "method", ""),
+            )
+            role_text = " ".join(
+                [
+                    str(_get(method, "role", "")),
+                    str(_get(method, "description", "")),
+                ]
+            ).lower()
+            if name and any(
+                term in role_text for term in ["baseline", "control", "comparison"]
+            ):
+                paper_names.append(name)
+        if paper.role == "baseline" and not paper_names:
+            paper_names.append(paper.title)
+        names.extend(paper_names)
+        if names:
+            break
+    return _unique(names)[:5]
+
+
+def _strengthen_plan_hypothesis(
+    hypothesis: str,
+    *,
+    primary_metric: str,
+    baseline_label: str,
+    paper_type: str,
+) -> str:
+    base = hypothesis.strip().rstrip(".")
+    if paper_type == "survey" or hypothesis_is_falsifiable(base):
+        return hypothesis.strip()
+    return (
+        f"{base}. Relative to {baseline_label}, this predicts a positive improvement "
+        f"in the primary metric {primary_metric}; reject the hypothesis if the mean "
+        "delta is not positive on the preregistered primary evaluation."
+    )
+
+
+def _deterministic_plan_core(
+    *,
+    candidate: IdeaCandidate,
+    literature_survey: PlanLiteratureSurvey,
+    paper_type: str,
+    hypothesis: str = "",
+) -> tuple[str, str]:
+    template = get_plan_template(paper_type)
+    metrics = _planned_validation_metrics(
+        candidate=candidate,
+        literature_survey=literature_survey,
+        literature_map=None,
+        template_metrics=template.recommendedMetrics,
+    )
+    primary_metric = metrics[0]
+    baselines = _planned_baseline_methods(candidate, literature_survey)
+    baseline_label = (
+        ", ".join(baselines)
+        if baselines
+        else "the strongest eligible baseline from investigated prior work"
+    )
+    question = (
+        f"Can {candidate.title} improve {primary_metric} over {baseline_label} "
+        f"for the bounded problem: {candidate.problem}?"
+    )
+    hypothesis = _strengthen_plan_hypothesis(
+        hypothesis or _candidate_hypothesis(candidate),
+        primary_metric=primary_metric,
+        baseline_label=baseline_label,
+        paper_type=template.paperType,
+    )
+    return question, hypothesis
+
+
+def _seed_mentions_rag_safety_text(text: str) -> bool:
+    lowered = text.lower()
+    return (
+        "rag" in lowered
+        and any(term in lowered for term in ["citation", "faithfulness", "faithful", "引用"])
+        and any(term in lowered for term in ["refusal", "abstention", "拒答", "traceability", "provenance", "可追踪"])
+    )
+
+
+def _is_placeholder_novelty(value: str) -> bool:
+    lowered = (value or "").lower()
+    return (
+        not lowered.strip()
+        or "needs to be contrasted" in lowered
+        or "llm analysis unavailable" in lowered
+        or "heuristic review" in lowered
+        or len(lowered.split()) < 8
+    )
+
+
+def _specific_novelty_basis(candidate: IdeaCandidate, gap: PlanGap, principle: PlanPrinciple) -> str:
+    selected_gap = next(
+        (item for item in gap.items if item.id == gap.selectedGapId),
+        gap.items[0] if gap.items else None,
+    )
+    mechanism = _first_text_value(principle.mechanism, candidate.proposedMethod, candidate.keyInsight)
+    gap_text = selected_gap.unresolvedIssue if selected_gap else gap.summary
+    validation_needs = selected_gap.validationNeeds if selected_gap else []
+    validation_clause = (
+        f" It is validated through {', '.join(validation_needs[:4])}."
+        if validation_needs
+        else ""
+    )
+    return (
+        "The contribution differs from prior work by binding the proposed mechanism to the selected unresolved gap: "
+        f"{gap_text.rstrip('.')}. The method operationalizes this through: {mechanism.rstrip('.')}.{validation_clause}"
+    )
 
 
 def _safe_id(value: Any) -> str:
@@ -331,6 +622,38 @@ def build_literature_survey(
         methods = [_method_dict(method) for method in sp.methods]
         findings = [_finding_dict(finding) for finding in sp.findings]
         claims = [_claim_dict(claim) for claim in sp.claims]
+        existing_method_names = {
+            str(method.get("name", "")).strip().lower()
+            for method in methods
+            if isinstance(method, dict)
+        }
+        for baseline in _unique([*sp.baselines, *sp.baselineMethods]):
+            if baseline.lower() in existing_method_names:
+                continue
+            methods.append(
+                {
+                    "name": baseline,
+                    "description": "Deep-reader recommended comparison method.",
+                    "role": "baseline",
+                }
+            )
+            existing_method_names.add(baseline.lower())
+        existing_metric_text = {
+            str(claim.get("text", "")).strip().lower()
+            for claim in claims
+            if isinstance(claim, dict)
+        }
+        for metric in _unique([*sp.metrics, *sp.recommendedMetrics]):
+            if metric.lower() in existing_metric_text:
+                continue
+            claims.append(
+                {
+                    "text": metric,
+                    "claimType": "metric",
+                    "source": "deep_reader_recommendation",
+                }
+            )
+            existing_metric_text.add(metric.lower())
         relevance_score, relevance_signals, relevance_reason = _paper_relevance(
             title=sp.title,
             summary=summary,
@@ -808,20 +1131,96 @@ def build_default_stages(
     max_steps_per_stage: int = 3,
 ) -> List[PlanStage]:
     template = get_plan_template(paper_type)
-    metrics = candidate.expectedMetrics or []
-    if not metrics:
-        for paper in literature_survey.papers:
-            for method_metric in paper.claims[:2]:
-                text = str(method_metric.get("text", "") or method_metric.get("claimType", ""))
-                if "metric" in text.lower():
-                    metrics.append(text[:80])
-        metrics = metrics or template.recommendedMetrics or ["primary_metric"]
+    metrics = _planned_validation_metrics(
+        candidate=candidate,
+        literature_survey=literature_survey,
+        literature_map=None,
+        template_metrics=template.recommendedMetrics,
+    )
+    baseline_methods = _planned_baseline_methods(candidate, literature_survey)
+    baseline_label = (
+        ", ".join(baseline_methods)
+        if baseline_methods
+        else "a frozen baseline selected from the closest investigated prior work"
+    )
 
     evidence_refs = [
         PlanEvidenceRef(type="paper", id=paper.paperId, source=paper.source)
         for paper in literature_survey.papers[:3]
     ]
     primary_output_prefix = candidate.title.lower().replace(" ", "_")[:40] or "plan"
+    candidate_title = " ".join(candidate.title.split())[:160] or "selected idea"
+    candidate_method = " ".join(
+        (candidate.proposedMethod or candidate.keyInsight or principle.mechanism).split()
+    )[:600]
+    stage_step_limit = max_steps_per_stage if max_stages >= 3 else max(3, max_steps_per_stage)
+
+    def partition(items: List[Any], count: int) -> List[List[Any]]:
+        count = min(max(1, count), len(items))
+        return [
+            items[index * len(items) // count:(index + 1) * len(items) // count]
+            for index in range(count)
+        ]
+
+    def merge_step_group(
+        selected_steps: List[PlanStep],
+        *,
+        stage_index: int,
+        step_index: int,
+    ) -> PlanStep:
+        return PlanStep(
+            id=f"step-{stage_index}-{step_index}",
+            order=step_index,
+            title=" + ".join(step.title for step in selected_steps),
+            desc=" ".join(step.desc for step in selected_steps if step.desc),
+            method=" ".join(step.method for step in selected_steps if step.method),
+            inputFrom=[],
+            outputs=[output.model_copy(deep=True) for step in selected_steps for output in step.outputs],
+            expected=[metric.model_copy(deep=True) for step in selected_steps for metric in step.expected],
+            evidenceRefs=[ref.model_copy(deep=True) for step in selected_steps for ref in step.evidenceRefs],
+            codeHints={key: value for step in selected_steps for key, value in step.codeHints.items()},
+        )
+
+    def fit_constrained_stages(source_stages: List[PlanStage]) -> List[PlanStage]:
+        if max_stages >= 3:
+            return source_stages[:max_stages]
+
+        fitted: List[PlanStage] = []
+        for stage_index, stage_group in enumerate(
+            partition(source_stages, max(1, max_stages)),
+            start=1,
+        ):
+            source_steps = [step for stage in stage_group for step in stage.steps]
+            step_groups = partition(source_steps, min(max(1, max_steps_per_stage), len(source_steps)))
+            base_title = " + ".join(stage.title for stage in stage_group)
+            fitted.append(
+                PlanStage(
+                    id=f"stage-{stage_index}",
+                    order=stage_index,
+                    title=f"{base_title}: {candidate_title}",
+                    goal=" ".join(stage.goal for stage in stage_group if stage.goal),
+                    method=(
+                        " ".join(stage.method for stage in stage_group if stage.method)
+                        + f" Apply the selected mechanism: {candidate_method}."
+                    ).strip(),
+                    dependsOn=[f"stage-{stage_index - 1}"] if stage_index > 1 else [],
+                    steps=[
+                        merge_step_group(
+                            step_group,
+                            stage_index=stage_index,
+                            step_index=step_index,
+                        )
+                        for step_index, step_group in enumerate(step_groups, start=1)
+                    ],
+                )
+            )
+
+        previous_step_id = ""
+        for stage in fitted:
+            for step in stage.steps:
+                step.inputFrom = [previous_step_id] if previous_step_id else []
+                previous_step_id = step.id
+        return fitted
 
     if template.paperType == "survey":
         stages = [
@@ -855,7 +1254,7 @@ def build_default_stages(
                         expected=[PlanExpectedMetric(metric="comparison_dimension_count", target=">= 3", desc="At least three useful comparison dimensions are defined.")],
                         evidenceRefs=[PlanEvidenceRef(type="gap", id=gap.selectedGapId, source="idea_gap")],
                     ),
-                ][:max_steps_per_stage],
+                ][:stage_step_limit],
             ),
             PlanStage(
                 id="stage-2",
@@ -886,7 +1285,7 @@ def build_default_stages(
                         outputs=[PlanOutput(type="chart", name="taxonomy_and_gap_figure.png", desc="Planned survey taxonomy or trend figure", requiredFor=["paper"])],
                         expected=[PlanExpectedMetric(metric="survey_artifact_count", target=">= 2", desc="Taxonomy and comparison artifacts are planned.")],
                     ),
-                ][:max_steps_per_stage],
+                ][:stage_step_limit],
             ),
             PlanStage(
                 id="stage-3",
@@ -906,10 +1305,10 @@ def build_default_stages(
                         outputs=[PlanOutput(type="checkpoint", name="survey_quality_gate.json", desc="Survey handoff validation status", requiredFor=["review"])],
                         expected=[PlanExpectedMetric(metric="schema_valid", target="true", desc="Package satisfies survey handoff requirements.")],
                     )
-                ][:max_steps_per_stage],
+                ][:stage_step_limit],
             ),
         ]
-        return stages[:max_stages]
+        return fit_constrained_stages(stages)
 
     if template.paperType == "benchmark":
         stages = [
@@ -949,7 +1348,7 @@ def build_default_stages(
                         ],
                         evidenceRefs=evidence_refs,
                     ),
-                ][:max_steps_per_stage],
+                ][:stage_step_limit],
             ),
             PlanStage(
                 id="stage-2",
@@ -979,7 +1378,7 @@ def build_default_stages(
                         outputs=[PlanOutput(type="metrics", name="evaluation_protocol.json", desc="Metric definitions and scoring protocol", requiredFor=["validation", "paper"])],
                         expected=[PlanExpectedMetric(metric="metric_count", target=">= 2", desc="Benchmark has at least two complementary metrics or checks.")],
                     ),
-                ][:max_steps_per_stage],
+                ][:stage_step_limit],
             ),
             PlanStage(
                 id="stage-3",
@@ -999,10 +1398,10 @@ def build_default_stages(
                         outputs=[PlanOutput(type="table", name="quality_slice_checks.csv", desc="Quality, leakage, bias, and slice checks", requiredFor=["validation", "review"])],
                         expected=[PlanExpectedMetric(metric="quality_check_count", target=">= 2", desc="At least two quality or bias checks are planned.")],
                     )
-                ][:max_steps_per_stage],
+                ][:stage_step_limit],
             ),
         ]
-        return stages[:max_stages]
+        return fit_constrained_stages(stages)
 
     stages = [
         PlanStage(
@@ -1028,8 +1427,14 @@ def build_default_stages(
                     id="step-1-2",
                     order=2,
                     title="Select implementation gap and baseline scope",
-                    desc="Confirm the selected GAP, record supporting papers or graph signals, and define the baseline/control methods for downstream comparison.",
-                    method="Use gap.items[], evidenceTrace, closestPriorWork, and literatureSurvey roles to bind the gap to evidence IDs and fair baselines.",
+                    desc=(
+                        "Confirm the selected GAP, record supporting papers or graph signals, "
+                        f"and define {baseline_label} for downstream comparison."
+                    ),
+                    method=(
+                        "Use gap.items[], evidenceTrace, closestPriorWork, and literatureSurvey "
+                        f"roles to bind the gap to evidence IDs and compare against {baseline_label}."
+                    ),
                     inputFrom=["step-1-1"],
                     outputs=[
                         PlanOutput(type="checkpoint", name="selected_gap.json", desc="Selected gap and supporting evidence", requiredFor=["review"]),
@@ -1045,29 +1450,43 @@ def build_default_stages(
                     id="step-1-3",
                     order=3,
                     title="Define baseline comparison scope",
-                    desc="List the baseline or control methods that downstream validation should compare against the proposed idea.",
-                    method="Use closestPriorWork, literatureSurvey roles, and selected GAP evidence to define fair comparison groups.",
+                    desc=(
+                        "Freeze the comparison scope around "
+                        f"{baseline_label} before downstream validation."
+                    ),
+                    method=(
+                        "Use closestPriorWork, literatureSurvey roles, and selected GAP evidence "
+                        f"to define matched settings for {baseline_label}."
+                    ),
                     inputFrom=["step-1-2"],
                     outputs=[PlanOutput(type="table", name="baseline_comparison_scope.csv", desc="Baseline/control methods and comparison rationale", requiredFor=["validation", "paper", "review"])],
                     expected=[PlanExpectedMetric(metric="baseline_count", target=">= 1", desc="At least one baseline or control comparison is declared.")],
                     evidenceRefs=evidence_refs or [PlanEvidenceRef(type="gap", id=gap.selectedGapId, source="idea_gap")],
                 ),
-            ][:max_steps_per_stage],
+            ][:stage_step_limit],
         ),
         PlanStage(
             id="stage-2",
             order=2,
-            title="Method and Principle Specification",
-            goal="Turn the selected idea into an implementation-ready method specification.",
-            method="Use the candidate proposed method, reasoning path, and prior-work differences to specify the principle.",
+            title=f"Method Specification: {candidate_title}",
+            goal=f"Turn {candidate_title} into an implementation-ready method specification.",
+            method=(
+                f"Specify the candidate mechanism ({candidate_method}) using the reasoning path "
+                "and prior-work differences."
+            ),
             dependsOn=["stage-1"],
             steps=[
                 PlanStep(
                     id="step-2-1",
                     order=1,
                     title="Write mechanism specification",
-                    desc="Describe how the proposed method works and why it addresses the selected gap.",
-                    method="Use principle.mechanism, principle.reasoningPath, and graph grounding IDs.",
+                    desc=(
+                        f"Describe how {candidate_title} works and why its mechanism addresses the selected gap."
+                    ),
+                    method=(
+                        f"Ground the mechanism ({candidate_method}) in principle.mechanism, "
+                        "principle.reasoningPath, and graph grounding IDs."
+                    ),
                     inputFrom=["step-1-2"],
                     outputs=[PlanOutput(type="report", name="method_principle.md", desc="Mechanism and novelty claim", requiredFor=["paper", "code"])],
                     expected=[PlanExpectedMetric(metric="reasoning_path_steps", target=f">= {max(1, len(principle.reasoningPath))}", desc="Principle is grounded in a reasoning path or explicit fallback.")],
@@ -1084,7 +1503,7 @@ def build_default_stages(
                     expected=[PlanExpectedMetric(metric="artifact_contracts", target=">= 1", desc="At least one code-facing artifact is specified.")],
                     codeHints={"source": "PlanPackage.stages"},
                 ),
-            ][:max_steps_per_stage],
+            ][:stage_step_limit],
         ),
         PlanStage(
             id="stage-3",
@@ -1099,11 +1518,18 @@ def build_default_stages(
                     order=1,
                     title="Specify validation metrics",
                     desc="Define planned metrics and target criteria for downstream validation.",
-                    method="Use candidate expected metrics and literature-derived baselines when available.",
+                    method=(
+                        "Use candidate expected metrics and compare every primary outcome against "
+                        f"{baseline_label} under the same evaluation protocol."
+                    ),
                     inputFrom=["step-2-2"],
                     outputs=[PlanOutput(type="metrics", name="validation_metrics.json", desc="Planned metrics and target values", requiredFor=["validation", "paper"])],
                     expected=[
-                        PlanExpectedMetric(metric=str(metric), target="specified before implementation", desc="Pre-registered expected metric.")
+                        PlanExpectedMetric(
+                            metric=str(metric),
+                            target=_planned_metric_target(str(metric)),
+                            desc="Pre-registered expected metric.",
+                        )
                         for metric in metrics[:5]
                     ],
                 ),
@@ -1137,7 +1563,7 @@ def build_default_stages(
                     ],
                     expected=[PlanExpectedMetric(metric="reportable_artifacts", target=">= 2", desc="At least one table and one chart are planned.")],
                 ),
-            ][:max_steps_per_stage],
+            ][:stage_step_limit],
         ),
         PlanStage(
             id="stage-4",
@@ -1157,10 +1583,10 @@ def build_default_stages(
                     outputs=[PlanOutput(type="checkpoint", name="quality_gate.json", desc="PlanPackage validation status", requiredFor=["review"])],
                     expected=[PlanExpectedMetric(metric="schema_valid", target="true", desc="Package satisfies the hard output schema.")],
                 )
-            ][:max_steps_per_stage],
+            ][:stage_step_limit],
         ),
     ]
-    return stages[:max_stages]
+    return fit_constrained_stages(stages)
 
 
 def build_contribution_statements(
@@ -1202,6 +1628,8 @@ def build_contribution_statements(
 
     mechanism_sentence = (principle.mechanism or candidate.proposedMethod or candidate.keyInsight).split(".")[0].strip()
     novelty_basis = principle.noveltyClaim or candidate.keyInsight
+    if _is_placeholder_novelty(novelty_basis):
+        novelty_basis = _specific_novelty_basis(candidate, gap, principle)
     selected_gap = next(
         (item.statement for item in gap.items if item.id == gap.selectedGapId),
         gap.summary,
@@ -1475,10 +1903,14 @@ def build_plan_package(
     if candidate.draftPlan:
         research_question = candidate.draftPlan.researchQuestion
         hypothesis = candidate.draftPlan.hypothesis
-    research_question = research_question or (
-        f"How can {candidate.title} address: {candidate.problem}?"
+    deterministic_question, deterministic_hypothesis = _deterministic_plan_core(
+        candidate=candidate,
+        literature_survey=literature_survey,
+        paper_type=paper_type,
+        hypothesis=hypothesis,
     )
-    hypothesis = hypothesis or _candidate_hypothesis(candidate)
+    research_question = research_question or deterministic_question
+    hypothesis = deterministic_hypothesis
     proposed_method = _candidate_method(candidate, critique)
     expected_outcome = _candidate_expected_outcome(candidate, critique)
 
