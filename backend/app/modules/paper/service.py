@@ -10,8 +10,9 @@ from typing import Any, Callable, Dict
 
 from app.core.settings import get_settings
 from app.llm.provider_client import get_provider_client
+from app.modules.paper.agents import PaperAgentOrchestrator
 from app.modules.paper.storage import add_log, get_paper, get_paper_latex_dir, update_paper
-from app.modules.paper.skills import PaperSkillContext, PaperSkillLeader, build_default_skill_chain
+from app.modules.paper.skills import PaperSkillContext
 from app.modules.paper.skills.collect_context import run as collect_context_skill
 from app.modules.paper.skills.constants import VENUE_CONFIGS
 from app.modules.paper.skills.evidence_collect import run as evidence_collect_skill
@@ -157,9 +158,8 @@ def generate_paper(paper_id: str) -> Dict[str, Any]:
     try:
         ctx = _build_skill_context(paper_id, paper, step_log)
 
-        leader = PaperSkillLeader(paper_id, _log)
-        skills = build_default_skill_chain()
-        leader.run(ctx, skills)
+        orchestrator = PaperAgentOrchestrator(paper_id, _log)
+        orchestrator.run(ctx)
 
         outline = ctx.get("outline", {})
         references = outline.get("references", [])
@@ -167,9 +167,12 @@ def generate_paper(paper_id: str) -> Dict[str, Any]:
         figure_entries = ctx.get("figure_entries", [])
         evidence_gates = ctx.get("evidence_gates", {})
         pdf_available = ctx.get("pdf_available", False)
+        compile_status = ctx.get("compile_status")
+        simple_review_passed = ctx.get("simple_review_passed", False)
+        final_status = "completed" if compile_status == "latexmk" else "failed"
 
         update_paper(paper_id, {
-            "status": "completed",
+            "status": final_status,
             "targetVenue": ctx.venue,
             "templateId": ctx.venue,
             "evidenceGates": evidence_gates,
@@ -177,8 +180,14 @@ def generate_paper(paper_id: str) -> Dict[str, Any]:
             "sectionCount": len(sections),
             "referenceCount": len(references),
             "pdfAvailable": pdf_available,
+            "compileStatus": compile_status,
+            "compileErrors": ctx.get("compile_errors"),
+            "simpleReviewPassed": simple_review_passed,
         })
-        _log("Paper generation completed successfully")
+        if final_status == "completed":
+            _log("Paper generation completed successfully")
+        else:
+            _log("Paper generation finished with unresolved LaTeX compile errors")
 
     except Exception as exc:
         logger.error(f"Paper generation failed: {exc}", exc_info=True)

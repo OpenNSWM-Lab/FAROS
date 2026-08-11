@@ -4,10 +4,8 @@ from typing import Any, Dict, List, Tuple
 
 from app.modules.paper.storage import update_paper
 from .base import PaperSkillContext, PaperSkillResult
-from .utils import LATEX_MATH_ENVS, write_artifact
+from .utils import LATEX_MATH_ENVS
 
-
-STEP_ID = "09_compile_pdf"
 
 UNICODE_LATEX_REPLACEMENTS: Dict[str, Tuple[str, str]] = {
     "≥": (r"\geq", r"$\geq$"),
@@ -341,7 +339,7 @@ def preflight_latex_project(latex_dir: str) -> List[Dict[str, Any]]:
     return rewrites
 
 
-def run(ctx: PaperSkillContext) -> PaperSkillResult:
+def compile_latex_once(ctx: PaperSkillContext) -> PaperSkillResult:
     pdf_path = os.path.join(ctx.latex_dir, "main.pdf")
     status = "unknown"
     size = 0
@@ -349,60 +347,25 @@ def run(ctx: PaperSkillContext) -> PaperSkillResult:
     preflight_rewrites = preflight_latex_project(ctx.latex_dir)
 
     try:
-        from app.services.pdf_renderer import compile_latex_project, render_paper_pdf
+        from app.services.pdf_renderer import compile_latex_project
         compile_latex_project(ctx.latex_dir)
         if os.path.isfile(pdf_path):
             size = os.path.getsize(pdf_path)
         update_paper(ctx.paper_id, {"pdfAvailable": True})
         status = "latexmk"
     except Exception as exc:
-        errors = str(exc)[:300]
-        try:
-            outline = ctx.get("outline", {})
-            sections = ctx.get("sections", [])
-            sections_content = ctx.get("sections_content", {})
-            refs = outline.get("references", [])
-            figures_dir = os.path.join(ctx.latex_dir, "figures")
-            sections_for_pdf = [
-                {"title": s.get("title", s["id"]), "content": sections_content.get(s["id"], "")}
-                for s in sections
-            ]
-            render_paper_pdf(
-                output_path=pdf_path,
-                title=outline.get("title", ctx.paper.get("title", "Untitled")),
-                authors=outline.get("authors", ["Anonymous"]),
-                abstract=outline.get("abstract", ""),
-                sections=sections_for_pdf,
-                references=refs,
-                figures_dir=figures_dir,
-                figure_entries=ctx.get("figure_entries", []),
-            )
-            if os.path.isfile(pdf_path):
-                size = os.path.getsize(pdf_path)
-            update_paper(ctx.paper_id, {"pdfAvailable": True})
-            status = "fallback"
-        except Exception as fallback_error:
-            errors = f"{errors}; fallback: {str(fallback_error)[:300]}"
-            status = "failed"
+        errors = str(exc)[:2000]
+        update_paper(ctx.paper_id, {"pdfAvailable": False})
+        status = "failed"
 
-    summary_lines = [
-        "# Compile PDF",
-        f"status: {status}",
-        f"size: {size}",
-        f"preflight rewrites: {len(preflight_rewrites)}",
-    ]
-    if errors:
-        summary_lines.append(f"errors: {errors}")
-
-    artifacts = write_artifact(
-        ctx.paper_id,
-        STEP_ID,
-        {"status": status, "size": size, "errors": errors, "preflight_rewrites": preflight_rewrites},
-        summary_lines,
-    )
     return PaperSkillResult(
-        name="compile_pdf",
+        name="latex_compile_once",
         summary=f"{status} ({size} bytes)" if size else status,
-        artifacts=artifacts,
-        data={"pdf_available": status != "failed"},
+        data={
+            "pdf_available": status != "failed",
+            "compile_status": status,
+            "compile_errors": errors,
+            "compile_preflight_rewrites": preflight_rewrites,
+            "compile_output_size": size,
+        },
     )

@@ -14,7 +14,7 @@ from app.modules.paper.papers_api import (
     _build_sections_for_fallback_pdf,
     update_paper_context_endpoint,
 )
-from app.modules.paper.skills.compile_pdf import (
+from app.modules.paper.skills.latex_compile_support import (
     _ensure_required_packages,
     _ensure_xcolor_table_option,
     _replace_unicode_latex_chars,

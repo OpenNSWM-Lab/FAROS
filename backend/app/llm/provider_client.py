@@ -107,6 +107,9 @@ class ProviderClient:
         **kwargs,
     ) -> ChatResponse:
         api_config = self._get_api_config()
+        if "timeout" in kwargs and kwargs["timeout"]:
+            api_config["timeout"] = kwargs["timeout"]
+            kwargs = {k: v for k, v in kwargs.items() if k != "timeout"}
         model_name = model or self.settings.get_active_model(self.provider_name)
         messages_dict = [{"role": m.role, "content": m.content} for m in messages]
         api_format = getattr(self.config, "api_format", "openai")
