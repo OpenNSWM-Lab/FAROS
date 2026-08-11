@@ -4,6 +4,7 @@ import re
 
 from app.models.plan_package import PlanOutputType, PlanPackage, PlanQualityGate
 from app.services.plan_package_plan_quality import missing_plan_roles
+from app.services.plan_package_specificity import plan_specificity_issues
 
 
 def _has_text(value: str | None) -> bool:
@@ -431,6 +432,7 @@ def validate_plan_package(package: PlanPackage) -> PlanQualityGate:
             evidence_errors.append(
                 "stages/steps appear semantically detached from the research question and selected idea"
             )
+        detached_stage_ids: list[str] = []
         for stage in package.stages:
             stage_text = " ".join([
                 stage.title,
@@ -439,7 +441,16 @@ def validate_plan_package(package: PlanPackage) -> PlanQualityGate:
                 " ".join(step.title + " " + step.desc + " " + step.method for step in stage.steps),
             ])
             if _hit_count(stage_text, topic_terms) == 0:
-                warnings.append(f"{stage.id} has no visible overlap with the PlanPackage topic anchors")
+                detached_stage_ids.append(stage.id)
+        if detached_stage_ids:
+            message = (
+                "stage(s) have no visible overlap with the PlanPackage topic anchors: "
+                + ", ".join(detached_stage_ids)
+            )
+            if len(detached_stage_ids) >= max(1, len(package.stages) // 2):
+                evidence_errors.append(message)
+            else:
+                warnings.append(message)
 
     if not package.evidenceTrace.reasoningTrace:
         warnings.append("evidenceTrace.reasoningTrace is empty")
@@ -476,6 +487,11 @@ def validate_plan_package(package: PlanPackage) -> PlanQualityGate:
         raw_method = str(raw_candidate.get("proposedMethod") or "").strip()
         if raw_method and package.principle.mechanism and raw_method not in package.principle.mechanism:
             warnings.append("principle.mechanism differs from IdeaCandidate.proposedMethod adapter source")
+
+    warnings.extend(
+        f"specificity.{issue.sectionPath}: {issue.message}"
+        for issue in plan_specificity_issues(package)
+    )
 
     schema_valid = not schema_errors
     evidence_valid = not evidence_errors

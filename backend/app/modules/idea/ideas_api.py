@@ -4,9 +4,11 @@ Idea Generation API Endpoints
 Provides endpoints for managing idea generation sessions.
 """
 
-from typing import Optional, List
+import json
+import logging
+from typing import Any, Dict, Optional, List
 from datetime import datetime
-from fastapi import APIRouter, HTTPException, status, BackgroundTasks
+from fastapi import APIRouter, HTTPException, status, BackgroundTasks, Query
 from pydantic import BaseModel, Field
 
 from app.modules.idea.contracts import (
@@ -56,7 +58,7 @@ class CreateSessionRequest(BaseModel):
     constraints: Optional[List[str]] = None
     mustCiteList: Optional[List[str]] = None
     searchBudget: Optional[int] = Field(default=None, ge=10, le=500)
-    maxReviewIterations: int = Field(default=2, ge=1, le=5)
+    maxReviewIterations: int = Field(default=3, ge=1, le=5)
 
 
 class SessionResponse(BaseModel):
@@ -69,6 +71,10 @@ class SessionResponse(BaseModel):
     endedAt: Optional[str] = None
     duration: Optional[int] = None
     candidateIds: List[str] = []
+    finalCandidateIds: List[str] = []
+    hiddenCandidateIds: List[str] = []
+    rejectedCandidateIds: List[str] = []
+    qualityLoopSummary: dict = {}
     selectedCandidateId: Optional[str] = None
     errorMessage: Optional[str] = None
 
@@ -145,6 +151,8 @@ class CandidatesResponse(BaseModel):
     """Response for candidates list."""
     candidates: List[CandidateResponse]
     total: int
+    view: str = "final"
+    allCandidateCount: int = 0
 
 
 class SelectCandidateRequest(BaseModel):
@@ -299,6 +307,10 @@ def _session_to_response(session: IdeaSession) -> SessionResponse:
         endedAt=session.endedAt.isoformat() if session.endedAt else None,
         duration=session.duration,
         candidateIds=session.candidateIds,
+        finalCandidateIds=getattr(session, "finalCandidateIds", []),
+        hiddenCandidateIds=getattr(session, "hiddenCandidateIds", []),
+        rejectedCandidateIds=getattr(session, "rejectedCandidateIds", []),
+        qualityLoopSummary=getattr(session, "qualityLoopSummary", {}),
         selectedCandidateId=session.selectedCandidateId,
         errorMessage=session.errorMessage,
     )
@@ -469,6 +481,28 @@ async def start_session(
 
 
 @router.post(
+    "/sessions/{session_id}/resume",
+    response_model=SessionResponse,
+    summary="Resume Idea Session",
+    description="Resume a session waiting for evidence or approved ideas.",
+)
+async def resume_session(
+    session_id: str,
+    background_tasks: BackgroundTasks,
+) -> SessionResponse:
+    service = get_idea_service()
+    try:
+        session = service.resume_session(session_id)
+        background_tasks.add_task(service.run_pipeline, session_id)
+        return _session_to_response(session)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+
+
+@router.post(
     "/sessions/{session_id}/cancel",
     response_model=SessionResponse,
     summary="Cancel Idea Session",
@@ -485,6 +519,29 @@ async def cancel_session(session_id: str) -> SessionResponse:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e)
+        )
+
+
+@router.post(
+    "/sessions/{session_id}/revalidate-final-candidates",
+    response_model=SessionResponse,
+    summary="Revalidate Final Idea Candidates",
+    description=(
+        "Run current hard quality gates on an existing idea session and update "
+        "the user-facing final candidate shortlist without new LLM calls."
+    )
+)
+async def revalidate_final_candidates(session_id: str) -> SessionResponse:
+    """Revalidate final candidates for old sessions after gate upgrades."""
+    service = get_idea_service()
+
+    try:
+        session = service.revalidate_final_candidates(session_id)
+        return _session_to_response(session)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e),
         )
 
 
@@ -580,7 +637,14 @@ async def get_session_literature(session_id: str) -> LiteratureResponse:
     summary="Get Session Candidates",
     description="Get candidate ideas for a session."
 )
-async def get_session_candidates(session_id: str) -> CandidatesResponse:
+async def get_session_candidates(
+    session_id: str,
+    view: str = Query(
+        "final",
+        pattern="^(final|debug|all)$",
+        description="final returns user-facing shortlisted candidates; debug/all returns every generated candidate.",
+    ),
+) -> CandidatesResponse:
     """Get candidates for a session."""
     service = get_idea_service()
     
@@ -591,10 +655,13 @@ async def get_session_candidates(session_id: str) -> CandidatesResponse:
             detail=f"Session {session_id} not found"
         )
     
-    candidates = service.get_candidates(session_id)
+    candidates = service.get_candidates(session_id, view=view)
+    all_candidate_count = len(service.get_candidates(session_id, view="debug"))
     return CandidatesResponse(
         candidates=[_candidate_to_response(c) for c in candidates],
         total=len(candidates),
+        view=view,
+        allCandidateCount=all_candidate_count,
     )
 
 
@@ -1053,4 +1120,336 @@ async def select_candidate(
         ok=True,
         candidateId=request.candidateId,
         selectedCandidateId=request.candidateId,
+    )
+
+
+# =============================================================================
+# Seed Query Pre-Check Endpoint
+# =============================================================================
+
+
+class SeedCheckRequest(BaseModel):
+    """Request to pre-check a seed query before running the full pipeline."""
+    seedQuery: str = Field(..., min_length=3)
+
+
+class SeedCheckResponse(BaseModel):
+    """Response for seed query pre-check."""
+    paperCount: int
+    isSufficient: bool
+    threshold: int
+    topicTerms: List[str] = []
+    generalizedQuery: Optional[str] = None
+    suggestion: Optional[str] = None
+    topPaperTitles: List[str] = []
+
+
+@router.post(
+    "/seed-check",
+    response_model=SeedCheckResponse,
+    summary="Pre-check Seed Query",
+    description=(
+        "Quickly search for papers matching the seed query and assess whether "
+        "enough literature exists. If not, generate a generalized query suggestion."
+    ),
+)
+async def seed_check(request: SeedCheckRequest) -> SeedCheckResponse:
+    """Pre-check a seed query before committing to a full pipeline run."""
+    from app.services.search_service import get_search_service
+    from app.llm.provider_client import get_provider_client, ChatMessage
+    from app.core.settings import get_settings
+    from app.modules.idea.service import _topic_terms_from_seed
+
+    threshold = int(__import__("os").getenv("FAROS_PAPER_GATE_MIN_PAPERS", "4"))
+    seed = request.seedQuery.strip()
+    if len(seed) < 3:
+        return SeedCheckResponse(
+            paperCount=0,
+            isSufficient=False,
+            threshold=threshold,
+        )
+
+    # 1. Quick search across all sources
+    search_service = get_search_service()
+    try:
+        results = search_service.search(seed, limit=10)
+    except Exception as exc:
+        logger.warning("seed-check search failed: %s", exc)
+        results = []
+
+    paper_count = len(results)
+    topic_terms = _topic_terms_from_seed(seed)
+    top_titles = [getattr(r, "title", "") for r in results[:5]]
+
+    if paper_count >= threshold:
+        return SeedCheckResponse(
+            paperCount=paper_count,
+            isSufficient=True,
+            threshold=threshold,
+            topicTerms=topic_terms[:12],
+            topPaperTitles=top_titles,
+        )
+
+    # 2. Not enough papers — ask LLM to generalize the seed
+    settings = get_settings()
+    provider_name = settings.get_active_provider()
+    model_name = settings.get_active_model(provider_name)
+
+    generalize_prompt = (
+        "You are a research advisor helping a user refine their search query.\n"
+        "The user's query returned too few academic papers. "
+        "Generalize it into a broader but still relevant research topic.\n\n"
+        "Rules:\n"
+        "1. Keep the core research intent.\n"
+        "2. Replace niche tool names with their broader research area.\n"
+        "3. Replace specific numeric parameters with the general research question.\n"
+        "4. Output ONLY a single-line generalized query, nothing else.\n\n"
+        f"Original query: {seed}\n"
+        f"Papers found: {paper_count}\n"
+        f"Topic terms extracted: {topic_terms[:8]}\n\n"
+        "Generalized query:"
+    )
+
+    generalized_query = None
+    suggestion = None
+    try:
+        client = get_provider_client(provider_name)
+        response = client.chat(
+            [ChatMessage(role="user", content=generalize_prompt)],
+            model=model_name,
+            temperature=0.3,
+            max_tokens=120,
+        )
+        generalized_query = (response.text or "").strip().split("\n")[0].strip()
+        if generalized_query.startswith('"') and generalized_query.endswith('"'):
+            generalized_query = generalized_query[1:-1]
+        # Validate: don't return if it's too similar or empty
+        if not generalized_query or generalized_query.lower() == seed.lower():
+            generalized_query = None
+    except Exception as exc:
+        logger.warning("seed-check LLM generalization failed: %s", exc)
+
+    if generalized_query:
+        suggestion = (
+            f"Only {paper_count} papers found for this topic. "
+            f"Consider using the generalized query: \"{generalized_query}\""
+        )
+    else:
+        suggestion = (
+            f"Only {paper_count} papers found. "
+            "Try broadening your topic or using more general research terms."
+        )
+
+    return SeedCheckResponse(
+        paperCount=paper_count,
+        isSufficient=False,
+        threshold=threshold,
+        topicTerms=topic_terms[:12],
+        generalizedQuery=generalized_query,
+        suggestion=suggestion,
+        topPaperTitles=top_titles,
+    )
+
+
+# =============================================================================
+# Research Dossier Endpoints (Public Contract)
+# =============================================================================
+
+class BuildDossierRequest(BaseModel):
+    """Request to build a ResearchDossier from an existing session."""
+    sessionId: str = Field(..., description="Idea session ID")
+    runId: Optional[str] = Field(default=None, description="Override run ID")
+    mode: str = Field(default="deep", description="coverage or deep")
+    questionId: Optional[str] = Field(default=None)
+    questionText: Optional[str] = Field(default=None)
+    domainHint: Optional[str] = None
+
+
+class BuildDossierResponse(BaseModel):
+    """Response containing the built ResearchDossier."""
+    dossier: Dict[str, Any]
+    degradationState: Optional[Dict[str, Any]] = None
+
+
+@router.post(
+    "/dossier",
+    response_model=BuildDossierResponse,
+    summary="Build a ResearchDossier from a completed session",
+)
+def build_dossier(request: BuildDossierRequest):
+    """Build a contract-compliant ResearchDossier from an idea session."""
+    from app.contracts import RunMode, ScientificQuestion
+    from app.modules.idea.research_dossier import build_research_dossier
+    from app.modules.idea.budget_modes import BudgetConfig, detect_degradation
+
+    service = get_idea_service()
+    session = service.session_storage.get(request.sessionId)
+    if not session:
+        raise HTTPException(status_code=404, detail=f"Session {request.sessionId} not found")
+
+    candidates = service.get_candidates(request.sessionId)
+    literature = service.get_literature(request.sessionId)
+
+    if not candidates:
+        raise HTTPException(status_code=400, detail="Session has no candidates")
+
+    mode = RunMode.DEEP if request.mode == "deep" else RunMode.COVERAGE
+    budget = BudgetConfig.from_mode(mode)
+
+    # Build question
+    question = None
+    if request.questionText:
+        question = ScientificQuestion(
+            id=request.questionId or f"question_{request.sessionId}",
+            text=request.questionText,
+            domainHint=request.domainHint,
+        )
+
+    # Detect degradation
+    degradation = detect_degradation(
+        api_available=True,
+        search_result_count=len(literature),
+        min_evidence_threshold=3,
+    )
+
+    dossier = build_research_dossier(
+        session=session,
+        candidates=candidates,
+        literature=literature,
+        question=question,
+        run_id=request.runId,
+        mode=mode,
+    )
+
+    return BuildDossierResponse(
+        dossier=dossier.model_dump(mode="json"),
+        degradationState=degradation.to_dict() if degradation.is_degraded else None,
+    )
+
+
+class DiffDossiersRequest(BaseModel):
+    """Request to diff two dossier versions."""
+    v1: Dict[str, Any] = Field(..., description="First dossier version (JSON)")
+    v2: Dict[str, Any] = Field(..., description="Second dossier version (JSON)")
+
+
+@router.post(
+    "/dossier/diff",
+    summary="Compute v1/v2 diff between two dossier versions",
+)
+def diff_dossiers(request: DiffDossiersRequest):
+    """Compute a structured diff between two ResearchDossier versions."""
+    from app.contracts import ResearchDossier
+    from app.modules.idea.research_dossier import diff_dossiers as _diff
+
+    try:
+        v1 = ResearchDossier.model_validate(request.v1)
+        v2 = ResearchDossier.model_validate(request.v2)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Invalid dossier: {e}")
+
+    return _diff(v1, v2)
+
+
+# ---------------------------------------------------------------------------
+# Child Run: accept Review finding, create v2 session from parent
+# ---------------------------------------------------------------------------
+
+class CreateChildRunRequest(BaseModel):
+    """Request to create a child run from a parent session and review findings."""
+    parentSessionId: str = Field(..., description="Parent idea session ID")
+    findings: List[Dict[str, Any]] = Field(..., description="Review findings (list of finding dicts with at least 'description' field)")
+    mode: Optional[str] = Field(default=None, description="Override mode: 'deep' or 'coverage'. Defaults to parent's mode.")
+
+
+class CreateChildRunResponse(BaseModel):
+    """Response containing the child run and new session info."""
+    childRunId: str
+    parentRunId: str
+    newSessionId: str
+    findingsCount: int
+    status: str
+
+
+@router.post(
+    "/dossier/child-run",
+    summary="Create a child run from a parent session and review findings",
+)
+def create_child_run(request: CreateChildRunRequest):
+    """
+    Accept Review findings and create a child ScientificQuestionRun.
+
+    This implements P0 task #8: "Accept Review finding, create child run."
+    The child run inherits the parent's question and mode, with parentRunId
+    set to the parent's run ID. A new idea session is created so the pipeline
+    can be re-run with the review feedback incorporated.
+    """
+    from app.contracts import RunMode, RunStatus, ScientificQuestion, ScientificQuestionRun
+    from app.modules.idea.research_dossier import create_child_run as _create_child_run
+
+    service = get_idea_service()
+
+    # 1. Get parent session
+    parent_session = service.session_storage.get(request.parentSessionId)
+    if not parent_session:
+        raise HTTPException(status_code=404, detail=f"Parent session {request.parentSessionId} not found")
+
+    # 2. Build parent ScientificQuestionRun
+    parent_mode = RunMode.DEEP
+    if request.mode:
+        parent_mode = RunMode.DEEP if request.mode == "deep" else RunMode.COVERAGE
+    elif hasattr(parent_session.config, 'mode') and parent_session.config.mode:
+        parent_mode = RunMode.DEEP if parent_session.config.mode == "deep" else RunMode.COVERAGE
+
+    seed_query = (parent_session.config.seedQuery if hasattr(parent_session, 'config') and hasattr(parent_session.config, 'seedQuery')
+                  else getattr(parent_session, 'seedQuery', getattr(parent_session, 'seed', '')))
+
+    parent_question = ScientificQuestion(
+        id=f"q_{request.parentSessionId}",
+        text=seed_query,
+        domainHint=getattr(parent_session.config, 'domain', None),
+    )
+
+    parent_run = ScientificQuestionRun(
+        runId=f"run_{request.parentSessionId}",
+        question=parent_question,
+        mode=parent_mode,
+        status=RunStatus.COMPLETED,
+        providerName=getattr(parent_session.config, 'providerName', None),
+        model=getattr(parent_session.config, 'model', None),
+    )
+
+    # 3. Create child run
+    child_run = _create_child_run(parent_run=parent_run, findings=request.findings)
+
+    # 4. Create new idea session from parent config
+    new_config = IdeaSessionConfig(
+        providerName=parent_session.config.providerName,
+        model=parent_session.config.model,
+        seedQuery=seed_query,
+        paperType=getattr(parent_session.config, 'paperType', 'full'),
+        maxCandidates=getattr(parent_session.config, 'maxCandidates', 10),
+        maxPapers=getattr(parent_session.config, 'maxPapers', 50),
+        domain=getattr(parent_session.config, 'domain', None),
+        constraints=getattr(parent_session.config, 'constraints', None),
+        mustCiteList=getattr(parent_session.config, 'mustCiteList', []),
+        searchBudget=getattr(parent_session.config, 'searchBudget', 30),
+        maxReviewIterations=getattr(parent_session.config, 'maxReviewIterations', 2),
+    )
+
+    new_session = service.create_session(new_config)
+
+    # 5. Store review findings in session qualityLoopSummary for the pipeline to use
+    new_session.qualityLoopSummary['parentSessionId'] = request.parentSessionId
+    new_session.qualityLoopSummary['parentRunId'] = parent_run.runId
+    new_session.qualityLoopSummary['childRunId'] = child_run.runId
+    new_session.qualityLoopSummary['reviewFindings'] = request.findings
+    service.session_storage.update(new_session)
+
+    return CreateChildRunResponse(
+        childRunId=child_run.runId,
+        parentRunId=parent_run.runId,
+        newSessionId=new_session.id,
+        findingsCount=len(request.findings),
+        status="created",
     )

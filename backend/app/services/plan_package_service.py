@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import uuid
 from typing import Any, Dict, List, Optional
 
 from app.llm.provider_client import ChatMessage, get_provider_client
+from app.llm.task_scheduler import get_llm_task_scheduler
 from app.models.idea import IdeaCandidate, IdeaSession
 from app.models.plan_package import (
     PlanEvidenceRef,
@@ -26,6 +28,12 @@ from app.models.plan_package import (
     PlanStep,
 )
 from app.services.plan_package_builder import build_contribution_statements, build_plan_package
+from app.services.plan_package_generation import (
+    PlanSegmentGenerationResult,
+    generate_plan_segments,
+    generate_stage_segment,
+    normalize_stage_graph,
+)
 from app.services.plan_package_llm_schema import llm_plan_output_schema_hint, validate_llm_plan_output
 from app.services.plan_package_plan_quality import (
     build_plan_blueprint,
@@ -35,6 +43,12 @@ from app.services.plan_package_plan_quality import (
 )
 from app.services.plan_package_readiness import evaluate_downstream_readiness
 from app.services.plan_package_revisor import build_plan_revision_patch
+from app.services.plan_package_review_loop import (
+    dedupe_review_issues,
+    repair_stage_ids,
+    repair_targets,
+    route_review_issue,
+)
 from app.services.plan_package_reviewers import apply_review_to_quality_gate
 from app.services.plan_package_validator import validate_plan_package
 from app.services.plan_package_views import build_plan_package_handoff, build_plan_package_presentation
@@ -55,6 +69,14 @@ from app.storage.idea_storage import (
 from app.storage.plan_package_storage import get_plan_package_storage
 
 logger = logging.getLogger(__name__)
+
+
+def _plan_llm_timeout_seconds() -> float:
+    try:
+        configured = float(os.getenv("FAROS_PLAN_PACKAGE_LLM_TIMEOUT_SECONDS", "120"))
+    except ValueError:
+        configured = 120.0
+    return max(5.0, min(600.0, configured))
 
 
 class PlanPackageNotFoundError(ValueError):
@@ -156,6 +178,43 @@ def _extract_json(text: str) -> Optional[Dict[str, Any]]:
                 except json.JSONDecodeError:
                     return None
     return None
+
+
+def _compact_prompt_value(
+    value: Any,
+    *,
+    max_string_chars: int = 800,
+    max_items: int = 8,
+    depth: int = 0,
+) -> Any:
+    """Bound LLM prompt context while preserving structured identifiers."""
+
+    if depth >= 5:
+        return str(value or "")[:max_string_chars]
+    if isinstance(value, str):
+        text = value.strip()
+        return text if len(text) <= max_string_chars else text[:max_string_chars].rstrip()
+    if isinstance(value, dict):
+        return {
+            str(key): _compact_prompt_value(
+                item,
+                max_string_chars=max_string_chars,
+                max_items=max_items,
+                depth=depth + 1,
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [
+            _compact_prompt_value(
+                item,
+                max_string_chars=max_string_chars,
+                max_items=max_items,
+                depth=depth + 1,
+            )
+            for item in list(value)[:max_items]
+        ]
+    return value
 
 
 def _topic_terms_from_package(package: PlanPackage) -> List[str]:
@@ -479,38 +538,60 @@ class PlanPackageService:
     ) -> None:
         """Automatically repair plan-owned fields from reviewer findings."""
 
-        if max_repair_rounds <= 0:
-            return
-        for repair_index in range(max_repair_rounds):
+        repair_budget = min(max(0, max_repair_rounds), 2)
+        for repair_index in range(repair_budget):
             if package.qualityGate.agentApproved and package.qualityGate.implementationReady:
                 return
-            revision_patch = build_plan_revision_patch(
-                package,
-                include_feedback=False,
-                allow_narrative=False,
+            current_issues = dedupe_review_issues(
+                [
+                    *(
+                        package.metaReview.blockingIssues
+                        if package.metaReview
+                        else []
+                    ),
+                    *(package.metaReview.warnings if package.metaReview else []),
+                ]
             )
-            targets = self._normalize_revision_targets(revision_patch.changedSections) if revision_patch.changedSections else []
-            if not targets and not revision_patch.upstreamBlocked:
-                targets = self._infer_plan_repair_targets_from_review(package)
-            if revision_patch.upstreamBlocked:
-                message = "PlanPackage auto repair blocked by upstream issue: " + "; ".join(revision_patch.unresolvedIssues[:3])
+            if any(
+                route_review_issue(issue) == "upstream_blocking"
+                for issue in current_issues
+            ):
+                message = "review_repair_blocked:upstream"
                 if message not in package.generation.warnings:
                     package.generation.warnings.append(message)
-                if message not in package.qualityGate.warnings:
-                    package.qualityGate.warnings.append(message)
                 return
+            targets = repair_targets(current_issues)
             if not targets:
                 return
+            stage_ids = repair_stage_ids(
+                current_issues,
+                [stage.id for stage in package.stages],
+            )
+            if "stages" in targets and not stage_ids:
+                stage_ids = [stage.id for stage in package.stages]
+            reports_before_repair = [
+                report.model_dump(mode="json")
+                for report in package.reviewReports
+            ]
             try:
                 previous_repair_rounds = package.generation.repairRounds
-                self._apply_llm_plan_fields(
-                    package,
-                    session,
-                    max_stages=max_stages,
-                    max_steps_per_stage=max_steps_per_stage,
-                    max_repair_rounds=1,
-                    target_sections=targets,
-                )
+                core_targets = [target for target in targets if target != "stages"]
+                if core_targets:
+                    self._apply_llm_plan_fields(
+                        package,
+                        session,
+                        max_stages=max_stages,
+                        max_steps_per_stage=max_steps_per_stage,
+                        max_repair_rounds=1,
+                        target_sections=core_targets,
+                    )
+                if stage_ids:
+                    self._repair_llm_stage_fields(
+                        package,
+                        session,
+                        stage_ids=stage_ids,
+                        max_steps_per_stage=max_steps_per_stage,
+                    )
                 package.contributionStatement = build_contribution_statements(
                     candidate=self._candidate_from_package(package),
                     gap=package.gap,
@@ -523,10 +604,15 @@ class PlanPackageService:
                         parentPackageId=package.packageId,
                         changedSections=[*targets, "contributionStatement", "qualityGate", "reviewReports"],
                         feedbackIds=[],
-                        summary="Auto-repaired PlanPackage from reviewer findings.",
+                        summary="Auto-repaired internal reviewer findings.",
                         generationMode="hybrid",
                         repairRounds=max(0, package.generation.repairRounds - previous_repair_rounds),
-                        patchSummary=revision_patch.model_dump(),
+                        patchSummary={
+                            "repairIndex": repair_index + 1,
+                            "targets": targets,
+                            "stageIds": stage_ids,
+                            "reviewReportsBeforeRepair": reports_before_repair,
+                        },
                     )
                 )
                 package.qualityGate = validate_plan_package(package)
@@ -540,8 +626,6 @@ class PlanPackageService:
                 message = f"PlanPackage auto repair failed on round {repair_index + 1}: {exc}"
                 if message not in package.generation.warnings:
                     package.generation.warnings.append(message)
-                if message not in package.qualityGate.warnings:
-                    package.qualityGate.warnings.append(message)
                 return
 
     def _infer_plan_repair_targets_from_review(self, package: PlanPackage) -> List[str]:
@@ -616,15 +700,68 @@ class PlanPackageService:
         reviewer_mode: str,
     ):
         mode = self._normalize_reviewer_mode(reviewer_mode)
+        upstream_blockers = self._upstream_plan_blockers(package)
+        for blocker in upstream_blockers:
+            message = f"upstream: {blocker}"
+            if message not in gate.errors:
+                gate.errors.append(message)
+            diagnostic = f"upstream_blocked:{blocker}"
+            if diagnostic not in package.generation.warnings:
+                package.generation.warnings.append(diagnostic)
         gate = apply_review_to_quality_gate(package, gate)
         package.qualityGate = gate
-        llm_reports = self._run_llm_reviewers(package, reviewer_mode=mode)
+        llm_reports = (
+            []
+            if upstream_blockers
+            else self._run_llm_reviewers(package, reviewer_mode=mode)
+        )
         if llm_reports:
             gate = apply_review_to_quality_gate(package, gate, extra_reports=llm_reports)
         gate = self._apply_downstream_readiness(package, gate)
         package.generation.reviewerMode = mode
         package.generation.llmReviewerUsed = self._llm_review_used(llm_reports)
         return gate
+
+    def _upstream_plan_blockers(self, package: PlanPackage) -> List[str]:
+        blockers: List[str] = []
+        if not all(
+            [
+                package.source.searchTreeId,
+                package.source.searchNodeId,
+                package.source.pathSeedId,
+                package.evidenceTrace.searchNodeId,
+                package.evidenceTrace.pathSeedId,
+            ]
+        ):
+            blockers.append("upstream evidence trace identity is incomplete")
+        if (
+            package.source.searchNodeId
+            and package.evidenceTrace.searchNodeId
+            and package.source.searchNodeId != package.evidenceTrace.searchNodeId
+        ):
+            blockers.append("source and evidence trace search nodes do not match")
+        if (
+            package.source.pathSeedId
+            and package.evidenceTrace.pathSeedId
+            and package.source.pathSeedId != package.evidenceTrace.pathSeedId
+        ):
+            blockers.append("source and evidence trace path seeds do not match")
+        if not package.literatureSurvey.papers:
+            blockers.append("investigated literature is empty")
+        selected_gap = next(
+            (
+                item
+                for item in package.gap.items
+                if item.id == package.gap.selectedGapId
+            ),
+            None,
+        )
+        if selected_gap is None or not (
+            selected_gap.supportedByPaperIds
+            or selected_gap.supportedByClaimIds
+        ):
+            blockers.append("selected GAP lacks upstream paper or claim support")
+        return blockers
 
     def _apply_downstream_readiness(self, package: PlanPackage, gate: Any):
         readiness = evaluate_downstream_readiness(package)
@@ -694,27 +831,32 @@ class PlanPackageService:
                 for report in rule_reports
             ]
         llm_reports: List[PlanReviewerReport] = []
+        scheduler = get_llm_task_scheduler()
         for rule_report in rule_reports:
             try:
-                response = client.chat(
-                    messages=[
-                        ChatMessage(
-                            role="system",
-                            content=(
-                                "You are a strict scientific reviewer for one specific dimension of an idea+plan handoff package. "
-                                "Return one JSON object only. Do not invent paper IDs, claim IDs, datasets, benchmarks, KG IDs, "
-                                "probe IDs, graph patch IDs, or executed results."
+                response = scheduler.run(
+                    "plan_package_reviewer",
+                    lambda rule_report=rule_report: client.chat(
+                        messages=[
+                            ChatMessage(
+                                role="system",
+                                content=(
+                                    "You are a strict scientific reviewer for one specific dimension of an idea+plan handoff package. "
+                                    "Return one JSON object only. Do not invent paper IDs, claim IDs, datasets, benchmarks, KG IDs, "
+                                    "probe IDs, graph patch IDs, or executed results."
+                                ),
                             ),
-                        ),
-                        ChatMessage(
-                            role="user",
-                            content=self._build_llm_review_prompt(package, rule_report=rule_report),
-                        ),
-                    ],
-                    model=model,
-                    temperature=0.0,
-                    max_tokens=3072,
-                    response_format={"type": "json_object"},
+                            ChatMessage(
+                                role="user",
+                                content=self._build_llm_review_prompt(package, rule_report=rule_report),
+                            ),
+                        ],
+                        model=model,
+                        temperature=0.0,
+                        max_tokens=3072,
+                        response_format={"type": "json_object"},
+                    ),
+                    timeout_seconds=_plan_llm_timeout_seconds(),
                 )
                 parsed = _extract_json(response.text or "")
                 if not parsed:
@@ -1140,7 +1282,7 @@ class PlanPackageService:
         package.generation.repairRounds = 0
         package.generation.fallbackUsed = mode == "deterministic"
         package.generation.promptVersion = (
-            "plan-package-single-implementation-planner-v2"
+            "plan-package-segmented-implementation-planner-v1"
             if mode == "hybrid"
             else "plan-package-adapter-v1"
         )
@@ -1159,19 +1301,24 @@ class PlanPackageService:
             "PlanPackage.literatureSurvey",
         ]
 
-        if mode == "hybrid":
+        upstream_blockers = self._upstream_plan_blockers(package)
+        if mode == "hybrid" and not upstream_blockers:
             try:
-                self._apply_llm_plan_fields(
+                self._apply_segmented_llm_plan_fields(
                     package,
                     session,
-                    max_stages=max_stages,
                     max_steps_per_stage=max_steps_per_stage,
-                    max_repair_rounds=max_repair_rounds,
                 )
             except Exception as exc:
                 logger.warning("LLM plan field generation failed: %s", exc, exc_info=True)
                 generation_warnings.append(f"LLM plan field generation failed: {exc}")
                 package.generation.fallbackUsed = True
+        elif mode == "hybrid":
+            package.generation.fallbackUsed = True
+            generation_warnings.extend(
+                f"upstream_blocked:{blocker}"
+                for blocker in upstream_blockers
+            )
 
         package.contributionStatement = build_contribution_statements(
             candidate=candidate,
@@ -1182,8 +1329,12 @@ class PlanPackageService:
         package.schemaVersion = "plan-package/v4"
         package.qualityGate = validate_plan_package(package)
         package.qualityGate = self._apply_review_mode(package, package.qualityGate, reviewer_mode=reviewer_mode)
-        package.qualityGate.warnings.extend(generation_warnings)
-        package.generation.warnings.extend(generation_warnings)
+        existing_generation_warnings = set(package.generation.warnings)
+        package.generation.warnings.extend(
+            warning
+            for warning in generation_warnings
+            if warning not in existing_generation_warnings
+        )
         if mode == "hybrid":
             self._auto_repair_plan_from_review(
                 package,
@@ -1345,19 +1496,22 @@ class PlanPackageService:
         for attempt in range(attempts):
             messages = list(base_messages)
             if attempt > 0:
-                messages.extend([
-                    ChatMessage(role="assistant", content=last_response_text[:4000]),
+                messages.append(
                     ChatMessage(
                         role="user",
                         content=self._build_llm_repair_prompt(last_issues, target_sections=target_sections),
-                    ),
-                ])
-            response = client.chat(
-                messages=messages,
-                model=session.config.model,
-                temperature=0.2 if attempt == 0 else 0.0,
-                max_tokens=8192,
-                response_format={"type": "json_object"},
+                    )
+                )
+            response = get_llm_task_scheduler().run(
+                "plan_package_fields",
+                lambda messages=messages, attempt=attempt: client.chat(
+                    messages=messages,
+                    model=session.config.model,
+                    temperature=0.2 if attempt == 0 else 0.0,
+                    max_tokens=4096,
+                    response_format={"type": "json_object"},
+                ),
+                timeout_seconds=_plan_llm_timeout_seconds(),
             )
             last_response_text = response.text or ""
             raw_parsed = _extract_json(last_response_text)
@@ -1407,6 +1561,153 @@ class PlanPackageService:
 
         package.generation.schemaRepairRounds += schema_repair_rounds
         raise ValueError("LLM plan field generation failed validation: " + "; ".join(last_issues))
+
+    def _apply_segmented_llm_plan_fields(
+        self,
+        package: PlanPackage,
+        session: IdeaSession,
+        *,
+        max_steps_per_stage: int,
+    ) -> None:
+        client = get_provider_client(session.config.providerName)
+        scheduler = get_llm_task_scheduler()
+        package.generation.providerName = session.config.providerName
+        package.generation.model = session.config.model
+        package.generation.promptVersion = "plan-package-segmented-implementation-planner-v1"
+
+        def call_json(
+            segment_name: str,
+            prompt: str,
+            max_tokens: int,
+        ) -> Dict[str, Any]:
+            task_name = (
+                "plan_package_core"
+                if segment_name == "core"
+                else "plan_package_stage"
+            )
+            system_prompt = (
+                "Generate PlanPackage core JSON only."
+                if segment_name == "core"
+                else "Generate exactly one PlanPackage stage JSON only."
+            )
+            response = scheduler.run(
+                task_name,
+                lambda: client.chat(
+                    messages=[
+                        ChatMessage(
+                            role="system",
+                            content=(
+                                system_prompt
+                                + " Do not invent paper IDs, claim IDs, datasets, "
+                                "benchmark values, or executed results."
+                            ),
+                        ),
+                        ChatMessage(role="user", content=prompt),
+                    ],
+                    model=session.config.model,
+                    temperature=0.2,
+                    max_tokens=max_tokens,
+                    response_format={"type": "json_object"},
+                ),
+                timeout_seconds=_plan_llm_timeout_seconds(),
+            )
+            parsed = _extract_json(response.text or "")
+            if parsed is None:
+                raise ValueError(f"{segment_name} returned invalid JSON")
+            return parsed
+
+        result = generate_plan_segments(
+            package=package,
+            call_json=call_json,
+            max_steps_per_stage=max_steps_per_stage,
+        )
+        package.researchQuestion = result.research_question
+        package.hypothesis = result.hypothesis
+        package.constants.update(sanitize_constants(result.constants))
+        package.stages = result.stages
+        package.generation.llmUsedSections = (
+            ["implementationPlan"]
+            if result.core_used or result.llm_stage_ids
+            else []
+        )
+        package.generation.fallbackUsed = bool(
+            result.fallback_stage_ids or not result.core_used
+        )
+        existing_warnings = set(package.generation.warnings)
+        package.generation.warnings.extend(
+            warning
+            for warning in result.warnings
+            if warning not in existing_warnings
+        )
+
+    def _repair_llm_stage_fields(
+        self,
+        package: PlanPackage,
+        session: IdeaSession,
+        *,
+        stage_ids: List[str],
+        max_steps_per_stage: int,
+    ) -> None:
+        client = get_provider_client(session.config.providerName)
+        scheduler = get_llm_task_scheduler()
+
+        def call_json(
+            segment_name: str,
+            prompt: str,
+            max_tokens: int,
+        ) -> Dict[str, Any]:
+            response = scheduler.run(
+                "plan_package_stage_repair",
+                lambda: client.chat(
+                    messages=[
+                        ChatMessage(
+                            role="system",
+                            content=(
+                                "Repair one PlanPackage stage. Return JSON only and "
+                                "do not invent evidence, datasets, benchmark values, "
+                                "or executed results."
+                            ),
+                        ),
+                        ChatMessage(role="user", content=prompt),
+                    ],
+                    model=session.config.model,
+                    temperature=0.0,
+                    max_tokens=max_tokens,
+                    response_format={"type": "json_object"},
+                ),
+                timeout_seconds=_plan_llm_timeout_seconds(),
+            )
+            parsed = _extract_json(response.text or "")
+            if parsed is None:
+                raise ValueError(f"{segment_name} repair returned invalid JSON")
+            return parsed
+
+        core_result = PlanSegmentGenerationResult(
+            research_question=package.researchQuestion,
+            hypothesis=package.hypothesis,
+            constants=dict(package.constants),
+            stages=[stage.model_copy(deep=True) for stage in package.stages],
+            core_used=True,
+        )
+        replacements: Dict[str, PlanStage] = {}
+        for fallback_stage in package.stages:
+            if fallback_stage.id not in stage_ids:
+                continue
+            replacements[fallback_stage.id] = generate_stage_segment(
+                package=package,
+                fallback_stage=fallback_stage,
+                core_result=core_result,
+                call_json=call_json,
+                max_steps_per_stage=max_steps_per_stage,
+            )
+        if replacements:
+            package.stages = normalize_stage_graph(
+                [
+                    replacements.get(stage.id, stage).model_copy(deep=True)
+                    for stage in package.stages
+                ]
+            )
+            package.generation.repairRounds += 1
 
     def _apply_parsed_plan_fields(
         self,
@@ -1626,6 +1927,25 @@ class PlanPackageService:
             max_stages=max_stages,
             max_steps_per_stage=max_steps_per_stage,
         )
+        design_brief = build_single_plan_design_brief(
+            package,
+            max_stages=max_stages,
+            max_steps_per_stage=max_steps_per_stage,
+        )
+        selected_gap = next(
+            (item for item in package.gap.items if item.id == package.gap.selectedGapId),
+            None,
+        )
+        supporting_gaps = [
+            item
+            for item in package.gap.items
+            if item.id != package.gap.selectedGapId
+        ][:5]
+        prompt_papers = sorted(
+            package.literatureSurvey.papers,
+            key=lambda paper: paper.relevanceScore,
+            reverse=True,
+        )[:6]
         ablation_instruction = (
             "At least one step must define baselines/control comparisons, and at least one step must define ablation, sensitivity, robustness, or failure analysis."
             if blueprint.ablationRequirements
@@ -1639,31 +1959,82 @@ class PlanPackageService:
                 "maxStepsPerStage": max_steps_per_stage,
                 "note": "Plan describes intended implementation and validation design only; it must not claim executed results.",
             },
-            "planBlueprint": blueprint.model_dump(),
-            "singlePlanDesignBrief": build_single_plan_design_brief(package, max_stages=max_stages, max_steps_per_stage=max_steps_per_stage),
+            "planBlueprint": _compact_prompt_value(
+                blueprint.model_dump(),
+                max_string_chars=400,
+                max_items=10,
+            ),
+            "singlePlanDesignBrief": {
+                "singlePlanOnly": design_brief.get("singlePlanOnly", True),
+                "doNotGenerate": design_brief.get("doNotGenerate", []),
+                "qualityBar": design_brief.get("qualityBar", []),
+            },
             "seedQuery": package.constants.get("seedQuery", ""),
             "domain": package.constants.get("domain", ""),
             "paperType": package.constants.get("paperType", ""),
             "topicAnchors": _topic_terms_from_package(package),
-            "idea": package.idea.model_dump(),
-            "background": package.background.model_dump(),
-            "gap": package.gap.model_dump(),
-            "principle": package.principle.model_dump(),
+            "idea": _compact_prompt_value({
+                "id": package.idea.id,
+                "title": package.idea.title,
+                "problem": package.idea.problem,
+                "hypothesisStatement": package.idea.hypothesisStatement,
+                "keyInsight": package.idea.keyInsight,
+                "proposedMethod": package.idea.proposedMethod,
+                "expectedOutcome": package.idea.expectedOutcome,
+                "closestPriorWork": package.idea.closestPriorWork[:3],
+            }, max_string_chars=900, max_items=8),
+            "background": _compact_prompt_value(
+                {
+                    "summary": package.background.summary,
+                    "motivation": package.background.motivation,
+                    "currentLimitations": package.background.currentLimitations[:6],
+                    "domainContext": package.background.domainContext[:6],
+                    "evidenceRefs": [ref.model_dump() for ref in package.background.evidenceRefs[:12]],
+                },
+                max_string_chars=600,
+                max_items=6,
+            ),
+            "gap": _compact_prompt_value(
+                {
+                    "summary": package.gap.summary,
+                    "selectedGapId": package.gap.selectedGapId,
+                    "items": [
+                        *([selected_gap.model_dump()] if selected_gap else []),
+                        *[item.model_dump() for item in supporting_gaps[:2]],
+                    ],
+                },
+                max_string_chars=600,
+                max_items=6,
+            ),
+            "principle": _compact_prompt_value(
+                {
+                    "summary": package.principle.summary,
+                    "mechanism": package.principle.mechanism,
+                    "noveltyClaim": package.principle.noveltyClaim,
+                    "assumptions": package.principle.assumptions[:6],
+                    "risks": package.principle.risks[:6],
+                    "reasoningPath": package.principle.reasoningPath[:4],
+                    "graphGrounding": package.principle.graphGrounding.model_dump(),
+                    "probeGrounding": package.principle.probeGrounding.model_dump(),
+                },
+                max_string_chars=600,
+                max_items=8,
+            ),
             "allowedEvidenceIds": self._allowed_evidence_ids(package),
             "paperSummaries": [
                 {
                     "paperId": p.paperId,
                     "source": p.source,
                     "title": p.title,
-                    "summary": p.summary,
+                    "summary": _compact_prompt_value(p.summary, max_string_chars=450),
                     "relevanceScore": p.relevanceScore,
                     "relevanceSignals": p.relevanceSignals[:8],
-                    "relevanceReason": p.relevanceReason,
-                    "methods": p.methods[:3],
-                    "findings": p.findings[:3],
-                    "limitations": p.limitations[:3],
+                    "relevanceReason": _compact_prompt_value(p.relevanceReason, max_string_chars=300),
+                    "methods": _compact_prompt_value(p.methods[:2], max_string_chars=250, max_items=2),
+                    "findings": _compact_prompt_value(p.findings[:2], max_string_chars=250, max_items=2),
+                    "limitations": _compact_prompt_value(p.limitations[:2], max_string_chars=250, max_items=2),
                 }
-                for p in package.literatureSurvey.papers[:20]
+                for p in prompt_papers
             ],
             "humanFeedback": [
                 {
@@ -1677,7 +2048,7 @@ class PlanPackageService:
                 for feedback in package.humanFeedback
                 if not feedback.resolved
             ],
-            "reviewFindings": {
+            "reviewFindings": _compact_prompt_value({
                 "decision": package.metaReview.decision if package.metaReview else "",
                 "blockingIssues": [
                     {
@@ -1687,7 +2058,7 @@ class PlanPackageService:
                     for issue in (package.metaReview.blockingIssues if package.metaReview else [])[:12]
                 ],
                 "requiredRepairs": (package.metaReview.requiredRepairs if package.metaReview else [])[:12],
-            },
+            }, max_string_chars=500, max_items=8),
         }
         return (
             "Return ONLY valid JSON. Include writable top-level keys only from: researchQuestion, hypothesis, constants, stages, background, gap, principle.\n"

@@ -113,6 +113,20 @@ class PlanPackageLLMOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class LLMPlanCoreOutput(BaseModel):
+    researchQuestion: str
+    hypothesis: str
+    constants: Dict[str, Any] = Field(default_factory=dict)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class LLMPlanStageOutput(BaseModel):
+    stage: LLMPlanStage
+
+    model_config = ConfigDict(extra="forbid")
+
+
 _ALLOWED_TOP_LEVEL = {
     "researchQuestion",
     "hypothesis",
@@ -122,6 +136,191 @@ _ALLOWED_TOP_LEVEL = {
     "gap",
     "principle",
 }
+
+_RECOVERABLE_TOP_LEVEL = {
+    # Models often add this despite instructions. The canonical contract stores
+    # planned metrics under stages[].steps[].expected, so the top-level copy is
+    # ignored instead of failing an otherwise valid repair round.
+    "expectedMetrics",
+}
+
+_DUPLICATE_NESTED_TOP_LEVEL = {
+    # Some providers repeat nested step fields after an otherwise complete
+    # plan object. They are never canonical top-level PlanPackage fields.
+    "evidenceRefs",
+    "expected",
+    "desc",
+    "metric",
+    "target",
+}
+
+
+def _is_structural_subset(expected: Any, actual: Any) -> bool:
+    if isinstance(expected, dict) and isinstance(actual, dict):
+        return bool(expected) and all(
+            key in actual and _is_structural_subset(item, actual[key])
+            for key, item in expected.items()
+        )
+    if isinstance(expected, list) and isinstance(actual, list):
+        return bool(expected) and len(expected) == len(actual) and all(
+            _is_structural_subset(expected_item, actual_item)
+            for expected_item, actual_item in zip(expected, actual)
+        )
+    return expected == actual
+
+
+def _contains_nested_duplicate(value: Any, field: str, expected: Any) -> bool:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key == field and _is_structural_subset(expected, item):
+                return True
+            if _contains_nested_duplicate(item, field, expected):
+                return True
+    elif isinstance(value, list):
+        return any(_contains_nested_duplicate(item, field, expected) for item in value)
+    return False
+
+
+def _as_list(value: Any) -> List[Any]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, dict):
+        if value and all(isinstance(item, dict) for item in value.values()):
+            return list(value.values())
+        return [value]
+    if isinstance(value, str):
+        cleaned = value.strip()
+        return [cleaned] if cleaned else []
+    return [value]
+
+
+def _as_string_list(value: Any) -> List[str]:
+    items = _as_list(value)
+    strings: List[str] = []
+    for item in items:
+        if isinstance(item, dict):
+            for nested in item.values():
+                text = str(nested or "").strip()
+                if text:
+                    strings.append(text)
+        else:
+            text = str(item or "").strip()
+            if text:
+                strings.append(text)
+    return list(dict.fromkeys(strings))
+
+
+def _coerce_outputs(value: Any) -> List[Any]:
+    outputs: List[Any] = []
+    for item in _as_list(value):
+        if isinstance(item, dict):
+            item = dict(item)
+            if item.get("desc") is None:
+                item["desc"] = ""
+            if item.get("requiredFor") is not None:
+                item["requiredFor"] = _as_string_list(item.get("requiredFor"))
+            outputs.append(item)
+        elif str(item or "").strip():
+            outputs.append({
+                "type": "report",
+                "name": str(item).strip(),
+                "desc": "",
+            })
+    return outputs
+
+
+def _coerce_expected(value: Any) -> List[Any]:
+    expected: List[Any] = []
+    for item in _as_list(value):
+        if isinstance(item, dict):
+            item = dict(item)
+            if item.get("desc") is None:
+                item["desc"] = ""
+            expected.append(item)
+        elif str(item or "").strip():
+            expected.append({
+                "metric": str(item).strip(),
+                "target": "specified before implementation",
+                "desc": "",
+            })
+    return expected
+
+
+def _coerce_evidence_refs(value: Any) -> List[Any]:
+    refs: List[Any] = []
+    for item in _as_list(value):
+        if isinstance(item, dict):
+            item = dict(item)
+            for key in ["type", "id", "source", "note"]:
+                if item.get(key) is None:
+                    item[key] = ""
+            refs.append(item)
+    return refs
+
+
+def _repair_plan_stage_shapes(raw: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize common LLM JSON shape mistakes before strict validation."""
+
+    repaired = dict(raw)
+    if "stages" in repaired:
+        stages = _as_list(repaired.get("stages"))
+        repaired_stages: List[Any] = []
+        for stage in stages:
+            if not isinstance(stage, dict):
+                repaired_stages.append(stage)
+                continue
+            stage = dict(stage)
+            if stage.get("goal") is None:
+                stage["goal"] = ""
+            if stage.get("method") is None:
+                stage["method"] = ""
+            stage["dependsOn"] = _as_string_list(stage.get("dependsOn", []))
+            if "steps" in stage:
+                steps = _as_list(stage.get("steps"))
+                repaired_steps: List[Any] = []
+                for step in steps:
+                    if not isinstance(step, dict):
+                        repaired_steps.append(step)
+                        continue
+                    step = dict(step)
+                    for key in ["desc", "method"]:
+                        if step.get(key) is None:
+                            step[key] = ""
+                    step["inputFrom"] = _as_string_list(step.get("inputFrom", []))
+                    step["outputs"] = _coerce_outputs(step.get("outputs", []))
+                    step["expected"] = _coerce_expected(step.get("expected", []))
+                    step["evidenceRefs"] = _coerce_evidence_refs(step.get("evidenceRefs", []))
+                    if step.get("codeHints") is None:
+                        step["codeHints"] = {}
+                    repaired_steps.append(step)
+                stage["steps"] = repaired_steps
+            repaired_stages.append(stage)
+        repaired["stages"] = repaired_stages
+
+    if isinstance(repaired.get("background"), dict):
+        background = dict(repaired["background"])
+        for key in ["currentLimitations", "domainContext"]:
+            background[key] = _as_string_list(background.get(key, []))
+        repaired["background"] = background
+    if isinstance(repaired.get("gap"), dict):
+        gap = dict(repaired["gap"])
+        if "items" in gap:
+            items = []
+            for item in _as_list(gap.get("items")):
+                if isinstance(item, dict):
+                    item = dict(item)
+                    item["validationNeeds"] = _as_string_list(item.get("validationNeeds", []))
+                items.append(item)
+            gap["items"] = items
+        repaired["gap"] = gap
+    if isinstance(repaired.get("principle"), dict):
+        principle = dict(repaired["principle"])
+        for key in ["assumptions", "risks"]:
+            principle[key] = _as_string_list(principle.get(key, []))
+        repaired["principle"] = principle
+    return repaired
 
 
 def _null_paths(value: Any, prefix: str = "") -> List[str]:
@@ -147,6 +346,54 @@ def _validation_error_messages(exc: ValidationError) -> List[str]:
     return messages
 
 
+def validate_llm_plan_core_output(
+    raw: Any,
+) -> Tuple[Optional[Dict[str, Any]], List[str]]:
+    if not isinstance(raw, dict):
+        return None, ["Core output must be one JSON object"]
+    forbidden = sorted(
+        set(raw) - {"researchQuestion", "hypothesis", "constants"}
+    )
+    if forbidden:
+        return None, ["Core output contains forbidden keys: " + ", ".join(forbidden)]
+    nulls = _null_paths(raw)
+    if nulls:
+        return None, [
+            "Core output contains null values; omit the field or use empty arrays/objects/strings: "
+            + ", ".join(nulls[:12])
+        ]
+    try:
+        parsed = LLMPlanCoreOutput.model_validate(raw)
+    except ValidationError as exc:
+        return None, _validation_error_messages(exc)
+    return parsed.model_dump(), []
+
+
+def validate_llm_plan_stage_output(
+    raw: Any,
+) -> Tuple[Optional[Dict[str, Any]], List[str]]:
+    if not isinstance(raw, dict):
+        return None, ["Stage output must be one JSON object"]
+    forbidden = sorted(set(raw) - {"stage"})
+    if forbidden:
+        return None, ["Stage output contains forbidden keys: " + ", ".join(forbidden)]
+    repaired = dict(raw)
+    if isinstance(repaired.get("stage"), dict):
+        wrapped = _repair_plan_stage_shapes({"stages": [repaired["stage"]]})
+        repaired["stage"] = wrapped["stages"][0]
+    nulls = _null_paths(repaired)
+    if nulls:
+        return None, [
+            "Stage output contains null values; omit the field or use empty arrays/objects/strings: "
+            + ", ".join(nulls[:12])
+        ]
+    try:
+        parsed = LLMPlanStageOutput.model_validate(repaired)
+    except ValidationError as exc:
+        return None, _validation_error_messages(exc)
+    return parsed.model_dump(), []
+
+
 def validate_llm_plan_output(
     raw: Any,
     *,
@@ -156,10 +403,40 @@ def validate_llm_plan_output(
 
     if not isinstance(raw, dict):
         return None, ["LLM output must be one JSON object"]
+    raw = _repair_plan_stage_shapes(dict(raw))
+    for key in _RECOVERABLE_TOP_LEVEL:
+        raw.pop(key, None)
+    for key in _DUPLICATE_NESTED_TOP_LEVEL:
+        if key not in raw:
+            continue
+        if any(
+            _contains_nested_duplicate(value, key, raw[key])
+            for root_key, value in raw.items()
+            if root_key in _ALLOWED_TOP_LEVEL
+        ):
+            raw.pop(key, None)
+    if not set(raw) & _ALLOWED_TOP_LEVEL:
+        return None, ["LLM output did not include any writable PlanPackage fields"]
     unknown = sorted(set(raw) - _ALLOWED_TOP_LEVEL)
     if unknown:
         return None, [
             "LLM output contains forbidden top-level keys: " + ", ".join(unknown)
+        ]
+    if target_sections is None:
+        required_sections = {"stages"}
+    else:
+        required_sections = {
+            section
+            for section in target_sections
+            if section in _ALLOWED_TOP_LEVEL
+        }
+        if "expectedMetrics" in target_sections:
+            required_sections.add("stages")
+    missing_required = sorted(required_sections - set(raw))
+    if missing_required:
+        return None, [
+            "LLM output is missing required writable sections: "
+            + ", ".join(missing_required)
         ]
     nulls = _null_paths(raw)
     if nulls:

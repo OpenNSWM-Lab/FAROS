@@ -1,0 +1,48 @@
+{
+  "schemaVersion": "reviewx_method_matrix_v1",
+  "methods": [
+    {
+      "id": "reviewx_local_full",
+      "kind": "reviewx",
+      "budgetMode": "local_only",
+      "ablationMode": "full",
+      "repetitions": 1,
+      "notes": "Deterministic ReviewX local-only reference method."
+    },
+    {
+      "id": "reviewx_local_no_verifier",
+      "kind": "reviewx",
+      "budgetMode": "local_only",
+      "ablationMode": "no_verifier",
+      "repetitions": 1
+    },
+    {
+      "id": "reviewx_local_no_citation_semantic",
+      "kind": "reviewx",
+      "budgetMode": "local_only",
+      "ablationMode": "no_citation_semantic",
+      "repetitions": 1
+    },
+    {
+      "id": "reviewx_local_no_external_calibration",
+      "kind": "reviewx",
+      "budgetMode": "local_only",
+      "ablationMode": "no_external_calibration",
+      "repetitions": 1
+    },
+    {
+      "id": "reviewx_local_no_mismatch_routing",
+      "kind": "reviewx",
+      "budgetMode": "local_only",
+      "ablationMode": "no_mismatch_routing",
+      "repetitions": 1
+    },
+    {
+      "id": "reviewx_local_no_risk_tree",
+      "kind": "reviewx",
+      "budgetMode": "local_only",
+      "ablationMode": "no_risk_tree",
+      "repetitions": 1
+    }
+  ]
+}

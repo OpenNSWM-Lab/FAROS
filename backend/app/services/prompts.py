@@ -20,6 +20,7 @@ EXPAND_QUERY_USER = """Given the following research topic, expand it into:
 Research Topic: {seed_query}
 Paper Type: {paper_type}
 Domain: {domain}
+{literature_context}
 
 Respond in JSON format:
 {{
@@ -33,6 +34,32 @@ Respond in JSON format:
   ],
   "pathTemplates": ["template1", "template2"]
 }}"""
+
+# Suffix appended when the seed query contains CJK (Chinese) characters.
+# Asks the LLM to also produce English search queries so that international
+# academic databases (Semantic Scholar, ArXiv, OpenAlex) can find relevant
+# papers about the Chinese research topic.
+EXPAND_QUERY_CJK_SUFFIX = """
+
+IMPORTANT: The research topic above is in Chinese (CJK characters).
+In addition to the fields above, provide role-specific English academic queries:
+
+  "englishSearchQueries": ["English search query 1", "English search query 2", ...],
+  "englishQueryRoles": {
+    "domain": ["queries about the named object/domain"],
+    "task": ["queries about the research task or gap"],
+    "method": ["queries about applicable methods"],
+    "evaluation": ["queries about evaluation and limitations"]
+  },
+  "englishKeyConcepts": ["English concept 1", "English concept 2", ...]
+
+These English queries will be used to search international academic databases.
+Translate the research topic and its key concepts accurately into English academic terminology.
+For example, "红楼梦人物关系网络分析" should produce queries like:
+  "Dream of the Red Chamber character network analysis",
+  "Chinese classical literature social network analysis",
+  "character relationship graph in classical Chinese novels"
+Provide 3-5 English search queries that would find relevant academic papers."""
 
 # Step 2: Literature Search (used for relevance scoring)
 SCORE_PAPER_SYSTEM = """You are a research assistant evaluating paper relevance.
@@ -99,6 +126,18 @@ For each gap, provide:
 4. Expected impact if addressed
 5. Feasibility assessment
 
+CRITICAL — Diversity Requirement for researchOpportunities:
+You MUST generate at least 3 research opportunities that are INDEPENDENT of each other.
+Each opportunity must differ from the others in at least TWO of these dimensions:
+- problem formulation (what question is being asked)
+- core methodology (what technical approach is used — e.g. contrastive learning, graph algorithms, probabilistic models, RL, etc.)
+- evaluation setting (how success is measured)
+- application domain (what real-world problem it addresses)
+
+Do NOT generate multiple opportunities that all revolve around the same technical
+paradigm (e.g. all using "contrastive learning" or all using "attention mechanisms").
+Instead, cover genuinely distinct paradigms from the literature review.
+
 Respond in JSON format:
 {{
   "gapAnalysis": [
@@ -115,6 +154,57 @@ Respond in JSON format:
 }}"""
 
 # Step 5: Idea Brainstorm
+SEED_DIRECTION_DECOMPOSITION_SYSTEM = """You are a research direction decomposer.
+Your task is to split an ambiguous seed topic into a small, diverse set of concrete research directions before idea generation.
+Prefer directions that can lead to distinct scientific contributions and experiments."""
+
+SEED_DIRECTION_DECOMPOSITION_USER = """Seed Topic: {seed_query}
+Paper Type: {paper_type}
+Domain: {domain}
+
+Gap Analysis:
+{gap_analysis}
+
+Research Opportunities:
+{opportunities}
+
+Key Literature:
+{key_papers}
+
+IMPORTANT: You MUST create at least 3 research directions that are INDEPENDENT
+from each other — each direction must explore a genuinely different technical
+paradigm or problem angle. They must NOT all revolve around the same core
+methodology (e.g. all "contrastive learning" or all "graph attention").
+
+Each direction must differ from the others in at least TWO of these dimensions:
+- problem formulation
+- core methodology / technical paradigm
+- evaluation setting
+- application domain
+
+Cover DIFFERENT contribution styles when relevant:
+- method (novel algorithm, architecture, or training approach)
+- benchmark (new evaluation tasks, metrics, datasets)
+- system (end-to-end pipeline, integration, deployment)
+- safety_reliability (robustness, faithfulness, failure analysis)
+- application (domain-specific adaptation with real-world use case)
+
+Each direction must stay faithful to the seed topic and cite why it is worth exploring.
+
+Respond in strict JSON:
+{{
+  "researchDirections": [
+    {{
+      "id": "dir-method",
+      "type": "method",
+      "title": "...",
+      "focus": "...",
+      "rationale": "...",
+      "evidenceAnchors": ["paper title, gap, or claim"]
+    }}
+  ]
+}}"""
+
 IDEA_BRAINSTORM_SYSTEM = """You are a creative research idea generator.
 Your task is to generate novel, feasible, and impactful research ideas based on identified gaps and opportunities."""
 
@@ -259,6 +349,7 @@ For each extraction:
 - Findings: key research results. Categorize as empirical, theoretical, methodological, or negative.
 - Methods: techniques, algorithms, frameworks, metrics, datasets mentioned. Categorize as algorithm, framework, metric, dataset, or technique.
 - Novelty Evidence: for each claimed novel contribution, assess whether the evidence supports, contradicts, or overlaps with existing work.
+- Idea cut-in points: extract concrete limitations, open questions, failed assumptions, method weaknesses, missing evaluations, baseline methods, and recommended metrics that could seed new ideas.
 - Always include the evidence span (the sentence or passage from which the claim was extracted).
 - Provide a 2-3 sentence summary of the paper's contribution."""
 
@@ -277,6 +368,7 @@ Extract:
 2. Findings (up to 3): key research results with categories
 3. Methods (up to 5): techniques, algorithms, frameworks, metrics, datasets
 4. Novelty Evidence (up to 3): assessment of whether evidence supports, contradicts, or overlaps with known work
+5. Idea cut-in points: concrete gaps that future idea generation can safely use without inventing evidence
 
 Respond in JSON format:
 {{
@@ -309,7 +401,17 @@ Respond in JSON format:
       "rationale": "Why this evidence supports/contradicts the novelty claim"
     }}
   ],
-  "summary": "A 2-3 sentence summary of the paper's contribution."
+  "summary": "A 2-3 sentence summary of the paper's contribution.",
+  "datasets": ["dataset names mentioned"],
+  "metrics": ["evaluation metrics mentioned"],
+  "limitations": ["limitations stated or directly implied"],
+  "baselines": ["baseline methods compared against"],
+  "openQuestions": ["unresolved questions left by the paper"],
+  "failedAssumptions": ["assumptions that may fail or remain unvalidated"],
+  "methodWeaknesses": ["weaknesses or brittle parts of the method"],
+  "missingEvaluation": ["missing datasets, metrics, ablations, stress tests, or deployment settings"],
+  "baselineMethods": ["baseline methods useful for downstream experiments"],
+  "recommendedMetrics": ["metrics that should test ideas addressing this paper's gaps"]
 }}"""
 
 

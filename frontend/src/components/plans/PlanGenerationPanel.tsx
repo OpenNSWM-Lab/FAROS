@@ -1,11 +1,11 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
   AlertTriangle,
-  ArrowRight,
   BookOpen,
   CheckCircle2,
   ClipboardList,
+  ChevronDown,
   FileJson,
   GitBranch,
   Layers3,
@@ -36,12 +36,11 @@ import {
   type PlanLiteraturePaperSummary,
   type PlanPackage,
   type PlanPackagePresentation,
+  type PlanMetaReview,
   type PlanQualityGate,
-  type PlanReadablePaper,
   type PlanReadableStage,
   type PlanReviewerReport,
   type PlanStage,
-  type PlanStep,
 } from '@/components/plans/planPackageApi'
 
 type GenerationMode = 'hybrid' | 'deterministic'
@@ -80,9 +79,93 @@ function compactValue(value: unknown): string {
   }
 }
 
+function uniqueStrings(values: Array<string | null | undefined>): string[] {
+  return Array.from(
+    new Set(
+      values
+        .map((value) => value?.trim())
+        .filter((value): value is string => Boolean(value)),
+    ),
+  )
+}
+
 function shortId(id?: string | null) {
   if (!id) return '-'
   return id.length > 18 ? `${id.slice(0, 10)}...${id.slice(-6)}` : id
+}
+
+function formatDomainContextSignal(value: string) {
+  const cleaned = value.replace(/^cluster:\s*/i, '').trim()
+  return cleaned
+    .split(',')
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .join(' · ')
+}
+
+function summarizeRecordText(value: unknown): string {
+  if (value == null) return ''
+  if (typeof value === 'string') return value.trim()
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+  if (Array.isArray(value)) {
+    return value.map(summarizeRecordText).filter(Boolean).join(', ')
+  }
+  if (typeof value !== 'object') return compactValue(value)
+
+  const record = value as Record<string, unknown>
+  for (const key of ['description', 'summary', 'title', 'name', 'text', 'label', 'statement']) {
+    const text = summarizeRecordText(record[key])
+    if (text) return text
+  }
+
+  return compactValue(value)
+}
+
+function StatCard({
+  label,
+  value,
+  detail,
+}: {
+  label: string
+  value: string
+  detail?: string
+}) {
+  return (
+    <div className="rounded-md border border-slate-300 bg-white px-3 py-2 shadow-sm">
+      <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">{label}</p>
+      <p className="mt-1 text-sm font-semibold text-slate-950">{value}</p>
+      {detail && <p className="mt-0.5 text-xs text-slate-600">{detail}</p>}
+    </div>
+  )
+}
+
+function toReadableStage(stage: PlanStage): PlanReadableStage {
+  return {
+    id: stage.id,
+    order: stage.order,
+    title: stage.title,
+    goal: stage.goal,
+    method: stage.method,
+    dependsOn: stage.dependsOn,
+    steps: stage.steps.map((step) => ({
+      id: step.id,
+      order: step.order,
+      title: step.title,
+      description: step.desc,
+      method: step.method,
+      inputFrom: step.inputFrom ?? [],
+      outputs: step.outputs.map((output) => ({
+        type: output.type,
+        name: output.name,
+        desc: output.desc,
+      })),
+      expected: step.expected.map((expected) => ({
+        metric: expected.metric,
+        target: expected.target,
+      })),
+      evidenceRefs: step.evidenceRefs ?? [],
+    })),
+  }
 }
 
 function QualityGateSummary({ gate }: { gate: PlanQualityGate }) {
@@ -129,7 +212,7 @@ function TextList({ items, emptyLabel }: { items: string[]; emptyLabel: string }
   return (
     <ul className="space-y-2 text-sm text-slate-800">
       {items.map((item, index) => (
-        <li key={`${item}-${index}`} className="rounded-md border border-slate-300 bg-slate-50 px-3 py-2">
+        <li key={`${item}-${index}`} className="break-words rounded-md border border-slate-300 bg-slate-50 px-3 py-2">
           {item}
         </li>
       ))}
@@ -137,112 +220,188 @@ function TextList({ items, emptyLabel }: { items: string[]; emptyLabel: string }
   )
 }
 
-function StepBlock({ step }: { step: PlanStep }) {
+function DisclosureBlock({
+  title,
+  summary,
+  children,
+  icon,
+  defaultOpen = false,
+}: {
+  title: string
+  summary?: string
+  children: ReactNode
+  icon?: ReactNode
+  defaultOpen?: boolean
+}) {
+  const [open, setOpen] = useState(defaultOpen)
+
   return (
     <div className="rounded-md border border-slate-300 bg-white px-4 py-3 shadow-sm">
-      <div className="flex flex-wrap items-start justify-between gap-3">
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        className="flex w-full items-start justify-between gap-3 text-left"
+        aria-expanded={open}
+      >
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <Badge variant="outline" className="font-mono text-[11px]">
-              {step.id}
-            </Badge>
-            <h4 className="text-sm font-semibold text-slate-900">{step.title}</h4>
+            {icon}
+            <p className="text-sm font-semibold text-slate-900">{title}</p>
           </div>
-          <p className="mt-2 text-sm text-slate-800">{step.desc}</p>
-          <p className="mt-2 text-xs text-slate-600">{step.method}</p>
+          {summary && <p className="mt-1 text-xs text-slate-600">{summary}</p>}
         </div>
-        <Badge variant="secondary" className="shrink-0">
-          Step {step.order}
-        </Badge>
-      </div>
+        <span className="flex shrink-0 items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-2 py-1 text-xs text-slate-600">
+          <ChevronDown className={`h-3.5 w-3.5 text-slate-500 transition-transform ${open ? 'rotate-180' : ''}`} />
+          {open ? 'Collapse' : 'Expand'}
+        </span>
+      </button>
 
-      {step.inputFrom.length > 0 && (
-        <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-slate-700">
-          <GitBranch className="h-3.5 w-3.5" />
-          {step.inputFrom.map((id) => (
-            <span key={id} className="rounded bg-slate-200 px-2 py-1 font-mono text-slate-900">
-              {id}
-            </span>
-          ))}
-        </div>
-      )}
-
-      <div className="mt-3 grid gap-3 lg:grid-cols-2">
-        <div>
-          <p className="mb-2 text-xs font-semibold uppercase text-slate-500">Outputs</p>
-          <div className="space-y-2">
-            {step.outputs.map((output, index) => (
-              <div key={`${output.name}-${index}`} className="rounded-md border border-l-4 border-slate-300 border-l-blue-700 bg-white px-3 py-2 text-xs">
-                <div className="flex flex-wrap items-center gap-2">
-                  <Badge variant="outline" className="border-blue-400 bg-blue-50 text-blue-900">
-                    {output.type}
-                  </Badge>
-                  <span className="font-mono text-slate-800">{output.name}</span>
-                </div>
-                {output.desc && <p className="mt-1 text-slate-600">{output.desc}</p>}
-              </div>
-            ))}
-          </div>
-        </div>
-        <div>
-          <p className="mb-2 text-xs font-semibold uppercase text-slate-500">Expected</p>
-          <div className="space-y-2">
-            {step.expected.map((expected, index) => (
-              <div key={`${expected.metric}-${index}`} className="rounded-md border border-l-4 border-slate-300 border-l-emerald-700 bg-white px-3 py-2 text-xs">
-                <p className="font-medium text-emerald-900">{expected.metric}</p>
-                <p className="mt-1 text-slate-800">{expected.target}</p>
-                {expected.desc && <p className="mt-1 text-slate-600">{expected.desc}</p>}
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      <div className="mt-3">
-        <EvidenceChips refs={step.evidenceRefs} />
-      </div>
+      {open && <div className="mt-3">{children}</div>}
     </div>
   )
 }
 
-function StageBlock({ stage }: { stage: PlanStage }) {
+function ReadableStageBlock({ stage }: { stage: PlanReadableStage }) {
+  const [expanded, setExpanded] = useState(false)
+  const [expandedSteps, setExpandedSteps] = useState<Record<string, boolean>>({})
+
   return (
-    <div className="rounded-md border border-slate-300 bg-white px-4 py-4 shadow-sm">
-      <div className="flex flex-wrap items-start justify-between gap-3">
+    <div className="rounded-md border border-slate-300 bg-white px-4 py-3 shadow-sm">
+      <button
+        type="button"
+        onClick={() => setExpanded((value) => !value)}
+        className="flex w-full flex-wrap items-start justify-between gap-3 text-left"
+        aria-expanded={expanded}
+      >
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <Badge variant="outline" className="font-mono text-[11px]">
-              {stage.id}
+              Stage {stage.order}
             </Badge>
             <h3 className="text-base font-semibold text-slate-900">{stage.title}</h3>
           </div>
           <p className="mt-2 text-sm text-slate-800">{stage.goal}</p>
           <p className="mt-2 text-xs text-slate-600">{stage.method}</p>
         </div>
-        <Badge className="bg-indigo-700 text-white">Stage {stage.order}</Badge>
-      </div>
-      {stage.dependsOn.length > 0 && (
-        <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-slate-700">
-          <GitBranch className="h-3.5 w-3.5" />
-          {stage.dependsOn.map((id) => (
-            <span key={id} className="rounded bg-slate-100 px-2 py-1 font-mono text-slate-900">
-              {id}
-            </span>
-          ))}
+        <div className="flex shrink-0 items-center gap-2 text-xs text-slate-600">
+          <Badge variant="secondary" className="shrink-0">
+            {stage.steps.length} steps
+          </Badge>
+          <span className="flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-2 py-1">
+            <ChevronDown className={`h-3.5 w-3.5 text-slate-500 transition-transform ${expanded ? 'rotate-180' : ''}`} />
+            {expanded ? 'Collapse' : 'Expand'}
+          </span>
         </div>
+      </button>
+
+      {expanded && (
+        <>
+          {stage.dependsOn.length > 0 && (
+            <div className="mt-4 flex flex-wrap items-center gap-2 text-xs text-slate-700">
+              <GitBranch className="h-3.5 w-3.5" />
+              {stage.dependsOn.map((id) => (
+                <span key={id} className="rounded bg-slate-100 px-2 py-1 font-mono text-slate-900">
+                  {id}
+                </span>
+              ))}
+            </div>
+          )}
+
+          <div className="mt-4 space-y-3 border-t border-slate-200 pt-4">
+            {stage.steps.map((step) => {
+              const stepOpen = Boolean(expandedSteps[step.id])
+              const inputFrom = step.inputFrom ?? []
+              const evidenceRefs = step.evidenceRefs ?? []
+              const outputs = step.outputs ?? []
+              const expected = step.expected ?? []
+
+              return (
+                <div key={step.id} className="rounded-md border border-slate-200 bg-slate-50 px-3 py-3">
+                  <button
+                    type="button"
+                    onClick={() => setExpandedSteps((current) => ({ ...current, [step.id]: !current[step.id] }))}
+                    className="flex w-full flex-wrap items-start justify-between gap-3 text-left"
+                    aria-expanded={stepOpen}
+                  >
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Badge variant="outline" className="font-mono text-[11px]">
+                          {step.id}
+                        </Badge>
+                        <p className="text-sm font-semibold text-slate-900">{step.title}</p>
+                      </div>
+                      <p className="mt-1 text-sm text-slate-700">{step.description}</p>
+                      <p className="mt-2 text-xs text-slate-600">{step.method}</p>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-2 text-xs text-slate-600">
+                      <Badge variant="secondary">Step {step.order}</Badge>
+                      <Badge variant="outline">{outputs.length} outputs</Badge>
+                      <Badge variant="outline">{expected.length} metrics</Badge>
+                      <span className="flex items-center gap-1 rounded-full border border-slate-200 bg-white px-2 py-1">
+                        <ChevronDown className={`h-3.5 w-3.5 text-slate-500 transition-transform ${stepOpen ? 'rotate-180' : ''}`} />
+                        {stepOpen ? 'Collapse' : 'Expand'}
+                      </span>
+                    </div>
+                  </button>
+
+                  {stepOpen && (
+                    <div className="mt-3 grid gap-3 md:grid-cols-2">
+                      <div>
+                        <p className="mb-2 text-xs font-semibold uppercase text-slate-500">Outputs</p>
+                        <div className="space-y-2">
+                          {outputs.map((output, index) => (
+                            <div key={`${output.name}-${index}`} className="rounded-md border border-l-4 border-slate-300 border-l-blue-700 bg-white px-3 py-2 text-xs">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <Badge variant="outline" className="border-blue-400 bg-blue-50 text-blue-900">
+                                  {output.type}
+                                </Badge>
+                                <span className="font-mono text-slate-800">{output.name}</span>
+                              </div>
+                              {output.desc && <p className="mt-1 text-slate-600">{output.desc}</p>}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                      <div>
+                        <p className="mb-2 text-xs font-semibold uppercase text-slate-500">Expected</p>
+                        <div className="space-y-2">
+                          {expected.map((expectedItem, index) => (
+                            <div key={`${expectedItem.metric}-${index}`} className="rounded-md border border-l-4 border-slate-300 border-l-emerald-700 bg-white px-3 py-2 text-xs">
+                              <p className="font-medium text-emerald-900">{expectedItem.metric}</p>
+                              <p className="mt-1 text-slate-800">{expectedItem.target}</p>
+                              {expectedItem.desc && <p className="mt-1 text-slate-600">{expectedItem.desc}</p>}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                      {inputFrom.length > 0 && (
+                        <div className="md:col-span-2 flex flex-wrap items-center gap-2 text-xs text-slate-700">
+                          <GitBranch className="h-3.5 w-3.5" />
+                          {inputFrom.map((id) => (
+                            <span key={id} className="rounded bg-slate-100 px-2 py-1 font-mono text-slate-900">
+                              {id}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                      <div className="md:col-span-2">
+                        <EvidenceChips refs={evidenceRefs} />
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        </>
       )}
-      <div className="mt-4 space-y-3">
-        {stage.steps.map((step) => (
-          <StepBlock key={step.id} step={step} />
-        ))}
-      </div>
     </div>
   )
 }
 
 function PaperRow({ paper }: { paper: PlanLiteraturePaperSummary }) {
-  const methods = paper.methods.map(compactValue).filter(Boolean).slice(0, 2)
-  const findings = paper.findings.map(compactValue).filter(Boolean).slice(0, 2)
+  const methods = paper.methods.map(summarizeRecordText).filter(Boolean).slice(0, 2)
+  const findings = paper.findings.map(summarizeRecordText).filter(Boolean).slice(0, 2)
 
   return (
     <div className="rounded-md border border-slate-300 bg-white px-4 py-3 shadow-sm">
@@ -252,9 +411,7 @@ function PaperRow({ paper }: { paper: PlanLiteraturePaperSummary }) {
             <Badge variant="outline" className="font-mono text-[11px]">
               {shortId(paper.paperId)}
             </Badge>
-            <Badge className={paper.source === 'probe' ? 'bg-indigo-700 text-white' : 'bg-blue-700 text-white'}>
-              {paper.source}
-            </Badge>
+            <Badge className={paper.source === 'probe' ? 'bg-indigo-700 text-white' : 'bg-blue-700 text-white'}>{paper.source}</Badge>
             <Badge
               variant="outline"
               className={
@@ -275,9 +432,7 @@ function PaperRow({ paper }: { paper: PlanLiteraturePaperSummary }) {
         {paper.role && <Badge variant="secondary">{paper.role}</Badge>}
       </div>
       <p className="mt-3 text-sm text-slate-700">{paper.summary}</p>
-      {paper.relevanceReason && (
-        <p className="mt-2 text-xs text-slate-600">{paper.relevanceReason}</p>
-      )}
+      {paper.relevanceReason && <p className="mt-2 text-xs text-slate-600">{paper.relevanceReason}</p>}
       {paper.relevanceSignals.length > 0 && (
         <div className="mt-2 flex flex-wrap gap-1.5">
           {paper.relevanceSignals.slice(0, 8).map((signal) => (
@@ -300,81 +455,6 @@ function PaperRow({ paper }: { paper: PlanLiteraturePaperSummary }) {
           <p className="text-xs font-semibold uppercase text-slate-500">Limitations</p>
           <TextList items={paper.limitations.slice(0, 3)} emptyLabel="No limitation summary" />
         </div>
-      </div>
-    </div>
-  )
-}
-
-function ReadablePaperRow({ paper }: { paper: PlanReadablePaper }) {
-  return (
-    <div className="rounded-md border border-slate-300 bg-white px-4 py-3 shadow-sm">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <Badge className={paper.source === 'probe' ? 'bg-indigo-700 text-white' : 'bg-blue-700 text-white'}>
-              {paper.source || 'paper'}
-            </Badge>
-            <Badge
-              variant="outline"
-              className={paper.relevanceScore >= 0.7 ? 'border-emerald-400 bg-emerald-50 text-emerald-900' : paper.relevanceScore >= 0.45 ? 'border-amber-400 bg-amber-50 text-amber-900' : 'border-red-300 bg-red-50 text-red-900'}
-            >
-              relevance {(paper.relevanceScore * 100).toFixed(0)}
-            </Badge>
-          </div>
-          <p className="mt-2 text-sm font-semibold text-slate-950">{paper.title}</p>
-        </div>
-      </div>
-      <p className="mt-2 text-sm text-slate-700">{paper.summary}</p>
-      {paper.supports.length > 0 && (
-        <div className="mt-2 flex flex-wrap gap-1.5">
-          {paper.supports.map((support) => (
-            <Badge key={support} variant="outline" className="border-emerald-300 bg-emerald-50 text-emerald-900">
-              {support}
-            </Badge>
-          ))}
-        </div>
-      )}
-    </div>
-  )
-}
-
-function ReadableStageBlock({ stage }: { stage: PlanReadableStage }) {
-  return (
-    <div className="rounded-md border border-slate-300 bg-white px-4 py-4 shadow-sm">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h3 className="text-base font-semibold text-slate-900">{stage.title}</h3>
-          <p className="mt-2 text-sm text-slate-800">{stage.goal}</p>
-          <p className="mt-2 text-xs text-slate-600">{stage.method}</p>
-        </div>
-        <Badge className="bg-indigo-700 text-white">Stage {stage.order}</Badge>
-      </div>
-      <div className="mt-4 space-y-3">
-        {stage.steps.map((step) => (
-          <div key={step.id} className="rounded-md border border-slate-200 bg-slate-50 px-3 py-3">
-            <p className="text-sm font-semibold text-slate-900">{step.title}</p>
-            <p className="mt-1 text-sm text-slate-700">{step.description}</p>
-            <p className="mt-2 text-xs text-slate-600">{step.method}</p>
-            <div className="mt-3 grid gap-2 md:grid-cols-2">
-              <div>
-                <p className="mb-1 text-xs font-semibold uppercase text-slate-500">Outputs</p>
-                {step.outputs.map((output, index) => (
-                  <p key={`${output.name}-${index}`} className="text-xs text-slate-700">
-                    {output.type}: {output.name}
-                  </p>
-                ))}
-              </div>
-              <div>
-                <p className="mb-1 text-xs font-semibold uppercase text-slate-500">Expected</p>
-                {step.expected.map((expected, index) => (
-                  <p key={`${expected.metric}-${index}`} className="text-xs text-slate-700">
-                    {expected.metric}: {expected.target}
-                  </p>
-                ))}
-              </div>
-            </div>
-          </div>
-        ))}
       </div>
     </div>
   )
@@ -462,6 +542,96 @@ function ReviewerReportCard({ report }: { report: PlanReviewerReport }) {
   )
 }
 
+function ReviewerCommitteeDisclosure({ reports }: { reports: PlanReviewerReport[] }) {
+  const [open, setOpen] = useState(false)
+
+  return (
+    <div className="rounded-md border border-slate-300 bg-white px-4 py-3 shadow-sm">
+      <button
+        type="button"
+        className="flex w-full items-center justify-between gap-3 text-left"
+        onClick={() => setOpen((value) => !value)}
+        aria-expanded={open}
+      >
+        <span className="text-sm font-medium text-slate-800">Reviewer committee details</span>
+        <span className="flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-2 py-1 text-xs text-slate-600">
+          <ChevronDown className={`h-3.5 w-3.5 text-slate-500 transition-transform ${open ? 'rotate-180' : ''}`} />
+          {open ? 'Collapse' : 'Expand'}
+        </span>
+      </button>
+      {open && (
+        <div className="mt-3 space-y-3">
+          {reports.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No reviewer reports yet. They are generated automatically when a package is created or revised.</p>
+          ) : (
+            <div className="space-y-3">
+              {reports.map((report) => (
+                <ReviewerReportCard key={report.reviewer} report={report} />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function IterationNotesDisclosure({
+  gate,
+  generationWarnings,
+  reviewSummary,
+  metaReview,
+}: {
+  gate: PlanQualityGate
+  generationWarnings: string[]
+  reviewSummary?: PlanPackagePresentation['reviewSummary'] | null
+  metaReview?: PlanMetaReview | null
+}) {
+  const refinementItems = useMemo(
+    () =>
+      uniqueStrings([
+        ...gate.errors,
+        ...(metaReview?.requiredRepairs || []),
+        ...(reviewSummary?.requiredFixes || []),
+      ]),
+    [gate.errors, metaReview?.requiredRepairs, reviewSummary?.requiredFixes],
+  )
+  const watchItems = useMemo(
+    () =>
+      uniqueStrings([
+        ...gate.warnings,
+        ...generationWarnings,
+        ...(reviewSummary?.mainConcerns || []),
+      ]),
+    [gate.warnings, generationWarnings, reviewSummary?.mainConcerns],
+  )
+
+  const itemCount = refinementItems.length + watchItems.length
+  const summary = itemCount
+    ? `${itemCount} internal notes grouped from validation, reviewer feedback, and generation warnings`
+    : 'No open iteration notes. The current package is clean enough for the next pass.'
+
+  return (
+    <DisclosureBlock
+      title="Iteration notes"
+      summary={summary}
+      icon={<RefreshCw className="h-4 w-4 text-slate-600" />}
+      defaultOpen={false}
+    >
+      <div className={`grid gap-4 ${refinementItems.length > 0 && watchItems.length > 0 ? 'lg:grid-cols-2' : ''}`}>
+        <div>
+          <p className="mb-2 text-xs font-semibold uppercase text-slate-500">Needs refinement</p>
+          <TextList items={refinementItems} emptyLabel="No refinement items" />
+        </div>
+        <div>
+          <p className="mb-2 text-xs font-semibold uppercase text-slate-500">Watch list</p>
+          <TextList items={watchItems} emptyLabel="No watch list items" />
+        </div>
+      </div>
+    </DisclosureBlock>
+  )
+}
+
 function FeedbackList({ feedback }: { feedback: PlanHumanFeedback[] }) {
   if (!feedback.length) {
     return <p className="text-sm text-muted-foreground">No human feedback yet.</p>
@@ -513,6 +683,7 @@ export function PlanGenerationPanel({
   const [maxStages, setMaxStages] = useState(3)
   const [maxStepsPerStage, setMaxStepsPerStage] = useState(3)
   const [maxReviewIterations, setMaxReviewIterations] = useState(2)
+  const [advancedGenerationOpen, setAdvancedGenerationOpen] = useState(false)
   const [userNotes, setUserNotes] = useState('')
   const [feedbackComment, setFeedbackComment] = useState('')
 
@@ -591,6 +762,13 @@ export function PlanGenerationPanel({
     setSearchParams(next, { replace: true })
   }
 
+  const openCodeWorkspace = useCallback(
+    (packageId: string) => {
+      navigate(`/code/workspace?packageId=${encodeURIComponent(packageId)}`)
+    },
+    [navigate],
+  )
+
   const createPackage = async () => {
     if (!ideaSessionIdFromUrl) {
       setError('Open this page from an Idea candidate or paste a PlanPackage ID.')
@@ -628,6 +806,7 @@ export function PlanGenerationPanel({
       const approved = await approvePlanPackageWithMode(planPackage.packageId, DEFAULT_REVIEWER_MODE)
       setPlanPackage(approved)
       setPresentation(await getPlanPackagePresentation(approved.packageId))
+      openCodeWorkspace(approved.packageId)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to approve PlanPackage')
     } finally {
@@ -705,7 +884,32 @@ export function PlanGenerationPanel({
     ].filter((id, index, ids) => id && ids.indexOf(id) === index && !summarizedIds.has(id))
   }, [evidencePapers, planPackage])
 
+  const readableImplementationStages = useMemo(
+    () => planPackage?.stages.map(toReadableStage) ?? [],
+    [planPackage],
+  )
+
+  const planStats = useMemo(() => {
+    if (!planPackage) return null
+    return {
+      status: planPackage.status,
+      score: `${(planPackage.qualityGate.overallScore * 100).toFixed(0)} / 100`,
+      readiness: planPackage.qualityGate.implementationReady ? 'Ready for handoff' : 'Iterating internally',
+      stages: `${planPackage.stages.length} stages`,
+      steps: `${totalSteps} steps`,
+      papers: `${planPackage.literatureSurvey.papers.length} papers`,
+    }
+  }, [planPackage, totalSteps])
+
   const gate = planPackage?.qualityGate ?? EMPTY_GATE
+  const summaryTitle = presentation?.title || planPackage?.idea.title || planPackage?.researchQuestion || 'PlanPackage'
+  const summaryQuestion = presentation?.researchQuestion || planPackage?.researchQuestion || ''
+  const summaryHypothesis = presentation?.hypothesis || planPackage?.hypothesis || ''
+  const summaryExecutive = presentation?.executiveSummary || planPackage?.idea.critiqueSummary || ''
+  const summaryReviewDecision = presentation?.reviewSummary.decision || planPackage?.metaReview?.decision || gate.reviewDecision
+  const summaryReviewScore = presentation?.reviewSummary.score ?? planPackage?.metaReview?.overallScore ?? gate.overallScore
+  const summaryReviewerMode = presentation?.reviewSummary.reviewerMode || planPackage?.generation.reviewerMode || 'unknown'
+  const summaryReviewerUsed = presentation?.reviewSummary.llmReviewerUsed ?? planPackage?.generation.llmReviewerUsed
 
   return (
     <div className="space-y-6">
@@ -724,7 +928,7 @@ export function PlanGenerationPanel({
             <div className="flex flex-wrap gap-2">
               <Button onClick={approveCurrentPackage} disabled={!planPackage || isApproving} className="bg-emerald-700 text-white hover:bg-emerald-800">
                 {isApproving ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <UserCheck className="mr-2 h-4 w-4" />}
-                Approve Handoff
+                Approve & Open Code
               </Button>
             </div>
           </div>
@@ -765,58 +969,76 @@ export function PlanGenerationPanel({
                   Generate PlanPackage
                 </Button>
               </div>
-              <div className="mt-3 grid gap-3 md:grid-cols-4">
-                <label className="space-y-1 text-xs font-medium text-slate-700">
-                  Generation
-                  <select
-                    value={generationMode}
-                    onChange={(event) => setGenerationMode(event.target.value as GenerationMode)}
-                    className="h-9 w-full rounded-md border border-slate-400 bg-white px-2 text-sm text-slate-900"
-                  >
-                    <option value="hybrid">Hybrid LLM</option>
-                    <option value="deterministic">Deterministic</option>
-                  </select>
-                </label>
-                <label className="space-y-1 text-xs font-medium text-slate-700">
-                  Max stages: {maxStages}
-                  <input
-                    type="range"
-                    min={1}
-                    max={5}
-                    value={maxStages}
-                    onChange={(event) => setMaxStages(Number(event.target.value))}
-                    className="w-full"
-                  />
-                </label>
-                <label className="space-y-1 text-xs font-medium text-slate-700">
-                  Max steps/stage: {maxStepsPerStage}
-                  <input
-                    type="range"
-                    min={1}
-                    max={5}
-                    value={maxStepsPerStage}
-                    onChange={(event) => setMaxStepsPerStage(Number(event.target.value))}
-                    className="w-full"
-                  />
-                </label>
-                <label className="space-y-1 text-xs font-medium text-slate-700">
-                  Review iterations: {maxReviewIterations}
-                  <input
-                    type="range"
-                    min={0}
-                    max={2}
-                    value={maxReviewIterations}
-                    onChange={(event) => setMaxReviewIterations(Number(event.target.value))}
-                    className="w-full"
-                  />
-                </label>
+              <div className="mt-3 flex flex-wrap items-center justify-between gap-3 text-xs text-slate-600">
+                <button
+                  type="button"
+                  onClick={() => setAdvancedGenerationOpen((value) => !value)}
+                  className="inline-flex items-center gap-1 font-medium text-slate-700 hover:text-slate-950"
+                  aria-expanded={advancedGenerationOpen}
+                >
+                  <ChevronDown className={`h-3.5 w-3.5 transition-transform ${advancedGenerationOpen ? 'rotate-180' : ''}`} />
+                  {advancedGenerationOpen ? 'Hide advanced generation settings' : 'Show advanced generation settings'}
+                </button>
+                <span className="text-slate-500">
+                  {generationMode === 'hybrid' ? 'Hybrid LLM' : 'Deterministic'} · {maxStages} stages · {maxStepsPerStage} steps/stage · {maxReviewIterations} review passes
+                </span>
               </div>
-              <textarea
-                value={userNotes}
-                onChange={(event) => setUserNotes(event.target.value)}
-                placeholder="Optional planning constraints for this package"
-                className="mt-3 min-h-[72px] w-full rounded-md border border-slate-400 bg-white px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-600"
-              />
+              {advancedGenerationOpen && (
+                <div className="mt-3 border-t border-slate-200 pt-3">
+                  <div className="grid gap-3 md:grid-cols-4">
+                    <label className="space-y-1 text-xs font-medium text-slate-700">
+                      Generation
+                      <select
+                        value={generationMode}
+                        onChange={(event) => setGenerationMode(event.target.value as GenerationMode)}
+                        className="h-9 w-full rounded-md border border-slate-400 bg-white px-2 text-sm text-slate-900"
+                      >
+                        <option value="hybrid">Hybrid LLM</option>
+                        <option value="deterministic">Deterministic</option>
+                      </select>
+                    </label>
+                    <label className="space-y-1 text-xs font-medium text-slate-700">
+                      Max stages: {maxStages}
+                      <input
+                        type="range"
+                        min={1}
+                        max={5}
+                        value={maxStages}
+                        onChange={(event) => setMaxStages(Number(event.target.value))}
+                        className="w-full"
+                      />
+                    </label>
+                    <label className="space-y-1 text-xs font-medium text-slate-700">
+                      Max steps/stage: {maxStepsPerStage}
+                      <input
+                        type="range"
+                        min={1}
+                        max={5}
+                        value={maxStepsPerStage}
+                        onChange={(event) => setMaxStepsPerStage(Number(event.target.value))}
+                        className="w-full"
+                      />
+                    </label>
+                    <label className="space-y-1 text-xs font-medium text-slate-700">
+                      Review iterations: {maxReviewIterations}
+                      <input
+                        type="range"
+                        min={0}
+                        max={2}
+                        value={maxReviewIterations}
+                        onChange={(event) => setMaxReviewIterations(Number(event.target.value))}
+                        className="w-full"
+                      />
+                    </label>
+                  </div>
+                  <textarea
+                    value={userNotes}
+                    onChange={(event) => setUserNotes(event.target.value)}
+                    placeholder="Optional planning constraints for this package"
+                    className="mt-3 min-h-[72px] w-full rounded-md border border-slate-400 bg-white px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-600"
+                  />
+                </div>
+              )}
             </div>
           )}
 
@@ -847,7 +1069,8 @@ export function PlanGenerationPanel({
       )}
 
       {planPackage && (
-        <div className="space-y-6">
+        <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_340px] xl:items-start">
+          <div className="space-y-6">
           <Card>
             <CardHeader>
               <div className="flex flex-wrap items-start justify-between gap-3">
@@ -884,55 +1107,554 @@ export function PlanGenerationPanel({
                     </CardDescription>
                   )}
                 </div>
-                <div className="flex flex-wrap gap-2">
-                  <Button variant="outline" onClick={() => navigate(`/code/workspace?packageId=${encodeURIComponent(planPackage.packageId)}`)}>
-                    <ArrowRight className="mr-2 h-4 w-4" />
-                    Code
-                  </Button>
-                </div>
               </div>
             </CardHeader>
-            <CardContent className="space-y-4">
-              <QualityGateSummary gate={gate} />
-              {(gate.errors.length > 0 || gate.warnings.length > 0 || planPackage.generation.warnings.length > 0) && (
-                <div className="grid gap-3 lg:grid-cols-2">
-                  {gate.errors.length > 0 && (
-                    <div className="rounded-md border border-l-4 border-red-300 border-l-red-700 bg-white px-3 py-2 text-sm text-red-800">
-                      <p className="font-medium">Errors</p>
-                      <TextList items={gate.errors} emptyLabel="No errors" />
-                    </div>
-                  )}
-                  {(gate.warnings.length > 0 || planPackage.generation.warnings.length > 0) && (
-                    <div className="rounded-md border border-l-4 border-amber-300 border-l-amber-700 bg-white px-3 py-2 text-sm text-amber-900">
-                      <p className="font-medium">Warnings</p>
-                      <TextList items={[...gate.warnings, ...planPackage.generation.warnings]} emptyLabel="No warnings" />
-                    </div>
-                  )}
-                </div>
-              )}
-              {planPackage.metaReview && (
-                <div className="rounded-md border border-slate-300 bg-white px-4 py-3 shadow-sm">
-                  <div className="flex flex-wrap items-center justify-between gap-3">
-                    <div>
-                      <p className="text-sm font-semibold text-slate-900">Reviewer decision</p>
-                      <p className="mt-1 text-xs text-slate-600">
-                        confidence {(planPackage.metaReview.confidence * 100).toFixed(0)} · {planPackage.metaReview.blockingIssues.length} blocking issues
-                      </p>
-                    </div>
-                    <Badge className={planPackage.metaReview.decision === 'approve' ? 'bg-emerald-700 text-white' : 'bg-amber-700 text-white'}>
-                      {planPackage.metaReview.decision}
-                    </Badge>
+              <CardContent className="space-y-4">
+                {planStats && (
+                  <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+                    <StatCard label="Status" value={planStats.status} detail={planStats.readiness} />
+                    <StatCard label="Score" value={planStats.score} detail={summaryTitle} />
+                    <StatCard label="Structure" value={planStats.stages} detail={planStats.steps} />
+                    <StatCard
+                      label="Evidence"
+                      value={planStats.papers}
+                      detail={`${planPackage.literatureSurvey.coverage.structuredPaperCount} structured`}
+                    />
+                    <StatCard label="Created" value={new Date(planPackage.createdAt).toLocaleDateString()} detail={planPackage.schemaVersion} />
                   </div>
-                  {planPackage.metaReview.requiredRepairs.length > 0 && (
-                    <div className="mt-3">
-                      <TextList items={planPackage.metaReview.requiredRepairs.slice(0, 4)} emptyLabel="No required repairs" />
-                    </div>
-                  )}
-                </div>
-              )}
+                )}
+              </CardContent>
+            </Card>
 
-              <div className="grid gap-4 xl:grid-cols-[1fr_1.2fr]">
-                <div className="rounded-md border border-slate-300 bg-white px-4 py-3 shadow-sm">
+            <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
+              <TabsList className="h-auto flex-wrap justify-start gap-1">
+                <TabsTrigger value="summary">Summary</TabsTrigger>
+                <TabsTrigger value="narrative">Narrative</TabsTrigger>
+                <TabsTrigger value="implementation">Implementation</TabsTrigger>
+                <TabsTrigger value="evidence">Evidence</TabsTrigger>
+              </TabsList>
+
+              <TabsContent value="summary" className="space-y-4">
+                {presentation ? (
+                  <div className="grid gap-4 xl:grid-cols-[1.45fr_1fr]">
+                    <Card>
+                      <CardHeader className="pb-3">
+                        <CardTitle className="text-lg">{summaryTitle}</CardTitle>
+                        <CardDescription className="leading-relaxed">{summaryExecutive}</CardDescription>
+                      </CardHeader>
+                      <CardContent className="space-y-4">
+                        <div className="grid gap-3 md:grid-cols-2">
+                          <div className="rounded-md border border-slate-300 bg-slate-50 px-3 py-3">
+                            <p className="text-xs font-semibold uppercase text-slate-500">Research question</p>
+                            <p className="mt-2 text-sm text-slate-800">{summaryQuestion}</p>
+                          </div>
+                          <div className="rounded-md border border-slate-300 bg-slate-50 px-3 py-3">
+                            <p className="text-xs font-semibold uppercase text-slate-500">Hypothesis</p>
+                            <p className="mt-2 text-sm text-slate-800">{summaryHypothesis}</p>
+                          </div>
+                        </div>
+                        {presentation.nextActions.length > 0 && (
+                          <div className="rounded-md border border-slate-300 bg-white px-3 py-3">
+                            <p className="text-xs font-semibold uppercase text-slate-500">Next actions</p>
+                            <div className="mt-2">
+                              <TextList items={presentation.nextActions.slice(0, 3)} emptyLabel="No next actions" />
+                            </div>
+                          </div>
+                        )}
+                      </CardContent>
+                    </Card>
+
+                    <Card>
+                      <CardHeader className="pb-3">
+                        <CardTitle className="text-base">Plan frame</CardTitle>
+                      </CardHeader>
+                      <CardContent className="space-y-3">
+                        <div className="grid gap-3 md:grid-cols-2">
+                          <StatCard label="Stages" value={`${planPackage.stages.length}`} detail={`${totalSteps} steps`} />
+                          <StatCard
+                            label="Papers"
+                            value={`${planPackage.literatureSurvey.papers.length}`}
+                            detail={`${planPackage.literatureSurvey.coverage.structuredPaperCount} structured · ${planPackage.literatureSurvey.coverage.probePaperCount} probe`}
+                          />
+                        </div>
+                        <div className="grid gap-2 md:grid-cols-2">
+                          {Object.keys(planPackage.constants).length === 0 ? (
+                            <p className="text-sm text-muted-foreground">No constants declared.</p>
+                          ) : (
+                            Object.entries(planPackage.constants).map(([key, value]) => (
+                              <div key={key} className="rounded-md border border-slate-300 bg-slate-50 px-3 py-2">
+                                <p className="text-xs font-medium text-slate-500">{key}</p>
+                                <p className="mt-1 break-words text-sm text-slate-800">{compactValue(value)}</p>
+                              </div>
+                            ))
+                          )}
+                        </div>
+                      </CardContent>
+                    </Card>
+                  </div>
+                ) : (
+                  <Card>
+                    <CardContent className="py-8 text-sm text-muted-foreground">
+                      Presentation view is not available for this package.
+                    </CardContent>
+                  </Card>
+                )}
+              </TabsContent>
+
+              <TabsContent value="narrative" className="space-y-4">
+                <div className="space-y-4">
+                  <Card>
+                    <CardHeader className="pb-3">
+                      <CardTitle className="flex items-center gap-2 text-base">
+                        <Lightbulb className="h-4 w-4 text-amber-600" />
+                        Idea anchor
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-4 text-sm text-slate-800">
+                      <div className="space-y-2">
+                        <p className="font-semibold text-slate-950">{planPackage.idea.title}</p>
+                        <p>{planPackage.idea.problem}</p>
+                        {planPackage.idea.hypothesisStatement && <p className="text-slate-700">{planPackage.idea.hypothesisStatement}</p>}
+                      </div>
+                      <DisclosureBlock
+                        title="Idea details"
+                        summary="Method, expected outcome, scores, critique, and prior work"
+                        icon={<Sparkles className="h-4 w-4 text-amber-600" />}
+                      >
+                        <div className="space-y-4">
+                          <div className="grid gap-3 md:grid-cols-2">
+                            <div className="rounded-md border border-slate-300 bg-slate-50 px-3 py-3">
+                              <p className="text-xs font-semibold uppercase text-slate-500">Key insight</p>
+                              <p className="mt-2 text-sm text-slate-800">{planPackage.idea.keyInsight || 'No key insight recorded.'}</p>
+                            </div>
+                            <div className="rounded-md border border-slate-300 bg-slate-50 px-3 py-3">
+                              <p className="text-xs font-semibold uppercase text-slate-500">Method</p>
+                              <p className="mt-2 text-sm text-slate-800">{planPackage.idea.proposedMethod || 'No method recorded.'}</p>
+                            </div>
+                            <div className="rounded-md border border-slate-300 bg-slate-50 px-3 py-3">
+                              <p className="text-xs font-semibold uppercase text-slate-500">Expected outcome</p>
+                              <p className="mt-2 text-sm text-slate-800">{planPackage.idea.expectedOutcome || 'No expected outcome recorded.'}</p>
+                            </div>
+                            <div className="rounded-md border border-slate-300 bg-slate-50 px-3 py-3 md:col-span-2">
+                              <p className="text-xs font-semibold uppercase text-slate-500">Scores</p>
+                              <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                                {Object.entries(planPackage.idea.scores).slice(0, 4).map(([key, value]) => (
+                                  <div key={key} className="rounded-md border border-slate-300 bg-white px-3 py-3">
+                                    <p className="text-xs font-semibold uppercase text-slate-500">{key}</p>
+                                    <p className="mt-2 text-sm font-semibold text-slate-900">{compactValue(value)}</p>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          </div>
+                          {planPackage.idea.critiqueSummary && (
+                            <div className="rounded-md border border-slate-300 bg-slate-50 px-3 py-3">
+                              <p className="text-xs font-semibold uppercase text-slate-500">Critique</p>
+                              <p className="mt-2 text-sm text-slate-800">{planPackage.idea.critiqueSummary}</p>
+                            </div>
+                          )}
+                          {planPackage.idea.closestPriorWork.length > 0 && (
+                            <div className="rounded-md border border-slate-300 bg-slate-50 px-3 py-3">
+                              <p className="text-xs font-semibold uppercase text-slate-500">Closest prior work</p>
+                              <TextList
+                                items={planPackage.idea.closestPriorWork.map((item) => summarizeRecordText(item)).filter(Boolean)}
+                                emptyLabel="No prior work recorded"
+                              />
+                            </div>
+                          )}
+                        </div>
+                      </DisclosureBlock>
+                    </CardContent>
+                  </Card>
+
+                  <Card>
+                    <CardHeader className="pb-3">
+                      <CardTitle className="text-base">Background and gap</CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-4 text-sm text-slate-800">
+                      <div className="space-y-2">
+                        <p>{planPackage.background.summary}</p>
+                        {planPackage.background.motivation && <p>{planPackage.background.motivation}</p>}
+                      </div>
+                      <div className="space-y-3">
+                        <div>
+                          <p className="mb-2 text-xs font-semibold uppercase text-slate-500">Current limitations</p>
+                          <TextList items={planPackage.background.currentLimitations} emptyLabel="No limitations listed" />
+                        </div>
+                      </div>
+                      <EvidenceChips refs={planPackage.background.evidenceRefs} />
+
+                      <DisclosureBlock
+                        title="Domain context"
+                        summary={`${planPackage.background.domainContext.length} cluster signals from retrieved literature`}
+                        icon={<BookOpen className="h-4 w-4 text-indigo-600" />}
+                      >
+                        <div className="space-y-2">
+                          <p className="text-xs text-slate-600">These are raw topic clusters from the retrieval layer, kept collapsed to preserve readability.</p>
+                          <TextList
+                            items={planPackage.background.domainContext.map((item) => formatDomainContextSignal(item))}
+                            emptyLabel="No domain context listed"
+                          />
+                        </div>
+                      </DisclosureBlock>
+
+                      <div className="rounded-md border border-slate-300 bg-slate-50 px-3 py-3">
+                        <p className="text-xs font-semibold uppercase text-slate-500">Gap summary</p>
+                        <p className="mt-2 text-sm text-slate-800">{planPackage.gap.summary}</p>
+                        {planPackage.gap.selectedGapId && <p className="mt-2 text-xs text-slate-600">Selected gap: {planPackage.gap.selectedGapId}</p>}
+                      </div>
+
+                      <div className={`grid gap-3 ${planPackage.gap.items.length > 1 ? 'lg:grid-cols-2' : ''}`}>
+                        {planPackage.gap.items.map((gap) => (
+                          <GapItem key={gap.id} gap={gap} />
+                        ))}
+                      </div>
+                    </CardContent>
+                  </Card>
+
+                  <Card>
+                    <CardHeader className="pb-3">
+                      <CardTitle className="flex items-center gap-2 text-base">
+                        <BookOpen className="h-4 w-4 text-indigo-600" />
+                        Principle and literature
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent className="grid gap-4 lg:grid-cols-[1fr_1.1fr]">
+                      <div className="space-y-4">
+                        <div className="space-y-3 text-sm text-slate-800">
+                          <p>{planPackage.principle.summary}</p>
+                          {planPackage.principle.mechanism && <p>{planPackage.principle.mechanism}</p>}
+                          {planPackage.principle.noveltyClaim && (
+                            <div className="rounded-md border border-indigo-200 bg-indigo-50 px-3 py-2 text-indigo-950">
+                              {planPackage.principle.noveltyClaim}
+                            </div>
+                          )}
+                        </div>
+                        <div className="grid gap-4 lg:grid-cols-2">
+                          <div>
+                            <p className="mb-2 text-xs font-semibold uppercase text-slate-500">Assumptions</p>
+                            <TextList items={planPackage.principle.assumptions} emptyLabel="No assumptions listed" />
+                          </div>
+                          <div>
+                            <p className="mb-2 text-xs font-semibold uppercase text-slate-500">Risks</p>
+                            <TextList items={planPackage.principle.risks} emptyLabel="No risks listed" />
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="space-y-3">
+                        <div className="rounded-md border border-slate-300 bg-white px-4 py-3 shadow-sm">
+                          <div className="flex items-center justify-between gap-3">
+                            <div>
+                              <p className="text-sm font-semibold text-slate-900">Literature signal</p>
+                              <p className="mt-1 text-xs text-slate-600">{planPackage.literatureSurvey.summary}</p>
+                            </div>
+                            <Badge variant="outline" className="border-slate-400 text-slate-700">
+                              {planPackage.literatureSurvey.papers.length}
+                            </Badge>
+                          </div>
+                          <div className="mt-3 space-y-3">
+                            {planPackage.literatureSurvey.papers.slice(0, 2).map((paper) => (
+                              <PaperRow key={`${paper.source}-${paper.paperId}`} paper={paper} />
+                            ))}
+                          </div>
+                          {planPackage.literatureSurvey.papers.length > 2 && (
+                            <details className="mt-3 rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
+                              <summary className="cursor-pointer text-sm font-medium text-slate-800">More literature</summary>
+                              <div className="mt-3 space-y-3">
+                                {planPackage.literatureSurvey.papers.slice(2).map((paper) => (
+                                  <PaperRow key={`${paper.source}-${paper.paperId}`} paper={paper} />
+                                ))}
+                              </div>
+                            </details>
+                          )}
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                </div>
+              </TabsContent>
+
+              <TabsContent value="implementation" className="space-y-4">
+                <Card>
+                  <CardHeader className="pb-3">
+                    <CardTitle className="flex items-center gap-2 text-base">
+                      <Layers3 className="h-4 w-4 text-blue-600" />
+                      Implementation timeline
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    {readableImplementationStages.length > 0 ? (
+                      readableImplementationStages.map((stage) => <ReadableStageBlock key={stage.id} stage={stage} />)
+                    ) : (
+                      <p className="text-sm text-muted-foreground">No stages available.</p>
+                    )}
+                  </CardContent>
+                </Card>
+              </TabsContent>
+
+              <TabsContent value="evidence" className="space-y-4">
+                <Card>
+                  <CardHeader className="pb-3">
+                    <CardTitle className="flex items-center gap-2 text-base">
+                      <ShieldCheck className="h-4 w-4 text-indigo-700" />
+                      Review snapshot
+                    </CardTitle>
+                    <CardDescription>Summary first, reviewer committee details only on demand.</CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <div className="grid gap-3 md:grid-cols-3">
+                      <StatCard label="Decision" value={summaryReviewDecision} detail={`${(summaryReviewScore * 100).toFixed(0)} / 100`} />
+                      <StatCard label="Mode" value={summaryReviewerMode} detail={summaryReviewerUsed ? 'LLM reviewer used' : 'Deterministic only'} />
+                      <StatCard
+                        label="Next actions"
+                        value={`${presentation?.nextActions.length || 0} items`}
+                        detail={presentation?.nextActions[0] || 'No next actions'}
+                      />
+                    </div>
+                    <p className="text-sm text-slate-600">
+                      Detailed iteration notes are grouped in the Summary tab so this review view stays focused on the decision and evidence chain.
+                    </p>
+                  </CardContent>
+                </Card>
+
+                <div className="grid gap-4 xl:grid-cols-[1.4fr_1fr]">
+                  <Card>
+                    <CardHeader className="pb-3">
+                      <CardTitle className="flex items-center gap-2 text-base">
+                        <Network className="h-4 w-4 text-indigo-700" />
+                        Evidence map
+                      </CardTitle>
+                      <CardDescription>
+                        {planPackage.evidenceTrace.structuredPaperIds.length + planPackage.evidenceTrace.selectedPaperIds.length} literature references,
+                        {' '}{planPackage.evidenceTrace.reasoningKgId ? 'reasoning graph attached' : 'no reasoning graph id'},
+                        {' '}{planPackage.evidenceTrace.probeResultIds.length} probe checks.
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent className="space-y-4">
+                      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                        <EvidenceCoverageCard
+                          label="Idea"
+                          value={shortId(planPackage.evidenceTrace.ideaCandidateId)}
+                          detail={planPackage.idea.title || 'Selected candidate'}
+                          ok={Boolean(planPackage.evidenceTrace.ideaCandidateId)}
+                        />
+                        <EvidenceCoverageCard
+                          label="Papers"
+                          value={String(planPackage.evidenceTrace.structuredPaperIds.length + planPackage.evidenceTrace.selectedPaperIds.length)}
+                          detail={`${evidencePapers.length} matched to summaries`}
+                          ok={planPackage.evidenceTrace.structuredPaperIds.length + planPackage.evidenceTrace.selectedPaperIds.length > 0}
+                        />
+                        <EvidenceCoverageCard
+                          label="Reasoning Graph"
+                          value={planPackage.evidenceTrace.reasoningKgId ? 'Linked' : 'Missing'}
+                          detail={planPackage.evidenceTrace.reasoningKgId ? shortId(planPackage.evidenceTrace.reasoningKgId) : 'No KG artifact id'}
+                          ok={Boolean(planPackage.evidenceTrace.reasoningKgId)}
+                        />
+                        <EvidenceCoverageCard
+                          label="Probe"
+                          value={String(planPackage.evidenceTrace.probeResultIds.length)}
+                          detail={`${planPackage.evidenceTrace.graphPatchIds.length} graph patches`}
+                          ok={planPackage.evidenceTrace.probeResultIds.length > 0 || planPackage.evidenceTrace.graphPatchIds.length > 0}
+                        />
+                      </div>
+
+                      <div className="rounded-md border border-slate-300 bg-white px-4 py-3 shadow-sm">
+                        <p className="text-sm font-semibold text-slate-900">Evidence path</p>
+                        <div className="mt-3 grid gap-3 lg:grid-cols-5">
+                          {[
+                            {
+                              label: 'Selected idea',
+                              value: planPackage.idea.title || shortId(planPackage.evidenceTrace.ideaCandidateId),
+                              ok: Boolean(planPackage.evidenceTrace.ideaCandidateId),
+                            },
+                            {
+                              label: 'Gap',
+                              value: planPackage.gap.selectedGapId || planPackage.gap.summary,
+                              ok: Boolean(planPackage.gap.selectedGapId || planPackage.gap.items.length),
+                            },
+                            {
+                              label: 'Literature',
+                              value: `${planPackage.literatureSurvey.papers.length} paper summaries`,
+                              ok: planPackage.literatureSurvey.papers.length > 0,
+                            },
+                            {
+                              label: 'Reasoning',
+                              value: planPackage.evidenceTrace.reasoningKgId ? shortId(planPackage.evidenceTrace.reasoningKgId) : 'No graph id',
+                              ok: Boolean(planPackage.evidenceTrace.reasoningKgId),
+                            },
+                            {
+                              label: 'Plan readiness',
+                              value: planPackage.qualityGate.evidenceValid ? 'Evidence valid' : 'Needs review',
+                              ok: planPackage.qualityGate.evidenceValid,
+                            },
+                          ].map((item, index) => (
+                            <div key={item.label} className="relative rounded-md border border-slate-300 bg-slate-50 px-3 py-3">
+                              <div className="flex items-center gap-2">
+                                <span className={`flex h-6 w-6 items-center justify-center rounded-full text-xs font-semibold text-white ${item.ok ? 'bg-emerald-700' : 'bg-amber-700'}`}>
+                                  {index + 1}
+                                </span>
+                                <p className="text-xs font-semibold uppercase text-slate-600">{item.label}</p>
+                              </div>
+                              <p className="mt-2 break-words text-sm text-slate-900">{item.value}</p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="grid gap-4 xl:grid-cols-[1.5fr_1fr]">
+                        <div className="rounded-md border border-slate-300 bg-white px-4 py-3 shadow-sm">
+                          <div className="flex items-center justify-between gap-3">
+                            <p className="text-sm font-semibold text-slate-900">Supporting papers</p>
+                            <Badge variant="outline" className="border-slate-400 text-slate-700">
+                              {evidencePapers.length || planPackage.literatureSurvey.papers.length}
+                            </Badge>
+                          </div>
+                          <div className="mt-3 space-y-3">
+                            {(evidencePapers.length ? evidencePapers : planPackage.literatureSurvey.papers.slice(0, 5)).map((paper) => (
+                              <div key={`${paper.source}-${paper.paperId}`} className="rounded-md border border-slate-300 bg-slate-50 px-3 py-3">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <Badge className={paper.source === 'probe' ? 'bg-indigo-700 text-white' : 'bg-blue-700 text-white'}>
+                                    {paper.source}
+                                  </Badge>
+                                  <span className="font-mono text-xs text-slate-600">{shortId(paper.paperId)}</span>
+                                  {paper.year ? <span className="text-xs text-slate-600">{paper.year}</span> : null}
+                                </div>
+                                <p className="mt-2 text-sm font-semibold text-slate-950">{paper.title}</p>
+                                <p className="mt-1 text-sm text-slate-700">{paper.summary}</p>
+                                {paper.limitations.length > 0 && <p className="mt-2 text-xs text-slate-600">Limitation: {paper.limitations[0]}</p>}
+                              </div>
+                            ))}
+                            {evidencePapers.length === 0 && planPackage.literatureSurvey.papers.length === 0 && (
+                              <p className="text-sm text-muted-foreground">No paper summaries are attached.</p>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="space-y-4">
+                          <ReviewerCommitteeDisclosure reports={planPackage.reviewReports} />
+
+                          {planPackage.revisions.length > 0 && (
+                            <details className="rounded-md border border-slate-300 bg-white px-4 py-3 shadow-sm">
+                              <summary className="cursor-pointer text-sm font-medium text-slate-800">Revision history</summary>
+                              <div className="mt-3 space-y-2">
+                                {planPackage.revisions.slice(0, 6).map((revision) => (
+                                  <div key={revision.id} className="rounded-md border border-slate-300 bg-slate-50 px-3 py-2 text-sm">
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <Badge variant="outline" className="font-mono text-[11px]">
+                                        {revision.id}
+                                      </Badge>
+                                      <Badge variant="secondary">{revision.generationMode}</Badge>
+                                      <span className="text-xs text-slate-500">{new Date(revision.createdAt).toLocaleString()}</span>
+                                    </div>
+                                    <p className="mt-2 text-slate-800">{revision.summary}</p>
+                                    {revision.changedSections.length > 0 && <p className="mt-1 text-xs text-slate-600">Changed: {revision.changedSections.join(', ')}</p>}
+                                  </div>
+                                ))}
+                              </div>
+                            </details>
+                          )}
+
+                          {evidencePaperIdsWithoutSummary.length > 0 && (
+                            <div className="rounded-md border border-amber-300 bg-white px-4 py-3 shadow-sm">
+                              <p className="text-sm font-semibold text-amber-900">Referenced IDs without summaries</p>
+                              <div className="mt-3">
+                                <TextList items={evidencePaperIdsWithoutSummary.map(shortId)} emptyLabel="All referenced IDs are summarized" />
+                              </div>
+                            </div>
+                          )}
+
+                          <details className="rounded-md border border-slate-300 bg-white px-4 py-3 shadow-sm">
+                            <summary className="cursor-pointer text-sm font-medium text-slate-800">Raw package snapshot</summary>
+                            <pre className="mt-3 max-h-80 overflow-auto rounded bg-slate-950 p-3 text-xs text-slate-100">
+                              {JSON.stringify(
+                                {
+                                  traceIds: {
+                                    ideaCandidateId: planPackage.evidenceTrace.ideaCandidateId,
+                                    searchNodeId: planPackage.evidenceTrace.searchNodeId,
+                                    pathSeedId: planPackage.evidenceTrace.pathSeedId,
+                                    reasoningKgId: planPackage.evidenceTrace.reasoningKgId,
+                                    literatureMapId: planPackage.evidenceTrace.literatureMapId,
+                                  },
+                                  reasoningTrace: planPackage.evidenceTrace.reasoningTrace,
+                                  candidateGraphEvidence: planPackage.evidenceTrace.candidateGraphEvidence,
+                                  sourceFields: planPackage.sourceFields,
+                                  downstreamContract: planPackage.downstreamContract,
+                                },
+                                null,
+                                2
+                              )}
+                            </pre>
+                          </details>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                </div>
+              </TabsContent>
+          </Tabs>
+          </div>
+          <aside className="space-y-6 xl:sticky xl:top-6">
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-base">Plan snapshot</CardTitle>
+                <CardDescription>Quick status, score, and structure at a glance.</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                {planStats && (
+                  <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
+                    <StatCard label="Status" value={planStats.status} detail={planStats.readiness} />
+                    <StatCard label="Score" value={planStats.score} detail={summaryTitle} />
+                    <StatCard label="Structure" value={planStats.stages} detail={planStats.steps} />
+                    <StatCard
+                      label="Evidence"
+                      value={planStats.papers}
+                      detail={`${planPackage.literatureSurvey.coverage.structuredPaperCount} structured`}
+                    />
+                    <StatCard label="Created" value={new Date(planPackage.createdAt).toLocaleDateString()} detail={planPackage.schemaVersion} />
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-base">Quality and iteration</CardTitle>
+                <CardDescription>Internal checks stay here instead of crowding the main reading path.</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <QualityGateSummary gate={gate} />
+                <IterationNotesDisclosure
+                  gate={gate}
+                  generationWarnings={planPackage.generation.warnings}
+                  reviewSummary={presentation?.reviewSummary}
+                  metaReview={planPackage.metaReview}
+                />
+                {planPackage.metaReview && (
+                  <div className="rounded-md border border-slate-300 bg-white px-4 py-3 shadow-sm">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-semibold text-slate-900">Reviewer decision</p>
+                        <p className="mt-1 text-xs text-slate-600">
+                          confidence {(planPackage.metaReview.confidence * 100).toFixed(0)} · {planPackage.metaReview.blockingIssues.length} blocking issues
+                        </p>
+                      </div>
+                      <Badge className={planPackage.metaReview.decision === 'approve' ? 'bg-emerald-700 text-white' : 'bg-amber-700 text-white'}>
+                        {planPackage.metaReview.decision}
+                      </Badge>
+                    </div>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-base">Feedback</CardTitle>
+                <CardDescription>Human edits and revision history for the current plan package.</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div>
                   <div className="mb-3 flex items-center gap-2">
                     <MessageSquareText className="h-4 w-4 text-indigo-700" />
                     <p className="text-sm font-semibold text-slate-900">Human feedback</p>
@@ -952,564 +1674,13 @@ export function PlanGenerationPanel({
                     Revise from Feedback
                   </Button>
                 </div>
-                <div className="rounded-md border border-slate-300 bg-white px-4 py-3 shadow-sm">
+                <div>
                   <p className="mb-3 text-sm font-semibold text-slate-900">Feedback history</p>
                   <FeedbackList feedback={planPackage.humanFeedback} />
                 </div>
-              </div>
-            </CardContent>
-          </Card>
-
-            <Tabs value={activeTab} onValueChange={setActiveTab}>
-            <TabsList className="h-auto flex-wrap justify-start">
-              <TabsTrigger value="summary">Summary</TabsTrigger>
-              <TabsTrigger value="overview">Overview</TabsTrigger>
-              <TabsTrigger value="implementation">Implementation</TabsTrigger>
-              <TabsTrigger value="context">Context</TabsTrigger>
-              <TabsTrigger value="literature">Literature</TabsTrigger>
-              <TabsTrigger value="evidence">Evidence</TabsTrigger>
-              <TabsTrigger value="review">Review</TabsTrigger>
-              <TabsTrigger value="json">JSON</TabsTrigger>
-            </TabsList>
-
-            <TabsContent value="summary" className="space-y-4">
-              {presentation ? (
-                <>
-                  <Card>
-                    <CardHeader className="pb-3">
-                      <CardTitle className="text-lg">{presentation.title}</CardTitle>
-                      <CardDescription>{presentation.executiveSummary}</CardDescription>
-                    </CardHeader>
-                    <CardContent className="grid gap-3 md:grid-cols-3">
-                      <div className="rounded-md border border-slate-300 bg-slate-50 px-3 py-2">
-                        <p className="text-xs font-semibold uppercase text-slate-500">Evidence</p>
-                        <p className="mt-1 text-sm font-semibold text-slate-900">{presentation.evidenceSummary.confidence}</p>
-                      </div>
-                      <div className="rounded-md border border-slate-300 bg-slate-50 px-3 py-2">
-                        <p className="text-xs font-semibold uppercase text-slate-500">Review</p>
-                        <p className="mt-1 text-sm font-semibold text-slate-900">{presentation.reviewSummary.decision}</p>
-                      </div>
-                      <div className="rounded-md border border-slate-300 bg-slate-50 px-3 py-2">
-                        <p className="text-xs font-semibold uppercase text-slate-500">Score</p>
-                        <p className="mt-1 text-sm font-semibold text-slate-900">{(presentation.reviewSummary.score * 100).toFixed(0)}</p>
-                      </div>
-                    </CardContent>
-                  </Card>
-
-                  <div className="grid gap-4 xl:grid-cols-2">
-                    <Card>
-                      <CardHeader className="pb-3">
-                        <CardTitle className="text-base">Background</CardTitle>
-                      </CardHeader>
-                      <CardContent className="space-y-3 text-sm text-slate-800">
-                        <p>{presentation.background.summary}</p>
-                        {presentation.background.whyValuable && <p>{presentation.background.whyValuable}</p>}
-                        <TextList items={presentation.background.currentLimitations} emptyLabel="No current limitations listed" />
-                      </CardContent>
-                    </Card>
-
-                    <Card>
-                      <CardHeader className="pb-3">
-                        <CardTitle className="text-base">GAP And Entry Point</CardTitle>
-                      </CardHeader>
-                      <CardContent className="space-y-3 text-sm text-slate-800">
-                        <p className="font-medium">{presentation.gap.statement}</p>
-                        {presentation.gap.unresolvedIssue && <p>{presentation.gap.unresolvedIssue}</p>}
-                        {presentation.gap.proposedEntry && (
-                          <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-emerald-950">
-                            {presentation.gap.proposedEntry}
-                          </div>
-                        )}
-                        <TextList items={presentation.gap.validationNeeds} emptyLabel="No validation needs listed" />
-                      </CardContent>
-                    </Card>
-                  </div>
-
-                  <Card>
-                    <CardHeader className="pb-3">
-                      <CardTitle className="text-base">Method And Contributions</CardTitle>
-                    </CardHeader>
-                    <CardContent className="grid gap-4 lg:grid-cols-2">
-                      <div className="space-y-3 text-sm text-slate-800">
-                        <p>{presentation.method.principle}</p>
-                        {presentation.method.mechanism && <p>{presentation.method.mechanism}</p>}
-                        {presentation.method.noveltyClaim && (
-                          <div className="rounded-md border border-indigo-200 bg-indigo-50 px-3 py-2 text-indigo-950">
-                            {presentation.method.noveltyClaim}
-                          </div>
-                        )}
-                      </div>
-                      <div>
-                        <p className="mb-2 text-xs font-semibold uppercase text-slate-500">Contributions</p>
-                        <TextList items={presentation.method.contributions} emptyLabel="No contribution statements" />
-                      </div>
-                    </CardContent>
-                  </Card>
-
-                  <Card>
-                    <CardHeader className="pb-3">
-                      <CardTitle className="text-base">Implementation Plan</CardTitle>
-                      <CardDescription>Readable plan for handoff, without raw trace IDs.</CardDescription>
-                    </CardHeader>
-                    <CardContent className="space-y-3">
-                      {presentation.implementationPlan.map((stage) => (
-                        <ReadableStageBlock key={stage.id} stage={stage} />
-                      ))}
-                    </CardContent>
-                  </Card>
-
-                  <div className="grid gap-4 xl:grid-cols-[1.2fr_1fr]">
-                    <Card>
-                      <CardHeader className="pb-3">
-                        <CardTitle className="text-base">Key Literature</CardTitle>
-                        <CardDescription>{presentation.literature.summary}</CardDescription>
-                      </CardHeader>
-                      <CardContent className="space-y-3">
-                        {presentation.literature.keyPapers.map((paper) => (
-                          <ReadablePaperRow key={paper.paperId} paper={paper} />
-                        ))}
-                      </CardContent>
-                    </Card>
-
-                    <Card>
-                      <CardHeader className="pb-3">
-                        <CardTitle className="text-base">Review And Next Actions</CardTitle>
-                      </CardHeader>
-                      <CardContent className="space-y-4">
-                        <div>
-                          <p className="mb-2 text-xs font-semibold uppercase text-slate-500">Main concerns</p>
-                          <TextList items={presentation.reviewSummary.mainConcerns} emptyLabel="No major concerns" />
-                        </div>
-                        <div>
-                          <p className="mb-2 text-xs font-semibold uppercase text-slate-500">Required fixes</p>
-                          <TextList items={presentation.reviewSummary.requiredFixes} emptyLabel="No required fixes" />
-                        </div>
-                        <div>
-                          <p className="mb-2 text-xs font-semibold uppercase text-slate-500">Next actions</p>
-                          <TextList items={presentation.nextActions} emptyLabel="No next actions" />
-                        </div>
-                      </CardContent>
-                    </Card>
-                  </div>
-                </>
-              ) : (
-                <Card>
-                  <CardContent className="py-8 text-sm text-muted-foreground">
-                    Presentation view is not available for this package.
-                  </CardContent>
-                </Card>
-              )}
-            </TabsContent>
-
-            <TabsContent value="overview" className="space-y-4">
-              <div className="grid gap-4 lg:grid-cols-3">
-                <Card>
-                  <CardHeader className="pb-3">
-                    <CardTitle className="flex items-center gap-2 text-base">
-                      <Lightbulb className="h-4 w-4 text-amber-600" />
-                      Idea
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent className="space-y-3 text-sm">
-                    <p className="font-semibold text-slate-900">{planPackage.idea.title}</p>
-                    <p className="text-slate-700">{planPackage.idea.problem}</p>
-                    {planPackage.idea.keyInsight && <p className="text-slate-600">{planPackage.idea.keyInsight}</p>}
-                  </CardContent>
-                </Card>
-
-                <Card>
-                  <CardHeader className="pb-3">
-                    <CardTitle className="flex items-center gap-2 text-base">
-                      <Layers3 className="h-4 w-4 text-blue-600" />
-                      Plan Shape
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent className="grid grid-cols-2 gap-3 text-sm">
-                    <div className="rounded-md border border-slate-300 bg-slate-50 px-3 py-2">
-                      <p className="text-xs text-muted-foreground">Stages</p>
-                      <p className="text-2xl font-semibold">{planPackage.stages.length}</p>
-                    </div>
-                    <div className="rounded-md border border-slate-300 bg-slate-50 px-3 py-2">
-                      <p className="text-xs text-muted-foreground">Steps</p>
-                      <p className="text-2xl font-semibold">{totalSteps}</p>
-                    </div>
-                    <div className="col-span-2 rounded-md border border-slate-300 bg-slate-50 px-3 py-2">
-                      <p className="text-xs text-muted-foreground">Created</p>
-                      <p className="text-sm">{new Date(planPackage.createdAt).toLocaleString()}</p>
-                    </div>
-                  </CardContent>
-                </Card>
-
-                <Card>
-                  <CardHeader className="pb-3">
-                    <CardTitle className="flex items-center gap-2 text-base">
-                      <BookOpen className="h-4 w-4 text-indigo-600" />
-                      Literature
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent className="grid grid-cols-2 gap-3 text-sm">
-                    <div className="rounded-md border border-slate-300 bg-slate-50 px-3 py-2">
-                      <p className="text-xs text-muted-foreground">Structured</p>
-                      <p className="text-2xl font-semibold">{planPackage.literatureSurvey.coverage.structuredPaperCount}</p>
-                    </div>
-                    <div className="rounded-md border border-slate-300 bg-slate-50 px-3 py-2">
-                      <p className="text-xs text-muted-foreground">Probe</p>
-                      <p className="text-2xl font-semibold">{planPackage.literatureSurvey.coverage.probePaperCount}</p>
-                    </div>
-                    <div className="col-span-2 rounded-md border border-slate-300 bg-slate-50 px-3 py-2">
-                      <p className="text-xs text-muted-foreground">Total summaries</p>
-                      <p className="text-2xl font-semibold">{planPackage.literatureSurvey.papers.length}</p>
-                    </div>
-                  </CardContent>
-                </Card>
-              </div>
-
-              <Card>
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-base">Constants</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  {Object.keys(planPackage.constants).length === 0 ? (
-                    <p className="text-sm text-muted-foreground">No constants declared.</p>
-                  ) : (
-                    <div className="grid gap-2 md:grid-cols-2">
-                      {Object.entries(planPackage.constants).map(([key, value]) => (
-                        <div key={key} className="rounded-md border border-slate-300 bg-slate-50 px-3 py-2">
-                          <p className="text-xs font-medium text-slate-500">{key}</p>
-                          <p className="mt-1 break-words text-sm text-slate-800">{compactValue(value)}</p>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-            </TabsContent>
-
-            <TabsContent value="implementation" className="space-y-4">
-              {planPackage.stages.map((stage) => (
-                <StageBlock key={stage.id} stage={stage} />
-              ))}
-            </TabsContent>
-
-            <TabsContent value="context" className="space-y-4">
-              <Card>
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-base">Background</CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-4 text-sm">
-                  <p className="text-slate-800">{planPackage.background.summary}</p>
-                  {planPackage.background.motivation && <p className="text-slate-700">{planPackage.background.motivation}</p>}
-                  <div className="grid gap-4 lg:grid-cols-2">
-                    <div>
-                      <p className="mb-2 text-xs font-semibold uppercase text-slate-500">Current limitations</p>
-                      <TextList items={planPackage.background.currentLimitations} emptyLabel="No limitations listed" />
-                    </div>
-                    <div>
-                      <p className="mb-2 text-xs font-semibold uppercase text-slate-500">Domain context</p>
-                      <TextList items={planPackage.background.domainContext} emptyLabel="No domain context listed" />
-                    </div>
-                  </div>
-                  <EvidenceChips refs={planPackage.background.evidenceRefs} />
-                </CardContent>
-              </Card>
-
-              <Card>
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-base">Gap</CardTitle>
-                  <CardDescription>{planPackage.gap.summary}</CardDescription>
-                </CardHeader>
-                <CardContent className="grid gap-3 lg:grid-cols-2">
-                  {planPackage.gap.items.map((gap) => (
-                    <GapItem key={gap.id} gap={gap} />
-                  ))}
-                </CardContent>
-              </Card>
-
-              <Card>
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-base">Principle</CardTitle>
-                  <CardDescription>{planPackage.principle.summary}</CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-4 text-sm">
-                  {planPackage.principle.mechanism && (
-                    <div>
-                      <p className="mb-1 text-xs font-semibold uppercase text-slate-500">Mechanism</p>
-                      <p className="text-slate-800">{planPackage.principle.mechanism}</p>
-                    </div>
-                  )}
-                  {planPackage.principle.noveltyClaim && (
-                    <div>
-                      <p className="mb-1 text-xs font-semibold uppercase text-slate-500">Novelty claim</p>
-                      <p className="text-slate-800">{planPackage.principle.noveltyClaim}</p>
-                    </div>
-                  )}
-                  <div className="grid gap-4 lg:grid-cols-2">
-                    <div>
-                      <p className="mb-2 text-xs font-semibold uppercase text-slate-500">Assumptions</p>
-                      <TextList items={planPackage.principle.assumptions} emptyLabel="No assumptions listed" />
-                    </div>
-                    <div>
-                      <p className="mb-2 text-xs font-semibold uppercase text-slate-500">Risks</p>
-                      <TextList items={planPackage.principle.risks} emptyLabel="No risks listed" />
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-            </TabsContent>
-
-            <TabsContent value="literature" className="space-y-3">
-              <Card>
-                <CardHeader className="pb-3">
-                  <CardTitle className="flex items-center gap-2 text-base">
-                    <BookOpen className="h-4 w-4 text-indigo-600" />
-                    Literature Survey
-                  </CardTitle>
-                  <CardDescription>{planPackage.literatureSurvey.summary}</CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  {planPackage.literatureSurvey.papers.map((paper) => (
-                    <PaperRow key={`${paper.source}-${paper.paperId}`} paper={paper} />
-                  ))}
-                </CardContent>
-              </Card>
-            </TabsContent>
-
-            <TabsContent value="evidence" className="space-y-4">
-              <Card>
-                <CardHeader className="pb-3">
-                  <CardTitle className="flex items-center gap-2 text-base">
-                    <Network className="h-4 w-4 text-indigo-700" />
-                    Evidence Map
-                  </CardTitle>
-                  <CardDescription>
-                    {planPackage.evidenceTrace.structuredPaperIds.length + planPackage.evidenceTrace.selectedPaperIds.length} literature references,
-                    {' '}{planPackage.evidenceTrace.reasoningKgId ? 'reasoning graph attached' : 'no reasoning graph id'},
-                    {' '}{planPackage.evidenceTrace.probeResultIds.length} probe checks.
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-                    <EvidenceCoverageCard
-                      label="Idea"
-                      value={shortId(planPackage.evidenceTrace.ideaCandidateId)}
-                      detail={planPackage.idea.title || 'Selected candidate'}
-                      ok={Boolean(planPackage.evidenceTrace.ideaCandidateId)}
-                    />
-                    <EvidenceCoverageCard
-                      label="Papers"
-                      value={String(planPackage.evidenceTrace.structuredPaperIds.length + planPackage.evidenceTrace.selectedPaperIds.length)}
-                      detail={`${evidencePapers.length} matched to summaries`}
-                      ok={planPackage.evidenceTrace.structuredPaperIds.length + planPackage.evidenceTrace.selectedPaperIds.length > 0}
-                    />
-                    <EvidenceCoverageCard
-                      label="Reasoning Graph"
-                      value={planPackage.evidenceTrace.reasoningKgId ? 'Linked' : 'Missing'}
-                      detail={planPackage.evidenceTrace.reasoningKgId ? shortId(planPackage.evidenceTrace.reasoningKgId) : 'No KG artifact id'}
-                      ok={Boolean(planPackage.evidenceTrace.reasoningKgId)}
-                    />
-                    <EvidenceCoverageCard
-                      label="Probe"
-                      value={String(planPackage.evidenceTrace.probeResultIds.length)}
-                      detail={`${planPackage.evidenceTrace.graphPatchIds.length} graph patches`}
-                      ok={planPackage.evidenceTrace.probeResultIds.length > 0 || planPackage.evidenceTrace.graphPatchIds.length > 0}
-                    />
-                  </div>
-
-                  <div className="rounded-md border border-slate-300 bg-white px-4 py-3 shadow-sm">
-                    <p className="text-sm font-semibold text-slate-900">Evidence path</p>
-                    <div className="mt-3 grid gap-3 lg:grid-cols-5">
-                      {[
-                        {
-                          label: 'Selected idea',
-                          value: planPackage.idea.title || shortId(planPackage.evidenceTrace.ideaCandidateId),
-                          ok: Boolean(planPackage.evidenceTrace.ideaCandidateId),
-                        },
-                        {
-                          label: 'Gap',
-                          value: planPackage.gap.selectedGapId || planPackage.gap.summary,
-                          ok: Boolean(planPackage.gap.selectedGapId || planPackage.gap.items.length),
-                        },
-                        {
-                          label: 'Literature',
-                          value: `${planPackage.literatureSurvey.papers.length} paper summaries`,
-                          ok: planPackage.literatureSurvey.papers.length > 0,
-                        },
-                        {
-                          label: 'Reasoning',
-                          value: planPackage.evidenceTrace.reasoningKgId ? shortId(planPackage.evidenceTrace.reasoningKgId) : 'No graph id',
-                          ok: Boolean(planPackage.evidenceTrace.reasoningKgId),
-                        },
-                        {
-                          label: 'Plan readiness',
-                          value: planPackage.qualityGate.evidenceValid ? 'Evidence valid' : 'Needs review',
-                          ok: planPackage.qualityGate.evidenceValid,
-                        },
-                      ].map((item, index) => (
-                        <div key={item.label} className="relative rounded-md border border-slate-300 bg-slate-50 px-3 py-3">
-                          <div className="flex items-center gap-2">
-                            <span className={`flex h-6 w-6 items-center justify-center rounded-full text-xs font-semibold text-white ${item.ok ? 'bg-emerald-700' : 'bg-amber-700'}`}>
-                              {index + 1}
-                            </span>
-                            <p className="text-xs font-semibold uppercase text-slate-600">{item.label}</p>
-                          </div>
-                          <p className="mt-2 break-words text-sm text-slate-900">{item.value}</p>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div className="grid gap-4 xl:grid-cols-[1.5fr_1fr]">
-                    <div className="rounded-md border border-slate-300 bg-white px-4 py-3 shadow-sm">
-                      <div className="flex items-center justify-between gap-3">
-                        <p className="text-sm font-semibold text-slate-900">Supporting papers</p>
-                        <Badge variant="outline" className="border-slate-400 text-slate-700">
-                          {evidencePapers.length || planPackage.literatureSurvey.papers.length}
-                        </Badge>
-                      </div>
-                      <div className="mt-3 space-y-3">
-                        {(evidencePapers.length ? evidencePapers : planPackage.literatureSurvey.papers.slice(0, 5)).map((paper) => (
-                          <div key={`${paper.source}-${paper.paperId}`} className="rounded-md border border-slate-300 bg-slate-50 px-3 py-3">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <Badge className={paper.source === 'probe' ? 'bg-indigo-700 text-white' : 'bg-blue-700 text-white'}>
-                                {paper.source}
-                              </Badge>
-                              <span className="font-mono text-xs text-slate-600">{shortId(paper.paperId)}</span>
-                              {paper.year ? <span className="text-xs text-slate-600">{paper.year}</span> : null}
-                            </div>
-                            <p className="mt-2 text-sm font-semibold text-slate-950">{paper.title}</p>
-                            <p className="mt-1 text-sm text-slate-700">{paper.summary}</p>
-                            {paper.limitations.length > 0 && (
-                              <p className="mt-2 text-xs text-slate-600">
-                                Limitation: {paper.limitations[0]}
-                              </p>
-                            )}
-                          </div>
-                        ))}
-                        {evidencePapers.length === 0 && planPackage.literatureSurvey.papers.length === 0 && (
-                          <p className="text-sm text-muted-foreground">No paper summaries are attached.</p>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="space-y-4">
-                      <div className="rounded-md border border-slate-300 bg-white px-4 py-3 shadow-sm">
-                        <p className="text-sm font-semibold text-slate-900">Evidence signals</p>
-                        <div className="mt-3 space-y-3">
-                          <div>
-                            <p className="mb-2 text-xs font-semibold uppercase text-slate-500">Structured paper IDs</p>
-                            <TextList items={planPackage.evidenceTrace.structuredPaperIds.map(shortId)} emptyLabel="No structured paper IDs" />
-                          </div>
-                          <div>
-                            <p className="mb-2 text-xs font-semibold uppercase text-slate-500">Probe results</p>
-                            <TextList items={planPackage.evidenceTrace.probeResultIds.map(shortId)} emptyLabel="No probe results" />
-                          </div>
-                          <div>
-                            <p className="mb-2 text-xs font-semibold uppercase text-slate-500">Graph patches</p>
-                            <TextList items={planPackage.evidenceTrace.graphPatchIds.map(shortId)} emptyLabel="No graph patches" />
-                          </div>
-                        </div>
-                      </div>
-
-                      {evidencePaperIdsWithoutSummary.length > 0 && (
-                        <div className="rounded-md border border-amber-300 bg-white px-4 py-3 shadow-sm">
-                          <p className="text-sm font-semibold text-amber-900">Referenced IDs without summaries</p>
-                          <div className="mt-3">
-                            <TextList items={evidencePaperIdsWithoutSummary.map(shortId)} emptyLabel="All referenced IDs are summarized" />
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-
-                  <details className="rounded-md border border-slate-300 bg-white px-4 py-3 shadow-sm">
-                    <summary className="cursor-pointer text-sm font-medium text-slate-800">Debug IDs and raw graph evidence</summary>
-                    <pre className="mt-3 max-h-80 overflow-auto rounded bg-slate-950 p-3 text-xs text-slate-100">
-                      {JSON.stringify(
-                        {
-                          traceIds: {
-                            ideaCandidateId: planPackage.evidenceTrace.ideaCandidateId,
-                            searchNodeId: planPackage.evidenceTrace.searchNodeId,
-                            pathSeedId: planPackage.evidenceTrace.pathSeedId,
-                            reasoningKgId: planPackage.evidenceTrace.reasoningKgId,
-                            literatureMapId: planPackage.evidenceTrace.literatureMapId,
-                          },
-                          reasoningTrace: planPackage.evidenceTrace.reasoningTrace,
-                          candidateGraphEvidence: planPackage.evidenceTrace.candidateGraphEvidence,
-                          sourceFields: planPackage.sourceFields,
-                          downstreamContract: planPackage.downstreamContract,
-                        },
-                        null,
-                        2
-                      )}
-                    </pre>
-                  </details>
-                </CardContent>
-              </Card>
-            </TabsContent>
-
-            <TabsContent value="review" className="space-y-4">
-              <Card>
-                <CardHeader className="pb-3">
-                  <CardTitle className="flex items-center gap-2 text-base">
-                    <ShieldCheck className="h-4 w-4 text-indigo-700" />
-                    Reviewer Committee
-                  </CardTitle>
-                  <CardDescription>
-                    Each dimension combines deterministic checks with a focused LLM reviewer when hybrid review is available.
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  {planPackage.reviewReports.length === 0 ? (
-                    <p className="text-sm text-muted-foreground">No reviewer reports yet. They are generated automatically when a package is created or revised.</p>
-                  ) : (
-                    <div className="grid gap-3 lg:grid-cols-2">
-                      {planPackage.reviewReports.map((report) => (
-                        <ReviewerReportCard key={report.reviewer} report={report} />
-                      ))}
-                    </div>
-                  )}
-                  {planPackage.revisions.length > 0 && (
-                    <div className="rounded-md border border-slate-300 bg-white px-4 py-3 shadow-sm">
-                      <p className="text-sm font-semibold text-slate-900">Revision history</p>
-                      <div className="mt-3 space-y-2">
-                        {planPackage.revisions.slice(0, 6).map((revision) => (
-                          <div key={revision.id} className="rounded-md border border-slate-300 bg-slate-50 px-3 py-2 text-sm">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <Badge variant="outline" className="font-mono text-[11px]">
-                                {revision.id}
-                              </Badge>
-                              <Badge variant="secondary">{revision.generationMode}</Badge>
-                              <span className="text-xs text-slate-500">{new Date(revision.createdAt).toLocaleString()}</span>
-                            </div>
-                            <p className="mt-2 text-slate-800">{revision.summary}</p>
-                            {revision.changedSections.length > 0 && (
-                              <p className="mt-1 text-xs text-slate-600">Changed: {revision.changedSections.join(', ')}</p>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-            </TabsContent>
-
-            <TabsContent value="json">
-              <Card>
-                <CardHeader className="pb-3">
-                  <CardTitle className="flex items-center gap-2 text-base">
-                    <FileJson className="h-4 w-4 text-slate-600" />
-                    Raw PlanPackage
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <pre className="max-h-[720px] overflow-auto rounded-md bg-slate-950 p-4 text-xs text-slate-100">
-                    {JSON.stringify(planPackage, null, 2)}
-                  </pre>
-                </CardContent>
-              </Card>
-            </TabsContent>
-          </Tabs>
+              </CardContent>
+            </Card>
+          </aside>
         </div>
       )}
     </div>
