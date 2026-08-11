@@ -376,6 +376,28 @@ async def cart_stream(request: CartRunRequest, db: Session = Depends(get_session
             detail="No PlanPackage found for this project. Generate a PlanPackage from the Pipeline page first.",
         )
 
+    # Scientific execution gate: a plan may be useful for reporting while not
+    # being safe or ready for code execution.  Do not launch a sandbox for
+    # missing data, instruments, ethics approval, proof tasks, or protocol-only
+    # work.  This check is additive and only affects PlanPackage-driven carts.
+    from app.modules.code.execution_assessment import assess_plan_package, execution_gate
+
+    execution_assessment = assess_plan_package(
+        ppkg,
+        run_id=f"code_{request.projectId}",
+        base_dir=repo_dir,
+    )
+    gate = execution_gate(execution_assessment)
+    if not gate.allowed:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "SCIENTIFIC_EXECUTION_BLOCKED",
+                "message": gate.reason,
+                "assessment": execution_assessment.model_dump(mode="json"),
+            },
+        )
+
     from app.services.cart_runner import CartRunner
     import asyncio as _asyncio
 
@@ -435,6 +457,17 @@ async def cart_stream(request: CartRunRequest, db: Session = Depends(get_session
 
         async def _run_cart():
             try:
+                os.makedirs(os.path.join(cart_dir, "data"), exist_ok=True)
+                assessment_path = os.path.join(cart_dir, "data", "execution_assessment.json")
+                with open(assessment_path + ".tmp", "w", encoding="utf-8") as f:
+                    json.dump(
+                        execution_assessment.model_dump(mode="json"),
+                        f,
+                        indent=2,
+                        ensure_ascii=False,
+                        default=str,
+                    )
+                os.replace(assessment_path + ".tmp", assessment_path)
                 async for event in runner.run(
                     ppkg,
                     project_id=request.projectId,

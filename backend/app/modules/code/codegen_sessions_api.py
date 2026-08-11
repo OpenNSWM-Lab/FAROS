@@ -19,7 +19,12 @@ from app.agents.codegen.kernel import (
     AgentKernel, CodeGenSession as KernelSession,
     get_session, list_sessions, _sessions, _save_session, _gen_id,
 )
-from app.modules.platform.storage import get_plan_candidate_storage, get_plan_link, get_plan_session_storage
+from app.modules.platform.storage import (
+    get_plan_candidate_storage,
+    get_plan_link,
+    get_plan_package_storage,
+    get_plan_session_storage,
+)
 from app.services.code_project_service import create_project
 from app.db.engine import get_session_context
 from app.core.settings import get_settings
@@ -48,12 +53,25 @@ class StartSessionRequest(BaseModel):
 
 
 def _resolve_plan_context(req: CreateSessionRequest) -> dict:
-    """Resolve plan session + candidate data from link or direct IDs."""
+    """Resolve legacy PlanSession or current PlanPackage into one code context.
+
+    The Code workspace now lists PlanPackages, whose source identifiers are
+    ``idea_*``/``cand_*``.  Older codegen flows used ``psess_*``/``cplan_*``.
+    Preserve the old lookup, but prefer a directly selected ``ppkg_*`` and
+    fall back to package lookup by Idea session before using generic defaults.
+    """
     plan_session_id = req.planSessionId
     candidate_id = req.candidateId
+    package = None
+
+    package_storage = get_plan_package_storage()
+    if req.planLinkId and req.planLinkId.startswith("ppkg_"):
+        package = package_storage.get(req.planLinkId)
+        if not package:
+            raise ValueError(f"PlanPackage {req.planLinkId} not found")
 
     # If linkId provided, load from link
-    if req.planLinkId:
+    if req.planLinkId and package is None:
         link_data = get_plan_link(req.planLinkId)
         if link_data:
             plan_session_id = link_data.get("planSessionId", plan_session_id)
@@ -65,6 +83,20 @@ def _resolve_plan_context(req: CreateSessionRequest) -> dict:
 
     plan_session = sess_storage.get(plan_session_id) if plan_session_id else None
     candidate = cand_storage.get(candidate_id) if candidate_id else None
+
+    # Current PlanPackage handoff: source.ideaSessionId/source.ideaCandidateId
+    # deliberately point to Idea storage, not the legacy PlanSession stores.
+    if package is None and plan_session_id:
+        package = package_storage.get_by_idea_session(plan_session_id)
+    if package is not None:
+        package_source = package.source
+        package_candidate_id = package_source.ideaCandidateId
+        if candidate_id and package_candidate_id and candidate_id != package_candidate_id:
+            raise ValueError(
+                f"Candidate {candidate_id} does not belong to PlanPackage {package.packageId}"
+            )
+        plan_session_id = package_source.ideaSessionId
+        candidate_id = package_candidate_id
 
     title = "Research Project"
     abstract = ""
@@ -83,9 +115,28 @@ def _resolve_plan_context(req: CreateSessionRequest) -> dict:
             elif isinstance(candidate.experimentDesign, dict):
                 research_question = candidate.experimentDesign.get("research_question", "")
 
+    context_source = "legacy_plan_session" if candidate or plan_session else "default"
+    plan_package_id = None
+    if package is not None:
+        context_source = "plan_package"
+        plan_package_id = package.packageId
+        title = package.idea.title or package.researchQuestion or title
+        abstract = package.idea.problem or package.background.summary or ""
+        method = package.principle.mechanism or package.idea.proposedMethod or ""
+        research_question = package.researchQuestion or ""
+        gap_analysis = package.gap.summary or ""
+
+    if (req.planLinkId or req.planSessionId or req.candidateId) and context_source == "default":
+        raise ValueError(
+            "Plan context could not be resolved. Expected a PlanPackage (ppkg_*) "
+            "or a legacy PlanSession/Candidate pair."
+        )
+
     return {
         "planSessionId": plan_session_id,
         "candidateId": candidate_id,
+        "planPackageId": plan_package_id,
+        "contextSource": context_source,
         "title": title,
         "abstract": abstract,
         "method": method,
@@ -101,7 +152,10 @@ async def create_codegen_session(req: CreateSessionRequest):
     provider_name = req.providerName if req.providerName is not None else settings.get_active_provider()
     model_name = req.model if req.model is not None else settings.get_active_model(provider_name)
 
-    ctx = _resolve_plan_context(req)
+    try:
+        ctx = _resolve_plan_context(req)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     # Create or reuse project
     project_id = req.existingProjectId
@@ -133,9 +187,13 @@ async def create_codegen_session(req: CreateSessionRequest):
             "enableGithub": req.enableGithub,
             "planSessionId": ctx["planSessionId"],
             "candidateId": ctx["candidateId"],
+            "planPackageId": ctx["planPackageId"],
+            "contextSource": ctx["contextSource"],
             "title": ctx["title"],
             "abstract": ctx["abstract"][:300],
             "method": ctx["method"][:300],
+            "research_question": ctx["research_question"][:500],
+            "gap_analysis": ctx["gap_analysis"][:500],
         },
         createdAt=datetime.utcnow().isoformat(),
     )
