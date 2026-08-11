@@ -9,7 +9,7 @@
   <img src="https://img.shields.io/badge/Phase-1.1.0--rc1-7c3aed?style=for-the-badge" alt="1.1.0-rc1">
   <img src="https://img.shields.io/badge/Python-3.11%2B-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/Node.js-18%2B-339933?style=for-the-badge&logo=node.js&logoColor=white" alt="Node 18+">
-  <img src="https://img.shields.io/badge/Tests-backend%20smoke-16a34a?style=for-the-badge&logo=pytest&logoColor=white" alt="Backend smoke tests">
+  <img src="https://img.shields.io/badge/Tests-10%20passed-16a34a?style=for-the-badge&logo=pytest&logoColor=white" alt="10 passed">
   <img src="https://img.shields.io/badge/Domain-LLM%20Research-d97706?style=for-the-badge" alt="LLM Research">
 </p>
 
@@ -195,7 +195,7 @@ flowchart LR
 ## 🗂️ Repository Layout
 
 ```text
-FAROS/
+github-v1/
   backend/
     app/
       faros/
@@ -272,7 +272,8 @@ Important:
 - the default frontend backend target is `http://127.0.0.1:8005`
 - real LLM execution is only ready when `/api/system/version` reports `llm.configured=true`
 
-See [docs/DEVELOPER_GUIDE.md](docs/DEVELOPER_GUIDE.md) for developer setup notes and [docs/FAROS_TODO.md](docs/FAROS_TODO.md) for the current roadmap.
+See [docs/FAROS_DEPLOYMENT_GUIDE.md](docs/FAROS_DEPLOYMENT_GUIDE.md) for the full deployment checklist and environment-variable reference.
+For copy-ready shell commands, see [docs/FAROS_PRODUCTION_COMMANDS.md](docs/FAROS_PRODUCTION_COMMANDS.md).
 
 ### Useful Endpoints
 
@@ -370,7 +371,7 @@ bash frontend/scripts/check_frontend_release.sh
 
 ### Current Validation State
 
-- `backend/tests`: backend smoke and ranking checks
+- `github-v1/backend/tests` in `aist`: `10 passed`
 - FAROS runtime routes mounted
 - plan-mode FAROS run creation verified
 - LLM-domain FAROS workflow skeleton wired through `idea -> experiment -> paper -> review`
@@ -428,11 +429,10 @@ It is already usable as a runtime baseline for LLM-domain AutoResearch workflows
 
 # GitHub Stars
 
-<h2 align="center">⭐ GitHub Stars</h2>
-
 <p align="center">
-  <img 
-    src="https://img.shields.io/github/stars/OpenNSWM-Lab/FAROS?style=for-the-badge"
-    alt="GitHub Stars"
-  />
+  <a href="https://star-history.com/#OpenNSWM-Lab/FAROS&Date">
+    <img src="https://api.star-history.com/svg?repos=OpenNSWM-Lab/FAROS&type=Date" alt="Star History Chart" width="100%"/>
+  </a>
+</p>
+  <sub>Built with care for the research community.</sub>
 </p>
