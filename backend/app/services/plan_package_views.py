@@ -9,6 +9,7 @@ from app.models.plan_package import (
     PlanPackage,
     PlanPackageHandoff,
     PlanPackagePresentation,
+    PlanPackageStatus,
     PlanPresentationBackground,
     PlanPresentationDebugRef,
     PlanPresentationEvidenceSummary,
@@ -19,6 +20,10 @@ from app.models.plan_package import (
     PlanReadablePaper,
     PlanReadableStage,
     PlanReadableStep,
+)
+from app.services.plan_package_review_loop import (
+    required_user_actions,
+    user_visible_concerns,
 )
 
 
@@ -145,32 +150,21 @@ def _confidence(package: PlanPackage) -> str:
 
 
 def _review_concerns(package: PlanPackage) -> List[str]:
-    concerns = [
-        issue.message
-        for issue in (package.metaReview.blockingIssues if package.metaReview else [])
-    ]
-    if not concerns:
-        concerns.extend(package.qualityGate.errors[:4])
-    if not concerns and package.metaReview:
-        concerns.extend(issue.message for issue in package.metaReview.warnings[:4])
-    return concerns[:6]
+    return user_visible_concerns(package)
 
 
 def _next_actions(package: PlanPackage) -> List[str]:
-    if package.status == "approved" or str(package.status).endswith("APPROVED"):
+    if package.status == PlanPackageStatus.APPROVED:
         return [
-            "Hand off the compact package to code, paper, and review modules.",
-            "Keep the full package available only for audit/debug traceability.",
+            "Hand off the compact package to downstream modules.",
+            "Keep the full package available for audit and debugging.",
         ]
+    actions = required_user_actions(package)
+    if actions:
+        return actions
     if package.qualityGate.agentApproved:
-        return [
-            "Ask a human owner to approve or add targeted feedback.",
-            "Use the Revise action for any required wording or metric fixes.",
-        ]
-    return [
-        "Resolve reviewer blocking issues before downstream handoff.",
-        "Add targeted human feedback, then run Revise and Review again.",
-    ]
+        return ["Review and approve the finalized research plan."]
+    return ["Retry internal plan optimization before approval."]
 
 
 def build_plan_package_presentation(package: PlanPackage) -> PlanPackagePresentation:
@@ -186,12 +180,7 @@ def build_plan_package_presentation(package: PlanPackage) -> PlanPackagePresenta
         f"The proposed mechanism is: {(package.principle.mechanism or package.idea.proposedMethod).strip()}"
     )
 
-    evidence_weak_points = list(package.qualityGate.errors[:4])
-    evidence_weak_points.extend(package.qualityGate.warnings[:4])
-    evidence_weak_points.extend(
-        f"{issue.module}: {issue.message}"
-        for issue in package.downstreamReadiness.blockingIssues[:4]
-    )
+    evidence_weak_points: List[str] = []
     if selected and selected.whyUnsolved:
         evidence_weak_points.append(selected.whyUnsolved)
 
@@ -233,8 +222,8 @@ def build_plan_package_presentation(package: PlanPackage) -> PlanPackagePresenta
         evidenceSummary=PlanPresentationEvidenceSummary(
             confidence=_confidence(package),
             summary=(
-                f"{len(key_papers)} key papers are surfaced for user-facing evidence. "
-                f"Reviewer score is {package.qualityGate.overallScore:.2f}."
+                f"{len(key_papers)} key papers are surfaced with the selected "
+                "GAP and method evidence trace."
             ),
             supportingPapers=key_papers[:4],
             weakPoints=evidence_weak_points[:8],
@@ -243,7 +232,7 @@ def build_plan_package_presentation(package: PlanPackage) -> PlanPackagePresenta
             decision=package.qualityGate.reviewDecision,
             score=package.qualityGate.overallScore,
             mainConcerns=_review_concerns(package),
-            requiredFixes=(package.metaReview.requiredRepairs[:6] if package.metaReview else []),
+            requiredFixes=required_user_actions(package),
             reviewerMode=package.generation.reviewerMode,
             llmReviewerUsed=package.generation.llmReviewerUsed,
         ),

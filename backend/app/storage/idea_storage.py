@@ -359,6 +359,18 @@ class RawPaperStorage:
 
         return paper
 
+    def update(self, paper: RawPaper) -> RawPaper:
+        """Atomically update an existing raw paper."""
+        path = self._get_path(paper.id)
+        if not path.exists():
+            raise ValueError(f"RawPaper {paper.id} not found")
+
+        data = paper.model_dump()
+        data['createdAt'] = data['createdAt'].isoformat() if isinstance(data['createdAt'], datetime) else data['createdAt']
+        _write_json_atomic(path, data, default=str)
+
+        return paper
+
     def get(self, paper_id: str) -> Optional[RawPaper]:
         """Get raw paper by ID."""
         path = self._get_path(paper_id)

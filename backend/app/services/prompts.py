@@ -20,6 +20,7 @@ EXPAND_QUERY_USER = """Given the following research topic, expand it into:
 Research Topic: {seed_query}
 Paper Type: {paper_type}
 Domain: {domain}
+{literature_context}
 
 Respond in JSON format:
 {{
@@ -41,9 +42,15 @@ Respond in JSON format:
 EXPAND_QUERY_CJK_SUFFIX = """
 
 IMPORTANT: The research topic above is in Chinese (CJK characters).
-In addition to the fields above, please ALSO provide English translations for academic search:
+In addition to the fields above, provide role-specific English academic queries:
 
   "englishSearchQueries": ["English search query 1", "English search query 2", ...],
+  "englishQueryRoles": {
+    "domain": ["queries about the named object/domain"],
+    "task": ["queries about the research task or gap"],
+    "method": ["queries about applicable methods"],
+    "evaluation": ["queries about evaluation and limitations"]
+  },
   "englishKeyConcepts": ["English concept 1", "English concept 2", ...]
 
 These English queries will be used to search international academic databases.
@@ -119,6 +126,18 @@ For each gap, provide:
 4. Expected impact if addressed
 5. Feasibility assessment
 
+CRITICAL — Diversity Requirement for researchOpportunities:
+You MUST generate at least 3 research opportunities that are INDEPENDENT of each other.
+Each opportunity must differ from the others in at least TWO of these dimensions:
+- problem formulation (what question is being asked)
+- core methodology (what technical approach is used — e.g. contrastive learning, graph algorithms, probabilistic models, RL, etc.)
+- evaluation setting (how success is measured)
+- application domain (what real-world problem it addresses)
+
+Do NOT generate multiple opportunities that all revolve around the same technical
+paradigm (e.g. all using "contrastive learning" or all using "attention mechanisms").
+Instead, cover genuinely distinct paradigms from the literature review.
+
 Respond in JSON format:
 {{
   "gapAnalysis": [
@@ -152,12 +171,23 @@ Research Opportunities:
 Key Literature:
 {key_papers}
 
-Create 3-5 complementary research directions. Cover different contribution styles when relevant:
-- method
-- benchmark
-- system
-- safety_reliability
-- application
+IMPORTANT: You MUST create at least 3 research directions that are INDEPENDENT
+from each other — each direction must explore a genuinely different technical
+paradigm or problem angle. They must NOT all revolve around the same core
+methodology (e.g. all "contrastive learning" or all "graph attention").
+
+Each direction must differ from the others in at least TWO of these dimensions:
+- problem formulation
+- core methodology / technical paradigm
+- evaluation setting
+- application domain
+
+Cover DIFFERENT contribution styles when relevant:
+- method (novel algorithm, architecture, or training approach)
+- benchmark (new evaluation tasks, metrics, datasets)
+- system (end-to-end pipeline, integration, deployment)
+- safety_reliability (robustness, faithfulness, failure analysis)
+- application (domain-specific adaptation with real-world use case)
 
 Each direction must stay faithful to the seed topic and cite why it is worth exploring.
 
