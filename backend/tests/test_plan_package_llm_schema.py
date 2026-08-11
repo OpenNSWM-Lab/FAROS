@@ -1,4 +1,59 @@
-from app.services.plan_package_llm_schema import validate_llm_plan_output
+from app.services.plan_package_llm_schema import (
+    validate_llm_plan_core_output,
+    validate_llm_plan_output,
+    validate_llm_plan_stage_output,
+)
+
+
+def test_validate_llm_plan_core_output_rejects_stage_write():
+    parsed, issues = validate_llm_plan_core_output(
+        {
+            "researchQuestion": "Can verification improve citation faithfulness?",
+            "hypothesis": (
+                "Verification increases citation faithfulness; "
+                "reject if mean delta is not positive."
+            ),
+            "constants": {"baseline": "vanilla RAG"},
+            "stages": [],
+        }
+    )
+
+    assert parsed is None
+    assert issues == ["Core output contains forbidden keys: stages"]
+
+
+def test_validate_llm_plan_stage_output_accepts_one_existing_stage_shape():
+    parsed, issues = validate_llm_plan_stage_output(
+        {
+            "stage": {
+                "title": "Controlled evaluation",
+                "goal": "Compare verification with vanilla RAG.",
+                "method": "Use the preregistered split and fixed retrieval corpus.",
+                "steps": [
+                    {
+                        "title": "Measure citation faithfulness",
+                        "desc": "Run both methods on the same questions.",
+                        "method": "Score claim-level attribution with a frozen evaluator.",
+                        "outputs": [
+                            {"type": "metrics", "name": "citation_metrics.json"}
+                        ],
+                        "expected": [
+                            {
+                                "metric": "citation faithfulness",
+                                "target": (
+                                    "mean_delta > 0 with 95% confidence interval excluding 0"
+                                ),
+                            }
+                        ],
+                    }
+                ],
+            }
+        }
+    )
+
+    assert issues == []
+    assert parsed is not None
+    assert parsed["stage"]["title"] == "Controlled evaluation"
 
 
 def test_validate_llm_plan_output_ignores_recoverable_expected_metrics_top_level():

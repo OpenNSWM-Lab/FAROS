@@ -23,6 +23,8 @@ class IdeaSessionStatus(str, Enum):
     """Idea session lifecycle states."""
     PENDING = "pending"
     RUNNING = "running"
+    AWAITING_EVIDENCE = "awaiting_evidence"
+    AWAITING_IDEAS = "awaiting_ideas"
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
@@ -81,7 +83,7 @@ class IdeaSessionConfig(BaseModel):
         description="Optional search budget for BFTS; defaults to maxPapers if unset"
     )
     maxReviewIterations: int = Field(
-        default=2,
+        default=3,
         ge=1,
         le=5,
         description="Maximum internal idea reviewer repair iterations before final handoff"
@@ -419,6 +421,16 @@ class RawPaper(BaseModel):
     citationCount: int = 0
     abstract: str = ""
     source: List[str] = Field(default_factory=list, description="List of sources: semantic_scholar, arxiv, local, openalex, crossref")
+    retrievalRoles: List[str] = Field(default_factory=list)
+    matchedQueries: List[str] = Field(default_factory=list)
+    evidenceTier: str = Field(
+        default="unclassified",
+        description="direct, transferable, rejected, unclassified",
+    )
+    decisiveAnchors: List[str] = Field(default_factory=list)
+    relevanceComponents: Dict[str, float] = Field(default_factory=dict)
+    rejectionReason: str = ""
+    mustCiteOverride: bool = False
     normalizedTitleHash: str = Field(default="", description="SHA256 of normalized title for dedup")
     references: List[str] = Field(default_factory=list, description="Paper IDs cited by this paper")
     citedBy: List[str] = Field(default_factory=list, description="Paper IDs citing this paper")

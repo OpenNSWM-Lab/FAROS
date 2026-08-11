@@ -42,6 +42,7 @@ from app.models.plan_package import (
     PlanStep,
 )
 from app.services.plan_package_templates import get_plan_template
+from app.services.plan_package_specificity import hypothesis_is_falsifiable
 from app.storage.plan_package_storage import generate_plan_package_id
 
 
@@ -299,6 +300,125 @@ def _planned_validation_metrics(
     return metrics[:limit] or ["primary_metric"]
 
 
+def _planned_metric_target(metric: str) -> str:
+    lowered = metric.lower()
+    if any(
+        term in lowered
+        for term in ["latency", "cost", "error", "failure", "violation", "hallucination"]
+    ):
+        return "<= strongest baseline under the same evaluation protocol"
+    if any(
+        term in lowered
+        for term in [
+            "agreement",
+            "accuracy",
+            "faithfulness",
+            "coverage",
+            "recall",
+            "precision",
+            "score",
+            "rate",
+            "throughput",
+        ]
+    ):
+        return ">= strongest baseline with a positive mean delta on the preregistered split"
+    return "mean_delta versus strongest baseline must be positive on the preregistered primary evaluation"
+
+
+def _planned_baseline_methods(
+    candidate: IdeaCandidate,
+    literature_survey: PlanLiteratureSurvey,
+) -> List[str]:
+    names: List[str] = []
+    for prior in candidate.closestPriorWork or []:
+        name = _first_text_value(
+            _get(prior, "method", ""),
+            _get(prior, "name", ""),
+            _get(prior, "title", ""),
+        )
+        if name:
+            names.append(name)
+
+    for paper in sorted(
+        literature_survey.papers,
+        key=lambda item: item.relevanceScore,
+        reverse=True,
+    ):
+        paper_names: List[str] = []
+        for method in paper.methods:
+            name = _first_text_value(
+                _get(method, "name", ""),
+                _get(method, "method", ""),
+            )
+            role_text = " ".join(
+                [
+                    str(_get(method, "role", "")),
+                    str(_get(method, "description", "")),
+                ]
+            ).lower()
+            if name and any(
+                term in role_text for term in ["baseline", "control", "comparison"]
+            ):
+                paper_names.append(name)
+        if paper.role == "baseline" and not paper_names:
+            paper_names.append(paper.title)
+        names.extend(paper_names)
+        if names:
+            break
+    return _unique(names)[:5]
+
+
+def _strengthen_plan_hypothesis(
+    hypothesis: str,
+    *,
+    primary_metric: str,
+    baseline_label: str,
+    paper_type: str,
+) -> str:
+    base = hypothesis.strip().rstrip(".")
+    if paper_type == "survey" or hypothesis_is_falsifiable(base):
+        return hypothesis.strip()
+    return (
+        f"{base}. Relative to {baseline_label}, this predicts a positive improvement "
+        f"in the primary metric {primary_metric}; reject the hypothesis if the mean "
+        "delta is not positive on the preregistered primary evaluation."
+    )
+
+
+def _deterministic_plan_core(
+    *,
+    candidate: IdeaCandidate,
+    literature_survey: PlanLiteratureSurvey,
+    paper_type: str,
+    hypothesis: str = "",
+) -> tuple[str, str]:
+    template = get_plan_template(paper_type)
+    metrics = _planned_validation_metrics(
+        candidate=candidate,
+        literature_survey=literature_survey,
+        literature_map=None,
+        template_metrics=template.recommendedMetrics,
+    )
+    primary_metric = metrics[0]
+    baselines = _planned_baseline_methods(candidate, literature_survey)
+    baseline_label = (
+        ", ".join(baselines)
+        if baselines
+        else "the strongest eligible baseline from investigated prior work"
+    )
+    question = (
+        f"Can {candidate.title} improve {primary_metric} over {baseline_label} "
+        f"for the bounded problem: {candidate.problem}?"
+    )
+    hypothesis = _strengthen_plan_hypothesis(
+        hypothesis or _candidate_hypothesis(candidate),
+        primary_metric=primary_metric,
+        baseline_label=baseline_label,
+        paper_type=template.paperType,
+    )
+    return question, hypothesis
+
+
 def _seed_mentions_rag_safety_text(text: str) -> bool:
     lowered = text.lower()
     return (
@@ -502,6 +622,38 @@ def build_literature_survey(
         methods = [_method_dict(method) for method in sp.methods]
         findings = [_finding_dict(finding) for finding in sp.findings]
         claims = [_claim_dict(claim) for claim in sp.claims]
+        existing_method_names = {
+            str(method.get("name", "")).strip().lower()
+            for method in methods
+            if isinstance(method, dict)
+        }
+        for baseline in _unique([*sp.baselines, *sp.baselineMethods]):
+            if baseline.lower() in existing_method_names:
+                continue
+            methods.append(
+                {
+                    "name": baseline,
+                    "description": "Deep-reader recommended comparison method.",
+                    "role": "baseline",
+                }
+            )
+            existing_method_names.add(baseline.lower())
+        existing_metric_text = {
+            str(claim.get("text", "")).strip().lower()
+            for claim in claims
+            if isinstance(claim, dict)
+        }
+        for metric in _unique([*sp.metrics, *sp.recommendedMetrics]):
+            if metric.lower() in existing_metric_text:
+                continue
+            claims.append(
+                {
+                    "text": metric,
+                    "claimType": "metric",
+                    "source": "deep_reader_recommendation",
+                }
+            )
+            existing_metric_text.add(metric.lower())
         relevance_score, relevance_signals, relevance_reason = _paper_relevance(
             title=sp.title,
             summary=summary,
@@ -985,6 +1137,12 @@ def build_default_stages(
         literature_map=None,
         template_metrics=template.recommendedMetrics,
     )
+    baseline_methods = _planned_baseline_methods(candidate, literature_survey)
+    baseline_label = (
+        ", ".join(baseline_methods)
+        if baseline_methods
+        else "a frozen baseline selected from the closest investigated prior work"
+    )
 
     evidence_refs = [
         PlanEvidenceRef(type="paper", id=paper.paperId, source=paper.source)
@@ -1269,8 +1427,14 @@ def build_default_stages(
                     id="step-1-2",
                     order=2,
                     title="Select implementation gap and baseline scope",
-                    desc="Confirm the selected GAP, record supporting papers or graph signals, and define the baseline/control methods for downstream comparison.",
-                    method="Use gap.items[], evidenceTrace, closestPriorWork, and literatureSurvey roles to bind the gap to evidence IDs and fair baselines.",
+                    desc=(
+                        "Confirm the selected GAP, record supporting papers or graph signals, "
+                        f"and define {baseline_label} for downstream comparison."
+                    ),
+                    method=(
+                        "Use gap.items[], evidenceTrace, closestPriorWork, and literatureSurvey "
+                        f"roles to bind the gap to evidence IDs and compare against {baseline_label}."
+                    ),
                     inputFrom=["step-1-1"],
                     outputs=[
                         PlanOutput(type="checkpoint", name="selected_gap.json", desc="Selected gap and supporting evidence", requiredFor=["review"]),
@@ -1286,8 +1450,14 @@ def build_default_stages(
                     id="step-1-3",
                     order=3,
                     title="Define baseline comparison scope",
-                    desc="List the baseline or control methods that downstream validation should compare against the proposed idea.",
-                    method="Use closestPriorWork, literatureSurvey roles, and selected GAP evidence to define fair comparison groups.",
+                    desc=(
+                        "Freeze the comparison scope around "
+                        f"{baseline_label} before downstream validation."
+                    ),
+                    method=(
+                        "Use closestPriorWork, literatureSurvey roles, and selected GAP evidence "
+                        f"to define matched settings for {baseline_label}."
+                    ),
                     inputFrom=["step-1-2"],
                     outputs=[PlanOutput(type="table", name="baseline_comparison_scope.csv", desc="Baseline/control methods and comparison rationale", requiredFor=["validation", "paper", "review"])],
                     expected=[PlanExpectedMetric(metric="baseline_count", target=">= 1", desc="At least one baseline or control comparison is declared.")],
@@ -1348,11 +1518,18 @@ def build_default_stages(
                     order=1,
                     title="Specify validation metrics",
                     desc="Define planned metrics and target criteria for downstream validation.",
-                    method="Use candidate expected metrics and literature-derived baselines when available.",
+                    method=(
+                        "Use candidate expected metrics and compare every primary outcome against "
+                        f"{baseline_label} under the same evaluation protocol."
+                    ),
                     inputFrom=["step-2-2"],
                     outputs=[PlanOutput(type="metrics", name="validation_metrics.json", desc="Planned metrics and target values", requiredFor=["validation", "paper"])],
                     expected=[
-                        PlanExpectedMetric(metric=str(metric), target="specified before implementation", desc="Pre-registered expected metric.")
+                        PlanExpectedMetric(
+                            metric=str(metric),
+                            target=_planned_metric_target(str(metric)),
+                            desc="Pre-registered expected metric.",
+                        )
                         for metric in metrics[:5]
                     ],
                 ),
@@ -1726,10 +1903,14 @@ def build_plan_package(
     if candidate.draftPlan:
         research_question = candidate.draftPlan.researchQuestion
         hypothesis = candidate.draftPlan.hypothesis
-    research_question = research_question or (
-        f"How can {candidate.title} address: {candidate.problem}?"
+    deterministic_question, deterministic_hypothesis = _deterministic_plan_core(
+        candidate=candidate,
+        literature_survey=literature_survey,
+        paper_type=paper_type,
+        hypothesis=hypothesis,
     )
-    hypothesis = hypothesis or _candidate_hypothesis(candidate)
+    research_question = research_question or deterministic_question
+    hypothesis = deterministic_hypothesis
     proposed_method = _candidate_method(candidate, critique)
     expected_outcome = _candidate_expected_outcome(candidate, critique)
 

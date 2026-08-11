@@ -9,6 +9,11 @@ backend/tests/*
 !backend/tests/test_paper_prompt_formatting.py
 !backend/tests/test_release_smoke.py
 !backend/tests/test_scientific_research_contracts.py
+!backend/tests/test_research_dossier_schema.py
+!backend/tests/test_idea_problem_framing.py
+!backend/tests/test_idea_evidence_gate_contract.py
+!backend/tests/test_idea_falsifiability.py
+!backend/tests/test_idea_degraded_fixtures.py
 !backend/tests/fixtures/
 !backend/tests/fixtures/scientific_research/
 !backend/tests/fixtures/scientific_research/*.json
@@ -16,8 +21,21 @@ backend/tests/*
 
 # Temp docs, backups, work logs
 docs/
+.worktrees/
 *.bak
 stop_dev.sh
+
+# Local diagnostic and temporary scripts (not part of codebase)
+/test_*.py
+/check_*.py
+/compare_*.py
+/generate_*.py
+/diagnosis_*.md
+/test_report_*.md
+/backend/test_*.py
+/backend/diagnose_*.py
+/backend/verify_*.py
+/backend/verification_*.md
 
 # Python
 __pycache__/
