@@ -18,10 +18,13 @@ import {
   FileText,
   Settings,
   ShieldCheck,
-  AlertTriangle
+  AlertTriangle,
+  Search,
+  Wand2,
 } from 'lucide-react'
 import { PAPER_TYPES, getPaperTypeById } from '@/lib/models/providers'
 import { summarizeEvidenceGate, type EvidenceGateSummary } from './evidenceGateSummary'
+import { DossierViewer } from './DossierViewer'
 
 interface IdeaSession {
   id: string
@@ -44,6 +47,9 @@ interface IdeaSession {
     hiddenCandidateCount?: number
     rejectedCandidateCount?: number
     warnings?: string[]
+    blockingReason?: string
+    resumeFrom?: string
+    qualityStatus?: string
   }
   selectedCandidateId?: string
   errorMessage?: string
@@ -368,6 +374,15 @@ export function IdeaGenerationPanel({
   const [expandedCandidate, setExpandedCandidate] = useState<string | null>(null)
   const [expandedStep, setExpandedStep] = useState<number | null>(null)
   const [showDebugDetails, setShowDebugDetails] = useState(false)
+  const [seedCheckResult, setSeedCheckResult] = useState<{
+    paperCount: number
+    isSufficient: boolean
+    threshold: number
+    generalizedQuery?: string | null
+    suggestion?: string | null
+    topPaperTitles?: string[]
+  } | null>(null)
+  const [isCheckingSeed, setIsCheckingSeed] = useState(false)
   const evidenceSummary = useMemo(() => summarizeEvidenceGate(trace?.steps), [trace])
 
   useEffect(() => {
@@ -457,6 +472,25 @@ export function IdeaGenerationPanel({
     }
   }
 
+  const checkSeed = async () => {
+    if (!seedQuery.trim()) return
+    setIsCheckingSeed(true)
+    setSeedCheckResult(null)
+    try {
+      const response = await fetch(`${API_BASE}/api/v1/ideas/seed-check`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ seedQuery }),
+      })
+      if (!response.ok) throw new Error(`Check failed: ${response.status}`)
+      setSeedCheckResult(await response.json())
+    } catch (err) {
+      setSeedCheckResult(null)
+    } finally {
+      setIsCheckingSeed(false)
+    }
+  }
+
   const generateIdeas = async () => {
     if (!seedQuery.trim()) { setError('Please enter a research topic'); return }
     setIsLoading(true); setError(null); setSession(null); setTrace(null); setCandidates([]); setLiterature([]); setShowDebugDetails(false)
@@ -494,7 +528,7 @@ export function IdeaGenerationPanel({
       const litResponse = await fetch(`${API_BASE}/api/v1/ideas/sessions/${session.id}/literature`)
       const litData = await litResponse.json()
       setLiterature(litData.items || [])
-      if (sessionData.status === 'completed' || sessionData.status === 'failed') {
+      if (['completed', 'failed', 'awaiting_evidence', 'awaiting_ideas'].includes(sessionData.status)) {
         setIsPolling(false)
         if (sessionData.status === 'completed') {
           const candResponse = await fetch(`${API_BASE}/api/v1/ideas/sessions/${session.id}/candidates`)
@@ -505,6 +539,27 @@ export function IdeaGenerationPanel({
       }
     } catch (err) { console.error('Polling error:', err) }
   }, [session?.id, isPolling])
+
+  const resumeSession = async () => {
+    if (!session?.id) return
+    setError(null)
+    setIsLoading(true)
+    try {
+      const response = await fetch(`${API_BASE}/api/v1/ideas/sessions/${session.id}/resume`, {
+        method: 'POST',
+      })
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}))
+        throw new Error(data.detail || `Failed to resume: ${response.status}`)
+      }
+      setSession(await response.json())
+      setIsPolling(true)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to resume session')
+    } finally {
+      setIsLoading(false)
+    }
+  }
 
   useEffect(() => {
     if (!isPolling) return
@@ -539,6 +594,8 @@ export function IdeaGenerationPanel({
       case 'completed': return 'bg-emerald-700 text-white'
       case 'running': return 'bg-blue-700 text-white'
       case 'failed': return 'bg-red-700 text-white'
+      case 'awaiting_evidence': return 'bg-amber-700 text-white'
+      case 'awaiting_ideas': return 'bg-amber-700 text-white'
       case 'pending': return 'bg-amber-600 text-white'
       default: return 'bg-slate-600 text-white'
     }
@@ -599,7 +656,70 @@ export function IdeaGenerationPanel({
         <CardContent className="space-y-4">
           <div className="space-y-2">
             <label className="text-sm font-medium">Research Topic / Seed Query</label>
-            <textarea value={seedQuery} onChange={(e) => setSeedQuery(e.target.value)} placeholder="e.g., graph neural networks for recommendation systems" className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm min-h-[80px] focus:ring-2 focus:ring-amber-500" disabled={isPolling} />
+            <textarea value={seedQuery} onChange={(e) => { setSeedQuery(e.target.value); setSeedCheckResult(null) }} placeholder="e.g., graph neural networks for recommendation systems" className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm min-h-[80px] focus:ring-2 focus:ring-amber-500" disabled={isPolling} />
+            <div className="flex items-center gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={checkSeed}
+                disabled={isPolling || isCheckingSeed || !seedQuery.trim()}
+              >
+                {isCheckingSeed ? <RefreshCw className="h-3.5 w-3.5 animate-spin mr-1.5" /> : <Search className="h-3.5 w-3.5 mr-1.5" />}
+                Check literature availability
+              </Button>
+            </div>
+            {seedCheckResult && (
+              <div className={`rounded-md border border-l-4 p-3 ${
+                seedCheckResult.isSufficient
+                  ? 'border-emerald-300 border-l-emerald-700 bg-emerald-50/80'
+                  : 'border-amber-300 border-l-amber-700 bg-amber-50/80'
+              }`}>
+                <div className="flex items-start gap-2">
+                  {seedCheckResult.isSufficient
+                    ? <CheckCircle2 className="h-4 w-4 mt-0.5 shrink-0 text-emerald-700" />
+                    : <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0 text-amber-700" />}
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-semibold text-slate-950">
+                      {seedCheckResult.isSufficient
+                        ? `${seedCheckResult.paperCount} papers found`
+                        : `Only ${seedCheckResult.paperCount} papers found (need ${seedCheckResult.threshold}+)`}
+                    </p>
+                    {seedCheckResult.suggestion && (
+                      <p className="mt-1 text-xs text-slate-700">{seedCheckResult.suggestion}</p>
+                    )}
+                    {seedCheckResult.generalizedQuery && (
+                      <div className="mt-2 flex flex-wrap items-center gap-2">
+                        <Badge variant="outline" className="border-amber-400 bg-white text-xs text-amber-800">
+                          <Wand2 className="h-3 w-3 mr-1" />
+                          Suggested: {seedCheckResult.generalizedQuery}
+                        </Badge>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="h-7 text-xs"
+                          onClick={() => {
+                            setSeedQuery(seedCheckResult.generalizedQuery!)
+                            setSeedCheckResult(null)
+                          }}
+                        >
+                          Use this query
+                        </Button>
+                      </div>
+                    )}
+                    {seedCheckResult.topPaperTitles && seedCheckResult.topPaperTitles.length > 0 && (
+                      <div className="mt-2 space-y-0.5">
+                        <p className="text-xs font-medium text-slate-600">Top results:</p>
+                        {seedCheckResult.topPaperTitles.slice(0, 3).map((title, i) => (
+                          <p key={i} className="text-xs text-slate-600 truncate">{i + 1}. {title}</p>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
           <div className="grid gap-4 md:grid-cols-2">
             <div className="space-y-2">
@@ -709,6 +829,24 @@ export function IdeaGenerationPanel({
               </div>
             )}
             {isPolling && (<div className="flex items-center gap-2 mt-4 text-sm text-muted-foreground"><RefreshCw className="h-4 w-4 animate-spin" /> Processing...</div>)}
+            {(session.status === 'awaiting_evidence' || session.status === 'awaiting_ideas') && (
+              <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-l-4 border-amber-600 bg-amber-50 px-3 py-3">
+                <div>
+                  <p className="text-sm font-semibold text-amber-950">
+                    {session.status === 'awaiting_evidence'
+                      ? 'More relevant evidence is required'
+                      : 'Two approved ideas are required'}
+                  </p>
+                  <p className="mt-0.5 text-xs text-amber-900">
+                    {session.qualityLoopSummary?.blockingReason || session.errorMessage}
+                  </p>
+                </div>
+                <Button variant="outline" onClick={resumeSession} disabled={isLoading || isPolling}>
+                  <RefreshCw className={`mr-2 h-4 w-4 ${isLoading ? 'animate-spin' : ''}`} />
+                  Resume
+                </Button>
+              </div>
+            )}
           </CardContent>
         </Card>
       )}
@@ -830,6 +968,11 @@ export function IdeaGenerationPanel({
             </div>
           </CardContent>
         </Card>
+      )}
+
+      {/* Research Dossier Viewer */}
+      {session && (session.status === 'completed' || session.status === 'awaiting_evidence' || session.status === 'awaiting_ideas') && (
+        <DossierViewer sessionId={session.id} />
       )}
 
       {/* Module Navigation Links */}
