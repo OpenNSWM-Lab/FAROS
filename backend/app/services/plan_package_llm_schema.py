@@ -113,6 +113,20 @@ class PlanPackageLLMOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class LLMPlanCoreOutput(BaseModel):
+    researchQuestion: str
+    hypothesis: str
+    constants: Dict[str, Any] = Field(default_factory=dict)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class LLMPlanStageOutput(BaseModel):
+    stage: LLMPlanStage
+
+    model_config = ConfigDict(extra="forbid")
+
+
 _ALLOWED_TOP_LEVEL = {
     "researchQuestion",
     "hypothesis",
@@ -330,6 +344,54 @@ def _validation_error_messages(exc: ValidationError) -> List[str]:
         loc = ".".join(str(part) for part in error.get("loc", [])) or "$"
         messages.append(f"{loc}: {error.get('msg', 'invalid value')}")
     return messages
+
+
+def validate_llm_plan_core_output(
+    raw: Any,
+) -> Tuple[Optional[Dict[str, Any]], List[str]]:
+    if not isinstance(raw, dict):
+        return None, ["Core output must be one JSON object"]
+    forbidden = sorted(
+        set(raw) - {"researchQuestion", "hypothesis", "constants"}
+    )
+    if forbidden:
+        return None, ["Core output contains forbidden keys: " + ", ".join(forbidden)]
+    nulls = _null_paths(raw)
+    if nulls:
+        return None, [
+            "Core output contains null values; omit the field or use empty arrays/objects/strings: "
+            + ", ".join(nulls[:12])
+        ]
+    try:
+        parsed = LLMPlanCoreOutput.model_validate(raw)
+    except ValidationError as exc:
+        return None, _validation_error_messages(exc)
+    return parsed.model_dump(), []
+
+
+def validate_llm_plan_stage_output(
+    raw: Any,
+) -> Tuple[Optional[Dict[str, Any]], List[str]]:
+    if not isinstance(raw, dict):
+        return None, ["Stage output must be one JSON object"]
+    forbidden = sorted(set(raw) - {"stage"})
+    if forbidden:
+        return None, ["Stage output contains forbidden keys: " + ", ".join(forbidden)]
+    repaired = dict(raw)
+    if isinstance(repaired.get("stage"), dict):
+        wrapped = _repair_plan_stage_shapes({"stages": [repaired["stage"]]})
+        repaired["stage"] = wrapped["stages"][0]
+    nulls = _null_paths(repaired)
+    if nulls:
+        return None, [
+            "Stage output contains null values; omit the field or use empty arrays/objects/strings: "
+            + ", ".join(nulls[:12])
+        ]
+    try:
+        parsed = LLMPlanStageOutput.model_validate(repaired)
+    except ValidationError as exc:
+        return None, _validation_error_messages(exc)
+    return parsed.model_dump(), []
 
 
 def validate_llm_plan_output(
