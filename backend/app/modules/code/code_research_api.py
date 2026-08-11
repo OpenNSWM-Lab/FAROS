@@ -5,11 +5,13 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
 import tempfile
+from ipaddress import ip_address
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Header, HTTPException, Request, UploadFile
 from pydantic import BaseModel, Field
 from sqlmodel import Session
 
@@ -39,7 +41,7 @@ from app.modules.code.storage import get_session
 
 router = APIRouter(prefix="/code/research", tags=["code_research"])
 _CART_ID_RE = re.compile(r"^cart_[A-Za-z0-9_-]+$")
-_MAX_UPLOAD_BYTES = 512 * 1024 * 1024
+_MAX_UPLOAD_BYTES = 128 * 1024 * 1024
 _UPLOAD_CHUNK_BYTES = 1024 * 1024
 
 
@@ -111,6 +113,67 @@ def _cart_path(cart_id: str) -> Path:
     return candidate
 
 
+def _resolve_assessment_base_dir(base_dir: Optional[str]) -> Optional[str]:
+    if not base_dir:
+        return None
+    data_root = Path(_DATA_DIR).resolve()
+    candidate = Path(base_dir).resolve()
+    try:
+        candidate.relative_to(data_root)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail="baseDir must be located under the managed backend data directory",
+        ) from exc
+    return str(candidate)
+
+
+def _cart_manifest(cart_path: Path) -> dict[str, Any]:
+    path = cart_path / "data" / "manifest.json"
+    if not path.is_file():
+        return {}
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=409, detail=f"Cart manifest is unreadable: {exc}") from exc
+    if not isinstance(value, dict):
+        raise HTTPException(status_code=409, detail="Cart manifest must be a JSON object")
+    return value
+
+
+def _validate_cart_assessment(
+    cart_id: str, cart_path: Path, assessment: ExecutionAssessment,
+) -> None:
+    manifest = _cart_manifest(cart_path)
+    manifest_cart_id = str(manifest.get("cart_id") or "")
+    if manifest_cart_id and manifest_cart_id != cart_id:
+        raise HTTPException(status_code=409, detail="Cart manifest ID does not match request path")
+    package_id = str(manifest.get("package_id") or "")
+    if package_id and assessment.planPackageId != package_id:
+        raise HTTPException(
+            status_code=409,
+            detail="ExecutionAssessment PlanPackage does not match the Cart manifest",
+        )
+
+
+def _authorize_bundle_upload(request: Request, supplied_token: Optional[str]) -> None:
+    host = request.client.host if request.client else ""
+    forwarded_host = request.headers.get("x-forwarded-for", "").split(",", 1)[0].strip()
+    try:
+        forwarded_is_remote = bool(forwarded_host) and not ip_address(forwarded_host).is_loopback
+        if host and ip_address(host).is_loopback and not forwarded_is_remote:
+            return
+    except ValueError:
+        pass
+    configured_token = os.environ.get("FAROS_BUNDLE_UPLOAD_TOKEN", "")
+    if configured_token and supplied_token and secrets.compare_digest(configured_token, supplied_token):
+        return
+    raise HTTPException(
+        status_code=403,
+        detail="Remote bundle upload is disabled; use localhost or configure FAROS_BUNDLE_UPLOAD_TOKEN",
+    )
+
+
 @router.post("/assess", response_model=ExecutionAssessment)
 async def create_execution_assessment(request: AssessmentRequest) -> ExecutionAssessment:
     try:
@@ -118,7 +181,7 @@ async def create_execution_assessment(request: AssessmentRequest) -> ExecutionAs
             request.source,
             run_id=request.runId,
             question_id=request.questionId,
-            base_dir=request.baseDir,
+            base_dir=_resolve_assessment_base_dir(request.baseDir),
         )
         validate_assessment_contract(assessment)
         return assessment
@@ -134,6 +197,7 @@ async def check_execution_gate(request: GateRequest) -> ExecutionGateDecision:
 @router.post("/carts/{cart_id}/evidence", response_model=ExperimentEvidence)
 async def create_experiment_evidence(cart_id: str, request: EvidenceRequest) -> ExperimentEvidence:
     cart_path = _cart_path(cart_id)
+    _validate_cart_assessment(cart_id, cart_path, request.assessment)
     evidence = build_experiment_evidence(
         cart_path,
         request.assessment,
@@ -150,6 +214,19 @@ async def create_experiment_evidence(cart_id: str, request: EvidenceRequest) -> 
 @router.post("/carts/{cart_id}/feedback", response_model=ExperimentFeedback)
 async def create_experiment_feedback(cart_id: str, request: FeedbackRequest) -> ExperimentFeedback:
     cart_path = _cart_path(cart_id)
+    if request.evidence.codeRunId != cart_id:
+        raise HTTPException(status_code=409, detail="ExperimentEvidence does not belong to this Cart")
+    persisted_path = cart_path / "data" / "experiment_evidence.json"
+    if not persisted_path.is_file():
+        raise HTTPException(status_code=409, detail="Create and persist Cart evidence before requesting feedback")
+    try:
+        persisted_evidence = ExperimentEvidence.model_validate_json(
+            persisted_path.read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=f"Persisted Cart evidence is invalid: {exc}") from exc
+    if persisted_evidence.model_dump(mode="json") != request.evidence.model_dump(mode="json"):
+        raise HTTPException(status_code=409, detail="Feedback evidence differs from persisted Cart evidence")
     feedback = build_experiment_feedback(request.evidence, request.planSource)
     if request.persistToCart and cart_path.is_dir():
         target = cart_path / "data" / "experiment_feedback.json"
@@ -181,10 +258,13 @@ async def import_finished_bundle(
 
 @router.post("/imports/upload", response_model=ImportBundleResponse, status_code=201)
 async def upload_finished_bundle(
+    request: Request,
     file: UploadFile = File(...),
+    x_faros_import_token: Optional[str] = Header(default=None),
     db: Session = Depends(get_session),
 ) -> ImportBundleResponse:
     """Upload, validate, register, and then discard a portable Code bundle ZIP."""
+    _authorize_bundle_upload(request, x_faros_import_token)
     filename = Path(file.filename or "bundle.zip").name
     if not filename.lower().endswith(".zip"):
         raise HTTPException(status_code=422, detail="Only ZIP bundles are supported")
@@ -201,7 +281,7 @@ async def upload_finished_bundle(
                     if uploaded_bytes > _MAX_UPLOAD_BYTES:
                         raise HTTPException(
                             status_code=413,
-                            detail="ZIP bundle exceeds the 512 MB upload limit",
+                            detail="ZIP bundle exceeds the 128 MB upload limit",
                         )
                     output.write(chunk)
             if uploaded_bytes == 0:

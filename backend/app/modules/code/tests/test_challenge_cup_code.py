@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
 import pytest
+from fastapi import HTTPException
+from starlette.requests import Request
 from sqlmodel import SQLModel, Session, create_engine
 
 from app.db import crud
 from app.models.plan_package import PlanPackage
 from app.modules.code import code_bundle_import as bundle_import
+from app.modules.code import code_research_api
 from app.modules.code import codegen_sessions_api
 from app.modules.code.execution_assessment import (
     ExecutionAssessment,
@@ -20,6 +24,7 @@ from app.modules.code.execution_assessment import (
 from app.modules.code.experiment_evidence_service import (
     build_experiment_evidence,
     build_experiment_feedback,
+    save_evidence,
 )
 from app.modules.code.tests.execution_class_cases import EXECUTION_CLASS_CASES
 from app.services import code_project_service as cps
@@ -100,6 +105,7 @@ def _build_cart(root: Path, package_id: str = "ppkg_test_bundle") -> Path:
         "node_id": "step-1", "success": True,
         "outputs": {"metrics": {"accuracy": 0.95}},
         "artifacts": [{"name": "metrics.json", "path": "data/step-1/metrics.json"}],
+        "baseline": "majority-class baseline",
         "node_info": {"method": "Fixed-seed Python comparison"},
     })
     _write_json(cart / "event_log.json", [
@@ -126,6 +132,26 @@ def test_seven_execution_classes_are_explainable():
         assert execution_gate(assessment).allowed == (
             fixture["expected"] in {"computational_ready", "simulation_ready"}
         )
+
+
+def test_hard_ethics_signal_overrides_optimistic_upstream_class():
+    assessment = assess_execution({
+        "runId": "run_ethics_override",
+        "questionId": "q_ethics_override",
+        "executionClass": "computational_ready",
+        "researchQuestion": "Run a clinical trial on patient personal data with informed consent.",
+        "availableInputs": ["patient dataset"],
+        "researchPlan": {"steps": [{
+            "id": "step-1",
+            "metrics": ["auc"],
+            "stopConditions": ["Stop after one run"],
+        }]},
+    })
+
+    assert assessment.executionClass == ExecutionClass.ETHICS_REVIEW_REQUIRED
+    assert assessment.status == ExecutionStatus.NOT_APPLICABLE
+    assert execution_gate(assessment).allowed is False
+    assert any("overridden" in warning for warning in assessment.warnings)
 
 
 def test_planpackage_codegen_context_uses_current_package(monkeypatch):
@@ -179,6 +205,41 @@ def test_protocol_only_never_becomes_executed(tmp_path):
     assert evidence.status == ExecutionStatus.NOT_APPLICABLE
     assert not evidence.codeHash
     assert evidence.failures
+
+
+def test_non_ready_assessment_never_becomes_executed(tmp_path):
+    cart = _build_cart(tmp_path)
+    blocked = _ready_assessment().model_copy(update={
+        "status": ExecutionStatus.NOT_APPLICABLE,
+        "missingInputs": ["ethics approval"],
+    })
+
+    evidence = build_experiment_evidence(cart, blocked, supported_claims=["candidate claim"])
+
+    assert evidence.status == ExecutionStatus.NOT_APPLICABLE
+    assert evidence.supportedClaims == []
+    assert evidence.unsupportedClaims == ["candidate claim"]
+
+
+def test_invalid_metrics_and_missing_baseline_fail_evidence(tmp_path):
+    cart = _build_cart(tmp_path)
+    result_path = cart / "data" / "step-1" / "result.json"
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    result["outputs"]["metrics"]["accuracy"] = "excellent"
+    result.pop("baseline")
+    _write_json(result_path, result)
+
+    evidence = build_experiment_evidence(
+        cart,
+        _ready_assessment(),
+        supported_claims=["the method works"],
+    )
+
+    assert evidence.status == ExecutionStatus.FAILED
+    assert evidence.supportedClaims == []
+    assert evidence.unsupportedClaims == ["the method works"]
+    assert any("finite numeric" in failure for failure in evidence.failures)
+    assert any("baseline" in failure.lower() for failure in evidence.failures)
 
 
 def test_metric_feedback_requests_targeted_plan_revision(tmp_path):
@@ -240,6 +301,58 @@ def test_bundle_import_rejects_non_object_cart_manifest(tmp_path):
 
     with pytest.raises(bundle_import.BundleImportError, match="manifest must be a JSON object"):
         bundle_import.inspect_bundle(bundle)
+
+
+def test_cart_assessment_must_match_manifest_package(tmp_path):
+    cart = _build_cart(tmp_path)
+    mismatch = _ready_assessment().model_copy(update={"planPackageId": "ppkg_other"})
+
+    with pytest.raises(HTTPException, match="does not match"):
+        code_research_api._validate_cart_assessment(cart.name, cart, mismatch)
+
+
+def test_feedback_requires_the_persisted_cart_evidence(tmp_path, monkeypatch):
+    data_root = tmp_path / "data"
+    cart = _build_cart(data_root / "cart_artifacts")
+    monkeypatch.setattr(code_research_api, "_DATA_DIR", str(data_root))
+    evidence = build_experiment_evidence(cart, _ready_assessment(), code_run_id=cart.name)
+    save_evidence(cart / "data" / "experiment_evidence.json", evidence)
+    forged = evidence.model_copy(update={"supportedClaims": ["forged claim"]})
+
+    with pytest.raises(HTTPException, match="differs from persisted"):
+        asyncio.run(code_research_api.create_experiment_feedback(
+            cart.name,
+            code_research_api.FeedbackRequest(evidence=forged),
+        ))
+
+
+def test_assessment_base_dir_is_limited_to_managed_data(tmp_path, monkeypatch):
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    monkeypatch.setattr(code_research_api, "_DATA_DIR", str(managed))
+
+    assert code_research_api._resolve_assessment_base_dir(str(managed)) == str(managed.resolve())
+    with pytest.raises(HTTPException, match="managed backend data"):
+        code_research_api._resolve_assessment_base_dir(str(outside))
+
+
+def test_remote_bundle_upload_requires_configured_token(monkeypatch):
+    monkeypatch.delenv("FAROS_BUNDLE_UPLOAD_TOKEN", raising=False)
+    remote = Request({"type": "http", "client": ("203.0.113.7", 1234), "headers": []})
+    local = Request({"type": "http", "client": ("127.0.0.1", 1234), "headers": []})
+    proxied_remote = Request({
+        "type": "http",
+        "client": ("127.0.0.1", 1234),
+        "headers": [(b"x-forwarded-for", b"203.0.113.7")],
+    })
+
+    with pytest.raises(HTTPException, match="Remote bundle upload is disabled"):
+        code_research_api._authorize_bundle_upload(remote, None)
+    with pytest.raises(HTTPException, match="Remote bundle upload is disabled"):
+        code_research_api._authorize_bundle_upload(proxied_remote, None)
+    code_research_api._authorize_bundle_upload(local, None)
 
 
 def test_malformed_node_result_downgrades_evidence_instead_of_crashing(tmp_path):

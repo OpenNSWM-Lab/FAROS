@@ -25,9 +25,9 @@ from app.modules.code.execution_assessment import (
     ArtifactRef,
     ContractModel,
     ExecutionAssessment,
-    ExecutionClass,
     ExecutionStatus,
     TargetModule,
+    execution_gate,
 )
 
 
@@ -38,6 +38,20 @@ class MetricEvidence(ContractModel):
     definition: str = ""
     split: str = ""
     sourcePath: str = ""
+
+    @model_validator(mode="after")
+    def validate_scientific_metric(self) -> "MetricEvidence":
+        if (
+            isinstance(self.value, bool)
+            or not isinstance(self.value, (int, float))
+            or not math.isfinite(float(self.value))
+        ):
+            raise ValueError("metric value must be a finite number")
+        if not self.definition.strip():
+            raise ValueError("metric definition is required")
+        if not self.sourcePath.strip():
+            raise ValueError("metric sourcePath is required")
+        return self
 
 
 class ExperimentEvidence(ContractModel):
@@ -69,8 +83,16 @@ class ExperimentEvidence(ContractModel):
                 missing.append("environmentHash")
             if not self.artifactRefs:
                 missing.append("artifactRefs")
+            if not self.method.strip():
+                missing.append("method")
+            if not self.baseline.strip():
+                missing.append("baseline")
+            if not self.metrics:
+                missing.append("metrics")
             if missing:
                 raise ValueError(f"executed evidence requires: {', '.join(missing)}")
+            if self.failures:
+                raise ValueError("executed evidence cannot contain failures")
         return self
 
 
@@ -177,8 +199,9 @@ def _artifact_ref(path: Path, cart_root: Path) -> ArtifactRef:
     )
 
 
-def _metric_items(cart_root: Path) -> list[MetricEvidence]:
+def _metric_items(cart_root: Path) -> tuple[list[MetricEvidence], list[str]]:
     metrics: list[MetricEvidence] = []
+    failures: list[str] = []
     seen: set[tuple[str, str]] = set()
     for result_path in sorted((cart_root / "data").glob("*/result.json")):
         try:
@@ -199,6 +222,15 @@ def _metric_items(cart_root: Path) -> list[MetricEvidence]:
             if key in seen:
                 continue
             seen.add(key)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+            ):
+                failures.append(
+                    f"Metric {node_id}:{name} must be a finite numeric value, got {value!r}"
+                )
+                continue
             metrics.append(MetricEvidence(
                 name=str(name),
                 value=value,
@@ -206,7 +238,7 @@ def _metric_items(cart_root: Path) -> list[MetricEvidence]:
                 split=node_id,
                 sourcePath=result_path.relative_to(cart_root).as_posix(),
             ))
-    return metrics
+    return metrics, failures
 
 
 def _declared_artifact_failures(cart_root: Path) -> list[str]:
@@ -307,15 +339,16 @@ def build_experiment_evidence(
     value = assessment if isinstance(assessment, ExecutionAssessment) else ExecutionAssessment.model_validate(assessment)
     cart_root = Path(cart_dir).resolve()
     resolved_code_run_id = code_run_id or cart_root.name or "unknown_code_run"
-    if value.executionClass not in {ExecutionClass.COMPUTATIONAL_READY, ExecutionClass.SIMULATION_READY}:
+    gate = execution_gate(value)
+    if not gate.allowed:
         return ExperimentEvidence(
             runId=value.runId,
             questionId=value.questionId,
             codeRunId=resolved_code_run_id,
             status=ExecutionStatus.NOT_APPLICABLE,
             method="",
-            failures=[f"Execution gate classified the task as {value.executionClass.value}: {value.rationale}"],
-            unsupportedClaims=unsupported_claims or [],
+            failures=[f"Execution gate blocked the task as {value.executionClass.value}: {gate.reason}"],
+            unsupportedClaims=list(dict.fromkeys([*(unsupported_claims or []), *(supported_claims or [])])),
         )
     if not cart_root.is_dir():
         return ExperimentEvidence(
@@ -324,7 +357,7 @@ def build_experiment_evidence(
             codeRunId=resolved_code_run_id,
             status=ExecutionStatus.FAILED,
             failures=[f"Cart artifact directory does not exist: {cart_root}"],
-            unsupportedClaims=unsupported_claims or [],
+            unsupportedClaims=list(dict.fromkeys([*(unsupported_claims or []), *(supported_claims or [])])),
         )
 
     all_files = _files_under(cart_root)
@@ -342,8 +375,9 @@ def build_experiment_evidence(
         or path.suffix.lower() in _LOG_EXTENSIONS
         or path.name == "event_log.json"
     ]
-    metrics = _metric_items(cart_root)
+    metrics, metric_failures = _metric_items(cart_root)
     failures = _declared_artifact_failures(cart_root)
+    failures.extend(metric_failures)
     terminal_failures, duration = _terminal_failures(cart_root)
     failures.extend(terminal_failures)
 
@@ -366,11 +400,16 @@ def build_experiment_evidence(
         for path in sorted(set(data_files + config_files))
     }
     method, baseline = _method_and_baseline(cart_root)
+    if not method.strip():
+        failures.append("Missing documented experimental method")
+    if not baseline.strip():
+        failures.append("Missing documented baseline or control")
     status = ExecutionStatus.EXECUTED if not failures else ExecutionStatus.FAILED
-    verified_supported = list(supported_claims or []) if status == ExecutionStatus.EXECUTED else []
-    verified_unsupported = list(unsupported_claims or [])
-    if status != ExecutionStatus.EXECUTED:
-        verified_unsupported.extend(supported_claims or [])
+    # Claims supplied by an API caller are candidates, not verified bindings.
+    # Until a claim-to-metric verifier produces an explicit binding, keep them
+    # unsupported even when the experiment itself executed successfully.
+    verified_supported: list[str] = []
+    verified_unsupported = [*(unsupported_claims or []), *(supported_claims or [])]
 
     return ExperimentEvidence(
         runId=value.runId,
