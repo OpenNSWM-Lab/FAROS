@@ -12,15 +12,14 @@ from .section_write import run as section_write
 from .evidence_gate import run as evidence_gate
 from .figure_generate import run as figure_generate
 from .assemble_latex import run as assemble_latex
-from .compile_pdf import run as compile_pdf
 
 
-def build_default_skill_chain() -> List[Callable[[PaperSkillContext], PaperSkillResult]]:
-    """Return the paper generation pipeline in dependency order.
+def build_writing_skill_chain() -> List[Callable[[PaperSkillContext], PaperSkillResult]]:
+    """Return the writing agent's skill pipeline in dependency order.
 
-    Each step should add new information or transform the draft. Summary-only
-    audits are intentionally left out of the default chain because service.py
-    already persists the gate results after generation.
+    Compile and review are handled by dedicated agents, not by this skill
+    runner. Keep this helper for compatibility with older callers that still
+    want the writing-only skill chain.
     """
     return [
         evidence_collect,
@@ -32,8 +31,10 @@ def build_default_skill_chain() -> List[Callable[[PaperSkillContext], PaperSkill
         evidence_gate,
         figure_generate,
         assemble_latex,
-        compile_pdf,
     ]
+
+
+build_default_skill_chain = build_writing_skill_chain
 
 
 class PaperSkillLeader:

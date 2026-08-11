@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { AppPageLayout } from '@/components/layout/AppPageLayout'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -18,7 +19,7 @@ interface TemplateInfo {
 
 const VENUES = ['icml', 'neurips', 'iclr', 'acl', 'generic', 'challenge_cup']
 const VENUE_LABELS: Record<string, string> = {
-  challenge_cup: '挑战杯模版',
+  challenge_cup: 'Challenge Cup Template',
 }
 const formatVenue = (venue?: string) => venue ? (VENUE_LABELS[venue] || venue.toUpperCase()) : ''
 
@@ -229,6 +230,7 @@ const normalizeOutline = (outline: PaperOutline | null | undefined, fallbackTitl
 }
 
 export function PapersList() {
+  const navigate = useNavigate()
   const [papers, setPapers] = useState<PaperRecord[]>([])
   const [loading, setLoading] = useState(true)
   const [selectedPaper, setSelectedPaper] = useState<PaperRecord | null>(null)
@@ -1061,7 +1063,7 @@ export function PapersList() {
                 <div
                   key={p.id}
                   className={`p-2.5 rounded-lg border cursor-pointer transition-colors ${selectedPaper?.id === p.id ? 'border-indigo-400 bg-indigo-50' : 'hover:bg-muted/50'}`}
-                  onClick={() => selectPaper(p)}
+                  onClick={() => navigate(`/papers/${p.id}/start`)}
                 >
                   <div className="flex items-start justify-between gap-1">
                     <span className="text-xs font-medium truncate">{p.title}</span>
