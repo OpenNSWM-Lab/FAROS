@@ -258,6 +258,7 @@ def collect_context(paper: Dict[str, Any]) -> Dict[str, str]:
     ctx = {
         "plan_context": "N/A",
         "plan_evidence": "N/A",
+        "code_evidence": "N/A",
         "project_summary": "N/A",
         "metrics_summary": "N/A",
         "runs_summary": "N/A",
@@ -279,6 +280,87 @@ def collect_context(paper: Dict[str, Any]) -> Dict[str, str]:
         evidence = paper.get("evidenceJson")
         if evidence and evidence.get("status") == "collected":
             ctx["plan_evidence"] = json.dumps(evidence, ensure_ascii=False, default=str)[:8000]
+            code_evidence = evidence.get("codeEvidence")
+            if isinstance(code_evidence, dict) and code_evidence.get("status") == "collected":
+                ctx["code_evidence"] = json.dumps(code_evidence, ensure_ascii=False, default=str)[:8000]
+                repo = code_evidence.get("repo") if isinstance(code_evidence.get("repo"), dict) else {}
+                if repo.get("readme") and ctx["project_summary"] == "N/A":
+                    ctx["project_summary"] = str(repo.get("readme"))[:2000]
+                metrics_sources = {
+                    "repoMetrics": repo.get("metrics"),
+                    "runMetrics": [
+                        {
+                            "runId": run.get("runId"),
+                            "metrics": run.get("metrics"),
+                            "executionSummary": run.get("executionSummary"),
+                        }
+                        for run in code_evidence.get("runs", [])
+                        if isinstance(run, dict)
+                    ],
+                    "cartMetrics": [
+                        {
+                            "cartId": cart.get("cartId"),
+                            "constants": {
+                                "datasets": (cart.get("constants") or {}).get("datasets"),
+                                "models": (cart.get("constants") or {}).get("models"),
+                                "paperType": (cart.get("constants") or {}).get("paperType"),
+                            },
+                            "metrics": cart.get("metrics"),
+                            "nodeResults": [
+                                {
+                                    "nodeId": node.get("nodeId"),
+                                    "success": node.get("success"),
+                                    "durationMs": node.get("durationMs"),
+                                    "metrics": node.get("metrics"),
+                                    "experimentPlan": node.get("experimentPlan"),
+                                    "dataset": node.get("dataset"),
+                                    "baseline": node.get("baseline"),
+                                    "figuresAndTables": node.get("figuresAndTables"),
+                                    "resultAnalysis": node.get("resultAnalysis"),
+                                    "artifacts": node.get("artifacts"),
+                                }
+                                for node in cart.get("nodeResults", [])
+                                if isinstance(node, dict)
+                            ],
+                            "stages": [
+                                {
+                                    "stageId": stage.get("stage_id"),
+                                    "title": stage.get("title"),
+                                    "success": stage.get("success"),
+                                }
+                                for stage in cart.get("stages", [])
+                                if isinstance(stage, dict)
+                            ],
+                        }
+                        for cart in code_evidence.get("cartResults", [])
+                        if isinstance(cart, dict)
+                    ],
+                    "experimentMetrics": [
+                        {
+                            "experimentId": exp.get("experimentId"),
+                            "metrics": exp.get("metrics"),
+                        }
+                        for exp in code_evidence.get("experiments", [])
+                        if isinstance(exp, dict)
+                    ],
+                }
+                if any(metrics_sources.values()):
+                    ctx["metrics_summary"] = json.dumps(metrics_sources, ensure_ascii=False, default=str)[:4000]
+                run_sources = [
+                    {
+                        "runId": run.get("runId"),
+                        "experimentIds": run.get("experimentIds"),
+                        "experimentStatus": run.get("experimentStatus"),
+                        "experimentDesign": run.get("experimentDesign"),
+                        "executionSummary": run.get("executionSummary"),
+                        "reportMdPath": run.get("reportMdPath"),
+                        "experimentReport": run.get("experimentReport"),
+                    }
+                    for run in code_evidence.get("runs", [])
+                    if isinstance(run, dict)
+                ]
+                if run_sources:
+                    ctx["runs_summary"] = json.dumps(run_sources, ensure_ascii=False, default=str)[:4000]
     except Exception:
         pass
 
