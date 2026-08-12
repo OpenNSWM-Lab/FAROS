@@ -19,7 +19,7 @@
       "capability": "experiment",
       "agent": "experimenter",
       "skills": ["experiment-scaffold", "artifact-packaging"],
-      "outputs": ["projectId", "experimentId", "experimentIds"],
+      "outputs": ["projectId", "experimentId", "experimentIds", "executionAssessment", "experimentEvidence"],
       "name": "Experiment Workspace",
       "description": "Provision a code project and experiment record for the workflow."
     },
@@ -49,13 +49,13 @@
   ],
   "artifact_schema": {
     "idea_refinement": ["idea_session"],
-    "experiment": ["code_project", "experiment_record"],
+    "experiment": ["code_project", "experiment_record", "experiment_report", "execution_assessment", "experiment_evidence"],
     "paper_drafting": ["paper_record", "latex_project", "latex_zip", "paper_pdf"],
     "reviewer_simulation": ["review_report"]
   },
   "verification_rules": [
     {"capability": "idea_refinement", "requires": ["ideaSessionId", "selectedCandidateId"]},
-    {"capability": "experiment", "requires": ["projectId", "experimentId"]},
+    {"capability": "experiment", "requires": ["projectId", "experimentId", "executionAssessment", "experimentEvidence"]},
     {"capability": "paper_drafting", "requires": ["paperId", "paperStatus"]},
     {"capability": "reviewer_simulation", "requires": ["reviewId", "reviewStatus"]}
   ],
