@@ -72,6 +72,8 @@ def collect_reviewx_artifacts(paper_id: str) -> Dict[str, Any]:
         })
 
     code_artifacts: List[Dict[str, Any]] = []
+    execution_assessment: Dict[str, Any] = {}
+    experiment_evidence: Dict[str, Any] = {}
     project_id = paper.get("projectId")
     if project_id:
         project_dir = os.path.join(_DATA_DIR, "code_projects", project_id)
@@ -91,10 +93,45 @@ def collect_reviewx_artifacts(paper_id: str) -> Dict[str, Any]:
                         "name": name,
                         "content": content,
                     })
+        repo_dir = os.path.join(project_dir, "repo")
+        evidence_dir = os.path.join(repo_dir, "artifacts", "evidence")
+        execution_assessment = _read_json(
+            os.path.join(evidence_dir, "execution_assessment.json"), {}
+        )
+        experiment_evidence = _read_json(
+            os.path.join(evidence_dir, "experiment_evidence.json"), {}
+        )
+        reviewable_paths = [
+            "src/main.py",
+            "configs/experiment.json",
+            "metrics.json",
+            "experiment_report.md",
+            "artifacts/evidence/run_manifest.json",
+            "artifacts/evidence/environment.json",
+            "artifacts/evidence/artifact_hashes.json",
+            "artifacts/evidence/execution_assessment.json",
+            "artifacts/evidence/experiment_evidence.json",
+        ]
+        seen_paths = {item["path"] for item in code_artifacts}
+        for rel_path in reviewable_paths:
+            abs_path = os.path.join(repo_dir, rel_path)
+            safe_path = _safe_rel(abs_path)
+            if safe_path in seen_paths or not os.path.isfile(abs_path) or os.path.getsize(abs_path) > 250_000:
+                continue
+            with open(abs_path, encoding="utf-8", errors="replace") as f:
+                content = f.read()[:12_000]
+            code_artifacts.append({
+                "path": safe_path,
+                "name": os.path.basename(abs_path),
+                "content": content,
+            })
+            seen_paths.add(safe_path)
 
     return {
         "paper": paper,
         "latexFiles": latex_files,
         "experiments": experiments,
         "codeArtifacts": code_artifacts,
+        "executionAssessment": execution_assessment,
+        "experimentEvidence": experiment_evidence,
     }

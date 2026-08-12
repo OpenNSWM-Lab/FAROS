@@ -23,6 +23,7 @@ import {
 import { usePapers, useReviewFindings, useRunConsistencyCheck } from '@/lib/hooks/useApi'
 import { API_BASE_URL } from '@/lib/api'
 import type { ReviewFinding } from '@/lib/types'
+import { ExperimentFeedbackPanel } from '@/components/review/ExperimentFeedbackPanel'
 
 const severityIcons = {
   blocker: <AlertCircle className="h-4 w-4 text-destructive" />,
@@ -672,11 +673,12 @@ export function ConsistencyChecker() {
   return (
     <AppPageLayout
       title="ReviewX Evidence Auditor"
-      subtitle="Trace claims to artifacts, evidence, and revision actions"
+      subtitle="Audit scientific claims and route experiment-driven research iterations"
       icon={Shield}
       iconColor="orange"
       accentColor="orange"
     >
+      <ExperimentFeedbackPanel />
       <div className="grid grid-cols-1 xl:grid-cols-[420px_minmax(0,1fr)] gap-6 items-start">
         <div className="space-y-6">
           <Card className="shadow-md">
