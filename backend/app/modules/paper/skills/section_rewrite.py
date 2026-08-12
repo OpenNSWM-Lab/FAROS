@@ -12,6 +12,7 @@ from .utils import (
     load_venue_style_guide,
     normalize_section_citations,
     normalize_section_figure_references,
+    sanitize_latex_text_specials,
 )
 
 
@@ -42,10 +43,11 @@ Return a complete replacement for this one section only.
 Mandatory requirements:
 - Start with \\section{{{section_title}}}
 - Keep the section focused on the same outline section and do not add other sections.
+- Treat the user instruction as an editing request, not paper content. Do not quote or mention feedback sources, review agents, compile agents, logs, or repair history in the manuscript.
 - Preserve citation keys from the current section when they still support the rewritten text: {preserve_citations}
-- Preserve existing figure references and include selected section figures with exact path, label, and caption when relevant: {preserve_figures}
+- Use selected section figures when relevant: {preserve_figures}. Do not invent concrete figure paths, labels, captions, or files.
 - Use only supported claims from the brief, metrics, runs, figures, and references above.
-- Keep valid LaTeX. Do not use markdown fences or explanatory prose outside LaTeX.
+- Keep valid LaTeX. Do not use markdown fences, Markdown inline code backticks, or explanatory prose outside LaTeX.
 """
 
 
@@ -66,6 +68,47 @@ def _strip_markdown_fences(content: str) -> str:
             lines = lines[:-1]
         content = "\n".join(lines).strip()
     return content
+
+
+def _latex_texttt_escape(value: str) -> str:
+    replacements = {
+        "\\": r"\textbackslash{}",
+        "{": r"\{",
+        "}": r"\}",
+        "%": r"\%",
+        "&": r"\&",
+        "#": r"\#",
+        "_": r"\_",
+        "$": r"\$",
+        "^": r"\^{}",
+        "~": r"\~{}",
+    }
+    return "".join(replacements.get(char, char) for char in value)
+
+
+def sanitize_markdown_inline_code_for_latex(content: str) -> Tuple[str, List[str]]:
+    warnings: List[str] = []
+
+    def replace_inline_code(match: re.Match[str]) -> str:
+        value = match.group(1).strip()
+        if not value:
+            return ""
+        return r"\texttt{" + _latex_texttt_escape(value) + "}"
+
+    sanitized, count = re.subn(r"`([^`\n]{1,160})`", replace_inline_code, content or "")
+    if count:
+        warnings.append(f"Converted {count} Markdown inline code span(s) to LaTeX-safe text.")
+    return sanitized, warnings
+
+
+def sanitize_markdown_emphasis_for_latex(content: str) -> Tuple[str, List[str]]:
+    warnings: List[str] = []
+
+    sanitized, bold_count = re.subn(r"\*\*([^*\n]{1,200})\*\*", r"\\textbf{\1}", content or "")
+    sanitized, italic_count = re.subn(r"(?<!\*)\*([^*\n]{1,120})\*(?!\*)", r"\\emph{\1}", sanitized)
+    if bold_count or italic_count:
+        warnings.append(f"Converted {bold_count + italic_count} Markdown emphasis span(s) to LaTeX.")
+    return sanitized, warnings
 
 
 def _extract_section_title(content: str) -> Optional[str]:
@@ -140,15 +183,6 @@ def _extract_citation_keys(content: str) -> List[str]:
             if key and key not in keys:
                 keys.append(key)
     return keys
-
-
-def _extract_includegraphics(content: str) -> List[str]:
-    paths: List[str] = []
-    for match in re.finditer(r"\\includegraphics(?:\[[^\]]*\])?\{([^}]+)\}", content or ""):
-        path = match.group(1).strip()
-        if path and path not in paths:
-            paths.append(path)
-    return paths
 
 
 def _mode_instruction(mode: str) -> str:
@@ -235,6 +269,15 @@ def rewrite_section(
         rewritten = rewritten.replace("```latex", "").replace("```", "").strip()
         warnings.append("Removed markdown fence markers from rewrite output.")
 
+    rewritten, inline_code_warnings = sanitize_markdown_inline_code_for_latex(rewritten)
+    warnings.extend(inline_code_warnings)
+    rewritten, emphasis_warnings = sanitize_markdown_emphasis_for_latex(rewritten)
+    warnings.extend(emphasis_warnings)
+    sanitized_rewritten = sanitize_latex_text_specials(rewritten)
+    if sanitized_rewritten != rewritten:
+        rewritten = sanitized_rewritten
+        warnings.append("Escaped LaTeX text-mode special character(s) in rewrite output.")
+
     figure_entries = get_linked_figure_entries(ctx.paper, ensure_copied=True)
     figures_dir = os.path.join(ctx.latex_dir, "figures")
     rewritten, figure_rewrites = normalize_section_figure_references(
@@ -251,13 +294,6 @@ def rewrite_section(
         missing_cites = sorted(before_cites - after_cites)
         if missing_cites:
             protection_errors.append(f"Rewrite dropped citation keys: {', '.join(missing_cites[:8])}")
-
-    if preserve_figures:
-        before_figures = set(_extract_includegraphics(current_content))
-        after_figures = set(_extract_includegraphics(rewritten))
-        missing_figures = sorted(before_figures - after_figures)
-        if missing_figures:
-            protection_errors.append(f"Rewrite dropped figure paths: {', '.join(missing_figures[:5])}")
 
     if protection_errors:
         raise ValueError("; ".join(protection_errors))

@@ -15,6 +15,7 @@ from app.modules.paper.skills.constants import (
 )
 from app.modules.paper.skills.outline import OUTLINE_PROMPT, build_outline
 from app.modules.paper.skills.paper_brief import BRIEF_PROMPT, build_brief
+from app.modules.paper.skills.review_feedback import get_simple_review_feedback
 from app.modules.paper.skills.section_writers.base import (
     EQUATION_TEMPLATE,
     TABLE_TEMPLATE,
@@ -38,7 +39,13 @@ class FakeClient:
 
     def chat(self, messages, **kwargs):
         self.calls.append({"messages": messages, **kwargs})
-        return FakeChatResponse(json.dumps(self.payload))
+        if isinstance(self.payload, list):
+            payload = self.payload[min(len(self.calls) - 1, len(self.payload) - 1)]
+        else:
+            payload = self.payload
+        if isinstance(payload, str):
+            return FakeChatResponse(payload)
+        return FakeChatResponse(json.dumps(payload))
 
 
 def _ctx_for_paper(paper, client, context, paper_brief=None):
@@ -108,6 +115,7 @@ def test_brief_prompt_includes_plan_evidence():
         venue_style_guide="Style",
         plan_context="Plan context",
         plan_evidence="Authoritative package evidence",
+        code_evidence="Code evidence",
         project_summary="Project",
         metrics_summary="Metrics",
         runs_summary="Runs",
@@ -193,6 +201,78 @@ def test_outline_regenerates_when_existing_is_not_bound_to_plan_evidence():
     assert client.calls
     assert result.data["outline"]["_evidencePackageId"] == "ppkg_outline"
     assert result.data["outline"]["title"] == "Evidence aligned outline"
+
+
+def test_outline_falls_back_when_llm_returns_truncated_json():
+    paper = create_paper({"title": "Truncated outline paper"})
+    client = FakeClient('{"title": "Broken", "abstract": "unfinished')
+    ctx = _ctx_for_paper(
+        paper,
+        client,
+        {"plan_evidence": "N/A", "plan_context": "N/A", "metrics_summary": "N/A"},
+        paper_brief={
+            "research_question": "How should the system adapt retrieval?",
+            "core_claim": "Adaptive retrieval improves the trade-off.",
+            "contributions": ["Adaptive policy", "Code-backed evaluation"],
+        },
+    )
+
+    result = build_outline(ctx, force=False)
+
+    outline = result.data["outline"]
+    assert result.summary == "fallback outline"
+    assert len(outline["sections"]) >= 5
+    assert any(section["id"] == "experiments" and section["hasTables"] for section in outline["sections"])
+
+
+def test_outline_prompt_keeps_figures_and_tables_at_general_description_level():
+    rendered = OUTLINE_PROMPT.format(
+        paper_type="algorithm",
+        venue_name="ICML",
+        title="Example Paper",
+        venue_style_guide="Style",
+        plan_context="Plan context",
+        plan_evidence="Plan evidence",
+        metrics_summary="Metrics",
+        runs_summary="Runs",
+        figures_summary="Figures",
+        paper_brief="Brief",
+        user_notes="Notes",
+        min_refs=MIN_REFERENCES,
+        min_algos=MIN_ALGORITHMS,
+        min_eqs=MIN_EQUATIONS,
+        min_tables=MIN_TABLES,
+        min_figs=MIN_FIGURES,
+    )
+
+    assert "broad purpose of a table/figure" in rendered
+    assert "Do not include concrete values" in rendered
+
+
+def test_simple_review_prompt_audits_brief_must_use_evidence(tmp_path):
+    paper = create_paper({
+        "title": "Review evidence coverage paper",
+        "briefJson": {
+            "research_question": "Question",
+            "core_claim": "Claim",
+            "must_use_evidence": ["Use code result metrics from node_a: accuracy=0.91"],
+            "must_use_figures": [{"path": "figures/result.pdf", "caption": "Result trend"}],
+        },
+    })
+    client = FakeClient({"passed": True, "issues": [], "targets": []})
+    ctx = _ctx_for_paper(paper, client, {"plan_context": "N/A"})
+    ctx.latex_dir = str(tmp_path)
+    (tmp_path / "sections").mkdir()
+    (tmp_path / "sections" / "method.tex").write_text(r"\section{Method}", encoding="utf-8")
+
+    get_simple_review_feedback(ctx, 1)
+
+    prompt = client.calls[0]["messages"][0].content
+    assert "Writing brief requirements to audit" in prompt
+    assert "accuracy=0.91" in prompt
+    assert "minor evidence-usage suggestion" in prompt
+    assert "not blocking issues" in prompt
+    assert "must not be reported as major" in prompt
 
 
 def test_section_prompt_formats_latex_examples_without_key_error():

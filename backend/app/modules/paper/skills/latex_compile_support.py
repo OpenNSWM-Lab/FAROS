@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Tuple
 
 from app.modules.paper.storage import update_paper
 from .base import PaperSkillContext, PaperSkillResult
-from .utils import LATEX_MATH_ENVS
+from .utils import LATEX_MATH_ENVS, sanitize_latex_text_specials
 
 
 UNICODE_LATEX_REPLACEMENTS: Dict[str, Tuple[str, str]] = {
@@ -72,6 +72,8 @@ REQUIRED_PACKAGE_RULES: Tuple[Tuple[str, str, str], ...] = (
 def _iter_tex_files(latex_dir: str) -> List[str]:
     tex_files: List[str] = []
     for root, _dirs, files in os.walk(latex_dir):
+        if "artifacts" in os.path.relpath(root, latex_dir).split(os.sep):
+            continue
         for filename in files:
             if filename.endswith(".tex"):
                 tex_files.append(os.path.join(root, filename))
@@ -318,6 +320,10 @@ def preflight_latex_project(latex_dir: str) -> List[Dict[str, Any]]:
     for path, content in file_contents.items():
         original = original_contents.get(path, content)
         file_rewrites: List[Dict[str, Any]] = []
+        sanitized = sanitize_latex_text_specials(content)
+        if sanitized != content:
+            file_rewrites.append({"kind": "text_specials"})
+            content = sanitized
         content, step_rewrites = _replace_unicode_latex_chars(content)
         file_rewrites.extend(step_rewrites)
         content, step_rewrites = _fix_algorithm_text_math_lines(content)
@@ -351,11 +357,21 @@ def compile_latex_once(ctx: PaperSkillContext) -> PaperSkillResult:
         compile_latex_project(ctx.latex_dir)
         if os.path.isfile(pdf_path):
             size = os.path.getsize(pdf_path)
-        update_paper(ctx.paper_id, {"pdfAvailable": True})
+        update_paper(ctx.paper_id, {
+            "pdfAvailable": True,
+            "compileStatus": "latexmk",
+            "pdfRenderMode": "latexmk",
+            "compileErrors": None,
+        })
         status = "latexmk"
     except Exception as exc:
         errors = str(exc)[:2000]
-        update_paper(ctx.paper_id, {"pdfAvailable": False})
+        update_paper(ctx.paper_id, {
+            "pdfAvailable": False,
+            "compileStatus": "failed",
+            "pdfRenderMode": None,
+            "compileErrors": errors,
+        })
         status = "failed"
 
     return PaperSkillResult(

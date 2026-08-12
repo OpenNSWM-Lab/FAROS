@@ -5,12 +5,11 @@ from app.modules.paper.storage import add_log
 from .base import PaperSkillContext, PaperSkillResult
 from .evidence_collect import run as evidence_collect
 from .collect_context import run as collect_context
+from .code_artifact_collect import run as code_artifact_collect
+from .figure_generate import run as figure_generate
 from .paper_brief import run as paper_brief
 from .outline import run as outline
-from .outline_gate import run as outline_gate
 from .section_write import run as section_write
-from .evidence_gate import run as evidence_gate
-from .figure_generate import run as figure_generate
 from .assemble_latex import run as assemble_latex
 
 
@@ -24,12 +23,11 @@ def build_writing_skill_chain() -> List[Callable[[PaperSkillContext], PaperSkill
     return [
         evidence_collect,
         collect_context,
+        code_artifact_collect,
+        figure_generate,
         paper_brief,
         outline,
-        outline_gate,
         section_write,
-        evidence_gate,
-        figure_generate,
         assemble_latex,
     ]
 

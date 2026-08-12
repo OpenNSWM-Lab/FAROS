@@ -29,8 +29,7 @@ Generate a DETAILED paper outline. You MUST include:
 - If the Venue style guide does not define mandatory fields or sections, create a venue-appropriate academic structure with enough sections to cover motivation, method, evidence, evaluation, analysis, limitations, and conclusion.
 - If the Venue style guide says to combine multiple planning fields into a single overview section, do so. Do not expand compact planning fields into redundant top-level sections.
 - References: if the Plan evidence package includes literature.keyPapers, the references array MUST contain only those evidence papers. Otherwise include at least {min_refs} real, well-known papers in the field using authors, title, venue, and year; do not invent DOIs, and add "note": "to verify" if uncertain.
-- Mark which sections need: algorithms (at least {min_algos}), equations (at least {min_eqs}), tables (at least {min_tables}), figures (at least {min_figs})
-- If Available paper figures are listed, assign them to the most relevant sections using their exact path, label, and caption. Do not invent alternate filenames.
+- Mark whether sections generally need algorithms, equations, tables, or figures. You may describe only the broad purpose of a table/figure and the intended analysis direction, such as "main result comparison table" or "ablation analysis figure". Do not include concrete values, filenames, paths, labels, captions, or full table/figure content in the outline.
 - Preserve the Paper writing brief's research question, core claim, must-use evidence, and avoid-claims constraints. If a Plan evidence package is present, keep the outline aligned to its research question, hypothesis, gap, principle, contribution statements, literature, and planned validation stages.
 - Do not invent author names. If explicit authors are not provided by the paper record or user notes, use ["Anonymous"].
 
@@ -50,7 +49,7 @@ Return strict JSON:
       "numEquations": 1,
       "hasTables": false,
       "hasFigures": true,
-      "figureDescriptions": ["Overview figure showing the proposed framework"]
+      "figureDescriptions": ["Broad purpose only, no concrete values, paths, labels, or captions"]
     }}
   ],
   "references": [
@@ -64,6 +63,33 @@ Return strict JSON:
 }}
 Return ONLY valid JSON, no markdown fences.
 """
+
+COMPACT_OUTLINE_PROMPT = """Return ONLY compact valid JSON for a paper outline.
+
+Title: {title}
+Venue: {venue_name}
+Paper type: {paper_type}
+Brief: {paper_brief}
+Evidence summary: {plan_evidence}
+Code/metrics summary: {metrics_summary}
+
+Schema:
+{{
+  "title": "...",
+  "authors": ["Anonymous"],
+  "abstract": "...",
+  "sections": [
+    {{"id": "introduction", "title": "Introduction", "keyPoints": ["..."], "minWords": 500, "hasAlgorithm": false, "hasEquations": false, "numEquations": 0, "hasTables": false, "hasFigures": false, "figureDescriptions": []}}
+  ],
+  "references": [],
+  "algorithms": [],
+  "contributions": []
+}}
+
+Use 5-7 sections. Keep text concise. For tables/figures, include only broad purpose and analysis direction; do not include concrete values, paths, labels, captions, or full contents. For challenge_cup, use Chinese section titles and Chinese prose.
+"""
+
+DEFAULT_REFERENCES: List[Dict[str, Any]] = []
 
 def _clean_section_id(value: str, fallback: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9]+", "_", value or "").strip("_").lower()
@@ -124,6 +150,91 @@ def _normalize_outline(outline: Dict[str, Any], ctx: PaperSkillContext) -> Dict[
     normalized["algorithms"] = normalized.get("algorithms") if isinstance(normalized.get("algorithms"), list) else []
     normalized["contributions"] = _normalize_string_list(normalized.get("contributions"))
     return normalized
+
+
+def _brief_list(brief: Dict[str, Any], key: str) -> List[str]:
+    value = brief.get(key) if isinstance(brief, dict) else []
+    return [str(item).strip() for item in value if str(item).strip()] if isinstance(value, list) else []
+
+
+def _fallback_sections(ctx: PaperSkillContext, paper_brief: Dict[str, Any]) -> List[Dict[str, Any]]:
+    chinese = ctx.venue == "challenge_cup"
+    priorities = paper_brief.get("section_priorities") if isinstance(paper_brief, dict) else {}
+    if not isinstance(priorities, dict):
+        priorities = {}
+
+    def points(section_name: str, defaults: List[str]) -> List[str]:
+        values = priorities.get(section_name) or priorities.get(section_name.title()) or []
+        if isinstance(values, list):
+            merged = [str(item).strip() for item in values if str(item).strip()]
+            if merged:
+                return merged[:5]
+        return defaults
+
+    if chinese:
+        return [
+            {"id": "introduction", "title": "引言", "keyPoints": points("Introduction", ["说明研究背景、问题定义与核心贡献。"]), "minWords": 700, "hasAlgorithm": False, "hasEquations": False, "numEquations": 0, "hasTables": False, "hasFigures": False, "figureDescriptions": []},
+            {"id": "related_work", "title": "相关工作", "keyPoints": points("Related Work", ["比较已有方法并指出尚未解决的格式化研究空缺。"]), "minWords": 650, "hasAlgorithm": False, "hasEquations": False, "numEquations": 0, "hasTables": False, "hasFigures": False, "figureDescriptions": []},
+            {"id": "method", "title": "技术路线与方法", "keyPoints": points("Method", ["给出总体架构、核心算法、数学定义与实现约束。"]), "minWords": 900, "hasAlgorithm": True, "hasEquations": True, "numEquations": 2, "hasTables": False, "hasFigures": True, "figureDescriptions": ["总体技术路线或模块关系示意，用于解释方法流程。"]},
+            {"id": "experiments", "title": "实验设计与结果", "keyPoints": points("Experiments", ["概述需要使用 code 阶段的实验设计、指标、表格和运行结果。"]), "minWords": 850, "hasAlgorithm": False, "hasEquations": True, "numEquations": 1, "hasTables": True, "hasFigures": True, "figureDescriptions": ["主要实验结果对比表或趋势图，用于分析性能与效率。"]},
+            {"id": "analysis", "title": "结果分析与讨论", "keyPoints": points("Analysis", ["分析主要结果、消融、边界条件与局限性。"]), "minWords": 700, "hasAlgorithm": False, "hasEquations": True, "numEquations": 1, "hasTables": True, "hasFigures": True, "figureDescriptions": ["消融或误差分析图表，用于解释关键因素影响。"]},
+            {"id": "conclusion", "title": "结论与展望", "keyPoints": points("Conclusion", ["总结贡献、应用价值与后续工作。"]), "minWords": 400, "hasAlgorithm": False, "hasEquations": False, "numEquations": 0, "hasTables": False, "hasFigures": False, "figureDescriptions": []},
+        ]
+    return [
+        {"id": "introduction", "title": "Introduction", "keyPoints": points("Introduction", ["Motivation, problem statement, and contributions."]), "minWords": 700, "hasAlgorithm": False, "hasEquations": False, "numEquations": 0, "hasTables": False, "hasFigures": False, "figureDescriptions": []},
+        {"id": "related_work", "title": "Related Work", "keyPoints": points("Related Work", ["Position the work against closely related methods."]), "minWords": 650, "hasAlgorithm": False, "hasEquations": False, "numEquations": 0, "hasTables": False, "hasFigures": False, "figureDescriptions": []},
+        {"id": "method", "title": "Method", "keyPoints": points("Method", ["Describe the technical design, algorithm, and assumptions."]), "minWords": 900, "hasAlgorithm": True, "hasEquations": True, "numEquations": 2, "hasTables": False, "hasFigures": True, "figureDescriptions": ["High-level method or module relationship figure for explaining the workflow."]},
+        {"id": "experiments", "title": "Experiments", "keyPoints": points("Experiments", ["Use linked code-stage metrics, tables, figures, and run evidence at drafting time."]), "minWords": 850, "hasAlgorithm": False, "hasEquations": True, "numEquations": 1, "hasTables": True, "hasFigures": True, "figureDescriptions": ["Main result comparison table or trend figure for analyzing performance and efficiency."]},
+        {"id": "analysis", "title": "Analysis", "keyPoints": points("Analysis", ["Analyze results, ablations, limitations, and failure modes."]), "minWords": 700, "hasAlgorithm": False, "hasEquations": True, "numEquations": 1, "hasTables": True, "hasFigures": True, "figureDescriptions": ["Ablation or error-analysis table/figure for explaining influential factors."]},
+        {"id": "conclusion", "title": "Conclusion", "keyPoints": points("Conclusion", ["Summarize contributions and future work."]), "minWords": 400, "hasAlgorithm": False, "hasEquations": False, "numEquations": 0, "hasTables": False, "hasFigures": False, "figureDescriptions": []},
+    ]
+
+
+def _fallback_outline(ctx: PaperSkillContext, paper_brief: Dict[str, Any], evidence_references: List[Dict[str, Any]]) -> Dict[str, Any]:
+    title = str(ctx.paper.get("title") or (paper_brief or {}).get("title") or "Untitled Paper")
+    research_question = str((paper_brief or {}).get("research_question") or "the research question")
+    core_claim = str((paper_brief or {}).get("core_claim") or "the evidence-grounded claim")
+    contributions = _brief_list(paper_brief, "contributions") or [
+        "Define the target problem and motivation.",
+        "Describe the proposed technical approach.",
+        "Evaluate the approach with linked evidence and artifacts.",
+    ]
+    if ctx.venue == "challenge_cup":
+        abstract = f"本文围绕{research_question}展开，提出并组织论证{core_claim}。论文将结合已有研究依据、技术路线、代码阶段实验设计与运行结果，系统说明问题背景、方法实现、实验结果和应用价值。"
+    else:
+        abstract = f"This paper studies {research_question}. It presents {core_claim}, grounding the method, experiments, and analysis in the linked plan and code-stage evidence."
+    return {
+        "title": title,
+        "authors": normalize_paper_authors(ctx.paper.get("authors") or ["Anonymous"]),
+        "abstract": abstract,
+        "sections": _fallback_sections(ctx, paper_brief or {}),
+        "references": evidence_references,
+        "algorithms": [
+            {"id": "alg1", "name": "Main Procedure", "inSection": "method"},
+            {"id": "alg2", "name": "Training or Evaluation Procedure", "inSection": "method"},
+        ],
+        "contributions": contributions,
+    }
+
+
+def _compact_outline_retry(ctx: PaperSkillContext, paper_brief: Dict[str, Any], context: Dict[str, str]) -> Dict[str, Any] | None:
+    prompt = COMPACT_OUTLINE_PROMPT.format(
+        title=ctx.paper.get("title", "Untitled"),
+        venue_name=ctx.venue_cfg["name"],
+        paper_type=ctx.paper_type,
+        paper_brief=json.dumps(paper_brief, ensure_ascii=False)[:1200] if paper_brief else "N/A",
+        plan_evidence=context.get("plan_evidence", "N/A")[:1600],
+        metrics_summary=context.get("metrics_summary", "N/A")[:1200],
+    )
+    resp = ctx.client.chat(
+        messages=[ChatMessage(role="user", content=prompt)],
+        model=ctx.model,
+        temperature=0.2,
+        max_tokens=3500,
+        timeout=ctx.llm_timeout(),
+    )
+    parsed = _extract_json(resp.text)
+    return parsed if isinstance(parsed, dict) and parsed.get("sections") else None
 
 
 def _parse_plan_evidence(context: Dict[str, str]) -> Dict[str, Any]:
@@ -236,14 +347,17 @@ def build_outline(ctx: PaperSkillContext, force: bool = False) -> PaperSkillResu
         )
         parsed = _extract_json(resp.text)
         if not parsed or "sections" not in parsed:
-            raise ValueError(f"LLM returned invalid outline: {resp.text[:500]}")
+            parsed = _compact_outline_retry(ctx, paper_brief, context)
+            source = "retry" if parsed else "fallback"
+        if not parsed or "sections" not in parsed:
+            parsed = _fallback_outline(ctx, paper_brief, evidence_references)
         outline = _normalize_outline(parsed, ctx)
         if evidence_package_id:
             outline["_evidencePackageId"] = evidence_package_id
 
     if evidence_references:
         outline["references"] = evidence_references
-    if source == "generated" or evidence_references:
+    if source in {"generated", "retry", "fallback"} or evidence_references:
         update_paper(ctx.paper_id, {"outlineJson": outline, "outlineStatus": source})
 
     summary_lines = [

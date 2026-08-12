@@ -1,5 +1,5 @@
 """
-Papers API — Research-grade LaTeX paper generation with quality gates.
+Papers API — Research-grade LaTeX paper generation and evidence-aware review.
 
 Endpoints:
 - GET/POST /papers
@@ -88,6 +88,22 @@ def _build_sections_for_fallback_pdf(
         })
 
     return sections_for_pdf
+
+
+def _record_pdf_render_status(
+    paper_id: str,
+    *,
+    pdf_available: bool,
+    compile_status: str,
+    pdf_render_mode: Optional[str],
+    compile_errors: Optional[str] = None,
+) -> None:
+    _update_paper(paper_id, {
+        "pdfAvailable": pdf_available,
+        "compileStatus": compile_status,
+        "pdfRenderMode": pdf_render_mode,
+        "compileErrors": compile_errors,
+    })
 
 
 class CreatePaperRequest(BaseModel):
@@ -632,10 +648,17 @@ async def render_paper_pdf_endpoint(paper_id: str):
             
             try:
                 compile_latex_project(latex_dir)
-                update_paper(paper_id, {"pdfAvailable": True})
+                _record_pdf_render_status(
+                    paper_id,
+                    pdf_available=True,
+                    compile_status="latexmk",
+                    pdf_render_mode="latexmk",
+                    compile_errors=None,
+                )
                 logger.info(f"PDF re-rendered successfully via latexmk: {os.path.getsize(pdf_path)} bytes")
                 return
             except Exception as compile_error:
+                compile_error_message = str(compile_error)[:2000]
                 logger.warning(f"LaTeX compile failed during re-render for {paper_id}: {compile_error}", exc_info=True)
             
             outline = paper.get("outlineJson", {
@@ -673,9 +696,22 @@ async def render_paper_pdf_endpoint(paper_id: str):
                 figures_dir=figures_dir,
                 figure_entries=figure_entries,
             )
-            update_paper(paper_id, {"pdfAvailable": True})
+            _record_pdf_render_status(
+                paper_id,
+                pdf_available=True,
+                compile_status="failed",
+                pdf_render_mode="fallback",
+                compile_errors=compile_error_message,
+            )
             logger.info(f"Fallback PDF re-rendered successfully: {os.path.getsize(pdf_path)} bytes")
         except Exception as e:
+            _record_pdf_render_status(
+                paper_id,
+                pdf_available=False,
+                compile_status="failed",
+                pdf_render_mode=None,
+                compile_errors=str(e)[:2000],
+            )
             logger.error(f"PDF re-render failed for {paper_id}: {e}", exc_info=True)
     
     thread = threading.Thread(target=_run, daemon=True)

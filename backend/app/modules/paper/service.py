@@ -73,9 +73,26 @@ def _run_skill(
     return result
 
 
+def _run_skill_sequence(
+    paper_id: str,
+    ctx: PaperSkillContext,
+    skills: list[tuple[str, Callable[[PaperSkillContext], Any]]],
+) -> list[Any]:
+    results = []
+    for label, skill in skills:
+        results.append(_run_skill(paper_id, ctx, label, skill))
+    return results
+
+
 def _run_prerequisite_skills(paper_id: str, ctx: PaperSkillContext) -> None:
-    _run_skill(paper_id, ctx, "evidence_collect", evidence_collect_skill)
-    _run_skill(paper_id, ctx, "collect_context", collect_context_skill)
+    _run_skill_sequence(
+        paper_id,
+        ctx,
+        [
+            ("evidence_collect", evidence_collect_skill),
+            ("collect_context", collect_context_skill),
+        ],
+    )
 
 
 def collect_paper_evidence(paper_id: str, force: bool = True) -> Dict[str, Any]:
@@ -117,7 +134,11 @@ def generate_paper_brief(paper_id: str, brief_user_edits: str | None = None, for
     ctx = _build_skill_context(paper_id, paper, step_log)
     _run_prerequisite_skills(paper_id, ctx)
 
-    _run_skill(paper_id, ctx, "paper_brief", lambda skill_ctx: build_brief(skill_ctx, force=force))
+    _run_skill_sequence(
+        paper_id,
+        ctx,
+        [("paper_brief", lambda skill_ctx: build_brief(skill_ctx, force=force))],
+    )
 
     return get_paper(paper_id)
 
@@ -132,14 +153,26 @@ def generate_paper_outline(paper_id: str, force: bool = True) -> Dict[str, Any]:
 
     _run_prerequisite_skills(paper_id, ctx)
 
-    _run_skill(paper_id, ctx, "paper_brief", lambda skill_ctx: build_brief(skill_ctx, force=False))
+    _run_skill_sequence(
+        paper_id,
+        ctx,
+        [("paper_brief", lambda skill_ctx: build_brief(skill_ctx, force=False))],
+    )
 
     refreshed = get_paper(paper_id) or paper
     ctx.paper = refreshed
 
-    _run_skill(paper_id, ctx, "outline", lambda skill_ctx: build_outline(skill_ctx, force=force))
+    _run_skill_sequence(
+        paper_id,
+        ctx,
+        [("outline", lambda skill_ctx: build_outline(skill_ctx, force=force))],
+    )
 
     return get_paper(paper_id)
+
+
+def _paper_final_status(compile_status: str | None, simple_review_passed: bool) -> str:
+    return "completed" if compile_status == "latexmk" and simple_review_passed else "failed"
 
 
 def generate_paper(paper_id: str) -> Dict[str, Any]:
@@ -165,17 +198,15 @@ def generate_paper(paper_id: str) -> Dict[str, Any]:
         references = outline.get("references", [])
         sections = outline.get("sections", [])
         figure_entries = ctx.get("figure_entries", [])
-        evidence_gates = ctx.get("evidence_gates", {})
         pdf_available = ctx.get("pdf_available", False)
         compile_status = ctx.get("compile_status")
         simple_review_passed = ctx.get("simple_review_passed", False)
-        final_status = "completed" if compile_status == "latexmk" else "failed"
+        final_status = _paper_final_status(compile_status, simple_review_passed)
 
         update_paper(paper_id, {
             "status": final_status,
             "targetVenue": ctx.venue,
             "templateId": ctx.venue,
-            "evidenceGates": evidence_gates,
             "figureCount": len(figure_entries),
             "sectionCount": len(sections),
             "referenceCount": len(references),
@@ -218,22 +249,22 @@ def rewrite_paper_section(
 
     _run_prerequisite_skills(paper_id, ctx)
 
-    add_log(paper_id, f"Running skill: section_rewrite:{section_id}")
-    rewrite_result = rewrite_section(
+    rewrite_result = _run_skill(
+        paper_id,
         ctx,
-        section_id,
-        instruction=instruction,
-        mode=mode,
-        preserve_citations=preserve_citations,
-        preserve_figures=preserve_figures,
-        target_length=target_length,
+        f"section_rewrite:{section_id}",
+        lambda skill_ctx: rewrite_section(
+            skill_ctx,
+            section_id,
+            instruction=instruction,
+            mode=mode,
+            preserve_citations=preserve_citations,
+            preserve_figures=preserve_figures,
+            target_length=target_length,
+        ),
     )
-    _apply_result_data(ctx, rewrite_result)
-    add_log(paper_id, f"section_rewrite: {rewrite_result.summary}")
     if rewrite_result.warnings:
         add_log(paper_id, f"section_rewrite warnings: {'; '.join(rewrite_result.warnings[:3])}")
-    if rewrite_result.artifacts:
-        add_log(paper_id, f"Artifacts: {', '.join(rewrite_result.artifacts)}")
 
     update_paper(paper_id, {
         "pdfAvailable": False,

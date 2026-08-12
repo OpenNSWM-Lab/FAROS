@@ -263,6 +263,7 @@ def collect_context(paper: Dict[str, Any]) -> Dict[str, str]:
         "metrics_summary": "N/A",
         "runs_summary": "N/A",
         "figures_summary": "N/A",
+        "code_tables_summary": "N/A",
         "user_notes": "N/A",
     }
 
@@ -317,6 +318,7 @@ def collect_context(paper: Dict[str, Any]) -> Dict[str, str]:
                                     "baseline": node.get("baseline"),
                                     "figuresAndTables": node.get("figuresAndTables"),
                                     "resultAnalysis": node.get("resultAnalysis"),
+                                    "codeTables": node.get("codeTables"),
                                     "artifacts": node.get("artifacts"),
                                 }
                                 for node in cart.get("nodeResults", [])
@@ -346,6 +348,34 @@ def collect_context(paper: Dict[str, Any]) -> Dict[str, str]:
                 }
                 if any(metrics_sources.values()):
                     ctx["metrics_summary"] = json.dumps(metrics_sources, ensure_ascii=False, default=str)[:4000]
+                code_figures = [
+                    {
+                        "figureId": f"{cart.get('cartId')}:{fig.get('nodeId')}:{fig.get('name')}",
+                        "title": fig.get("name"),
+                        "caption": f"Code-stage result artifact from {fig.get('nodeId')}: {fig.get('name')}",
+                        "path": fig.get("cartRelativePath"),
+                        "label": f"fig:code_{str(fig.get('nodeId') or '').replace('-', '_')}_{str(fig.get('name') or '').rsplit('.', 1)[0].replace('-', '_')}",
+                        "targetSection": "Experiments",
+                        "include": str(fig.get("name") or "").lower().endswith((".png", ".jpg", ".jpeg", ".pdf")),
+                        "source": "code_cart",
+                        "notes": "SVG figures are reported as evidence but require conversion before LaTeX inclusion.",
+                    }
+                    for cart in code_evidence.get("cartResults", [])
+                    if isinstance(cart, dict)
+                    for fig in cart.get("codeFigures", [])
+                    if isinstance(fig, dict)
+                ]
+                if code_figures and ctx["figures_summary"] == "N/A":
+                    ctx["figures_summary"] = json.dumps(code_figures, ensure_ascii=False, default=str)[:3000]
+                code_tables = [
+                    table
+                    for cart in code_evidence.get("cartResults", [])
+                    if isinstance(cart, dict)
+                    for table in cart.get("codeTables", [])
+                    if isinstance(table, dict)
+                ]
+                if code_tables:
+                    ctx["code_tables_summary"] = json.dumps(code_tables, ensure_ascii=False, default=str)[:4000]
                 run_sources = [
                     {
                         "runId": run.get("runId"),
@@ -385,7 +415,11 @@ def collect_context(paper: Dict[str, Any]) -> Dict[str, str]:
                     metrics = get_metrics(eid)
                     all_metrics.extend(metrics[:20])
             if all_metrics:
-                ctx["metrics_summary"] = json.dumps(all_metrics[:30], default=str)[:2000]
+                exp_metrics_summary = json.dumps(all_metrics[:30], default=str)
+                if ctx["metrics_summary"] == "N/A":
+                    ctx["metrics_summary"] = exp_metrics_summary[:2000]
+                else:
+                    ctx["metrics_summary"] = (ctx["metrics_summary"] + "\n" + exp_metrics_summary)[:4000]
         except Exception:
             pass
 
@@ -427,7 +461,7 @@ def collect_context(paper: Dict[str, Any]) -> Dict[str, str]:
 
     figure_entries = get_linked_figure_entries(paper, ensure_copied=False)
     if figure_entries:
-        ctx["figures_summary"] = json.dumps([
+        linked_figures = [
             {
                 "figureId": f.get("figureId"),
                 "title": f.get("title"),
@@ -443,7 +477,17 @@ def collect_context(paper: Dict[str, Any]) -> Dict[str, str]:
                 "source": f.get("source"),
             }
             for f in figure_entries
-        ], default=str)[:2000]
+        ]
+        if ctx["figures_summary"] == "N/A":
+            ctx["figures_summary"] = json.dumps(linked_figures, default=str)[:2000]
+        else:
+            try:
+                existing_figures = json.loads(ctx["figures_summary"])
+                if not isinstance(existing_figures, list):
+                    existing_figures = []
+            except Exception:
+                existing_figures = []
+            ctx["figures_summary"] = json.dumps(existing_figures + linked_figures, default=str)[:4000]
 
     notes = paper.get("notes", "")
     if notes:
