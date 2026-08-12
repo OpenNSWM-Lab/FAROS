@@ -186,7 +186,14 @@ def generate_paper(paper_id: str) -> Dict[str, Any]:
     if not paper:
         raise ValueError(f"Paper not found: {paper_id}")
 
-    update_paper(paper_id, {"status": "generating"})
+    update_paper(paper_id, {
+        "status": "generating",
+        "pdfAvailable": False,
+        "compileStatus": None,
+        "pdfRenderMode": None,
+        "compileErrors": None,
+        "simpleReviewPassed": False,
+    })
     step_log = []
     reset_artifacts_dir(paper_id)
 
@@ -276,7 +283,12 @@ def rewrite_paper_section(
         add_log(paper_id, f"section_rewrite warnings: {'; '.join(rewrite_result.warnings[:3])}")
 
     update_paper(paper_id, {
+        "status": "created",
         "pdfAvailable": False,
+        "compileStatus": None,
+        "pdfRenderMode": None,
+        "compileErrors": None,
+        "simpleReviewPassed": False,
         "lastSectionRewrite": {
             "sectionId": rewrite_result.data.get("sectionId", section_id),
             "path": rewrite_result.data.get("path"),

@@ -358,6 +358,7 @@ def collect_context(paper: Dict[str, Any]) -> Dict[str, str]:
                     "cartMetrics": [
                         {
                             "cartId": cart.get("cartId"),
+                            "claimEligible": cart.get("claimEligible") is True,
                             "constants": {
                                 "datasets": (cart.get("constants") or {}).get("datasets"),
                                 "models": (cart.get("constants") or {}).get("models"),
@@ -400,7 +401,7 @@ def collect_context(paper: Dict[str, Any]) -> Dict[str, str]:
                             ],
                         }
                         for cart in code_evidence.get("cartResults", [])
-                        if isinstance(cart, dict)
+                        if isinstance(cart, dict) and cart.get("claimEligible") is True
                     ],
                     "experimentMetrics": [
                         {
@@ -426,7 +427,7 @@ def collect_context(paper: Dict[str, Any]) -> Dict[str, str]:
                         "notes": "SVG figures are reported as evidence but require conversion before LaTeX inclusion.",
                     }
                     for cart in code_evidence.get("cartResults", [])
-                    if isinstance(cart, dict)
+                    if isinstance(cart, dict) and cart.get("claimEligible") is True
                     for fig in cart.get("codeFigures", [])
                     if isinstance(fig, dict)
                 ]
@@ -435,7 +436,7 @@ def collect_context(paper: Dict[str, Any]) -> Dict[str, str]:
                 code_tables = [
                     artifact_ref(table)
                     for cart in code_evidence.get("cartResults", [])
-                    if isinstance(cart, dict)
+                    if isinstance(cart, dict) and cart.get("claimEligible") is True
                     for table in cart.get("codeTables", [])
                     if isinstance(table, dict)
                 ]

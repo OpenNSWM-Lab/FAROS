@@ -1009,8 +1009,8 @@ export function PapersList() {
       accentColor="indigo"
       actions={
         <div className="flex gap-2">
-          <Button variant="outline" size="sm" onClick={createPaper} disabled={creating}>
-            {creating ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Plus className="h-4 w-4 mr-1" />} New
+          <Button variant="outline" size="sm" onClick={() => setShowCreate(current => !current)} disabled={creating}>
+            <Plus className="h-4 w-4 mr-1" /> New
           </Button>
           <Button variant="outline" size="sm" onClick={fetchPapers} disabled={loading}>
             <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
@@ -1023,16 +1023,16 @@ export function PapersList() {
         <div className="space-y-3">
           {showCreate && (
             <Card className="border-indigo-200">
-	              <CardContent className="pt-3 space-y-2">
-	                <input className="w-full border rounded px-2 py-1.5 text-sm" placeholder="Title" value={newTitle} onChange={e => setNewTitle(e.target.value)} />
-	                <textarea
-	                  className="w-full border rounded px-2 py-1.5 text-xs resize-none"
-	                  rows={2}
-	                  placeholder="Authors, one per line"
-	                  value={newAuthors}
-	                  onChange={e => setNewAuthors(e.target.value)}
-	                />
-	                <select className="w-full border rounded px-2 py-1.5 text-sm" value={newType} onChange={e => setNewType(e.target.value)}>
+                <CardContent className="pt-3 space-y-2">
+                  <input className="w-full border rounded px-2 py-1.5 text-sm" placeholder="Title" value={newTitle} onChange={e => setNewTitle(e.target.value)} />
+                  <textarea
+                    className="w-full border rounded px-2 py-1.5 text-xs resize-none"
+                    rows={2}
+                    placeholder="Authors, one per line"
+                    value={newAuthors}
+                    onChange={e => setNewAuthors(e.target.value)}
+                  />
+                  <select className="w-full border rounded px-2 py-1.5 text-sm" value={newType} onChange={e => setNewType(e.target.value)}>
                   {PAPER_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
                 </select>
                 <select className="w-full border rounded px-2 py-1.5 text-sm" value={newVenue} onChange={e => setNewVenue(e.target.value)}>
@@ -1538,24 +1538,24 @@ export function PapersList() {
                 <div className="border rounded-lg bg-white overflow-hidden">
                   <div className="px-3 py-1.5 border-b bg-slate-50 text-xs font-medium text-muted-foreground">Evidence Sources</div>
                   <div className="p-2 space-y-2 text-xs text-muted-foreground">
-	                    <div>
-	                      <div className="mb-1 font-medium">Project</div>
-	                      <select className="w-full border rounded px-2 py-1.5 text-xs" value={contextProjectId} onChange={e => setContextProjectId(e.target.value)}>
+                      <div>
+                        <div className="mb-1 font-medium">Project</div>
+                        <select className="w-full border rounded px-2 py-1.5 text-xs" value={contextProjectId} onChange={e => setContextProjectId(e.target.value)}>
                         <option value="">No linked project</option>
                         {projects.map(project => <option key={project.id} value={project.id}>{project.title} ({project.id})</option>)}
-	                      </select>
-	                    </div>
-	                    <div>
-	                      <div className="mb-1 font-medium">Authors</div>
-	                      <textarea
-	                        className="w-full border rounded px-2 py-1.5 text-xs resize-none"
-	                        rows={2}
-	                        value={contextAuthors}
-	                        onChange={e => setContextAuthors(e.target.value)}
-	                      />
-	                    </div>
-	                    <div>
-	                      <div className="mb-1 font-medium">Runs</div>
+                        </select>
+                      </div>
+                      <div>
+                        <div className="mb-1 font-medium">Authors</div>
+                        <textarea
+                          className="w-full border rounded px-2 py-1.5 text-xs resize-none"
+                          rows={2}
+                          value={contextAuthors}
+                          onChange={e => setContextAuthors(e.target.value)}
+                        />
+                      </div>
+                      <div>
+                        <div className="mb-1 font-medium">Runs</div>
                       <div className="max-h-24 overflow-y-auto border rounded p-1 space-y-1">
                         {runs.length === 0 ? <div className="text-[11px] text-muted-foreground">No runs available</div> : runs.map(run => (
                           <label key={run.id} className="flex items-start gap-2 text-[11px] cursor-pointer">

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 import os
 import re
@@ -13,6 +14,16 @@ from typing import Any, Dict, Iterable, List, Optional
 def _data_dir() -> str:
     base = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
     return os.path.join(base, "data")
+
+
+def _safe_child(root: str, *parts: str) -> Optional[str]:
+    """Resolve a child path without allowing IDs or stored paths to escape root."""
+    real_root = os.path.realpath(root)
+    target = os.path.realpath(os.path.join(real_root, *parts))
+    try:
+        return target if os.path.commonpath([real_root, target]) == real_root else None
+    except ValueError:
+        return None
 
 
 def _compact(value: Any, max_chars: int = 1200) -> str:
@@ -37,6 +48,30 @@ def _load_json(path: str) -> Optional[Any]:
         return None
 
 
+def _verify_evidence_artifacts(cart_dir: str, evidence: Dict[str, Any]) -> Optional[str]:
+    refs = evidence.get("artifactRefs")
+    if not isinstance(refs, list) or not refs:
+        return "Executed ExperimentEvidence has no artifact references."
+    for ref in refs:
+        if not isinstance(ref, dict):
+            return "ExperimentEvidence contains an invalid artifact reference."
+        uri = str(ref.get("uri") or "")
+        expected = str(ref.get("contentHash") or "")
+        path = _safe_child(cart_dir, uri) if uri else None
+        if not path or not os.path.isfile(path):
+            return f"Evidence artifact is missing or unsafe: {uri or 'unknown'}"
+        digest = hashlib.sha256()
+        try:
+            with open(path, "rb") as handle:
+                for block in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(block)
+        except OSError as exc:
+            return f"Evidence artifact cannot be read: {uri}: {_compact(exc, 200)}"
+        if expected != f"sha256:{digest.hexdigest()}":
+            return f"Evidence artifact hash changed after validation: {uri}"
+    return None
+
+
 def _read_text(path: str, max_chars: int = 4000) -> str:
     if not os.path.isfile(path):
         return ""
@@ -48,11 +83,8 @@ def _read_text(path: str, max_chars: int = 4000) -> str:
 
 
 def _safe_repo_path(project_id: str, rel_path: str) -> Optional[str]:
-    repo = os.path.realpath(os.path.join(_data_dir(), "code_projects", project_id, "repo"))
-    target = os.path.realpath(os.path.join(repo, rel_path))
-    if target == repo or target.startswith(repo + os.sep):
-        return target
-    return None
+    repo = _safe_child(os.path.join(_data_dir(), "code_projects"), project_id, "repo")
+    return _safe_child(repo, rel_path) if repo else None
 
 
 def _repo_file(project_id: str, rel_path: str, max_chars: int = 4000) -> str:
@@ -75,7 +107,9 @@ def _collect_repo_evidence(project_id: Optional[str]) -> Dict[str, Any]:
     if not project_id:
         return {"projectId": None, "available": False}
 
-    repo_dir = os.path.join(_data_dir(), "code_projects", project_id, "repo")
+    repo_dir = _safe_child(os.path.join(_data_dir(), "code_projects"), project_id, "repo")
+    if not repo_dir:
+        return {"projectId": project_id, "available": False}
     files: List[str] = []
     if os.path.isdir(repo_dir):
         for root, _dirs, names in os.walk(repo_dir):
@@ -145,7 +179,9 @@ def _discover_run_dirs(paper: Dict[str, Any], max_runs: int = 8) -> List[str]:
         selected.append(run_dir)
 
     for run_id in run_ids:
-        add(os.path.join(data_root, "faros", "runs", run_id))
+        run_dir = _safe_child(os.path.join(data_root, "faros", "runs"), run_id)
+        if run_dir:
+            add(run_dir)
 
     if project_id:
         for run_dir in _iter_faros_run_dirs() or []:
@@ -160,8 +196,13 @@ def _resolve_data_rel_path(rel_path: Any) -> str:
         return ""
     path = str(rel_path)
     if os.path.isabs(path):
-        return path
-    return os.path.join(_data_dir(), path)
+        real_data = os.path.realpath(_data_dir())
+        target = os.path.realpath(path)
+        try:
+            return target if os.path.commonpath([real_data, target]) == real_data else ""
+        except ValueError:
+            return ""
+    return _safe_child(_data_dir(), path) or ""
 
 
 def _collect_run_evidence(paper: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -352,12 +393,55 @@ def _cart_summary(cart_dir: str) -> Optional[Dict[str, Any]]:
     result = _load_json(os.path.join(cart_dir, "cart_results.json"))
     if not isinstance(result, dict):
         return None
+    cart_id = str(result.get("cart_id") or os.path.basename(cart_dir))
+    evidence_payload = _load_json(os.path.join(cart_dir, "data", "experiment_evidence.json"))
+    experiment_evidence: Optional[Dict[str, Any]] = None
+    evidence_status = "missing"
+    claim_eligible = False
+    eligibility_reason = "No validated ExperimentEvidence is available for this Cart."
+    if isinstance(evidence_payload, dict):
+        try:
+            from app.modules.code.execution_assessment import ExecutionStatus
+            from app.modules.code.experiment_evidence_service import ExperimentEvidence
+
+            validated = ExperimentEvidence.model_validate(evidence_payload)
+            experiment_evidence = validated.model_dump(mode="json")
+            evidence_status = validated.status.value
+            if validated.codeRunId != cart_id:
+                evidence_status = "invalid"
+                eligibility_reason = "ExperimentEvidence codeRunId does not match the Cart."
+            elif validated.status == ExecutionStatus.EXECUTED:
+                freshness_error = _verify_evidence_artifacts(cart_dir, experiment_evidence)
+                if freshness_error:
+                    evidence_status = "stale"
+                    eligibility_reason = freshness_error
+                else:
+                    claim_eligible = True
+                    eligibility_reason = "Validated executed ExperimentEvidence is bound to this Cart."
+            else:
+                eligibility_reason = f"ExperimentEvidence status is {validated.status.value}, not executed."
+        except (ImportError, ValueError, TypeError) as exc:
+            evidence_status = "invalid"
+            eligibility_reason = f"ExperimentEvidence validation failed: {_compact(exc, 300)}"
     event_log = _load_json(os.path.join(cart_dir, "event_log.json"))
     blueprint = _load_json(os.path.join(cart_dir, "blueprint_state.json"))
     node_results = _cart_node_results(cart_dir, result)
+    if not claim_eligible:
+        node_results = [
+            {
+                **node,
+                "outputs": None,
+                "metrics": None,
+                "codeArtifacts": [],
+                "codeFigures": [],
+                "codeTables": [],
+                "resultAnalysis": "",
+            }
+            for node in node_results
+        ]
     project_dir = os.path.join(cart_dir, "project")
     return {
-        "cartId": result.get("cart_id") or os.path.basename(cart_dir),
+        "cartId": cart_id,
         "cartDir": os.path.relpath(cart_dir, _data_dir()),
         "packageId": result.get("package_id"),
         "projectId": result.get("project_id"),
@@ -366,7 +450,7 @@ def _cart_summary(cart_dir: str) -> Optional[Dict[str, Any]]:
         "proposedMethod": _compact(result.get("proposed_method"), 1600),
         "overallStatus": result.get("overall_status"),
         "durationMs": result.get("total_duration_ms"),
-        "metrics": result.get("all_metrics"),
+        "metrics": result.get("all_metrics") if claim_eligible else None,
         "artifacts": result.get("all_artifacts") or [],
         "stages": result.get("stages") or [],
         "constants": result.get("constants") or {},
@@ -383,6 +467,10 @@ def _cart_summary(cart_dir: str) -> Optional[Dict[str, Any]]:
             for item in node.get("codeTables", [])
             if isinstance(item, dict)
         ],
+        "experimentEvidence": experiment_evidence,
+        "evidenceStatus": evidence_status,
+        "claimEligible": claim_eligible,
+        "claimEligibilityReason": eligibility_reason,
         "blueprintState": blueprint if isinstance(blueprint, dict) else {},
         "eventLogSummary": [
             {
@@ -411,6 +499,10 @@ def _iter_cart_dirs() -> Iterable[str]:
 
 
 def _collect_cart_evidence(project_id: Optional[str], max_entries: int = 4) -> List[Dict[str, Any]]:
+    # A Cart has no direct paper link. Without a project ID, selecting the most
+    # recent carts would silently mix evidence from unrelated research projects.
+    if not project_id:
+        return []
     entries: List[Dict[str, Any]] = []
     for cart_dir in _iter_cart_dirs():
         if len(entries) >= max_entries:
@@ -449,11 +541,20 @@ def materialize_code_artifacts_for_paper(paper: Dict[str, Any], paper_id: str) -
     for cart in code_evidence.get("cartResults", []):
         if not isinstance(cart, dict):
             continue
+        if cart.get("claimEligible") is not True:
+            warnings.append(
+                f"Skipped Cart {cart.get('cartId') or 'unknown'} artifacts: "
+                f"{cart.get('claimEligibilityReason') or 'executed evidence is unavailable.'}"
+            )
+            continue
         cart_id = str(cart.get("cartId") or "cart")
         for artifact in cart.get("codeFigures", []):
             if not isinstance(artifact, dict):
                 continue
-            src = os.path.join(_data_dir(), str(artifact.get("cartRelativePath") or ""))
+            src = _safe_child(_data_dir(), str(artifact.get("cartRelativePath") or ""))
+            if not src:
+                warnings.append(f"Skipped unsafe code figure path: {artifact.get('cartRelativePath')}")
+                continue
             if not os.path.isfile(src):
                 continue
             ext = os.path.splitext(src)[1].lower()
@@ -482,7 +583,10 @@ def materialize_code_artifacts_for_paper(paper: Dict[str, Any], paper_id: str) -
         for artifact in cart.get("codeTables", []):
             if not isinstance(artifact, dict):
                 continue
-            src = os.path.join(_data_dir(), str(artifact.get("cartRelativePath") or ""))
+            src = _safe_child(_data_dir(), str(artifact.get("cartRelativePath") or ""))
+            if not src:
+                warnings.append(f"Skipped unsafe code table path: {artifact.get('cartRelativePath')}")
+                continue
             if not os.path.isfile(src):
                 continue
             ext = os.path.splitext(src)[1].lower()
@@ -515,6 +619,12 @@ def collect_code_evidence_for_paper(paper: Dict[str, Any]) -> Dict[str, Any]:
         warnings.append("Linked code project appears to use synthetic/local validation outputs; do not present them as full benchmark results.")
     if not any([repo.get("available"), runs, experiments, carts]):
         warnings.append("No linked code-stage evidence could be resolved from project, runs, experiments, or CART artifacts.")
+    for cart in carts:
+        if cart.get("claimEligible") is not True:
+            warnings.append(
+                f"Cart {cart.get('cartId') or 'unknown'} is diagnostic-only: "
+                f"{cart.get('claimEligibilityReason') or 'executed evidence is unavailable.'}"
+            )
 
     status = "collected" if any([repo.get("available"), runs, experiments, carts]) else "missing"
     return {
