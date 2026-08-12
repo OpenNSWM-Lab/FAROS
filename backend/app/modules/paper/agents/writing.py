@@ -8,11 +8,10 @@ from typing import Callable, List
 from app.modules.paper.skills.assemble_latex import run as assemble_latex
 from app.modules.paper.skills.base import PaperSkillContext, PaperSkillResult
 from app.modules.paper.skills.collect_context import run as collect_context
+from app.modules.paper.skills.code_artifact_collect import run as code_artifact_collect
 from app.modules.paper.skills.evidence_collect import run as evidence_collect
-from app.modules.paper.skills.evidence_gate import run as evidence_gate
 from app.modules.paper.skills.figure_generate import run as figure_generate
 from app.modules.paper.skills.outline import run as outline
-from app.modules.paper.skills.outline_gate import run as outline_gate
 from app.modules.paper.skills.paper_brief import run as paper_brief
 from app.modules.paper.skills.section_rewrite import rewrite_section
 from app.modules.paper.skills.section_write import run as section_write
@@ -27,12 +26,11 @@ class PaperWritingAgent(PaperAgent):
         return [
             evidence_collect,
             collect_context,
+            code_artifact_collect,
+            figure_generate,
             paper_brief,
             outline,
-            outline_gate,
             section_write,
-            evidence_gate,
-            figure_generate,
             assemble_latex,
         ]
 
@@ -73,6 +71,25 @@ class PaperWritingAgent(PaperAgent):
                     feedback.setdefault(section_id, []).append(f"[{source}:target] {instruction}")
         return feedback
 
+    @staticmethod
+    def _feedback_instruction(source: str, messages: List[str]) -> str:
+        if source == "latex_compile":
+            header = (
+                "Revise this section only to fix the LaTeX compile error(s) below. "
+                "Make the smallest source change needed for successful compilation. "
+                "Do not mention compile feedback, logs, reviewers, agents, or repair history in the manuscript. "
+                "Do not introduce Markdown backticks. If command names must appear as prose, write them as LaTeX-safe text. "
+                "Preserve scientific claims and section structure unless a local syntax fix requires a tiny adjustment.\n"
+            )
+        else:
+            header = (
+                f"Revise this section only to address {source} feedback. "
+                "Focus on the reported local issue; do not change the paper's core idea, evidence chain, or claims beyond what is needed. "
+                "Do not mention feedback, reviewers, agents, or revision history in the manuscript. "
+                "Do not introduce Markdown backticks.\n"
+            )
+        return header + "\n".join(f"- {message}" for message in messages[:8])
+
     def apply_feedback(
         self,
         ctx: PaperSkillContext,
@@ -84,11 +101,7 @@ class PaperWritingAgent(PaperAgent):
         warnings: List[str] = []
 
         for section_id, messages in section_feedback.items():
-            instruction = (
-                f"Revise this section only to address {source} feedback. "
-                "Focus on the reported local issue; do not change the paper's core idea, evidence chain, or claims beyond what is needed.\n"
-                + "\n".join(f"- {message}" for message in messages[:8])
-            )
+            instruction = self._feedback_instruction(source, messages)
             try:
                 result = rewrite_section(
                     ctx,

@@ -6,6 +6,7 @@ import ast
 import json
 import os
 import re
+import shutil
 from typing import Any, Dict, Iterable, List, Optional
 
 
@@ -19,6 +20,11 @@ def _compact(value: Any, max_chars: int = 1200) -> str:
     if len(text) <= max_chars:
         return text
     return text[: max_chars - 1].rstrip() + "…"
+
+
+def _clean_name(value: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "_", value or "").strip("_")
+    return cleaned or "artifact"
 
 
 def _load_json(path: str) -> Optional[Any]:
@@ -251,6 +257,8 @@ def _node_result_summary(cart_dir: str, node_id: str) -> Optional[Dict[str, Any]
     if not isinstance(result, dict):
         return None
     output_metrics = result.get("outputs", {}).get("metrics") if isinstance(result.get("outputs"), dict) else None
+    artifacts = result.get("artifacts") or []
+    code_artifacts = _code_artifacts_from_node(cart_dir, node_id, artifacts)
     return {
         "nodeId": result.get("node_id") or node_id,
         "success": result.get("success"),
@@ -259,7 +267,10 @@ def _node_result_summary(cart_dir: str, node_id: str) -> Optional[Dict[str, Any]
         "message": _compact(result.get("message"), 500),
         "outputs": result.get("outputs"),
         "metrics": output_metrics,
-        "artifacts": result.get("artifacts") or [],
+        "artifacts": artifacts,
+        "codeArtifacts": code_artifacts,
+        "codeFigures": [item for item in code_artifacts if item.get("kind") == "figure"],
+        "codeTables": [item for item in code_artifacts if item.get("kind") == "table"],
         "error": result.get("error"),
         "nodeInfo": result.get("node_info"),
         "experimentPlan": _compact(result.get("experiment_plan"), 1200),
@@ -271,6 +282,46 @@ def _node_result_summary(cart_dir: str, node_id: str) -> Optional[Dict[str, Any]
         "dataFiles": _list_files(node_dir, max_files=40),
         "trace": _trace_summary(cart_dir, node_id),
     }
+
+
+def _artifact_kind(name: str) -> str:
+    ext = os.path.splitext(name.lower())[1]
+    if ext in {".png", ".jpg", ".jpeg", ".pdf", ".svg"}:
+        return "figure"
+    if ext in {".csv", ".tsv", ".md", ".tex"}:
+        return "table"
+    if ext in {".json", ".txt", ".log"}:
+        return "data"
+    return "artifact"
+
+
+def _code_artifacts_from_node(cart_dir: str, node_id: str, artifacts: List[Any]) -> List[Dict[str, Any]]:
+    entries: List[Dict[str, Any]] = []
+    for artifact in artifacts:
+        if not isinstance(artifact, dict):
+            continue
+        rel_path = str(artifact.get("path") or "").lstrip("/")
+        if not rel_path:
+            continue
+        abs_path = os.path.realpath(os.path.join(cart_dir, rel_path))
+        real_cart = os.path.realpath(cart_dir)
+        if not (abs_path == real_cart or abs_path.startswith(real_cart + os.sep)):
+            continue
+        name = str(artifact.get("name") or os.path.basename(rel_path))
+        kind = _artifact_kind(name)
+        preview = ""
+        if kind in {"table", "data"} and os.path.splitext(name.lower())[1] in {".csv", ".tsv", ".md", ".txt", ".json"}:
+            preview = _compact(_read_text(abs_path, 2500), 2500)
+        entries.append({
+            "nodeId": node_id,
+            "name": name,
+            "kind": kind,
+            "path": rel_path,
+            "cartRelativePath": os.path.relpath(abs_path, _data_dir()),
+            "size": artifact.get("size"),
+            "preview": preview,
+        })
+    return entries
 
 
 def _cart_node_results(cart_dir: str, cart_summary: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -320,6 +371,18 @@ def _cart_summary(cart_dir: str) -> Optional[Dict[str, Any]]:
         "stages": result.get("stages") or [],
         "constants": result.get("constants") or {},
         "nodeResults": node_results,
+        "codeFigures": [
+            item
+            for node in node_results
+            for item in node.get("codeFigures", [])
+            if isinstance(item, dict)
+        ],
+        "codeTables": [
+            item
+            for node in node_results
+            for item in node.get("codeTables", [])
+            if isinstance(item, dict)
+        ],
         "blueprintState": blueprint if isinstance(blueprint, dict) else {},
         "eventLogSummary": [
             {
@@ -359,6 +422,86 @@ def _collect_cart_evidence(project_id: Optional[str], max_entries: int = 4) -> L
             continue
         entries.append(summary)
     return entries
+
+
+def materialize_code_artifacts_for_paper(paper: Dict[str, Any], paper_id: str) -> Dict[str, Any]:
+    """Copy code-stage table/figure artifacts into the paper LaTeX tree."""
+    try:
+        from app.modules.paper.storage import get_paper_latex_dir
+    except Exception:
+        return {"figures": [], "tables": [], "warnings": ["Paper storage unavailable."]}
+
+    evidence = paper.get("evidenceJson") if isinstance(paper, dict) else {}
+    code_evidence = evidence.get("codeEvidence") if isinstance(evidence, dict) else {}
+    if not isinstance(code_evidence, dict):
+        return {"figures": [], "tables": [], "warnings": []}
+
+    latex_dir = get_paper_latex_dir(paper_id)
+    figures_dir = os.path.join(latex_dir, "figures")
+    tables_dir = os.path.join(latex_dir, "tables")
+    os.makedirs(figures_dir, exist_ok=True)
+    os.makedirs(tables_dir, exist_ok=True)
+
+    figures: List[Dict[str, Any]] = []
+    tables: List[Dict[str, Any]] = []
+    warnings: List[str] = []
+
+    for cart in code_evidence.get("cartResults", []):
+        if not isinstance(cart, dict):
+            continue
+        cart_id = str(cart.get("cartId") or "cart")
+        for artifact in cart.get("codeFigures", []):
+            if not isinstance(artifact, dict):
+                continue
+            src = os.path.join(_data_dir(), str(artifact.get("cartRelativePath") or ""))
+            if not os.path.isfile(src):
+                continue
+            ext = os.path.splitext(src)[1].lower()
+            node_id = _clean_name(str(artifact.get("nodeId") or "node"))
+            base = _clean_name(os.path.splitext(str(artifact.get("name") or os.path.basename(src)))[0])
+            if ext not in {".png", ".jpg", ".jpeg", ".pdf"}:
+                warnings.append(f"Code figure '{artifact.get('name')}' is {ext or 'unknown'} and was recorded as evidence but not added to LaTeX figures.")
+                continue
+            dest_name = f"code_{node_id}_{base}{ext}"
+            dest = os.path.join(figures_dir, dest_name)
+            shutil.copy2(src, dest)
+            label = f"fig:code_{node_id}_{base}".lower().replace(".", "_")
+            figures.append({
+                "figureId": f"{cart_id}:{artifact.get('nodeId')}:{artifact.get('name')}",
+                "filename": os.path.splitext(dest_name)[0],
+                "ext": ext.lstrip("."),
+                "path": f"figures/{dest_name}",
+                "caption": f"Code-stage result artifact from {artifact.get('nodeId')}: {artifact.get('name')}",
+                "label": label,
+                "title": str(artifact.get("name") or base),
+                "targetSection": "Experiments" if any(key in base.lower() for key in ["accuracy", "efficiency", "main", "result"]) else "Analysis",
+                "notes": f"Copied from {artifact.get('cartRelativePath')}",
+                "include": True,
+                "source": "code_cart",
+            })
+        for artifact in cart.get("codeTables", []):
+            if not isinstance(artifact, dict):
+                continue
+            src = os.path.join(_data_dir(), str(artifact.get("cartRelativePath") or ""))
+            if not os.path.isfile(src):
+                continue
+            ext = os.path.splitext(src)[1].lower()
+            node_id = _clean_name(str(artifact.get("nodeId") or "node"))
+            base = _clean_name(os.path.splitext(str(artifact.get("name") or os.path.basename(src)))[0])
+            dest_name = f"code_{node_id}_{base}{ext}"
+            dest = os.path.join(tables_dir, dest_name)
+            shutil.copy2(src, dest)
+            tables.append({
+                "tableId": f"{cart_id}:{artifact.get('nodeId')}:{artifact.get('name')}",
+                "name": artifact.get("name"),
+                "path": f"tables/{dest_name}",
+                "sourcePath": artifact.get("cartRelativePath"),
+                "nodeId": artifact.get("nodeId"),
+                "targetSection": "Experiments",
+                "preview": artifact.get("preview", ""),
+            })
+
+    return {"figures": figures, "tables": tables, "warnings": warnings}
 
 
 def collect_code_evidence_for_paper(paper: Dict[str, Any]) -> Dict[str, Any]:

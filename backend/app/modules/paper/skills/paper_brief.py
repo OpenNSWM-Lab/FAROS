@@ -64,6 +64,8 @@ def _figures_from_summary(figures_summary: str) -> list[Dict[str, Any]]:
     for item in parsed:
         if not isinstance(item, dict):
             continue
+        if item.get("include") is False:
+            continue
         figures.append({
             "label": item.get("label") or "",
             "path": item.get("path") or "",
@@ -73,15 +75,68 @@ def _figures_from_summary(figures_summary: str) -> list[Dict[str, Any]]:
     return [fig for fig in figures if fig["label"] or fig["path"] or fig["caption"]]
 
 
-def _parse_plan_evidence(context: Dict[str, str]) -> Dict[str, Any]:
-    raw = context.get("plan_evidence", "N/A")
+def _parse_context_json(context: Dict[str, str], key: str) -> Any:
+    raw = context.get(key, "N/A")
     if not raw or raw == "N/A":
-        return {}
+        return None
     try:
-        parsed = json.loads(raw)
+        return json.loads(raw)
     except Exception:
-        return {}
+        return None
+
+
+def _parse_plan_evidence(context: Dict[str, str]) -> Dict[str, Any]:
+    parsed = _parse_context_json(context, "plan_evidence")
     return parsed if isinstance(parsed, dict) and parsed.get("status") == "collected" else {}
+
+
+def _code_brief_requirements(context: Dict[str, str], code_evidence_obj: Any = None) -> Dict[str, list[Any]]:
+    requirements: Dict[str, list[Any]] = {
+        "must_use_evidence": [],
+        "must_use_figures": [],
+    }
+    code_evidence = code_evidence_obj if isinstance(code_evidence_obj, dict) else _parse_context_json(context, "code_evidence")
+    metrics_summary = _parse_context_json(context, "metrics_summary")
+    cart_sources: list[Dict[str, Any]] = []
+    if isinstance(code_evidence, dict):
+        cart_sources.extend([
+            cart for cart in code_evidence.get("cartResults", [])[:3]
+            if isinstance(cart, dict)
+        ])
+    if isinstance(metrics_summary, dict):
+        cart_sources.extend([
+            cart for cart in metrics_summary.get("cartMetrics", [])[:3]
+            if isinstance(cart, dict)
+        ])
+
+    seen_cart_ids = set()
+    for cart in cart_sources:
+        cart_id = str(cart.get("cartId") or id(cart))
+        if cart_id in seen_cart_ids:
+            continue
+        seen_cart_ids.add(cart_id)
+        for node in cart.get("nodeResults", [])[:8]:
+            if not isinstance(node, dict):
+                continue
+            node_id = node.get("nodeId", "code node")
+            metrics = node.get("metrics")
+            if isinstance(metrics, dict) and metrics:
+                requirements["must_use_evidence"].append(
+                    f"Use code result metrics from {node_id}: {json.dumps(metrics, ensure_ascii=False)[:500]}"
+                )
+            if node.get("resultAnalysis"):
+                requirements["must_use_evidence"].append(
+                    f"Use code result analysis from {node_id}: {str(node.get('resultAnalysis'))[:500]}"
+                )
+            for table in node.get("codeTables", [])[:3] if isinstance(node.get("codeTables"), list) else []:
+                if isinstance(table, dict):
+                    requirements["must_use_evidence"].append(
+                        f"Use code table artifact {table.get('path') or table.get('name')} from {node_id}: {str(table.get('preview') or '')[:500]}"
+                    )
+    for fig in _figures_from_summary(context.get("figures_summary", "N/A"))[:8]:
+        if fig.get("path"):
+            requirements["must_use_figures"].append(fig)
+    return requirements
 
 
 def _evidence_package_id(context: Dict[str, str]) -> str:
@@ -241,7 +296,7 @@ def _fallback_brief(ctx: PaperSkillContext, context: Dict[str, str], brief_user_
     }
 
 
-def _normalize_brief(brief: Dict[str, Any], ctx: PaperSkillContext, brief_user_edits: str) -> Dict[str, Any]:
+def _normalize_brief(brief: Dict[str, Any], ctx: PaperSkillContext, brief_user_edits: str, context: Dict[str, str] | None = None) -> Dict[str, Any]:
     brief.setdefault("research_question", f"What does {ctx.paper.get('title', 'this paper')} investigate?")
     brief.setdefault("core_claim", "Claims should be grounded in the linked context and evidence.")
     brief.setdefault("paper_angle", ctx.paper_type)
@@ -251,6 +306,26 @@ def _normalize_brief(brief: Dict[str, Any], ctx: PaperSkillContext, brief_user_e
     brief.setdefault("must_use_figures", [])
     brief.setdefault("section_priorities", {})
     brief.setdefault("avoid_claims", [])
+    if context:
+        code_requirements = _code_brief_requirements(context, ctx.get("code_evidence"))
+        brief["must_use_evidence"] = list(dict.fromkeys(
+            [str(item) for item in brief.get("must_use_evidence", [])]
+            + [str(item) for item in code_requirements["must_use_evidence"]]
+        ))
+        existing_figures = brief.get("must_use_figures", [])
+        if not isinstance(existing_figures, list):
+            existing_figures = []
+        seen_figures = {
+            str(fig.get("path") or fig.get("label") or fig)
+            for fig in existing_figures
+            if isinstance(fig, dict)
+        }
+        for fig in code_requirements["must_use_figures"]:
+            key = str(fig.get("path") or fig.get("label"))
+            if key and key not in seen_figures:
+                existing_figures.append(fig)
+                seen_figures.add(key)
+        brief["must_use_figures"] = existing_figures
     if brief_user_edits:
         brief["user_brief_edits"] = brief_user_edits
     return brief
@@ -264,7 +339,7 @@ def build_brief(ctx: PaperSkillContext, force: bool = False) -> PaperSkillResult
     source = "existing"
 
     if existing and not force and _existing_matches_evidence(existing, evidence_package_id):
-        brief = _normalize_brief(existing, ctx, brief_user_edits)
+        brief = _normalize_brief(existing, ctx, brief_user_edits, context)
     else:
         prompt = BRIEF_PROMPT.format(
             title=ctx.paper.get("title", "Untitled"),
@@ -275,9 +350,9 @@ def build_brief(ctx: PaperSkillContext, force: bool = False) -> PaperSkillResult
             plan_evidence=context.get("plan_evidence", "N/A")[:6000],
             code_evidence=context.get("code_evidence", "N/A")[:5000],
             project_summary=context.get("project_summary", "N/A")[:1500],
-            metrics_summary=context.get("metrics_summary", "N/A")[:1500],
-            runs_summary=context.get("runs_summary", "N/A")[:1500],
-            figures_summary=context.get("figures_summary", "N/A")[:1500],
+            metrics_summary=context.get("metrics_summary", "N/A")[:4000],
+            runs_summary=context.get("runs_summary", "N/A")[:2500],
+            figures_summary=context.get("figures_summary", "N/A")[:2500],
             user_notes=context.get("user_notes", "N/A"),
             brief_user_edits=brief_user_edits or "N/A",
         )
@@ -292,12 +367,12 @@ def build_brief(ctx: PaperSkillContext, force: bool = False) -> PaperSkillResult
             parsed = _extract_json(resp.text)
             if not parsed:
                 raise ValueError(f"LLM returned invalid brief: {resp.text[:300]}")
-            brief = _normalize_brief(parsed, ctx, brief_user_edits)
+            brief = _normalize_brief(parsed, ctx, brief_user_edits, context)
             if evidence_package_id:
                 brief["_evidencePackageId"] = evidence_package_id
             source = "generated"
         except Exception:
-            brief = _fallback_brief(ctx, context, brief_user_edits)
+            brief = _normalize_brief(_fallback_brief(ctx, context, brief_user_edits), ctx, brief_user_edits, context)
             source = "fallback"
         if evidence_package_id:
             brief["_evidencePackageId"] = evidence_package_id

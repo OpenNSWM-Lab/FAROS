@@ -124,6 +124,7 @@ interface FeedbackTarget {
 
 interface FeedbackRound {
   source: 'latex_compile' | 'simple_review' | 'writing_rewrite'
+  rawSource?: string
   artifactPath: string
   iteration?: number
   issues: FeedbackIssue[]
@@ -137,6 +138,19 @@ interface StepEvent {
   owner: string
   step: string
   duration?: string
+}
+
+interface FeedbackLoopItem {
+  label: string
+  source: 'latex_compile' | 'simple_review'
+  status?: 'success' | 'issues' | 'failed'
+  feedback?: FeedbackRound
+  detail?: string
+}
+
+interface FeedbackLoopRound {
+  round: number
+  items: FeedbackLoopItem[]
 }
 
 interface AgentTransfer {
@@ -269,6 +283,7 @@ export function PaperWritingWorkspace() {
       for (const review of reviews) {
         rounds.push({
           source: artifact.path.includes('simple_review') ? 'simple_review' : 'latex_compile',
+          rawSource: typeof review.source === 'string' ? review.source : undefined,
           artifactPath: artifact.path,
           iteration: Number(review.iteration) || undefined,
           issues: Array.isArray(review.issues) ? review.issues as FeedbackIssue[] : [],
@@ -790,6 +805,7 @@ function WritingStage(props: {
   goResult: () => void
 }) {
   const stepEvents = parseStepEvents(props.logs)
+  const loopRounds = buildFeedbackLoopRounds(props.feedbackRounds, props.logs)
   const transfers = buildAgentTransfers(props.feedbackRounds, props.paper, props.logs)
 
   return (
@@ -838,13 +854,10 @@ function WritingStage(props: {
             {stepEvents.length === 0 ? (
               <div className="text-sm text-slate-500">No step timing has been recorded yet.</div>
             ) : (
-              <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+              <div className="space-y-2">
                 {stepEvents.map((event, index) => (
                   <div key={`${event.time}-${event.owner}-${event.step}-${index}`} className="flex items-center justify-between gap-3 rounded-md border bg-slate-50 px-3 py-2">
-                    <div className="min-w-0">
-                      <div className="truncate text-sm font-medium text-slate-800">{event.owner}/{event.step}</div>
-                      <div className="text-xs text-slate-500">{new Date(event.time).toLocaleTimeString()}</div>
-                    </div>
+                    <div className="truncate text-sm font-medium text-slate-800">{formatStepEvent(event)}</div>
                     <Badge variant="outline" className="shrink-0">{event.duration || 'running'}</Badge>
                   </div>
                 ))}
@@ -852,25 +865,21 @@ function WritingStage(props: {
             )}
           </div>
 
-          {props.feedbackRounds.length === 0 ? (
+          {loopRounds.length === 0 ? (
             <div className="rounded-md border border-dashed p-4 text-sm text-slate-500">No feedback artifacts yet.</div>
           ) : (
-            props.feedbackRounds.map((round, index) => (
-              <details key={`${round.artifactPath}-${index}`} className="rounded-md border bg-white p-3">
+            loopRounds.map(group => (
+              <details key={`feedback-round-${group.round}`} className="rounded-md border bg-white p-3">
                 <summary className="cursor-pointer">
                   <div className="inline-flex flex-wrap items-center gap-2">
-                    <Badge variant="outline">{round.source}</Badge>
-                    {round.iteration && <Badge variant="outline">round {round.iteration}</Badge>}
-                    <span className="text-sm font-medium text-slate-800">{round.summary}</span>
-                    <span className="font-mono text-xs text-slate-500">{round.artifactPath}</span>
+                    <Badge variant="outline">round {group.round}</Badge>
+                    <span className="text-sm font-medium text-slate-800">{summarizeFeedbackLoopRound(group)}</span>
                   </div>
                 </summary>
-                <div className="mt-3">
-                  <FeedbackList title="Issues" items={round.issues.map(issue => `${issue.severity || 'issue'} ${issue.path || ''}: ${issue.message || ''}`)} />
-                  <FeedbackList title="Writing targets" items={round.targets.map(target => `${target.path || ''}: ${target.instruction || ''}`)} />
-                  {round.rewrites.length > 0 && (
-                    <pre className="mt-2 max-h-36 overflow-auto rounded bg-slate-50 p-2 text-[11px] text-slate-700">{jsonPreview(round.rewrites, 900)}</pre>
-                  )}
+                <div className="mt-3 space-y-2">
+                  {group.items.map((item, index) => (
+                    <FeedbackLoopItemView key={`${group.round}-${item.label}-${index}`} item={item} index={index + 1} />
+                  ))}
                 </div>
               </details>
             ))
@@ -1038,6 +1047,24 @@ function FeedbackList({ title, items }: { title: string; items: string[] }) {
   )
 }
 
+function compactOwner(owner: string): string {
+  const normalized = owner.replace(/_agent$/i, '')
+  if (normalized === 'latex_compile') return 'compile'
+  if (normalized === 'simple_review') return 'review'
+  if (normalized === 'paper') return 'orchestrator'
+  return normalized
+}
+
+function compactStep(step: string): string {
+  return step
+    .replace(/^run$/, 'run')
+    .replace(/_agent$/i, '')
+}
+
+function formatStepEvent(event: StepEvent): string {
+  return `${compactOwner(event.owner)}/${compactStep(event.step)}`
+}
+
 function parseStepEvents(logs: PaperLog[]): StepEvent[] {
   const starts = new Map<string, PaperLog>()
   const events: StepEvent[] = []
@@ -1057,6 +1084,9 @@ function parseStepEvents(logs: PaperLog[]): StepEvent[] {
         duration: completionMatch[4],
       })
       starts.delete(`${completionMatch[1]}/${completionMatch[2]}`)
+      Array.from(starts.keys())
+        .filter(key => key.startsWith(`${completionMatch[1]}/`))
+        .forEach(key => starts.delete(key))
       return
     }
 
@@ -1077,6 +1107,158 @@ function parseStepEvents(logs: PaperLog[]): StepEvent[] {
   })
 
   return events
+}
+
+function sortedFeedbackRounds(feedbackRounds: FeedbackRound[]): FeedbackRound[] {
+  return [...feedbackRounds].sort((a, b) => {
+    const sourceOrder = (round: FeedbackRound) => {
+      if (round.artifactPath.includes('09_latex_compile_agent')) return 0
+      if (round.artifactPath.includes('10_simple_review_compile_agent')) return 1
+      if (round.source === 'simple_review') return 2
+      return 3
+    }
+    return sourceOrder(a) - sourceOrder(b) || (a.iteration || 0) - (b.iteration || 0) || a.artifactPath.localeCompare(b.artifactPath)
+  })
+}
+
+function getLoopRound(map: Map<number, FeedbackLoopRound>, round: number): FeedbackLoopRound {
+  const normalized = Math.max(1, round)
+  const existing = map.get(normalized)
+  if (existing) return existing
+  const created = { round: normalized, items: [] }
+  map.set(normalized, created)
+  return created
+}
+
+function buildFeedbackLoopRounds(feedbackRounds: FeedbackRound[], logs: PaperLog[]): FeedbackLoopRound[] {
+  const feedbackItems = sortedFeedbackRounds(feedbackRounds).filter(round => round.source !== 'writing_rewrite' && round.rawSource !== 'evidence_usage')
+  const compileQueue = feedbackItems.filter(round => round.source === 'latex_compile')
+  const reviewQueue = feedbackItems.filter(round => round.source === 'simple_review')
+  const used = new Set<FeedbackRound>()
+  const groups = new Map<number, FeedbackLoopRound>()
+  let currentRound = 1
+  let pendingCompileItems: FeedbackLoopItem[] = []
+
+  logs.forEach(log => {
+    const compileResult = log.message.match(/^latex_compile_agent\/latex_compile_once:\s*([^()]+?)(?:\s+\(([\d.]+s)\))?$/)
+    if (compileResult) {
+      const status = compileResult[1].trim()
+      const duration = compileResult[2]
+      pendingCompileItems.push({
+        label: 'compile feedback',
+        source: 'latex_compile',
+        status: status.startsWith('latexmk') ? 'success' : status.startsWith('failed') ? 'failed' : undefined,
+        detail: `compile ${status}${duration ? `, ${duration}` : ''}`,
+      })
+      return
+    }
+
+    const compileFeedback = log.message.match(/^latex_compile_agent: requesting feedback round/)
+    if (compileFeedback) {
+      const feedback = compileQueue.find(item => !used.has(item))
+      if (feedback) used.add(feedback)
+      const lastCompile = pendingCompileItems[pendingCompileItems.length - 1]
+      if (lastCompile && !lastCompile.feedback) {
+        lastCompile.feedback = feedback
+        lastCompile.status = feedback && feedbackHasBlockingOrMajor(feedback) ? 'issues' : lastCompile.status
+      } else {
+        pendingCompileItems.push({
+          label: 'compile feedback',
+          source: 'latex_compile',
+          status: feedback && feedbackHasBlockingOrMajor(feedback) ? 'issues' : undefined,
+          feedback,
+        })
+      }
+      return
+    }
+
+    const reviewFeedback = log.message.match(/^simple_review_agent: requesting feedback round (\d+)/)
+    if (reviewFeedback) {
+      const round = Number(reviewFeedback[1]) || currentRound
+      const feedback = reviewQueue.find(item => !used.has(item) && (!item.iteration || item.iteration === round))
+        || reviewQueue.find(item => !used.has(item))
+      if (feedback) used.add(feedback)
+      const group = getLoopRound(groups, round)
+      group.items.push(...pendingCompileItems)
+      pendingCompileItems = []
+      group.items.push({
+        label: 'review feedback',
+        source: 'simple_review',
+        status: feedback ? feedbackStatus(feedback) : undefined,
+        feedback,
+      })
+      currentRound = round + 1
+    }
+  })
+
+  feedbackItems.forEach(item => {
+    if (used.has(item)) return
+    const round = item.source === 'simple_review'
+      ? item.iteration || currentRound
+      : item.artifactPath.includes('09_latex_compile_agent')
+        ? 1
+        : Math.max(1, currentRound)
+    getLoopRound(groups, round).items.push({
+      label: item.source === 'latex_compile' ? 'compile feedback' : 'review feedback',
+      source: item.source === 'latex_compile' ? 'latex_compile' : 'simple_review',
+      status: feedbackStatus(item),
+      feedback: item,
+    })
+  })
+
+  if (pendingCompileItems.length > 0) {
+    getLoopRound(groups, Math.max(1, currentRound - 1)).items.push(...pendingCompileItems)
+  }
+
+  return [...groups.values()]
+    .filter(group => group.items.length > 0)
+    .sort((a, b) => a.round - b.round)
+}
+
+function summarizeFeedbackLoopRound(round: FeedbackLoopRound): string {
+  return round.items.map(item => `${item.label}${item.status === 'success' ? ' success' : ''}`).join('; ')
+}
+
+function feedbackHasBlockingOrMajor(feedback: FeedbackRound): boolean {
+  return feedback.issues.some(issue => ['blocking', 'major'].includes(String(issue.severity || '').toLowerCase()))
+}
+
+function feedbackStatus(feedback: FeedbackRound): 'success' | 'issues' {
+  return feedbackHasBlockingOrMajor(feedback) ? 'issues' : 'success'
+}
+
+function statusBadgeClass(status?: FeedbackLoopItem['status']) {
+  if (status === 'success') return 'border-emerald-300 bg-emerald-50 text-emerald-700'
+  if (status === 'failed' || status === 'issues') return 'border-amber-300 bg-amber-50 text-amber-700'
+  return ''
+}
+
+function FeedbackLoopItemView({ item, index }: { item: FeedbackLoopItem; index: number }) {
+  const feedback = item.feedback
+  return (
+    <details className="rounded-md border bg-slate-50 p-3">
+      <summary className="cursor-pointer">
+        <div className="inline-flex flex-wrap items-center gap-2">
+          <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-white text-[11px] font-medium text-slate-600">{index}</span>
+          <Badge variant="outline">{item.label}</Badge>
+          {item.status && <Badge variant="outline" className={statusBadgeClass(item.status)}>{item.status === 'issues' ? 'needs revision' : item.status}</Badge>}
+          {feedback?.iteration && <Badge variant="outline">feedback {feedback.iteration}</Badge>}
+          {feedback?.artifactPath && <span className="font-mono text-xs text-slate-500">{feedback.artifactPath}</span>}
+        </div>
+      </summary>
+      {feedback ? (
+        <div className="mt-3">
+          {item.detail && <div className="mb-2 text-xs text-slate-500">{item.detail}</div>}
+          <FeedbackList title="Issues" items={feedback.issues.map(issue => `${issue.severity || 'issue'} ${issue.path || ''}: ${issue.message || ''}`)} />
+          <FeedbackList title="Writing targets" items={feedback.targets.map(target => `${target.path || ''}: ${target.instruction || ''}`)} />
+        </div>
+      ) : item.detail ? (
+        <div className="mt-2 text-xs text-slate-500">{item.detail}. No repair feedback was needed.</div>
+      ) : (
+        <div className="mt-2 text-xs text-slate-500">Feedback was recorded in the loop log; no artifact detail is available.</div>
+      )}
+    </details>
+  )
 }
 
 function buildAgentTransfers(feedbackRounds: FeedbackRound[], paper: PaperRecord, logs: PaperLog[]): AgentTransfer[] {

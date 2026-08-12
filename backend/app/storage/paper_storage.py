@@ -36,6 +36,9 @@ def _normalize_record(record: Dict[str, Any]) -> Dict[str, Any]:
     record.setdefault("authors", [])
     record.setdefault("logs", [])
     record.setdefault("pdfAvailable", False)
+    record.setdefault("compileStatus", None)
+    record.setdefault("pdfRenderMode", None)
+    record.setdefault("compileErrors", None)
     record.setdefault("briefJson", None)
     record.setdefault("briefUserEdits", "")
     record.setdefault("briefStatus", "missing")
@@ -331,9 +334,16 @@ def get_paper_latex_dir(paper_id: str) -> str:
 
 def write_paper_file(paper_id: str, rel_path: str, content: str):
     latex_dir = get_paper_latex_dir(paper_id)
+    latex_real = os.path.realpath(latex_dir)
     abs_path = os.path.join(latex_dir, rel_path)
+    real = os.path.realpath(abs_path)
+    try:
+        if os.path.commonpath([latex_real, real]) != latex_real:
+            raise ValueError("Invalid path outside paper LaTeX directory")
+    except ValueError as exc:
+        raise ValueError("Invalid path outside paper LaTeX directory") from exc
     os.makedirs(os.path.dirname(abs_path), exist_ok=True)
-    with open(abs_path, "w", encoding="utf-8") as f:
+    with open(real, "w", encoding="utf-8") as f:
         f.write(content)
 
 
