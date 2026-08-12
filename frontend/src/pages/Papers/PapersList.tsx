@@ -1,10 +1,12 @@
 import { useState, useEffect, useCallback } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { AppPageLayout } from '@/components/layout/AppPageLayout'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
 import { BookOpen, Plus, Download, Code2, Loader2, RefreshCw, Save, Eye, Copy, CheckCircle, ImagePlus, FileText, ListTree, Trash2, Wand2 } from 'lucide-react'
 import { LLM_PROVIDERS, getModelsByProvider } from '@/lib/models/providers'
+import { getPaperDisplayStatus, paperDisplayStatusClass, paperDisplayStatusLabel } from './paperStatus'
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || ''
 
@@ -18,7 +20,7 @@ interface TemplateInfo {
 
 const VENUES = ['icml', 'neurips', 'iclr', 'acl', 'generic', 'challenge_cup']
 const VENUE_LABELS: Record<string, string> = {
-  challenge_cup: '挑战杯模版',
+  challenge_cup: 'Challenge Cup Template',
 }
 const formatVenue = (venue?: string) => venue ? (VENUE_LABELS[venue] || venue.toUpperCase()) : ''
 
@@ -99,6 +101,8 @@ interface PaperRecord {
   sectionCount?: number
   referenceCount?: number
   figureCount?: number
+  compileStatus?: string | null
+  simpleReviewPassed?: boolean | null
   logs: { timestamp: string; message: string }[]
   fileCount?: number
   createdAt: string
@@ -158,13 +162,6 @@ interface RunRecord {
 }
 
 const PAPER_TYPES = ['algorithm', 'application', 'survey', 'benchmark', 'system', 'security', 'position']
-const statusColors: Record<string, string> = {
-  created: 'bg-gray-100 text-gray-800',
-  generating: 'bg-blue-100 text-blue-800',
-  completed: 'bg-green-100 text-green-800',
-  failed: 'bg-red-100 text-red-800',
-}
-
 const toStringList = (value: unknown): string[] => {
   if (!Array.isArray(value)) return []
   return value.map(item => String(item || '').trim()).filter(Boolean)
@@ -177,6 +174,24 @@ const textToList = (value: string) => value.split('\n').map(item => item.trim())
 const cleanSectionId = (value: string, fallback: string) => {
   const cleaned = value.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '')
   return cleaned || fallback
+}
+
+const pdfPreviewPlaceholder = (paper: PaperRecord) => {
+  switch (getPaperDisplayStatus(paper)) {
+    case 'review_passed':
+      return 'PDF is being generated...'
+    case 'generating':
+      return 'Paper generation in progress...'
+    case 'loop_revising':
+      return 'Agent feedback loop is revising the paper...'
+    case 'compile_failed':
+      return 'LaTeX compile failed; review compile feedback before previewing the PDF.'
+    case 'review_issues':
+      return 'Review loop ended with remaining issues.'
+    case 'created':
+    default:
+      return 'Generate the paper to see the PDF preview.'
+  }
 }
 
 const createBlankSection = (index: number): PaperOutlineSection => ({
@@ -229,6 +244,7 @@ const normalizeOutline = (outline: PaperOutline | null | undefined, fallbackTitl
 }
 
 export function PapersList() {
+  const navigate = useNavigate()
   const [papers, setPapers] = useState<PaperRecord[]>([])
   const [loading, setLoading] = useState(true)
   const [selectedPaper, setSelectedPaper] = useState<PaperRecord | null>(null)
@@ -892,10 +908,33 @@ export function PapersList() {
         }
         await fetchPapers()
         setShowCreate(false)
-        selectPaper(data)
+        navigate(`/papers/${data.id}/start`)
       }
     } catch (err) { console.error(err) }
     finally { setCreating(false) }
+  }
+
+  const deletePaper = async (paper: PaperRecord) => {
+    if (!confirm(`Delete "${paper.title}"? This will remove the paper files and cannot be undone.`)) return
+    try {
+      const resp = await fetch(`${API_BASE}/api/v1/papers/${paper.id}`, { method: 'DELETE' })
+      if (!resp.ok) {
+        const error = await resp.json().catch(() => ({ detail: 'Delete failed' }))
+        alert(error.detail || 'Delete failed')
+        return
+      }
+      if (selectedPaper?.id === paper.id) {
+        setSelectedPaper(null)
+        setPaperFiles([])
+        setSelectedFile('')
+        setFileContent('')
+        setEditedContent('')
+      }
+      await fetchPapers()
+    } catch (err) {
+      console.error(err)
+      alert('Delete failed')
+    }
   }
 
   const applyTemplate = async (templateId: string) => {
@@ -970,7 +1009,7 @@ export function PapersList() {
       accentColor="indigo"
       actions={
         <div className="flex gap-2">
-          <Button variant="outline" size="sm" onClick={() => setShowCreate(!showCreate)}>
+          <Button variant="outline" size="sm" onClick={() => setShowCreate(current => !current)} disabled={creating}>
             <Plus className="h-4 w-4 mr-1" /> New
           </Button>
           <Button variant="outline" size="sm" onClick={fetchPapers} disabled={loading}>
@@ -984,16 +1023,16 @@ export function PapersList() {
         <div className="space-y-3">
           {showCreate && (
             <Card className="border-indigo-200">
-	              <CardContent className="pt-3 space-y-2">
-	                <input className="w-full border rounded px-2 py-1.5 text-sm" placeholder="Title" value={newTitle} onChange={e => setNewTitle(e.target.value)} />
-	                <textarea
-	                  className="w-full border rounded px-2 py-1.5 text-xs resize-none"
-	                  rows={2}
-	                  placeholder="Authors, one per line"
-	                  value={newAuthors}
-	                  onChange={e => setNewAuthors(e.target.value)}
-	                />
-	                <select className="w-full border rounded px-2 py-1.5 text-sm" value={newType} onChange={e => setNewType(e.target.value)}>
+                <CardContent className="pt-3 space-y-2">
+                  <input className="w-full border rounded px-2 py-1.5 text-sm" placeholder="Title" value={newTitle} onChange={e => setNewTitle(e.target.value)} />
+                  <textarea
+                    className="w-full border rounded px-2 py-1.5 text-xs resize-none"
+                    rows={2}
+                    placeholder="Authors, one per line"
+                    value={newAuthors}
+                    onChange={e => setNewAuthors(e.target.value)}
+                  />
+                  <select className="w-full border rounded px-2 py-1.5 text-sm" value={newType} onChange={e => setNewType(e.target.value)}>
                   {PAPER_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
                 </select>
                 <select className="w-full border rounded px-2 py-1.5 text-sm" value={newVenue} onChange={e => setNewVenue(e.target.value)}>
@@ -1061,11 +1100,24 @@ export function PapersList() {
                 <div
                   key={p.id}
                   className={`p-2.5 rounded-lg border cursor-pointer transition-colors ${selectedPaper?.id === p.id ? 'border-indigo-400 bg-indigo-50' : 'hover:bg-muted/50'}`}
-                  onClick={() => selectPaper(p)}
+                  onClick={() => navigate(`/papers/${p.id}/start`)}
                 >
                   <div className="flex items-start justify-between gap-1">
                     <span className="text-xs font-medium truncate">{p.title}</span>
-                    <span className={`px-1 py-0.5 rounded text-[10px] font-medium shrink-0 ${statusColors[p.status] || 'bg-gray-100'}`}>{p.status}</span>
+                    <div className="flex shrink-0 items-center gap-1">
+                      <span className={`rounded border px-1 py-0.5 text-[10px] font-medium ${paperDisplayStatusClass(p)}`}>{paperDisplayStatusLabel(p)}</span>
+                      <button
+                        className="inline-flex h-5 w-5 items-center justify-center rounded border border-red-200 bg-white text-red-500 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-40"
+                        title="Delete paper"
+                        disabled={p.status === 'generating'}
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          void deletePaper(p)
+                        }}
+                      >
+                        <Trash2 className="h-3 w-3" />
+                      </button>
+                    </div>
                   </div>
                   <div className="flex items-center gap-1.5 mt-1 text-[10px] text-muted-foreground">
                     <Badge variant="outline" className="text-[10px] py-0">{p.paperType}</Badge>
@@ -1094,7 +1146,7 @@ export function PapersList() {
               <div className="flex items-center gap-3">
                 <span className="font-medium text-sm truncate max-w-xs">{selectedPaper.title}</span>
                 <Badge variant="outline" className="text-xs">{selectedPaper.paperType}</Badge>
-                <span className={`px-1.5 py-0.5 rounded text-xs font-medium ${statusColors[selectedPaper.status] || 'bg-gray-100'}`}>{selectedPaper.status}</span>
+                <span className={`rounded border px-1.5 py-0.5 text-xs font-medium ${paperDisplayStatusClass(selectedPaper)}`}>{paperDisplayStatusLabel(selectedPaper)}</span>
               </div>
               <div className="flex items-center gap-1.5">
                 {templates.length > 0 && (selectedPaper.status === 'created' || selectedPaper.status === 'completed') && (
@@ -1477,11 +1529,7 @@ export function PapersList() {
                     />
                   ) : (
                     <div className="p-4 text-center text-xs text-muted-foreground">
-                      {selectedPaper.status === 'completed'
-                        ? 'PDF is being generated...'
-                        : selectedPaper.status === 'generating'
-                          ? 'Paper generation in progress...'
-                          : 'Generate the paper to see the PDF preview.'}
+                      {pdfPreviewPlaceholder(selectedPaper)}
                     </div>
                   )}
                 </div>
@@ -1490,24 +1538,24 @@ export function PapersList() {
                 <div className="border rounded-lg bg-white overflow-hidden">
                   <div className="px-3 py-1.5 border-b bg-slate-50 text-xs font-medium text-muted-foreground">Evidence Sources</div>
                   <div className="p-2 space-y-2 text-xs text-muted-foreground">
-	                    <div>
-	                      <div className="mb-1 font-medium">Project</div>
-	                      <select className="w-full border rounded px-2 py-1.5 text-xs" value={contextProjectId} onChange={e => setContextProjectId(e.target.value)}>
+                      <div>
+                        <div className="mb-1 font-medium">Project</div>
+                        <select className="w-full border rounded px-2 py-1.5 text-xs" value={contextProjectId} onChange={e => setContextProjectId(e.target.value)}>
                         <option value="">No linked project</option>
                         {projects.map(project => <option key={project.id} value={project.id}>{project.title} ({project.id})</option>)}
-	                      </select>
-	                    </div>
-	                    <div>
-	                      <div className="mb-1 font-medium">Authors</div>
-	                      <textarea
-	                        className="w-full border rounded px-2 py-1.5 text-xs resize-none"
-	                        rows={2}
-	                        value={contextAuthors}
-	                        onChange={e => setContextAuthors(e.target.value)}
-	                      />
-	                    </div>
-	                    <div>
-	                      <div className="mb-1 font-medium">Runs</div>
+                        </select>
+                      </div>
+                      <div>
+                        <div className="mb-1 font-medium">Authors</div>
+                        <textarea
+                          className="w-full border rounded px-2 py-1.5 text-xs resize-none"
+                          rows={2}
+                          value={contextAuthors}
+                          onChange={e => setContextAuthors(e.target.value)}
+                        />
+                      </div>
+                      <div>
+                        <div className="mb-1 font-medium">Runs</div>
                       <div className="max-h-24 overflow-y-auto border rounded p-1 space-y-1">
                         {runs.length === 0 ? <div className="text-[11px] text-muted-foreground">No runs available</div> : runs.map(run => (
                           <label key={run.id} className="flex items-start gap-2 text-[11px] cursor-pointer">

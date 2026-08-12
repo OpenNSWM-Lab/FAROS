@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -280,6 +281,34 @@ def test_bundle_import_registers_project_and_cart(tmp_path, monkeypatch):
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert manifest["project_id"] == imported.project_id
     assert manifest["package_id"] == package.packageId
+
+
+def test_bundle_import_handles_zip_directory_entries_without_trailing_slash(tmp_path, monkeypatch):
+    package = _minimal_package()
+    bundle = tmp_path / "bundle"
+    package_path = bundle / "idea" / "plan_packages" / f"{package.packageId}.json"
+    _write_json(package_path, package.model_dump(mode="json"))
+    _build_cart(bundle / "code" / "cart_artifacts", package.packageId)
+
+    archive_path = tmp_path / "bundle.zip"
+    with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("sample", b"")
+        archive.writestr("sample/code", b"")
+        for path in sorted(item for item in bundle.rglob("*") if item.is_file()):
+            archive.write(path, "sample/" + path.relative_to(bundle).as_posix())
+
+    data_root = tmp_path / "runtime_data"
+    monkeypatch.setattr(bundle_import, "_DATA_DIR", str(data_root))
+    monkeypatch.setattr(cps, "CODE_PROJECTS_DIR", str(data_root / "code_projects"))
+    monkeypatch.setattr(bundle_import, "_register_package", lambda value: None)
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'test.db'}")
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        imported = bundle_import.import_bundle(archive_path, session)
+        indexed = crud.list_project_files(session, imported.project_id)
+
+    assert any(item.path == "main.py" for item in indexed)
 
 
 def test_bundle_source_rejects_paths_outside_allowed_root(tmp_path):

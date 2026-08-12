@@ -103,6 +103,18 @@ def _extract_zip_safely(archive_path: Path, destination: Path) -> None:
         infos = archive.infolist()
         if len(infos) > MAX_ARCHIVE_FILES:
             raise BundleImportError(f"Archive has too many entries: {len(infos)}")
+        parent_dirs: set[str] = set()
+        for info in infos:
+            normalized = info.filename.replace("\\", "/").rstrip("/")
+            if not normalized or normalized.startswith("/") or ".." in Path(normalized).parts:
+                continue
+            parent = Path(normalized).parent
+            while str(parent) not in ("", "."):
+                parent_dirs.add(parent.as_posix())
+                next_parent = parent.parent
+                if next_parent == parent:
+                    break
+                parent = next_parent
         for info in infos:
             normalized = info.filename.replace("\\", "/")
             if normalized.startswith("/") or ".." in Path(normalized).parts:
@@ -117,7 +129,8 @@ def _extract_zip_safely(archive_path: Path, destination: Path) -> None:
             target = (destination / normalized).resolve()
             if not _safe_relative(target, destination):
                 raise BundleImportError(f"Archive path escapes extraction root: {info.filename}")
-            if info.is_dir():
+            normalized_dir_key = normalized.rstrip("/")
+            if info.is_dir() or stat.S_ISDIR(unix_mode) or normalized_dir_key in parent_dirs:
                 target.mkdir(parents=True, exist_ok=True)
                 continue
             target.parent.mkdir(parents=True, exist_ok=True)

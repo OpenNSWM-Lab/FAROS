@@ -1,5 +1,5 @@
 """
-Papers API — Research-grade LaTeX paper generation with quality gates.
+Papers API — Research-grade LaTeX paper generation and evidence-aware review.
 
 Endpoints:
 - GET/POST /papers
@@ -30,6 +30,7 @@ from app.modules.paper.storage import (
     update_paper as _update_paper, list_paper_files as _list_paper_files,
     read_paper_file as _read_paper_file, write_paper_file as _write_paper_file,
     create_paper_zip, get_paper_latex_dir, add_log as _add_log,
+    delete_paper as _delete_paper,
     get_selected_figures as _get_selected_figures,
     remove_selected_figure as _remove_selected_figure,
     select_figure_for_paper as _select_figure_for_paper,
@@ -89,6 +90,42 @@ def _build_sections_for_fallback_pdf(
     return sections_for_pdf
 
 
+def _record_pdf_render_status(
+    paper_id: str,
+    *,
+    pdf_available: bool,
+    compile_status: str,
+    pdf_render_mode: Optional[str],
+    compile_errors: Optional[str] = None,
+) -> None:
+    # pdfAvailable means a preview exists; compileStatus records LaTeX build
+    # status; paper status remains the generation quality status and is not
+    # changed by the fallback renderer.
+    _update_paper(paper_id, {
+        "pdfAvailable": pdf_available,
+        "compileStatus": compile_status,
+        "pdfRenderMode": pdf_render_mode,
+        "compileErrors": compile_errors,
+    })
+
+
+def _invalidate_generated_output(updates: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    return {
+        **(updates or {}),
+        "status": "created",
+        "pdfAvailable": False,
+        "compileStatus": None,
+        "pdfRenderMode": None,
+        "compileErrors": None,
+        "simpleReviewPassed": False,
+    }
+
+
+def _reject_generation_mutation(record: Dict[str, Any]) -> None:
+    if record.get("status") == "generating":
+        raise HTTPException(status_code=409, detail="Cannot modify a paper while generation is in progress")
+
+
 class CreatePaperRequest(BaseModel):
     title: str = "Untitled Paper"
     paperType: str = "algorithm"
@@ -138,6 +175,15 @@ class UpdatePaperContextRequest(BaseModel):
     experimentIds: Optional[List[str]] = None
     runIds: Optional[List[str]] = None
     notes: Optional[str] = None
+
+
+class UpdatePaperMetadataRequest(BaseModel):
+    title: Optional[str] = None
+    paperType: Optional[str] = None
+    targetVenue: Optional[str] = None
+    providerName: Optional[str] = None
+    model: Optional[str] = None
+    templateId: Optional[str] = None
 
 
 class SelectedFigureRequest(BaseModel):
@@ -212,6 +258,19 @@ async def get_paper_endpoint(paper_id: str):
     return record
 
 
+@router.delete("/{paper_id}", status_code=status.HTTP_200_OK)
+async def delete_paper_endpoint(paper_id: str):
+    record = _get_paper(paper_id)
+    if not record:
+        raise HTTPException(status_code=404, detail=f"Paper '{paper_id}' not found")
+    if record.get("status") == "generating":
+        raise HTTPException(status_code=409, detail="Cannot delete a paper while generation is in progress")
+    deleted = _delete_paper(paper_id)
+    if not deleted:
+        return {"deleted": False, "paperId": paper_id}
+    return {"deleted": True, "paperId": paper_id}
+
+
 
 
 @router.patch("/{paper_id}/context", status_code=status.HTTP_200_OK)
@@ -219,8 +278,28 @@ async def update_paper_context_endpoint(paper_id: str, req: UpdatePaperContextRe
     record = _get_paper(paper_id)
     if not record:
         raise HTTPException(status_code=404, detail=f"Paper '{paper_id}' not found")
+    _reject_generation_mutation(record)
     updates = req.model_dump(exclude_unset=True)
-    return _update_paper(paper_id, updates)
+    return _update_paper(paper_id, _invalidate_generated_output(updates)) if updates else record
+
+
+@router.patch("/{paper_id}/metadata", status_code=status.HTTP_200_OK)
+async def update_paper_metadata_endpoint(paper_id: str, req: UpdatePaperMetadataRequest):
+    record = _get_paper(paper_id)
+    if not record:
+        raise HTTPException(status_code=404, detail=f"Paper '{paper_id}' not found")
+    _reject_generation_mutation(record)
+    updates = req.model_dump(exclude_unset=True)
+    if "title" in updates:
+        title = str(updates.get("title") or "").strip()
+        if not title:
+            raise HTTPException(status_code=400, detail="title cannot be empty")
+        updates["title"] = title
+    if "paperType" in updates and updates["paperType"] not in PAPER_TYPES:
+        raise HTTPException(status_code=400, detail=f"Invalid paperType. Must be one of: {PAPER_TYPES}")
+    if "targetVenue" in updates and updates["targetVenue"] not in VENUES:
+        raise HTTPException(status_code=400, detail=f"Invalid targetVenue. Must be one of: {VENUES}")
+    return _update_paper(paper_id, _invalidate_generated_output(updates)) if updates else record
 
 
 @router.get("/{paper_id}/evidence", status_code=status.HTTP_200_OK)
@@ -240,10 +319,13 @@ async def collect_paper_evidence_endpoint(paper_id: str, req: CollectPaperEviden
     record = _get_paper(paper_id)
     if not record:
         raise HTTPException(status_code=404, detail=f"Paper '{paper_id}' not found")
+    _reject_generation_mutation(record)
     try:
         from app.modules.paper.service import collect_paper_evidence
 
-        return collect_paper_evidence(paper_id, force=req.force)
+        result = collect_paper_evidence(paper_id, force=req.force)
+        _update_paper(paper_id, _invalidate_generated_output())
+        return result
     except Exception as exc:
         logger.error(f"Paper evidence collection failed: {exc}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(exc)[:500]) from exc
@@ -267,13 +349,14 @@ async def update_paper_brief_endpoint(paper_id: str, req: UpdatePaperBriefReques
     record = _get_paper(paper_id)
     if not record:
         raise HTTPException(status_code=404, detail=f"Paper '{paper_id}' not found")
+    _reject_generation_mutation(record)
     updates: Dict[str, Any] = {}
     if req.briefJson is not None:
         updates["briefJson"] = req.briefJson
         updates["briefStatus"] = "user_edited"
     if req.briefUserEdits is not None:
         updates["briefUserEdits"] = req.briefUserEdits
-    updated = _update_paper(paper_id, updates) if updates else record
+    updated = _update_paper(paper_id, _invalidate_generated_output(updates)) if updates else record
     return {
         "paperId": paper_id,
         "brief": updated.get("briefJson"),
@@ -296,6 +379,7 @@ async def generate_paper_brief_endpoint(paper_id: str, req: GeneratePaperBriefRe
             brief_user_edits=req.briefUserEdits,
             force=req.force,
         )
+        updated = _update_paper(paper_id, _invalidate_generated_output()) or updated
     except Exception as exc:
         logger.error(f"Paper brief generation failed: {exc}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(exc)[:500]) from exc
@@ -324,10 +408,11 @@ async def update_paper_outline_endpoint(paper_id: str, req: UpdatePaperOutlineRe
     record = _get_paper(paper_id)
     if not record:
         raise HTTPException(status_code=404, detail=f"Paper '{paper_id}' not found")
-    updated = _update_paper(paper_id, {
+    _reject_generation_mutation(record)
+    updated = _update_paper(paper_id, _invalidate_generated_output({
         "outlineJson": req.outlineJson,
         "outlineStatus": "user_edited",
-    })
+    }))
     return {
         "paperId": paper_id,
         "outline": updated.get("outlineJson") if updated else req.outlineJson,
@@ -345,6 +430,7 @@ async def generate_paper_outline_endpoint(paper_id: str, req: GeneratePaperOutli
     try:
         from app.modules.paper.service import generate_paper_outline
         updated = generate_paper_outline(paper_id, force=req.force)
+        updated = _update_paper(paper_id, _invalidate_generated_output()) or updated
     except Exception as exc:
         logger.error(f"Paper outline generation failed: {exc}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(exc)[:500]) from exc
@@ -363,6 +449,17 @@ async def generate_paper_endpoint(paper_id: str):
     if record.get("status") == "generating":
         raise HTTPException(status_code=409, detail="Paper generation already in progress")
 
+    # Claim the paper before starting the thread. Without this state change two
+    # near-simultaneous requests can both pass the check and write one project.
+    _update_paper(paper_id, {
+        "status": "generating",
+        "pdfAvailable": False,
+        "compileStatus": None,
+        "pdfRenderMode": None,
+        "compileErrors": None,
+        "simpleReviewPassed": False,
+    })
+
     def _run():
         try:
             from app.modules.paper.service import generate_paper
@@ -371,7 +468,11 @@ async def generate_paper_endpoint(paper_id: str):
             logger.error(f"Paper generation background task failed: {e}", exc_info=True)
 
     thread = threading.Thread(target=_run, daemon=True)
-    thread.start()
+    try:
+        thread.start()
+    except Exception as exc:
+        _update_paper(paper_id, {"status": "failed", "compileErrors": str(exc)[:500]})
+        raise HTTPException(status_code=500, detail="Unable to start paper generation") from exc
     return {"message": "Paper generation started", "paperId": paper_id}
 
 
@@ -401,9 +502,19 @@ async def save_paper_file(paper_id: str, req: SaveFileRequest):
     record = _get_paper(paper_id)
     if not record:
         raise HTTPException(status_code=404, detail=f"Paper '{paper_id}' not found")
+    if record.get("status") == "generating":
+        raise HTTPException(status_code=409, detail="Cannot edit files while paper generation is in progress")
     if ".." in req.path or req.path.startswith("/"):
         raise HTTPException(status_code=400, detail="Invalid path")
     _write_paper_file(paper_id, req.path, req.content)
+    _update_paper(paper_id, {
+        "status": "created",
+        "pdfAvailable": False,
+        "compileStatus": None,
+        "pdfRenderMode": None,
+        "compileErrors": None,
+        "simpleReviewPassed": False,
+    })
     return {"paperId": paper_id, "path": req.path, "saved": True, "size": len(req.content)}
 
 
@@ -443,6 +554,8 @@ async def get_paper_pdf(paper_id: str):
     record = _get_paper(paper_id)
     if not record:
         raise HTTPException(status_code=404, detail=f"Paper '{paper_id}' not found")
+    if not record.get("pdfAvailable"):
+        raise HTTPException(status_code=404, detail="PDF is stale or not available. Generate or render the paper first.")
     latex_dir = get_paper_latex_dir(paper_id)
     pdf_path = os.path.join(latex_dir, "main.pdf")
     if not os.path.isfile(pdf_path):
@@ -591,10 +704,17 @@ async def render_paper_pdf_endpoint(paper_id: str):
             
             try:
                 compile_latex_project(latex_dir)
-                update_paper(paper_id, {"pdfAvailable": True})
+                _record_pdf_render_status(
+                    paper_id,
+                    pdf_available=True,
+                    compile_status="latexmk",
+                    pdf_render_mode="latexmk",
+                    compile_errors=None,
+                )
                 logger.info(f"PDF re-rendered successfully via latexmk: {os.path.getsize(pdf_path)} bytes")
                 return
             except Exception as compile_error:
+                compile_error_message = str(compile_error)[:2000]
                 logger.warning(f"LaTeX compile failed during re-render for {paper_id}: {compile_error}", exc_info=True)
             
             outline = paper.get("outlineJson", {
@@ -632,9 +752,22 @@ async def render_paper_pdf_endpoint(paper_id: str):
                 figures_dir=figures_dir,
                 figure_entries=figure_entries,
             )
-            update_paper(paper_id, {"pdfAvailable": True})
+            _record_pdf_render_status(
+                paper_id,
+                pdf_available=True,
+                compile_status="failed",
+                pdf_render_mode="fallback",
+                compile_errors=compile_error_message,
+            )
             logger.info(f"Fallback PDF re-rendered successfully: {os.path.getsize(pdf_path)} bytes")
         except Exception as e:
+            _record_pdf_render_status(
+                paper_id,
+                pdf_available=False,
+                compile_status="failed",
+                pdf_render_mode=None,
+                compile_errors=str(e)[:2000],
+            )
             logger.error(f"PDF re-render failed for {paper_id}: {e}", exc_info=True)
     
     thread = threading.Thread(target=_run, daemon=True)

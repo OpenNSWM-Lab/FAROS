@@ -97,6 +97,9 @@ class PaperDraftingCapability(BaseCapability):
             'status': payload.get('paperStatus', 'prepared'),
             'outlineJson': payload.get('outlineJson'),
             'pdfAvailable': True,
+            'compileStatus': payload.get('compileStatus') or 'provider_placeholder',
+            'pdfRenderMode': payload.get('pdfRenderMode') or 'provider_placeholder',
+            'compileErrors': payload.get('compileErrors'),
         }) or create_paper({})
         return self._assemble_result(context, record['id'], paper, event_message=provider_result.text or f"Tool-backed paper drafting completed for {record['id']}")
 

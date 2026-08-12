@@ -12,23 +12,27 @@ from app.modules.paper.skills.base import PaperSkillContext
 from app.modules.paper.papers_api import (
     UpdatePaperContextRequest,
     _build_sections_for_fallback_pdf,
+    _record_pdf_render_status,
     update_paper_context_endpoint,
 )
-from app.modules.paper.skills.compile_pdf import (
+from app.modules.paper.skills.latex_compile_support import (
     _ensure_required_packages,
     _ensure_xcolor_table_option,
+    preflight_latex_project,
     _replace_unicode_latex_chars,
 )
 from app.modules.paper.skills.constants import TEMPLATE_ROOT
-from app.modules.paper.skills.outline import _normalize_outline
+from app.modules.paper.skills.outline import _fallback_outline, _normalize_outline
 from app.modules.paper.skills.section_writers.dispatcher import classify_section
 from app.modules.paper.skills.section_rewrite import rewrite_section
+from app.modules.paper.skills.section_rewrite import sanitize_markdown_emphasis_for_latex
+from app.modules.paper.skills.section_rewrite import sanitize_markdown_inline_code_for_latex
 from app.modules.paper.skills.utils import (
     get_linked_figure_entries,
     normalize_duplicate_latex_labels,
     sanitize_latex_text_specials,
 )
-from app.modules.paper.storage import create_paper, read_paper_file, write_paper_file
+from app.modules.paper.storage import create_paper, delete_paper, get_paper_latex_dir, read_paper_file, write_paper_file
 from app.services.pdf_renderer import _requires_xelatex, _strip_latex
 
 
@@ -71,6 +75,69 @@ def test_sanitize_latex_text_specials_preserves_display_math_subscripts():
     assert sanitize_latex_text_specials(content) == content
 
 
+def test_sanitize_latex_text_specials_escapes_text_snake_case_metrics():
+    content = "F1_drop and steps_reduction columns remain in prose, but $E_i$ stays math."
+
+    sanitized = sanitize_latex_text_specials(content)
+
+    assert "F1\\_drop" in sanitized
+    assert "steps\\_reduction" in sanitized
+    assert "$E_i$" in sanitized
+
+
+def test_preflight_latex_project_escapes_text_snake_case_metrics(tmp_path: Path):
+    main_tex = tmp_path / "main.tex"
+    main_tex.write_text(
+        r"\documentclass{article}\begin{document}\input{sections/results.tex}\end{document}",
+        encoding="utf-8",
+    )
+    sections_dir = tmp_path / "sections"
+    sections_dir.mkdir()
+    results_tex = sections_dir / "results.tex"
+    results_tex.write_text(r"\section{Results} F1_drop and steps_reduction are reported.", encoding="utf-8")
+
+    rewrites = preflight_latex_project(str(tmp_path))
+
+    assert any(rewrite["kind"] == "text_specials" for rewrite in rewrites)
+    assert "F1\\_drop" in results_tex.read_text(encoding="utf-8")
+    assert "steps\\_reduction" in results_tex.read_text(encoding="utf-8")
+
+
+def test_preflight_latex_project_skips_artifacts(tmp_path: Path):
+    main_tex = tmp_path / "main.tex"
+    main_tex.write_text(r"\documentclass{article}\begin{document}Ok\end{document}", encoding="utf-8")
+    artifacts_dir = tmp_path / "artifacts" / "section_rewrites"
+    artifacts_dir.mkdir(parents=True)
+    artifact_tex = artifacts_dir / "results.before.tex"
+    artifact_tex.write_text("F1_drop should stay as historical output.", encoding="utf-8")
+
+    rewrites = preflight_latex_project(str(tmp_path))
+
+    assert not any("artifacts" in rewrite["file"] for rewrite in rewrites)
+    assert artifact_tex.read_text(encoding="utf-8") == "F1_drop should stay as historical output."
+
+
+def test_section_rewrite_sanitizes_markdown_inline_latex_commands():
+    content = r"每个`\If`都有`\EndIf`，并符合`algorithm2e`规范。"
+
+    sanitized, warnings = sanitize_markdown_inline_code_for_latex(content)
+
+    assert "`" not in sanitized
+    assert r"\texttt{\textbackslash{}If}" in sanitized
+    assert r"\texttt{\textbackslash{}EndIf}" in sanitized
+    assert r"\texttt{algorithm2e}" in sanitized
+    assert warnings
+
+
+def test_section_rewrite_sanitizes_markdown_emphasis():
+    content = "**Result analysis** shows *stable* behavior."
+
+    sanitized, warnings = sanitize_markdown_emphasis_for_latex(content)
+
+    assert sanitized == r"\textbf{Result analysis} shows \emph{stable} behavior."
+    assert warnings
+
+
 def test_preflight_unicode_replacement_respects_display_math():
     content = r"\begin{equation} α_i = β_i \end{equation}"
 
@@ -104,6 +171,71 @@ def test_section_rewrite_preserve_options_block_dropped_citations_and_figures():
         rewrite_section(ctx, "method", preserve_citations=True, preserve_figures=True)
 
     assert read_paper_file(paper["id"], "sections/method.tex") == original
+
+
+def test_write_paper_file_rejects_paths_outside_latex_dir(tmp_path: Path):
+    paper = create_paper({"title": "Storage boundary paper"})
+    try:
+        write_paper_file(paper["id"], "sections/method.tex", "ok")
+        assert read_paper_file(paper["id"], "sections/method.tex") == "ok"
+
+        with pytest.raises(ValueError, match="outside paper LaTeX directory"):
+            write_paper_file(paper["id"], "../escape.tex", "bad")
+
+        outside = tmp_path / "escape.tex"
+        with pytest.raises(ValueError, match="outside paper LaTeX directory"):
+            write_paper_file(paper["id"], str(outside), "bad")
+
+        assert not outside.exists()
+        assert not os.path.exists(os.path.join(os.path.dirname(get_paper_latex_dir(paper["id"])), "escape.tex"))
+    finally:
+        delete_paper(paper["id"])
+
+
+def test_section_rewrite_does_not_block_dropped_figures(tmp_path: Path):
+    paper = create_paper({
+        "title": "Dropped figure rewrite paper",
+        "outlineJson": {
+            "title": "Dropped figure rewrite paper",
+            "abstract": "Abstract",
+            "sections": [{"id": "method", "title": "Method", "minWords": 200}],
+            "references": [],
+        },
+    })
+    original = (
+        r"\section{Method}"
+        "\n"
+        r"\includegraphics{figures/existing.pdf}"
+    )
+    write_paper_file(paper["id"], "sections/method.tex", original)
+    ctx = _ctx_for_paper(paper, FakeClient(r"\section{Method} Rewritten without the unavailable placeholder."))
+    ctx.latex_dir = str(tmp_path)
+    (tmp_path / "figures").mkdir()
+    (tmp_path / "figures" / "existing.pdf").write_bytes(b"%PDF-1.4\n")
+
+    result = rewrite_section(ctx, "method", preserve_citations=True, preserve_figures=True)
+
+    assert result.data["content"] == r"\section{Method} Rewritten without the unavailable placeholder."
+    assert "existing.pdf" not in read_paper_file(paper["id"], "sections/method.tex")
+
+
+def test_section_rewrite_escapes_text_snake_case_metrics():
+    paper = create_paper({
+        "title": "Snake case rewrite paper",
+        "outlineJson": {
+            "title": "Snake case rewrite paper",
+            "abstract": "Abstract",
+            "sections": [{"id": "results", "title": "Results", "minWords": 200}],
+            "references": [],
+        },
+    })
+    write_paper_file(paper["id"], "sections/results.tex", r"\section{Results} Old text.")
+    ctx = _ctx_for_paper(paper, FakeClient(r"\section{Results} F1_drop and steps_reduction remain prose."))
+
+    result = rewrite_section(ctx, "results", preserve_citations=True, preserve_figures=True)
+
+    assert "F1\\_drop" in result.data["content"]
+    assert "steps\\_reduction" in read_paper_file(paper["id"], "sections/results.tex")
 
 
 def test_section_rewrite_sends_the_complete_section_to_the_model():
@@ -223,6 +355,15 @@ def test_outline_normalization_preserves_outline_authors_when_record_has_none():
     assert normalized["authors"] == ["Alice", "Bob"]
 
 
+def test_fallback_outline_does_not_inject_default_nlp_references():
+    paper = {"id": "paper_refs", "title": "Robotics Scheduling", "authors": []}
+    ctx = _ctx_for_paper(paper, FakeClient(""))
+
+    outline = _fallback_outline(ctx, {"research_question": "robot scheduling"}, [])
+
+    assert outline["references"] == []
+
+
 def test_context_patch_does_not_clear_authors_when_omitted():
     paper = create_paper({
         "title": "Context patch paper",
@@ -270,3 +411,25 @@ def test_fallback_pdf_sections_follow_outline_titles_and_order():
         {"title": "引言", "content": "Intro content"},
         {"title": "Extra", "content": "Extra content"},
     ]
+
+
+def test_pdf_render_status_distinguishes_fallback_preview():
+    paper = create_paper({"title": "PDF status paper"})
+    try:
+        _record_pdf_render_status(
+            paper["id"],
+            pdf_available=True,
+            compile_status="failed",
+            pdf_render_mode="fallback",
+            compile_errors="latexmk failed",
+        )
+
+        from app.modules.paper.storage import get_paper
+
+        updated = get_paper(paper["id"])
+        assert updated["pdfAvailable"] is True
+        assert updated["compileStatus"] == "failed"
+        assert updated["pdfRenderMode"] == "fallback"
+        assert updated["compileErrors"] == "latexmk failed"
+    finally:
+        delete_paper(paper["id"])
