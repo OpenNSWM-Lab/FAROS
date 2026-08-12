@@ -8,6 +8,10 @@ backend/tests/*
 !backend/tests/test_paper_latex_safety.py
 !backend/tests/test_paper_prompt_formatting.py
 !backend/tests/test_release_smoke.py
+!backend/tests/test_execution_assessment.py
+!backend/tests/test_experiment_evidence.py
+!backend/tests/test_provider_client_proxy.py
+!backend/tests/test_reviewx_experiment_feedback.py
 !backend/tests/test_scientific_research_contracts.py
 !backend/tests/fixtures/
 !backend/tests/fixtures/scientific_research/
