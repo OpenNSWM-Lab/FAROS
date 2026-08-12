@@ -6,7 +6,7 @@ import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
 import { BookOpen, Plus, Download, Code2, Loader2, RefreshCw, Save, Eye, Copy, CheckCircle, ImagePlus, FileText, ListTree, Trash2, Wand2 } from 'lucide-react'
 import { LLM_PROVIDERS, getModelsByProvider } from '@/lib/models/providers'
-import { paperDisplayStatusClass, paperDisplayStatusLabel } from './paperStatus'
+import { getPaperDisplayStatus, paperDisplayStatusClass, paperDisplayStatusLabel } from './paperStatus'
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || ''
 
@@ -174,6 +174,24 @@ const textToList = (value: string) => value.split('\n').map(item => item.trim())
 const cleanSectionId = (value: string, fallback: string) => {
   const cleaned = value.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '')
   return cleaned || fallback
+}
+
+const pdfPreviewPlaceholder = (paper: PaperRecord) => {
+  switch (getPaperDisplayStatus(paper)) {
+    case 'review_passed':
+      return 'PDF is being generated...'
+    case 'generating':
+      return 'Paper generation in progress...'
+    case 'loop_revising':
+      return 'Agent feedback loop is revising the paper...'
+    case 'compile_failed':
+      return 'LaTeX compile failed; review compile feedback before previewing the PDF.'
+    case 'review_issues':
+      return 'Review loop ended with remaining issues.'
+    case 'created':
+    default:
+      return 'Generate the paper to see the PDF preview.'
+  }
 }
 
 const createBlankSection = (index: number): PaperOutlineSection => ({
@@ -1511,17 +1529,7 @@ export function PapersList() {
                     />
                   ) : (
                     <div className="p-4 text-center text-xs text-muted-foreground">
-                      {paperDisplayStatusLabel(selectedPaper) === 'Review passed'
-                        ? 'PDF is being generated...'
-                        : paperDisplayStatusLabel(selectedPaper) === 'Generating'
-                          ? 'Paper generation in progress...'
-                          : paperDisplayStatusLabel(selectedPaper) === 'Loop revising'
-                            ? 'Agent feedback loop is revising the paper...'
-                            : paperDisplayStatusLabel(selectedPaper) === 'Compile failed'
-                              ? 'LaTeX compile failed; review compile feedback before previewing the PDF.'
-                              : paperDisplayStatusLabel(selectedPaper) === 'Review issues'
-                                ? 'Review loop ended with remaining issues.'
-                                : 'Generate the paper to see the PDF preview.'}
+                      {pdfPreviewPlaceholder(selectedPaper)}
                     </div>
                   )}
                 </div>

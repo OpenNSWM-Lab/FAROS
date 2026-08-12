@@ -124,8 +124,12 @@ def delete_paper(paper_id: str) -> bool:
     paper_dir = os.path.join(PAPERS_DIR, paper_id)
     if not os.path.isdir(paper_dir):
         return False
-    shutil.rmtree(paper_dir)
-    return True
+    try:
+        shutil.rmtree(paper_dir)
+        return True
+    except OSError as exc:
+        logger.warning("Failed to delete paper %s at %s: %s", paper_id, paper_dir, exc)
+        return False
 
 
 def _clean_latex_label_part(value: str) -> str:

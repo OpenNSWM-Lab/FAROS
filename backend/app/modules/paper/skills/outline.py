@@ -6,7 +6,7 @@ from app.llm.provider_client import ChatMessage
 from app.modules.paper.storage import update_paper
 from .base import PaperSkillContext, PaperSkillResult
 from .constants import MIN_ALGORITHMS, MIN_EQUATIONS, MIN_FIGURES, MIN_REFERENCES, MIN_TABLES
-from .utils import _extract_json, load_venue_style_guide, normalize_paper_authors, write_artifact
+from .utils import _extract_json, load_venue_style_guide, normalize_paper_authors, stable_context_fingerprint, write_artifact
 
 
 STEP_ID = "03_outline"
@@ -262,6 +262,57 @@ def _evidence_package_id(context: Dict[str, str]) -> str:
     return str(package.get("packageId") or "")
 
 
+def _brief_fingerprint(paper_brief: Dict[str, Any]) -> str:
+    public_brief = {
+        key: value
+        for key, value in (paper_brief or {}).items()
+        if not str(key).startswith("_")
+    }
+    return stable_context_fingerprint(public_brief)
+
+
+def _outline_context_fingerprint(
+    ctx: PaperSkillContext,
+    context: Dict[str, str],
+    paper_brief: Dict[str, Any],
+) -> str:
+    return stable_context_fingerprint(
+        {
+            "title": ctx.paper.get("title"),
+            "paperType": ctx.paper_type,
+            "venue": ctx.venue,
+            "authors": ctx.paper.get("authors") or [],
+            "briefFingerprint": _brief_fingerprint(paper_brief),
+        },
+        {
+            key: context.get(key, "N/A")
+            for key in (
+                "plan_evidence",
+                "code_evidence",
+                "metrics_summary",
+                "runs_summary",
+                "figures_summary",
+                "code_tables_summary",
+                "user_notes",
+            )
+        },
+    )
+
+
+def _outline_context_is_empty(context: Dict[str, str], paper_brief: Dict[str, Any]) -> bool:
+    context_keys = (
+        "plan_evidence",
+        "code_evidence",
+        "metrics_summary",
+        "runs_summary",
+        "figures_summary",
+        "code_tables_summary",
+        "user_notes",
+    )
+    brief_public = {key: value for key, value in (paper_brief or {}).items() if not str(key).startswith("_")}
+    return not brief_public and all(context.get(key, "N/A") in {"", "N/A", None} for key in context_keys)
+
+
 def _reference_key_from_paper(paper: Dict[str, Any], index: int) -> str:
     paper_id = str(paper.get("paperId") or paper.get("structuredPaperId") or "").strip()
     if paper_id:
@@ -299,12 +350,22 @@ def _references_from_plan_evidence(evidence: Dict[str, Any]) -> List[Dict[str, A
     return references
 
 
-def _existing_matches_evidence(existing: Any, evidence_package_id: str) -> bool:
-    if not evidence_package_id:
-        return True
+def _existing_matches_context(
+    existing: Any,
+    evidence_package_id: str,
+    context_fingerprint: str,
+    brief_fingerprint: str,
+    context_empty: bool = False,
+) -> bool:
     if not isinstance(existing, dict):
         return False
-    return existing.get("_evidencePackageId") == evidence_package_id
+    if existing.get("_contextFingerprint"):
+        return (
+            existing.get("_evidencePackageId", "") == evidence_package_id
+            and existing.get("_contextFingerprint") == context_fingerprint
+            and existing.get("_briefFingerprint", "") == brief_fingerprint
+        )
+    return context_empty and not evidence_package_id
 
 
 def build_outline(ctx: PaperSkillContext, force: bool = False) -> PaperSkillResult:
@@ -315,9 +376,17 @@ def build_outline(ctx: PaperSkillContext, force: bool = False) -> PaperSkillResu
     evidence_package = evidence.get("package") if isinstance(evidence.get("package"), dict) else {}
     evidence_package_id = str(evidence_package.get("packageId") or _evidence_package_id(context))
     evidence_references = _references_from_plan_evidence(evidence)
+    brief_fingerprint = _brief_fingerprint(paper_brief)
+    context_fingerprint = _outline_context_fingerprint(ctx, context, paper_brief)
     source = "existing"
 
-    if existing and not force and _existing_matches_evidence(existing, evidence_package_id):
+    if existing and not force and _existing_matches_context(
+        existing,
+        evidence_package_id,
+        context_fingerprint,
+        brief_fingerprint,
+        _outline_context_is_empty(context, paper_brief),
+    ):
         source = ctx.paper.get("outlineStatus") or "existing"
         outline = _normalize_outline(existing, ctx)
     else:
@@ -354,6 +423,8 @@ def build_outline(ctx: PaperSkillContext, force: bool = False) -> PaperSkillResu
         outline = _normalize_outline(parsed, ctx)
         if evidence_package_id:
             outline["_evidencePackageId"] = evidence_package_id
+        outline["_contextFingerprint"] = context_fingerprint
+        outline["_briefFingerprint"] = brief_fingerprint
 
     if evidence_references:
         outline["references"] = evidence_references

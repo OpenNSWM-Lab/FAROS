@@ -47,7 +47,7 @@ TABLE_TEMPLATE = """- MUST include at least {n} tables using:
 \\toprule ... \\midrule ... \\bottomrule
 \\end{{tabular}}
 \\end{{table}}
-Tables must be grounded in linked metrics where available; do not invent unsupported benchmark numbers."""
+Tables must use only linked metrics or code table evidence provided in the prompt. Do not invent unsupported benchmark numbers, datasets, baselines, or measurements."""
 
 FIGURE_TEMPLATE = """- MUST reference only the concrete figures listed in Section-selected figures or Available paper figures.
 - Use the exact listed path, label, and caption.
@@ -192,10 +192,25 @@ def build_artifact_requirements(
 ) -> Dict[str, Any]:
     algorithm_template = ICML_ALGORITHM_TEMPLATE if ctx.venue == "icml" else ALGORITHM2E_TEMPLATE
     algo_req = algorithm_template if section.get("hasAlgorithm") else ""
-    n_eq = section.get("numEquations", 2 if section.get("hasEquations") else 0)
-    eq_req = EQUATION_TEMPLATE.format(n=max(n_eq, 2)) if section.get("hasEquations") else ""
-    n_tab = 2 if section.get("hasTables") else 0
-    table_req = TABLE_TEMPLATE.format(n=n_tab) if n_tab > 0 else ""
+    try:
+        n_eq = int(section.get("numEquations", 1 if section.get("hasEquations") else 0) or 0)
+    except (TypeError, ValueError):
+        n_eq = 1 if section.get("hasEquations") else 0
+    eq_req = EQUATION_TEMPLATE.format(n=max(n_eq, 1)) if section.get("hasEquations") else ""
+    context = ctx.get("context", {}) or {}
+    has_metric_or_table_evidence = any(
+        context.get(key, "N/A") not in {"", "N/A", None}
+        for key in ("metrics_summary", "code_tables_summary")
+    )
+    key_points_text = " ".join(str(item) for item in section.get("keyPoints", []) if item).lower()
+    key_points_request_table = any(term in key_points_text for term in ("table", "tabular", "表格", "表"))
+    try:
+        n_tab = int(section.get("numTables") or 0)
+    except (TypeError, ValueError):
+        n_tab = 0
+    if section.get("hasTables") and n_tab <= 0 and (has_metric_or_table_evidence or key_points_request_table):
+        n_tab = 1
+    table_req = TABLE_TEMPLATE.format(n=max(n_tab, 1)) if n_tab > 0 else ""
     section_lower = section_title.lower()
     figures_needed = (
         bool(section_figures)
@@ -210,7 +225,7 @@ def build_artifact_requirements(
     requirements = [
         f"Min {section.get('minWords', 500)} words",
         "Include algorithm" if section.get("hasAlgorithm") else "",
-        f"{n_eq} equations" if n_eq else "",
+        f"{max(n_eq, 1)} equations" if section.get("hasEquations") else "",
         f"{n_tab} tables" if n_tab else "",
         "Include figures" if fig_req else "",
     ]

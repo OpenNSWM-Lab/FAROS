@@ -4,7 +4,7 @@ from typing import Any, Dict
 from app.llm.provider_client import ChatMessage
 from app.modules.paper.storage import update_paper
 from .base import PaperSkillContext, PaperSkillResult
-from .utils import _extract_json, load_venue_style_guide, write_artifact
+from .utils import _extract_json, load_venue_style_guide, stable_context_fingerprint, write_artifact
 
 
 STEP_ID = "02_paper_brief"
@@ -202,12 +202,57 @@ def _evidence_package_id(context: Dict[str, str]) -> str:
     return str(package.get("packageId") or "")
 
 
-def _existing_matches_evidence(existing: Any, evidence_package_id: str) -> bool:
-    if not evidence_package_id:
-        return True
+def _brief_context_fingerprint(ctx: PaperSkillContext, context: Dict[str, str], brief_user_edits: str) -> str:
+    return stable_context_fingerprint(
+        {
+            "title": ctx.paper.get("title"),
+            "paperType": ctx.paper_type,
+            "venue": ctx.venue,
+            "authors": ctx.paper.get("authors") or [],
+            "briefUserEdits": brief_user_edits,
+        },
+        {
+            key: context.get(key, "N/A")
+            for key in (
+                "plan_evidence",
+                "code_evidence",
+                "metrics_summary",
+                "runs_summary",
+                "figures_summary",
+                "code_tables_summary",
+                "user_notes",
+            )
+        },
+    )
+
+
+def _context_is_empty(context: Dict[str, str], brief_user_edits: str) -> bool:
+    context_keys = (
+        "plan_evidence",
+        "code_evidence",
+        "metrics_summary",
+        "runs_summary",
+        "figures_summary",
+        "code_tables_summary",
+        "user_notes",
+    )
+    return not brief_user_edits and all(context.get(key, "N/A") in {"", "N/A", None} for key in context_keys)
+
+
+def _existing_matches_context(
+    existing: Any,
+    evidence_package_id: str,
+    context_fingerprint: str,
+    context_empty: bool = False,
+) -> bool:
     if not isinstance(existing, dict):
         return False
-    return existing.get("_evidencePackageId") == evidence_package_id
+    if existing.get("_contextFingerprint"):
+        return (
+            existing.get("_evidencePackageId", "") == evidence_package_id
+            and existing.get("_contextFingerprint") == context_fingerprint
+        )
+    return context_empty and not evidence_package_id
 
 
 def _brief_from_plan_evidence(
@@ -395,9 +440,15 @@ def build_brief(ctx: PaperSkillContext, force: bool = False) -> PaperSkillResult
     brief_user_edits = (ctx.paper.get("briefUserEdits") or "").strip()
     existing = ctx.paper.get("briefJson")
     evidence_package_id = _evidence_package_id(context)
+    context_fingerprint = _brief_context_fingerprint(ctx, context, brief_user_edits)
     source = "existing"
 
-    if existing and not force and _existing_matches_evidence(existing, evidence_package_id):
+    if existing and not force and _existing_matches_context(
+        existing,
+        evidence_package_id,
+        context_fingerprint,
+        _context_is_empty(context, brief_user_edits),
+    ):
         brief = _normalize_brief(existing, ctx, brief_user_edits, context)
     else:
         prompt = BRIEF_PROMPT.format(
@@ -429,12 +480,14 @@ def build_brief(ctx: PaperSkillContext, force: bool = False) -> PaperSkillResult
             brief = _normalize_brief(parsed, ctx, brief_user_edits, context)
             if evidence_package_id:
                 brief["_evidencePackageId"] = evidence_package_id
+            brief["_contextFingerprint"] = context_fingerprint
             source = "generated"
         except Exception:
             brief = _normalize_brief(_fallback_brief(ctx, context, brief_user_edits), ctx, brief_user_edits, context)
             source = "fallback"
         if evidence_package_id:
             brief["_evidencePackageId"] = evidence_package_id
+        brief["_contextFingerprint"] = context_fingerprint
 
         update_paper(ctx.paper_id, {
             "briefJson": brief,

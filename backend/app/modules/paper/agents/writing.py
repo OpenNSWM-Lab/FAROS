@@ -5,15 +5,9 @@ from collections import OrderedDict
 from typing import Any, Dict
 from typing import Callable, List
 
-from app.modules.paper.skills.assemble_latex import run as assemble_latex
 from app.modules.paper.skills.base import PaperSkillContext, PaperSkillResult
-from app.modules.paper.skills.collect_context import run as collect_context
-from app.modules.paper.skills.code_artifact_collect import run as code_artifact_collect
-from app.modules.paper.skills.evidence_collect import run as evidence_collect
-from app.modules.paper.skills.outline import run as outline
-from app.modules.paper.skills.paper_brief import run as paper_brief
+from app.modules.paper.skills.leader import build_writing_skill_chain
 from app.modules.paper.skills.section_rewrite import rewrite_section
-from app.modules.paper.skills.section_write import run as section_write
 from app.modules.paper.skills.utils import write_artifact
 from .base import PaperAgent
 
@@ -22,15 +16,7 @@ class PaperWritingAgent(PaperAgent):
     name = "writing_agent"
 
     def skills(self) -> List[Callable[[PaperSkillContext], PaperSkillResult]]:
-        return [
-            evidence_collect,
-            collect_context,
-            code_artifact_collect,
-            paper_brief,
-            outline,
-            section_write,
-            assemble_latex,
-        ]
+        return build_writing_skill_chain()
 
     def run(self, ctx: PaperSkillContext) -> None:
         for skill in self.skills():
@@ -124,6 +110,11 @@ class PaperWritingAgent(PaperAgent):
                 }
             )
 
+        artifact_suffix = {
+            "latex_compile": "compile",
+            "simple_review": "review",
+            "evidence_usage": "evidence_usage",
+        }.get(source, source.replace("/", "_").replace("\\", "_"))
         artifacts = write_artifact(
             ctx.paper_id,
             f"feedback_rewrite_{source}",
@@ -139,7 +130,7 @@ class PaperWritingAgent(PaperAgent):
                 f"rewrites: {len(rewrites)}",
                 f"warnings: {len(warnings)}",
             ],
-            artifact_path=f"artifacts/feedback/round_{max(1, feedback_round):02d}/rewrite_{'compile' if source == 'latex_compile' else 'review'}.json",
+            artifact_path=f"artifacts/feedback/round_{max(1, feedback_round):02d}/rewrite_{artifact_suffix}.json",
         )
         result = PaperSkillResult(
             name="writing_feedback_rewrite",

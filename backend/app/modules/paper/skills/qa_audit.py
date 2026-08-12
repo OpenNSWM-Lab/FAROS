@@ -1,3 +1,9 @@
+"""Legacy QA aggregation.
+
+The active pipeline uses LaTeX compile status plus SimpleReviewAgent. This
+compatibility skill only summarizes diagnostics when called directly.
+"""
+
 from .base import PaperSkillContext, PaperSkillResult
 from .utils import write_artifact
 
@@ -28,6 +34,8 @@ def run(ctx: PaperSkillContext) -> PaperSkillResult:
         ctx.paper_id,
         STEP_ID,
         {
+            "mode": "legacy_diagnostic_only",
+            "blocking": False,
             "paper_brief": paper_brief,
             "legacy_outline_issues": outline_issues,
             "evidence_usage": evidence_usage,
