@@ -19,7 +19,7 @@ const STAGES: { id: Stage; label: string; description: string }[] = [
 ]
 
 const PAPER_TYPE_OPTIONS = ['algorithm', 'application', 'survey', 'benchmark', 'system', 'security', 'position']
-const VENUE_OPTIONS = ['icml', 'neurips', 'iclr', 'acl', 'generic', 'challenge_cup']
+const TEMPLATE_FALLBACK_OPTIONS = ['icml', 'neurips', 'iclr', 'acl', 'generic', 'challenge_cup']
 
 interface TemplateInfo {
   id: string
@@ -126,6 +126,8 @@ interface FeedbackRound {
   source: 'latex_compile' | 'simple_review' | 'writing_rewrite'
   rawSource?: string
   artifactPath: string
+  artifactId?: string
+  loopRound?: number
   iteration?: number
   issues: FeedbackIssue[]
   targets: FeedbackTarget[]
@@ -204,7 +206,6 @@ export function PaperWritingWorkspace() {
   const [savingBrief, setSavingBrief] = useState(false)
   const [generatingBrief, setGeneratingBrief] = useState(false)
   const [generatingPaper, setGeneratingPaper] = useState(false)
-  const [selectedTemplate, setSelectedTemplate] = useState('')
   const [contextProjectId, setContextProjectId] = useState('')
   const [contextRunIds, setContextRunIds] = useState<string[]>([])
   const [contextExperimentIds, setContextExperimentIds] = useState<string[]>([])
@@ -215,7 +216,7 @@ export function PaperWritingWorkspace() {
   const [loading, setLoading] = useState(true)
   const [draftTitle, setDraftTitle] = useState('')
   const [draftPaperType, setDraftPaperType] = useState('algorithm')
-  const [draftVenue, setDraftVenue] = useState('generic')
+  const [selectedTemplate, setSelectedTemplate] = useState('generic')
   const [draftProvider, setDraftProvider] = useState('')
   const [draftModel, setDraftModel] = useState('')
 
@@ -226,10 +227,10 @@ export function PaperWritingWorkspace() {
     const data = await resp.json()
     setPaper(data)
     setBriefUserEdits(data.briefUserEdits || '')
-    setSelectedTemplate(data.templateId || data.targetVenue || '')
     setDraftTitle(data.title || '')
     setDraftPaperType(data.paperType || 'algorithm')
-    setDraftVenue(data.targetVenue || 'generic')
+    const templateId = data.templateId || data.targetVenue || 'generic'
+    setSelectedTemplate(templateId)
     setDraftProvider(data.providerName || '')
     setDraftModel(data.model || '')
     setContextProjectId(data.projectId || '')
@@ -263,7 +264,8 @@ export function PaperWritingWorkspace() {
     const artifactFiles = entries
       .filter(file => !file.isDir && file.path.startsWith('artifacts/') && file.path.endsWith('.json'))
       .filter(file => (
-        file.path.includes('latex_compile_agent')
+        file.path.startsWith('artifacts/feedback/')
+        || file.path.includes('latex_compile_agent')
         || file.path.includes('simple_review')
         || file.path.includes('feedback_rewrite')
       ))
@@ -279,12 +281,46 @@ export function PaperWritingWorkspace() {
       } catch {
         continue
       }
-      const reviews = Array.isArray(parsed.reviews) ? parsed.reviews as Record<string, unknown>[] : []
+      const artifactMeta = parsed._artifact as Record<string, unknown> | undefined
+      const artifactId = typeof artifactMeta?.id === 'string' ? artifactMeta.id : ''
+      const artifactRound = Number(artifact.path.match(/artifacts\/feedback\/round_(\d+)\//)?.[1]) || Number(parsed.round) || undefined
+      const feedbackSource = artifactId.includes('latex_compile')
+        || artifactId.includes('review_compile')
+        || artifact.path.includes('/compile')
+        || artifact.path.includes('latex_compile_agent')
+        || artifact.path.includes('simple_review_compile_agent')
+        ? 'latex_compile'
+        : artifactId.includes('simple_review')
+        || artifact.path.includes('/review')
+        || artifact.path.includes('simple_review')
+          ? 'simple_review'
+          : 'latex_compile'
+      const reviews = Array.isArray(parsed.reviews)
+        ? parsed.reviews as Record<string, unknown>[]
+        : (Array.isArray(parsed.issues) || Array.isArray(parsed.targets) || typeof parsed.passed === 'boolean')
+          ? [parsed]
+          : []
+      if (reviews.length === 0 && (artifact.path.endsWith('/compile.json') || artifact.path.endsWith('/review.json'))) {
+        rounds.push({
+          source: feedbackSource,
+          rawSource: typeof parsed.source === 'string' ? parsed.source : undefined,
+          artifactPath: artifact.path,
+          artifactId,
+          loopRound: artifactRound,
+          iteration: artifactRound,
+          issues: [],
+          targets: [],
+          rewrites: [],
+          summary: `${artifact.path} round ${artifactRound || ''}`,
+        })
+      }
       for (const review of reviews) {
         rounds.push({
-          source: artifact.path.includes('simple_review') ? 'simple_review' : 'latex_compile',
+          source: feedbackSource,
           rawSource: typeof review.source === 'string' ? review.source : undefined,
           artifactPath: artifact.path,
+          artifactId,
+          loopRound: artifactRound,
           iteration: Number(review.iteration) || undefined,
           issues: Array.isArray(review.issues) ? review.issues as FeedbackIssue[] : [],
           targets: Array.isArray(review.targets) ? review.targets as FeedbackTarget[] : [],
@@ -297,6 +333,8 @@ export function PaperWritingWorkspace() {
         rounds.push({
           source: 'writing_rewrite',
           artifactPath: artifact.path,
+          artifactId,
+          loopRound: artifactRound,
           issues: [],
           targets: [],
           rewrites,
@@ -365,32 +403,23 @@ export function PaperWritingWorkspace() {
     if (!paper) return
     setSavingMetadata(true)
     try {
+      const templateVenue = selectedTemplate || paper.templateId || paper.targetVenue || 'generic'
       const resp = await fetch(`${API_BASE}/api/v1/papers/${paper.id}/metadata`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           title: draftTitle,
           paperType: draftPaperType,
-          targetVenue: draftVenue,
+          targetVenue: templateVenue,
           providerName: draftProvider || undefined,
           model: draftModel || undefined,
-          templateId: selectedTemplate || undefined,
+          templateId: templateVenue,
         }),
       })
       if (resp.ok) await refreshPaper()
     } finally {
       setSavingMetadata(false)
     }
-  }
-
-  const applyTemplate = async () => {
-    if (!paper || !selectedTemplate) return
-    await fetch(`${API_BASE}/api/v1/templates/apply`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ paperId: paper.id, templateId: selectedTemplate, title: draftTitle || paper.title }),
-    })
-    await loadAll()
   }
 
   const saveBrief = async () => {
@@ -455,10 +484,6 @@ export function PaperWritingWorkspace() {
       return (
         <StartStage
           paper={paper}
-          templates={templates}
-          selectedTemplate={selectedTemplate}
-          setSelectedTemplate={setSelectedTemplate}
-          applyTemplate={applyTemplate}
           projects={projects}
           runs={runs}
           experiments={experiments}
@@ -474,12 +499,16 @@ export function PaperWritingWorkspace() {
           saveContext={saveContext}
           savingContext={savingContext}
           goBrief={() => setStage('brief')}
+          templates={templates}
           draftTitle={draftTitle}
           setDraftTitle={setDraftTitle}
           draftPaperType={draftPaperType}
           setDraftPaperType={setDraftPaperType}
-          draftVenue={draftVenue}
-          setDraftVenue={setDraftVenue}
+          selectedTemplate={selectedTemplate}
+          setSelectedTemplate={(value) => {
+            const templateId = value || 'generic'
+            setSelectedTemplate(templateId)
+          }}
           draftProvider={draftProvider}
           setDraftProvider={(value) => {
             setDraftProvider(value)
@@ -585,10 +614,6 @@ function toggleList(current: string[], value: string) {
 
 function StartStage(props: {
   paper: PaperRecord
-  templates: TemplateInfo[]
-  selectedTemplate: string
-  setSelectedTemplate: (value: string) => void
-  applyTemplate: () => void
   projects: CodeProject[]
   runs: RunRecord[]
   experiments: Experiment[]
@@ -604,12 +629,13 @@ function StartStage(props: {
   saveContext: () => void
   savingContext: boolean
   goBrief: () => void
+  templates: TemplateInfo[]
   draftTitle: string
   setDraftTitle: (value: string) => void
   draftPaperType: string
   setDraftPaperType: (value: string) => void
-  draftVenue: string
-  setDraftVenue: (value: string) => void
+  selectedTemplate: string
+  setSelectedTemplate: (value: string) => void
   draftProvider: string
   setDraftProvider: (value: string) => void
   draftModel: string
@@ -619,11 +645,14 @@ function StartStage(props: {
 }) {
   const evidence = props.paper.evidenceJson
   const modelOptions = getModelsByProvider(props.draftProvider)
+  const templateOptions = props.templates.length
+    ? props.templates.map(template => ({ value: template.id, label: template.name || template.id }))
+    : TEMPLATE_FALLBACK_OPTIONS.map(templateId => ({ value: templateId, label: templateId }))
   return (
     <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
       <Card className="xl:col-span-1">
         <CardHeader className="pb-3">
-          <CardTitle className="text-base">Paper and Template</CardTitle>
+          <CardTitle className="text-base">Paper & Template</CardTitle>
         </CardHeader>
         <CardContent className="space-y-3 text-sm">
           <div className="space-y-1">
@@ -643,11 +672,11 @@ function StartStage(props: {
             emptyLabel="Select type"
           />
           <SelectBlock
-            label="Venue"
-            value={props.draftVenue}
-            onChange={props.setDraftVenue}
-            options={VENUE_OPTIONS.map(venue => ({ value: venue, label: venue }))}
-            emptyLabel="Select venue"
+            label="Template"
+            value={props.selectedTemplate}
+            onChange={props.setSelectedTemplate}
+            options={templateOptions}
+            emptyLabel="Select template"
           />
           <SelectBlock
             label="Provider"
@@ -663,16 +692,6 @@ function StartStage(props: {
             options={modelOptions.map(model => ({ value: model.id, label: model.id }))}
             emptyLabel="Select model"
           />
-          <div className="space-y-1">
-            <label className="text-xs font-medium text-slate-600">Template</label>
-            <div className="flex gap-2">
-              <select className="min-w-0 flex-1 rounded-md border bg-white px-2 py-2 text-sm" value={props.selectedTemplate} onChange={event => props.setSelectedTemplate(event.target.value)}>
-                <option value="">No template</option>
-                {props.templates.map(template => <option key={template.id} value={template.id}>{template.name}</option>)}
-              </select>
-              <Button size="sm" variant="outline" onClick={props.applyTemplate}>Apply files</Button>
-            </div>
-          </div>
           <Button size="sm" variant="outline" className="w-full" onClick={props.saveMetadata} disabled={props.savingMetadata || !props.draftTitle.trim()}>
             {props.savingMetadata ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <Save className="mr-1 h-4 w-4" />}
             Save paper settings
@@ -1112,8 +1131,8 @@ function parseStepEvents(logs: PaperLog[]): StepEvent[] {
 function sortedFeedbackRounds(feedbackRounds: FeedbackRound[]): FeedbackRound[] {
   return [...feedbackRounds].sort((a, b) => {
     const sourceOrder = (round: FeedbackRound) => {
-      if (round.artifactPath.includes('09_latex_compile_agent')) return 0
-      if (round.artifactPath.includes('10_simple_review_compile_agent')) return 1
+      if (round.artifactId === '09_latex_compile_agent' || round.artifactPath.endsWith('/compile.json') || round.artifactPath.includes('09_latex_compile_agent')) return 0
+      if (round.artifactId === '10_simple_review_compile_agent' || round.artifactPath.endsWith('/review_compile.json') || round.artifactPath.includes('10_simple_review_compile_agent')) return 1
       if (round.source === 'simple_review') return 2
       return 3
     }
@@ -1144,29 +1163,41 @@ function buildFeedbackLoopRounds(feedbackRounds: FeedbackRound[], logs: PaperLog
     if (compileResult) {
       const status = compileResult[1].trim()
       const duration = compileResult[2]
+      const feedback = compileQueue.find(item => !used.has(item) && item.loopRound === currentRound)
+        || compileQueue.find(item => !used.has(item) && !item.loopRound)
+        || compileQueue.find(item => !used.has(item))
+      if (feedback) used.add(feedback)
       pendingCompileItems.push({
         label: 'compile feedback',
         source: 'latex_compile',
-        status: status.startsWith('latexmk') ? 'success' : status.startsWith('failed') ? 'failed' : undefined,
-        detail: `compile ${status}${duration ? `, ${duration}` : ''}`,
+        status: feedback ? feedbackStatus(feedback) : status.startsWith('latexmk') ? 'success' : status.startsWith('failed') ? 'failed' : undefined,
+        feedback,
+        detail: feedback
+          ? feedbackEmptyMessage(feedback, 'latex_compile') || undefined
+          : status.startsWith('latexmk')
+          ? `No compile feedback; LaTeX passed${duration ? ` in ${duration}` : ''}.`
+          : `compile ${status}${duration ? `, ${duration}` : ''}`,
       })
       return
     }
 
     const compileFeedback = log.message.match(/^latex_compile_agent: requesting feedback round/)
     if (compileFeedback) {
-      const feedback = compileQueue.find(item => !used.has(item))
+      const feedback = compileQueue.find(item => !used.has(item) && item.loopRound === currentRound)
+        || compileQueue.find(item => !used.has(item))
       if (feedback) used.add(feedback)
       const lastCompile = pendingCompileItems[pendingCompileItems.length - 1]
       if (lastCompile && !lastCompile.feedback) {
         lastCompile.feedback = feedback
-        lastCompile.status = feedback && feedbackHasBlockingOrMajor(feedback) ? 'issues' : lastCompile.status
+        lastCompile.status = feedback ? feedbackStatus(feedback) : lastCompile.status
+        lastCompile.detail = feedback ? feedbackEmptyMessage(feedback, 'latex_compile') : lastCompile.detail
       } else {
         pendingCompileItems.push({
           label: 'compile feedback',
           source: 'latex_compile',
-          status: feedback && feedbackHasBlockingOrMajor(feedback) ? 'issues' : undefined,
+          status: feedback ? feedbackStatus(feedback) : undefined,
           feedback,
+          detail: feedback ? feedbackEmptyMessage(feedback, 'latex_compile') : undefined,
         })
       }
       return
@@ -1186,6 +1217,7 @@ function buildFeedbackLoopRounds(feedbackRounds: FeedbackRound[], logs: PaperLog
         source: 'simple_review',
         status: feedback ? feedbackStatus(feedback) : undefined,
         feedback,
+        detail: feedback ? feedbackEmptyMessage(feedback, 'simple_review') : undefined,
       })
       currentRound = round + 1
     }
@@ -1194,8 +1226,10 @@ function buildFeedbackLoopRounds(feedbackRounds: FeedbackRound[], logs: PaperLog
   feedbackItems.forEach(item => {
     if (used.has(item)) return
     const round = item.source === 'simple_review'
-      ? item.iteration || currentRound
-      : item.artifactPath.includes('09_latex_compile_agent')
+      ? item.loopRound || item.iteration || currentRound
+      : item.loopRound
+        ? item.loopRound
+        : item.artifactId === '09_latex_compile_agent' || item.artifactPath.endsWith('/compile.json') || item.artifactPath.includes('09_latex_compile_agent')
         ? 1
         : Math.max(1, currentRound)
     getLoopRound(groups, round).items.push({
@@ -1212,7 +1246,17 @@ function buildFeedbackLoopRounds(feedbackRounds: FeedbackRound[], logs: PaperLog
 
   return [...groups.values()]
     .filter(group => group.items.length > 0)
+    .map(group => ({ ...group, items: sortFeedbackLoopItems(group.items) }))
     .sort((a, b) => a.round - b.round)
+}
+
+function sortFeedbackLoopItems(items: FeedbackLoopItem[]): FeedbackLoopItem[] {
+  const itemOrder = (item: FeedbackLoopItem) => {
+    if (item.source === 'latex_compile') return 0
+    if (item.source === 'simple_review') return 1
+    return 2
+  }
+  return [...items].sort((a, b) => itemOrder(a) - itemOrder(b))
 }
 
 function summarizeFeedbackLoopRound(round: FeedbackLoopRound): string {
@@ -1225,6 +1269,13 @@ function feedbackHasBlockingOrMajor(feedback: FeedbackRound): boolean {
 
 function feedbackStatus(feedback: FeedbackRound): 'success' | 'issues' {
   return feedbackHasBlockingOrMajor(feedback) ? 'issues' : 'success'
+}
+
+function feedbackEmptyMessage(feedback: FeedbackRound, source: 'latex_compile' | 'simple_review'): string {
+  if (feedback.issues.length > 0 || feedback.targets.length > 0) return ''
+  return source === 'latex_compile'
+    ? 'No compile feedback; LaTeX passed or no writing-side repair target was needed.'
+    : 'No review feedback; no presentation, format, figure, table, or artifact-usage revision was requested.'
 }
 
 function statusBadgeClass(status?: FeedbackLoopItem['status']) {
@@ -1253,9 +1304,13 @@ function FeedbackLoopItemView({ item, index }: { item: FeedbackLoopItem; index: 
           <FeedbackList title="Writing targets" items={feedback.targets.map(target => `${target.path || ''}: ${target.instruction || ''}`)} />
         </div>
       ) : item.detail ? (
-        <div className="mt-2 text-xs text-slate-500">{item.detail}. No repair feedback was needed.</div>
+        <div className="mt-2 text-xs text-slate-500">{item.detail}</div>
       ) : (
-        <div className="mt-2 text-xs text-slate-500">Feedback was recorded in the loop log; no artifact detail is available.</div>
+        <div className="mt-2 text-xs text-slate-500">
+          {item.source === 'latex_compile'
+            ? 'No compile feedback; LaTeX passed or no writing-side repair target was needed.'
+            : 'No review feedback is available yet; no modification request was recorded for this step.'}
+        </div>
       )}
     </details>
   )
@@ -1299,7 +1354,7 @@ function buildAgentTransfers(feedbackRounds: FeedbackRound[], paper: PaperRecord
       transfers.push({
         from: 'Writing Agent',
         to: 'LaTeX Compile Agent',
-        label: round.artifactPath.includes('simple_review')
+        label: round.artifactId === 'feedback_rewrite_simple_review' || round.artifactPath.includes('rewrite_review') || round.artifactPath.includes('simple_review')
           ? 'Review-driven rewrite; return to compile step'
           : 'Compile-driven rewrite; return to compile step',
         kind: 'rewrite_result',

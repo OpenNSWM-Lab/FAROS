@@ -1,7 +1,9 @@
 """
 Paper orchestrator using skill-based pipeline.
 
-Each skill emits intermediate artifacts under: artifacts/<step>.{json,md}
+Paper artifacts are JSON-only records under artifacts/ with stable names:
+evidence.json, brief.json, outline.json, code_artifacts.json, assembly.json,
+and feedback/*.json.
 """
 
 import logging
@@ -19,7 +21,7 @@ from app.modules.paper.skills.evidence_collect import run as evidence_collect_sk
 from app.modules.paper.skills.outline import build_outline
 from app.modules.paper.skills.paper_brief import build_brief
 from app.modules.paper.skills.section_rewrite import rewrite_section
-from app.modules.paper.skills.utils import ensure_artifacts_dir
+from app.modules.paper.skills.utils import ensure_artifacts_dir, reset_artifacts_dir
 
 logger = logging.getLogger(__name__)
 
@@ -68,8 +70,6 @@ def _run_skill(
     result = skill(ctx)
     _apply_result_data(ctx, result)
     add_log(paper_id, f"{result.name}: {result.summary}")
-    if result.artifacts:
-        add_log(paper_id, f"Artifacts: {', '.join(result.artifacts)}")
     return result
 
 
@@ -182,6 +182,7 @@ def generate_paper(paper_id: str) -> Dict[str, Any]:
 
     update_paper(paper_id, {"status": "generating"})
     step_log = []
+    reset_artifacts_dir(paper_id)
 
     def _log(msg: str) -> None:
         add_log(paper_id, msg)

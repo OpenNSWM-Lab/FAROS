@@ -39,12 +39,49 @@ def ensure_artifacts_dir(paper_id: str) -> str:
     return artifacts_dir
 
 
-def write_artifact(paper_id: str, step_id: str, data: Dict[str, Any], summary_lines: List[str]) -> List[str]:
-    json_path = f"artifacts/{step_id}.json"
-    md_path = f"artifacts/{step_id}.md"
-    write_paper_file(paper_id, json_path, json.dumps(data, ensure_ascii=False, indent=2))
-    write_paper_file(paper_id, md_path, "\n".join(summary_lines) + "\n")
-    return [json_path, md_path]
+def reset_artifacts_dir(paper_id: str) -> str:
+    artifacts_dir = ensure_artifacts_dir(paper_id)
+    for name in os.listdir(artifacts_dir):
+        path = os.path.join(artifacts_dir, name)
+        if os.path.isdir(path):
+            shutil.rmtree(path)
+        else:
+            os.remove(path)
+    return artifacts_dir
+
+
+ARTIFACT_PATHS = {
+    "00_plan_evidence": "artifacts/evidence.json",
+    "02_code_artifacts": "artifacts/code_artifacts.json",
+    "02_paper_brief": "artifacts/brief.json",
+    "03_outline": "artifacts/outline.json",
+    "08_assemble_latex": "artifacts/assembly.json",
+    "09_latex_compile_agent": "artifacts/feedback/round_01/compile.json",
+    "10_simple_review_compile_agent": "artifacts/feedback/round_01/compile.json",
+    "10_simple_review_loop": "artifacts/feedback/round_01/review.json",
+    "feedback_rewrite_latex_compile": "artifacts/feedback/round_01/rewrite_compile.json",
+    "feedback_rewrite_simple_review": "artifacts/feedback/round_01/rewrite_review.json",
+}
+
+
+def write_artifact(
+    paper_id: str,
+    step_id: str,
+    data: Dict[str, Any],
+    summary_lines: List[str],
+    artifact_path: str | None = None,
+) -> List[str]:
+    json_path = artifact_path or ARTIFACT_PATHS.get(step_id, f"artifacts/{step_id}.json")
+    payload = {
+        "_artifact": {
+            "id": step_id,
+            "path": json_path,
+            "summaryLines": summary_lines,
+        },
+        **data,
+    }
+    write_paper_file(paper_id, json_path, json.dumps(payload, ensure_ascii=False, indent=2))
+    return [json_path]
 
 
 def _extract_json(text: str) -> Optional[Dict[str, Any]]:
@@ -287,6 +324,19 @@ def collect_context(paper: Dict[str, Any]) -> Dict[str, str]:
                 repo = code_evidence.get("repo") if isinstance(code_evidence.get("repo"), dict) else {}
                 if repo.get("readme") and ctx["project_summary"] == "N/A":
                     ctx["project_summary"] = str(repo.get("readme"))[:2000]
+                def artifact_ref(artifact: Dict[str, Any]) -> Dict[str, Any]:
+                    return {
+                        "id": artifact.get("id"),
+                        "label": artifact.get("label") or artifact.get("tableId") or artifact.get("figureId"),
+                        "name": artifact.get("name"),
+                        "filename": artifact.get("filename"),
+                        "path": artifact.get("path"),
+                        "cartRelativePath": artifact.get("cartRelativePath"),
+                        "sourcePath": artifact.get("sourcePath"),
+                        "nodeId": artifact.get("nodeId"),
+                        "kind": artifact.get("kind"),
+                    }
+
                 metrics_sources = {
                     "repoMetrics": repo.get("metrics"),
                     "runMetrics": [
@@ -318,8 +368,16 @@ def collect_context(paper: Dict[str, Any]) -> Dict[str, str]:
                                     "baseline": node.get("baseline"),
                                     "figuresAndTables": node.get("figuresAndTables"),
                                     "resultAnalysis": node.get("resultAnalysis"),
-                                    "codeTables": node.get("codeTables"),
-                                    "artifacts": node.get("artifacts"),
+                                    "codeTables": [
+                                        artifact_ref(table)
+                                        for table in node.get("codeTables", [])
+                                        if isinstance(table, dict)
+                                    ],
+                                    "artifacts": [
+                                        artifact_ref(artifact)
+                                        for artifact in node.get("artifacts", [])
+                                        if isinstance(artifact, dict)
+                                    ],
                                 }
                                 for node in cart.get("nodeResults", [])
                                 if isinstance(node, dict)
@@ -368,7 +426,7 @@ def collect_context(paper: Dict[str, Any]) -> Dict[str, str]:
                 if code_figures and ctx["figures_summary"] == "N/A":
                     ctx["figures_summary"] = json.dumps(code_figures, ensure_ascii=False, default=str)[:3000]
                 code_tables = [
-                    table
+                    artifact_ref(table)
                     for cart in code_evidence.get("cartResults", [])
                     if isinstance(cart, dict)
                     for table in cart.get("codeTables", [])

@@ -34,7 +34,10 @@ Return strict JSON:
   "paper_angle": "system | algorithm | benchmark | survey | application | security | position",
   "target_audience": "...",
   "contributions": ["...", "...", "..."],
-  "must_use_evidence": ["metric or run evidence that must be discussed"],
+  "must_use_evidence": [
+    "metric or run evidence that must be discussed",
+    {{"kind": "code_table|code_figure", "label": "...", "file": "...", "location": "...", "target_section": "Experiments", "analysis": "what the artifact supports, without copying table/body content"}}
+  ],
   "must_use_figures": [
     {{"label": "fig:...", "path": "figures/...", "caption": "...", "target_section": "Experiments"}}
   ],
@@ -90,6 +93,43 @@ def _parse_plan_evidence(context: Dict[str, str]) -> Dict[str, Any]:
     return parsed if isinstance(parsed, dict) and parsed.get("status") == "collected" else {}
 
 
+def _artifact_reference(kind: str, node_id: str, artifact: Dict[str, Any], analysis: str = "") -> Dict[str, Any]:
+    label = (
+        artifact.get("label")
+        or artifact.get("tableId")
+        or artifact.get("figureId")
+        or artifact.get("id")
+        or artifact.get("name")
+        or artifact.get("path")
+        or "code-artifact"
+    )
+    file_name = artifact.get("name") or artifact.get("filename") or artifact.get("path") or artifact.get("cartRelativePath")
+    location = artifact.get("cartRelativePath") or artifact.get("sourcePath") or artifact.get("path") or artifact.get("location")
+    target_section = artifact.get("targetSection") or artifact.get("target_section") or "Experiments"
+    return {
+        "kind": kind,
+        "label": str(label),
+        "file": str(file_name or ""),
+        "location": str(location or ""),
+        "node_id": str(artifact.get("nodeId") or node_id or ""),
+        "target_section": str(target_section),
+        "analysis": str(analysis or artifact.get("analysis") or artifact.get("caption") or "Discuss the artifact only as supporting evidence; do not copy its raw table or chart body into the brief."),
+        "instruction": "Reference this code artifact by label/file/location and use its analysis to guide local writing; do not paste raw table rows, chart data, or artifact body content into the brief.",
+    }
+
+
+def _dedupe_requirement_items(items: list[Any]) -> list[Any]:
+    deduped: list[Any] = []
+    seen: set[str] = set()
+    for item in items:
+        key = json.dumps(item, ensure_ascii=False, sort_keys=True, default=str) if isinstance(item, dict) else str(item)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped
+
+
 def _code_brief_requirements(context: Dict[str, str], code_evidence_obj: Any = None) -> Dict[str, list[Any]]:
     requirements: Dict[str, list[Any]] = {
         "must_use_evidence": [],
@@ -128,11 +168,28 @@ def _code_brief_requirements(context: Dict[str, str], code_evidence_obj: Any = N
                 requirements["must_use_evidence"].append(
                     f"Use code result analysis from {node_id}: {str(node.get('resultAnalysis'))[:500]}"
                 )
+            analysis = str(node.get("resultAnalysis") or "")
             for table in node.get("codeTables", [])[:3] if isinstance(node.get("codeTables"), list) else []:
                 if isinstance(table, dict):
                     requirements["must_use_evidence"].append(
-                        f"Use code table artifact {table.get('path') or table.get('name')} from {node_id}: {str(table.get('preview') or '')[:500]}"
+                        _artifact_reference("code_table", str(node_id), table, analysis)
                     )
+            for figure in node.get("codeFigures", [])[:3] if isinstance(node.get("codeFigures"), list) else []:
+                if isinstance(figure, dict):
+                    requirements["must_use_evidence"].append(
+                        _artifact_reference("code_figure", str(node_id), figure, analysis)
+                    )
+        cart_analysis = str(cart.get("resultAnalysis") or cart.get("analysis") or "")
+        for figure in cart.get("codeFigures", [])[:5] if isinstance(cart.get("codeFigures"), list) else []:
+            if isinstance(figure, dict):
+                requirements["must_use_evidence"].append(
+                    _artifact_reference("code_figure", str(figure.get("nodeId") or ""), figure, cart_analysis)
+                )
+        for table in cart.get("codeTables", [])[:5] if isinstance(cart.get("codeTables"), list) else []:
+            if isinstance(table, dict):
+                requirements["must_use_evidence"].append(
+                    _artifact_reference("code_table", str(table.get("nodeId") or ""), table, cart_analysis)
+                )
     for fig in _figures_from_summary(context.get("figures_summary", "N/A"))[:8]:
         if fig.get("path"):
             requirements["must_use_figures"].append(fig)
@@ -308,10 +365,12 @@ def _normalize_brief(brief: Dict[str, Any], ctx: PaperSkillContext, brief_user_e
     brief.setdefault("avoid_claims", [])
     if context:
         code_requirements = _code_brief_requirements(context, ctx.get("code_evidence"))
-        brief["must_use_evidence"] = list(dict.fromkeys(
-            [str(item) for item in brief.get("must_use_evidence", [])]
-            + [str(item) for item in code_requirements["must_use_evidence"]]
-        ))
+        existing_evidence = brief.get("must_use_evidence", [])
+        if not isinstance(existing_evidence, list):
+            existing_evidence = []
+        brief["must_use_evidence"] = _dedupe_requirement_items(
+            existing_evidence + code_requirements["must_use_evidence"]
+        )
         existing_figures = brief.get("must_use_figures", [])
         if not isinstance(existing_figures, list):
             existing_figures = []

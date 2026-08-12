@@ -49,14 +49,9 @@ TABLE_TEMPLATE = """- MUST include at least {n} tables using:
 \\end{{table}}
 Tables must be grounded in linked metrics where available; do not invent unsupported benchmark numbers."""
 
-FIGURE_TEMPLATE = """- MUST reference figures using:
-\\begin{figure}[t]
-\\centering
-\\includegraphics[width=\\linewidth]{figures/fig_name.pdf}
-\\caption{Figure caption}
-\\label{fig:name}
-\\end{figure}
-Reference each figure in the text. If figures list concrete paths, labels, or captions, use those exact values instead of inventing filenames."""
+FIGURE_TEMPLATE = """- MUST reference only the concrete figures listed in Section-selected figures or Available paper figures.
+- Use the exact listed path, label, and caption.
+- Do not invent figure filenames, labels, captions, or placeholder figures."""
 
 
 COMMON_SECTION_INSTRUCTIONS = """Global requirements:
@@ -201,12 +196,9 @@ def build_artifact_requirements(
     eq_req = EQUATION_TEMPLATE.format(n=max(n_eq, 2)) if section.get("hasEquations") else ""
     n_tab = 2 if section.get("hasTables") else 0
     table_req = TABLE_TEMPLATE.format(n=n_tab) if n_tab > 0 else ""
-    fig_descs = section.get("figureDescriptions", [])
     section_lower = section_title.lower()
     figures_needed = (
         bool(section_figures)
-        or section.get("hasFigures")
-        or fig_descs
         or (
             figures_summary != "N/A"
             and figures_for_prompt

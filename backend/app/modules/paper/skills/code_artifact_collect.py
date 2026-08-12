@@ -37,7 +37,11 @@ def _dedupe_table_entries(entries: list[dict]) -> list[dict]:
         if key in seen:
             continue
         seen.add(key)
-        deduped.append(entry)
+        deduped.append({
+            key_name: value
+            for key_name, value in entry.items()
+            if key_name not in {"preview", "content", "rows", "data"}
+        })
     return deduped
 
 

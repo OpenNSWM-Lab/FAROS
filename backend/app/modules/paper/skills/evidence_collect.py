@@ -32,20 +32,6 @@ def run(ctx: PaperSkillContext) -> PaperSkillResult:
         f"validation_stages: {len(evidence.get('validationPlan', []))}",
     ]
     artifacts = write_artifact(ctx.paper_id, STEP_ID, evidence, summary_lines)
-    artifacts.extend(write_artifact(
-        ctx.paper_id,
-        "00_code_evidence",
-        code_evidence,
-        [
-            "# Code Evidence",
-            f"status: {code_evidence.get('status', 'missing')}",
-            f"project: {code_evidence.get('projectId') or 'N/A'}",
-            f"cart_results: {len(code_evidence.get('cartResults', []))}",
-            f"runs: {len(code_evidence.get('runs', []))}",
-            f"experiments: {len(code_evidence.get('experiments', []))}",
-            f"warnings: {len(code_evidence.get('warnings', []))}",
-        ],
-    ))
     updated = update_paper(ctx.paper_id, {
         "evidenceJson": evidence,
         "evidenceStatus": status,

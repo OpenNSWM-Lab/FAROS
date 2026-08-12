@@ -1,7 +1,6 @@
 import json
 import os
 import re
-from datetime import UTC, datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.llm.provider_client import ChatMessage
@@ -298,35 +297,12 @@ def rewrite_section(
     if protection_errors:
         raise ValueError("; ".join(protection_errors))
 
-    timestamp = datetime.now(UTC).strftime("%Y%m%d%H%M%S")
-    artifact_prefix = f"artifacts/section_rewrites/{safe_section_id}_{timestamp}"
-    before_path = f"{artifact_prefix}.before.tex"
-    after_path = f"{artifact_prefix}.after.tex"
-    meta_path = f"{artifact_prefix}.json"
-    write_paper_file(ctx.paper_id, before_path, current_content)
-    write_paper_file(ctx.paper_id, after_path, rewritten)
-    write_paper_file(ctx.paper_id, meta_path, json.dumps({
-        "paperId": ctx.paper_id,
-        "sectionId": safe_section_id,
-        "sectionPath": section_path,
-        "mode": mode,
-        "instruction": instruction,
-        "preserveCitations": preserve_citations,
-        "preserveFigures": preserve_figures,
-        "targetLength": effective_target_length,
-        "beforeWordCount": _word_count(current_content),
-        "afterWordCount": _word_count(rewritten),
-        "figureRewrites": figure_rewrites,
-        "citationRewrites": citation_rewrites,
-        "warnings": warnings,
-    }, ensure_ascii=False, indent=2))
-
     write_paper_file(ctx.paper_id, section_path, rewritten)
 
     return PaperSkillResult(
         name=STEP_ID,
         summary=f"rewrote {section_path}",
-        artifacts=[before_path, after_path, meta_path],
+        artifacts=[],
         warnings=warnings,
         data={
             "sectionId": safe_section_id,
@@ -334,7 +310,8 @@ def rewrite_section(
             "content": rewritten,
             "beforeWordCount": _word_count(current_content),
             "afterWordCount": _word_count(rewritten),
+            "figureRewrites": figure_rewrites,
+            "citationRewrites": citation_rewrites,
             "warnings": warnings,
-            "artifacts": [before_path, after_path, meta_path],
         },
     )

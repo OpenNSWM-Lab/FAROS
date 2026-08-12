@@ -3,7 +3,6 @@ from __future__ import annotations
 import time
 from typing import Any, Callable
 
-from app.modules.paper.storage import add_log
 from app.modules.paper.skills.base import PaperSkillContext, PaperSkillResult
 
 
@@ -29,8 +28,6 @@ class PaperAgent:
             self.log(f"{self.name}/{result.name}: {result.summary} ({elapsed:.1f}s)")
         else:
             self.log(f"{self.name}/{result.name}: completed ({elapsed:.1f}s)")
-        if result.artifacts:
-            add_log(self.paper_id, f"Artifacts: {', '.join(result.artifacts)}")
         return result
 
     @staticmethod
