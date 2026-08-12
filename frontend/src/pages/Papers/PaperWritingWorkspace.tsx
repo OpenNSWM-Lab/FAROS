@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link, Navigate, useNavigate, useParams } from 'react-router-dom'
-import { ArrowLeft, BookOpen, CheckCircle, Code2, Download, Eye, FileText, GitBranch, Loader2, Network, RefreshCw, Save, ScrollText } from 'lucide-react'
+import { ArrowLeft, ArrowRight, BookOpen, Clock, Code2, Download, Eye, FileText, Loader2, Network, RefreshCw, Save, ScrollText } from 'lucide-react'
 import { AppPageLayout } from '@/components/layout/AppPageLayout'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -126,6 +126,22 @@ interface FeedbackRound {
   targets: FeedbackTarget[]
   rewrites: unknown[]
   summary: string
+}
+
+interface StepEvent {
+  time: string
+  owner: string
+  step: string
+  duration?: string
+}
+
+interface AgentTransfer {
+  from: string
+  to: string
+  label: string
+  kind: string
+  content: unknown
+  artifactPath?: string
 }
 
 const statusClass: Record<string, string> = {
@@ -671,6 +687,9 @@ function WritingStage(props: {
   generatingPaper: boolean
   goResult: () => void
 }) {
+  const stepEvents = parseStepEvents(props.logs)
+  const transfers = buildAgentTransfers(props.feedbackRounds, props.paper, props.logs)
+
   return (
     <div className="grid grid-cols-1 gap-4 xl:grid-cols-5">
       <Card className="xl:col-span-2">
@@ -679,13 +698,16 @@ function WritingStage(props: {
         </CardHeader>
         <CardContent>
           <div className="space-y-3">
-            <AgentNode icon={<FileText className="h-4 w-4" />} title="Writing Agent" desc="Drafts the paper and performs local section rewrites from feedback" active />
-            <FlowArrow label="LaTeX source" />
-            <AgentNode icon={<Code2 className="h-4 w-4" />} title="Latex Compile Agent" desc="Compiles and reports feedback only; it never edits" active={props.paper.compileStatus !== 'latexmk'} />
-            <FlowArrow label="compile feedback targets" reverse />
-            <AgentNode icon={<ScrollText className="h-4 w-4" />} title="Simple Review Agent" desc="Reviews formatting, conventions, figures, and submission readiness only" active={!props.paper.simpleReviewPassed} />
-            <FlowArrow label="review feedback targets" reverse />
-            <AgentNode icon={<CheckCircle className="h-4 w-4" />} title="Writing Agent" desc="The only agent allowed to modify paper text" active />
+            <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
+              <AgentNode icon={<FileText className="h-4 w-4" />} title="Writing Agent" desc="Drafts and performs all revisions" active />
+              <AgentNode icon={<Code2 className="h-4 w-4" />} title="LaTeX Compile Agent" desc="Compiles and reports feedback only" active={props.paper.compileStatus !== 'latexmk'} />
+              <AgentNode icon={<ScrollText className="h-4 w-4" />} title="Simple Review Agent" desc="Checks format and submission readiness" active={!props.paper.simpleReviewPassed} />
+            </div>
+            <div className="space-y-2 rounded-md border bg-slate-50 p-3">
+              {transfers.map((transfer, index) => (
+                <TransferRow key={`${transfer.from}-${transfer.to}-${index}`} transfer={transfer} index={index + 1} />
+              ))}
+            </div>
           </div>
           <div className="mt-4 flex flex-wrap gap-2">
             <Button onClick={props.generatePaper} disabled={props.generatingPaper}>
@@ -700,39 +722,53 @@ function WritingStage(props: {
 
       <Card className="xl:col-span-3">
         <CardHeader className="pb-3">
-          <CardTitle className="text-base">Revision Requests from Each Feedback Round</CardTitle>
+          <CardTitle className="text-base">Writing Steps, Timing, and Feedback</CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
+          <div className="rounded-md border bg-white p-3">
+            <div className="mb-2 flex items-center gap-2 text-xs font-medium text-slate-600">
+              <Clock className="h-4 w-4" /> Step timeline
+            </div>
+            {stepEvents.length === 0 ? (
+              <div className="text-sm text-slate-500">No step timing has been recorded yet.</div>
+            ) : (
+              <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+                {stepEvents.map((event, index) => (
+                  <div key={`${event.time}-${event.owner}-${event.step}-${index}`} className="flex items-center justify-between gap-3 rounded-md border bg-slate-50 px-3 py-2">
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-medium text-slate-800">{event.owner}/{event.step}</div>
+                      <div className="text-xs text-slate-500">{new Date(event.time).toLocaleTimeString()}</div>
+                    </div>
+                    <Badge variant="outline" className="shrink-0">{event.duration || 'running'}</Badge>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
           {props.feedbackRounds.length === 0 ? (
             <div className="rounded-md border border-dashed p-4 text-sm text-slate-500">No feedback artifacts yet.</div>
           ) : (
             props.feedbackRounds.map((round, index) => (
-              <div key={`${round.artifactPath}-${index}`} className="rounded-md border bg-white p-3">
-                <div className="flex flex-wrap items-center gap-2">
-                  <Badge variant="outline">{round.source}</Badge>
-                  {round.iteration && <Badge variant="outline">round {round.iteration}</Badge>}
-                  <span className="font-mono text-xs text-slate-500">{round.artifactPath}</span>
+              <details key={`${round.artifactPath}-${index}`} className="rounded-md border bg-white p-3">
+                <summary className="cursor-pointer">
+                  <div className="inline-flex flex-wrap items-center gap-2">
+                    <Badge variant="outline">{round.source}</Badge>
+                    {round.iteration && <Badge variant="outline">round {round.iteration}</Badge>}
+                    <span className="text-sm font-medium text-slate-800">{round.summary}</span>
+                    <span className="font-mono text-xs text-slate-500">{round.artifactPath}</span>
+                  </div>
+                </summary>
+                <div className="mt-3">
+                  <FeedbackList title="Issues" items={round.issues.map(issue => `${issue.severity || 'issue'} ${issue.path || ''}: ${issue.message || ''}`)} />
+                  <FeedbackList title="Writing targets" items={round.targets.map(target => `${target.path || ''}: ${target.instruction || ''}`)} />
+                  {round.rewrites.length > 0 && (
+                    <pre className="mt-2 max-h-36 overflow-auto rounded bg-slate-50 p-2 text-[11px] text-slate-700">{jsonPreview(round.rewrites, 900)}</pre>
+                  )}
                 </div>
-                <div className="mt-2 text-sm font-medium text-slate-800">{round.summary}</div>
-                <FeedbackList title="Issues" items={round.issues.map(issue => `${issue.severity || 'issue'} ${issue.path || ''}: ${issue.message || ''}`)} />
-                <FeedbackList title="Writing targets" items={round.targets.map(target => `${target.path || ''}: ${target.instruction || ''}`)} />
-                {round.rewrites.length > 0 && (
-                  <pre className="mt-2 max-h-36 overflow-auto rounded bg-slate-50 p-2 text-[11px] text-slate-700">{jsonPreview(round.rewrites, 900)}</pre>
-                )}
-              </div>
+              </details>
             ))
           )}
-          <div className="rounded-md border bg-slate-50 p-3">
-            <div className="mb-2 text-xs font-medium text-slate-600">Generation logs</div>
-            <div className="max-h-56 space-y-1 overflow-auto text-xs">
-              {props.logs.length === 0 ? <div className="text-slate-500">No logs</div> : props.logs.map((log, index) => (
-                <div key={`${log.timestamp}-${index}`} className="grid grid-cols-[84px_1fr] gap-2">
-                  <span className="text-slate-500">{new Date(log.timestamp).toLocaleTimeString()}</span>
-                  <span>{log.message}</span>
-                </div>
-              ))}
-            </div>
-          </div>
         </CardContent>
       </Card>
     </div>
@@ -893,15 +929,6 @@ function AgentNode({ icon, title, desc, active }: { icon: React.ReactNode; title
   )
 }
 
-function FlowArrow({ label, reverse = false }: { label: string; reverse?: boolean }) {
-  return (
-    <div className="flex items-center gap-2 px-3 text-xs text-slate-500">
-      <GitBranch className={`h-4 w-4 ${reverse ? 'rotate-180' : ''}`} />
-      <span>{label}</span>
-    </div>
-  )
-}
-
 function FeedbackList({ title, items }: { title: string; items: string[] }) {
   if (items.length === 0) return null
   return (
@@ -912,4 +939,161 @@ function FeedbackList({ title, items }: { title: string; items: string[] }) {
       </ul>
     </div>
   )
+}
+
+function parseStepEvents(logs: PaperLog[]): StepEvent[] {
+  const starts = new Map<string, PaperLog>()
+  const events: StepEvent[] = []
+  logs.forEach(log => {
+    const agentMatch = log.message.match(/^([^:]+): running skill ([A-Za-z0-9_]+)/)
+    if (agentMatch) {
+      starts.set(`${agentMatch[1]}/${agentMatch[2]}`, log)
+      return
+    }
+
+    const completionMatch = log.message.match(/^([^/]+)\/([^:]+):\s*(.*?)(?:\s+\(([\d.]+s)\))?$/)
+    if (completionMatch) {
+      events.push({
+        time: log.timestamp,
+        owner: completionMatch[1],
+        step: completionMatch[2],
+        duration: completionMatch[4],
+      })
+      starts.delete(`${completionMatch[1]}/${completionMatch[2]}`)
+      return
+    }
+
+    const legacyMatch = log.message.match(/^([A-Za-z0-9_]+):\s*(.*?)(?:\s+\(([\d.]+s)\))?$/)
+    if (legacyMatch && legacyMatch[3] && !log.message.startsWith('Artifacts:')) {
+      events.push({
+        time: log.timestamp,
+        owner: 'pipeline',
+        step: legacyMatch[1],
+        duration: legacyMatch[3],
+      })
+    }
+  })
+
+  starts.forEach((log, key) => {
+    const [owner, step] = key.split('/')
+    events.push({ time: log.timestamp, owner, step })
+  })
+
+  return events
+}
+
+function buildAgentTransfers(feedbackRounds: FeedbackRound[], paper: PaperRecord, logs: PaperLog[]): AgentTransfer[] {
+  const transfers: AgentTransfer[] = [
+    {
+      from: 'Writing Agent',
+      to: 'LaTeX Compile Agent',
+      label: 'TeX source files after writing',
+      kind: 'paper_ready_for_compile',
+      content: {
+        title: paper.title,
+        status: paper.status,
+        compileStatus: paper.compileStatus || 'not compiled',
+        recentSteps: parseStepEvents(logs).slice(-6),
+      },
+    },
+  ]
+
+  feedbackRounds.forEach(round => {
+    if (round.source === 'latex_compile') {
+      transfers.push({
+        from: 'LaTeX Compile Agent',
+        to: 'Writing Agent',
+        label: `Compile feedback${round.iteration ? ` round ${round.iteration}` : ''}`,
+        kind: 'compile_feedback',
+        artifactPath: round.artifactPath,
+        content: { issues: round.issues, targets: round.targets },
+      })
+    }
+    if (round.source === 'writing_rewrite') {
+      transfers.push({
+        from: 'Writing Agent',
+        to: 'LaTeX Compile Agent',
+        label: round.artifactPath.includes('simple_review')
+          ? 'Review-driven rewrite; return to compile step'
+          : 'Compile-driven rewrite; return to compile step',
+        kind: 'rewrite_result',
+        artifactPath: round.artifactPath,
+        content: round.rewrites,
+      })
+    }
+    if (round.source === 'simple_review') {
+      transfers.push({
+        from: 'Simple Review Agent',
+        to: 'Writing Agent',
+        label: `Simple review feedback${round.iteration ? ` round ${round.iteration}` : ''}`,
+        kind: 'simple_review_feedback',
+        artifactPath: round.artifactPath,
+        content: { issues: round.issues, targets: round.targets },
+      })
+    }
+  })
+
+  if (paper.compileStatus === 'latexmk') {
+    transfers.push({
+      from: 'LaTeX Compile Agent',
+      to: 'Simple Review Agent',
+      label: 'Compiled PDF and TeX files',
+      kind: 'paper_ready_for_review',
+      content: {
+        title: paper.title,
+        simpleReviewPassed: Boolean(paper.simpleReviewPassed),
+        pdfAvailable: Boolean(paper.pdfAvailable),
+        compileStatus: paper.compileStatus,
+      },
+    })
+  }
+
+  return transfers
+}
+
+function TransferRow({ transfer, index }: { transfer: AgentTransfer; index: number }) {
+  return (
+    <details className="rounded-md border bg-white p-3">
+      <summary className="cursor-pointer">
+        <div className="grid grid-cols-1 gap-2 text-sm lg:grid-cols-[48px_1fr_28px_1fr_1.2fr] lg:items-center">
+          <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-indigo-50 text-xs font-medium text-indigo-700">{index}</span>
+          <div>
+            <div className="text-[10px] uppercase text-slate-500">Source agent</div>
+            <div className="font-medium text-slate-800">{transfer.from}</div>
+          </div>
+          <ArrowRight className="hidden h-4 w-4 text-slate-400 lg:block" />
+          <div>
+            <div className="text-[10px] uppercase text-slate-500">Target agent</div>
+            <div className="font-medium text-slate-800">{transfer.to}</div>
+          </div>
+          <div className="min-w-0">
+            <div className="mb-1 flex flex-wrap items-center gap-2">
+              <Badge variant="outline">{transfer.kind}</Badge>
+              <span className="truncate text-slate-700">{transfer.label}</span>
+            </div>
+            <div className="truncate text-xs text-slate-500">{summarizeTransfer(transfer)}</div>
+          </div>
+        </div>
+      </summary>
+      <div className="mt-2 space-y-2">
+        {transfer.artifactPath && <div className="font-mono text-xs text-slate-500">{transfer.artifactPath}</div>}
+        <pre className="max-h-52 overflow-auto rounded bg-slate-50 p-2 text-[11px] text-slate-700">{jsonPreview(transfer.content, 1200)}</pre>
+      </div>
+    </details>
+  )
+}
+
+function summarizeTransfer(transfer: AgentTransfer): string {
+  if (transfer.kind.includes('feedback') && typeof transfer.content === 'object' && transfer.content) {
+    const data = transfer.content as { issues?: unknown[]; targets?: unknown[] }
+    return `${data.issues?.length || 0} issues, ${data.targets?.length || 0} writing targets`
+  }
+  if (Array.isArray(transfer.content)) {
+    return `${transfer.content.length} writing rewrite records`
+  }
+  if (typeof transfer.content === 'object' && transfer.content) {
+    const data = transfer.content as Record<string, unknown>
+    return Object.entries(data).slice(0, 3).map(([key, value]) => `${key}: ${toText(value).split('\n')[0]}`).join(' · ')
+  }
+  return toText(transfer.content).split('\n')[0]
 }

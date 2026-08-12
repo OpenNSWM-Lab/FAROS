@@ -21,5 +21,8 @@ class PaperAgentOrchestrator:
         self.writing_agent.run(ctx)
         self.log("Paper agent orchestrator: starting LaTeX compile agent")
         self.latex_compile_agent.run(ctx, writing_agent=self.writing_agent)
+        if ctx.get("compile_status") != "latexmk":
+            self.log("Paper agent orchestrator: skipping simple review because LaTeX compile did not pass")
+            return
         self.log("Paper agent orchestrator: starting simple review agent")
         self.simple_review_agent.run(ctx, writing_agent=self.writing_agent)
