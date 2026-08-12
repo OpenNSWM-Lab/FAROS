@@ -8,7 +8,6 @@ from .section_writers import (
     get_section_writer,
     parse_figures_summary,
 )
-from .utils import write_artifact
 
 
 STEP_ID = "05_section_write"
@@ -49,28 +48,10 @@ def run(ctx: PaperSkillContext) -> PaperSkillResult:
             "writer": writer.kind,
         })
 
-    summary_lines = [
-        "# Section Write",
-        f"sections: {len(sections_content)}",
-    ]
-    summary_lines.extend(
-        f"{assignment['sectionId']}: {assignment['writer']}"
-        for assignment in writer_assignments
-    )
-    artifacts = write_artifact(
-        ctx.paper_id,
-        STEP_ID,
-        {
-            "section_ids": list(sections_content.keys()),
-            "writer_assignments": writer_assignments,
-        },
-        summary_lines,
-    )
-
     return PaperSkillResult(
         name="section_write",
         summary=f"{len(sections_content)} sections generated",
-        artifacts=artifacts,
+        artifacts=[],
         data={
             "sections": sections,
             "sections_content": sections_content,

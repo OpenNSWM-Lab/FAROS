@@ -1,39 +1,35 @@
 import time
 from typing import Callable, List
 
-from app.modules.paper.storage import add_log
 from .base import PaperSkillContext, PaperSkillResult
 from .evidence_collect import run as evidence_collect
 from .collect_context import run as collect_context
+from .code_artifact_collect import run as code_artifact_collect
 from .paper_brief import run as paper_brief
 from .outline import run as outline
-from .outline_gate import run as outline_gate
 from .section_write import run as section_write
-from .evidence_gate import run as evidence_gate
-from .figure_generate import run as figure_generate
 from .assemble_latex import run as assemble_latex
-from .compile_pdf import run as compile_pdf
 
 
-def build_default_skill_chain() -> List[Callable[[PaperSkillContext], PaperSkillResult]]:
-    """Return the paper generation pipeline in dependency order.
+def build_writing_skill_chain() -> List[Callable[[PaperSkillContext], PaperSkillResult]]:
+    """Return the writing agent's skill pipeline in dependency order.
 
-    Each step should add new information or transform the draft. Summary-only
-    audits are intentionally left out of the default chain because service.py
-    already persists the gate results after generation.
+    Compile and review are handled by dedicated agents, not by this skill
+    runner. Keep this helper for compatibility with older callers that still
+    want the writing-only skill chain.
     """
     return [
         evidence_collect,
         collect_context,
+        code_artifact_collect,
         paper_brief,
         outline,
-        outline_gate,
         section_write,
-        evidence_gate,
-        figure_generate,
         assemble_latex,
-        compile_pdf,
     ]
+
+
+build_default_skill_chain = build_writing_skill_chain
 
 
 class PaperSkillLeader:
@@ -51,8 +47,6 @@ class PaperSkillLeader:
                 self.log(f"{result.name}: {result.summary} ({elapsed:.1f}s)")
             else:
                 self.log(f"{result.name}: completed ({elapsed:.1f}s)")
-            if result.artifacts:
-                add_log(self.paper_id, f"Artifacts: {', '.join(result.artifacts)}")
             if result.data:
                 for k, v in result.data.items():
                     ctx.update(k, v)

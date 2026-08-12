@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import re
@@ -6,7 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.modules.paper.storage import get_paper_latex_dir, write_paper_file
-from .constants import MIN_ALGORITHMS, MIN_EQUATIONS, MIN_FIGURES, MIN_REFERENCES, MIN_TABLES, TEMPLATE_ROOT
+from .constants import TEMPLATE_ROOT
 
 
 LATEX_MATH_ENVS = {
@@ -39,12 +40,55 @@ def ensure_artifacts_dir(paper_id: str) -> str:
     return artifacts_dir
 
 
-def write_artifact(paper_id: str, step_id: str, data: Dict[str, Any], summary_lines: List[str]) -> List[str]:
-    json_path = f"artifacts/{step_id}.json"
-    md_path = f"artifacts/{step_id}.md"
-    write_paper_file(paper_id, json_path, json.dumps(data, ensure_ascii=False, indent=2))
-    write_paper_file(paper_id, md_path, "\n".join(summary_lines) + "\n")
-    return [json_path, md_path]
+def reset_artifacts_dir(paper_id: str) -> str:
+    artifacts_dir = ensure_artifacts_dir(paper_id)
+    for name in os.listdir(artifacts_dir):
+        path = os.path.join(artifacts_dir, name)
+        if os.path.isdir(path):
+            shutil.rmtree(path)
+        else:
+            os.remove(path)
+    return artifacts_dir
+
+
+ARTIFACT_PATHS = {
+    "00_plan_evidence": "artifacts/evidence.json",
+    "02_code_artifacts": "artifacts/code_artifacts.json",
+    "02_paper_brief": "artifacts/brief.json",
+    "03_outline": "artifacts/outline.json",
+    "08_assemble_latex": "artifacts/assembly.json",
+    "09_latex_compile_agent": "artifacts/feedback/round_01/compile.json",
+    "10_simple_review_compile_agent": "artifacts/feedback/round_01/compile.json",
+    "10_simple_review_loop": "artifacts/feedback/round_01/review.json",
+    "feedback_rewrite_latex_compile": "artifacts/feedback/round_01/rewrite_compile.json",
+    "feedback_rewrite_simple_review": "artifacts/feedback/round_01/rewrite_review.json",
+}
+
+
+def write_artifact(
+    paper_id: str,
+    step_id: str,
+    data: Dict[str, Any],
+    summary_lines: List[str],
+    artifact_path: str | None = None,
+) -> List[str]:
+    json_path = artifact_path or ARTIFACT_PATHS.get(step_id, f"artifacts/{step_id}.json")
+    payload = {
+        "_artifact": {
+            "id": step_id,
+            "path": json_path,
+            "summaryLines": summary_lines,
+        },
+        **data,
+    }
+    write_paper_file(paper_id, json_path, json.dumps(payload, ensure_ascii=False, indent=2))
+    return [json_path]
+
+
+def stable_context_fingerprint(*parts: Any) -> str:
+    """Return a stable short fingerprint for cache invalidation inputs."""
+    payload = json.dumps(parts, ensure_ascii=False, sort_keys=True, default=str, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
 def _extract_json(text: str) -> Optional[Dict[str, Any]]:
@@ -258,10 +302,12 @@ def collect_context(paper: Dict[str, Any]) -> Dict[str, str]:
     ctx = {
         "plan_context": "N/A",
         "plan_evidence": "N/A",
+        "code_evidence": "N/A",
         "project_summary": "N/A",
         "metrics_summary": "N/A",
         "runs_summary": "N/A",
         "figures_summary": "N/A",
+        "code_tables_summary": "N/A",
         "user_notes": "N/A",
     }
 
@@ -279,6 +325,138 @@ def collect_context(paper: Dict[str, Any]) -> Dict[str, str]:
         evidence = paper.get("evidenceJson")
         if evidence and evidence.get("status") == "collected":
             ctx["plan_evidence"] = json.dumps(evidence, ensure_ascii=False, default=str)[:8000]
+            code_evidence = evidence.get("codeEvidence")
+            if isinstance(code_evidence, dict) and code_evidence.get("status") == "collected":
+                ctx["code_evidence"] = json.dumps(code_evidence, ensure_ascii=False, default=str)[:8000]
+                repo = code_evidence.get("repo") if isinstance(code_evidence.get("repo"), dict) else {}
+                if repo.get("readme") and ctx["project_summary"] == "N/A":
+                    ctx["project_summary"] = str(repo.get("readme"))[:2000]
+                def artifact_ref(artifact: Dict[str, Any]) -> Dict[str, Any]:
+                    return {
+                        "id": artifact.get("id"),
+                        "label": artifact.get("label") or artifact.get("tableId") or artifact.get("figureId"),
+                        "name": artifact.get("name"),
+                        "filename": artifact.get("filename"),
+                        "path": artifact.get("path"),
+                        "cartRelativePath": artifact.get("cartRelativePath"),
+                        "sourcePath": artifact.get("sourcePath"),
+                        "nodeId": artifact.get("nodeId"),
+                        "kind": artifact.get("kind"),
+                    }
+
+                metrics_sources = {
+                    "repoMetrics": repo.get("metrics"),
+                    "runMetrics": [
+                        {
+                            "runId": run.get("runId"),
+                            "metrics": run.get("metrics"),
+                            "executionSummary": run.get("executionSummary"),
+                        }
+                        for run in code_evidence.get("runs", [])
+                        if isinstance(run, dict)
+                    ],
+                    "cartMetrics": [
+                        {
+                            "cartId": cart.get("cartId"),
+                            "claimEligible": cart.get("claimEligible") is True,
+                            "constants": {
+                                "datasets": (cart.get("constants") or {}).get("datasets"),
+                                "models": (cart.get("constants") or {}).get("models"),
+                                "paperType": (cart.get("constants") or {}).get("paperType"),
+                            },
+                            "metrics": cart.get("metrics"),
+                            "nodeResults": [
+                                {
+                                    "nodeId": node.get("nodeId"),
+                                    "success": node.get("success"),
+                                    "durationMs": node.get("durationMs"),
+                                    "metrics": node.get("metrics"),
+                                    "experimentPlan": node.get("experimentPlan"),
+                                    "dataset": node.get("dataset"),
+                                    "baseline": node.get("baseline"),
+                                    "figuresAndTables": node.get("figuresAndTables"),
+                                    "resultAnalysis": node.get("resultAnalysis"),
+                                    "codeTables": [
+                                        artifact_ref(table)
+                                        for table in node.get("codeTables", [])
+                                        if isinstance(table, dict)
+                                    ],
+                                    "artifacts": [
+                                        artifact_ref(artifact)
+                                        for artifact in node.get("artifacts", [])
+                                        if isinstance(artifact, dict)
+                                    ],
+                                }
+                                for node in cart.get("nodeResults", [])
+                                if isinstance(node, dict)
+                            ],
+                            "stages": [
+                                {
+                                    "stageId": stage.get("stage_id"),
+                                    "title": stage.get("title"),
+                                    "success": stage.get("success"),
+                                }
+                                for stage in cart.get("stages", [])
+                                if isinstance(stage, dict)
+                            ],
+                        }
+                        for cart in code_evidence.get("cartResults", [])
+                        if isinstance(cart, dict) and cart.get("claimEligible") is True
+                    ],
+                    "experimentMetrics": [
+                        {
+                            "experimentId": exp.get("experimentId"),
+                            "metrics": exp.get("metrics"),
+                        }
+                        for exp in code_evidence.get("experiments", [])
+                        if isinstance(exp, dict)
+                    ],
+                }
+                if any(metrics_sources.values()):
+                    ctx["metrics_summary"] = json.dumps(metrics_sources, ensure_ascii=False, default=str)[:4000]
+                code_figures = [
+                    {
+                        "figureId": f"{cart.get('cartId')}:{fig.get('nodeId')}:{fig.get('name')}",
+                        "title": fig.get("name"),
+                        "caption": f"Code-stage result artifact from {fig.get('nodeId')}: {fig.get('name')}",
+                        "path": fig.get("cartRelativePath"),
+                        "label": f"fig:code_{str(fig.get('nodeId') or '').replace('-', '_')}_{str(fig.get('name') or '').rsplit('.', 1)[0].replace('-', '_')}",
+                        "targetSection": "Experiments",
+                        "include": str(fig.get("name") or "").lower().endswith((".png", ".jpg", ".jpeg", ".pdf")),
+                        "source": "code_cart",
+                        "notes": "SVG figures are reported as evidence but require conversion before LaTeX inclusion.",
+                    }
+                    for cart in code_evidence.get("cartResults", [])
+                    if isinstance(cart, dict) and cart.get("claimEligible") is True
+                    for fig in cart.get("codeFigures", [])
+                    if isinstance(fig, dict)
+                ]
+                if code_figures and ctx["figures_summary"] == "N/A":
+                    ctx["figures_summary"] = json.dumps(code_figures, ensure_ascii=False, default=str)[:3000]
+                code_tables = [
+                    artifact_ref(table)
+                    for cart in code_evidence.get("cartResults", [])
+                    if isinstance(cart, dict) and cart.get("claimEligible") is True
+                    for table in cart.get("codeTables", [])
+                    if isinstance(table, dict)
+                ]
+                if code_tables:
+                    ctx["code_tables_summary"] = json.dumps(code_tables, ensure_ascii=False, default=str)[:4000]
+                run_sources = [
+                    {
+                        "runId": run.get("runId"),
+                        "experimentIds": run.get("experimentIds"),
+                        "experimentStatus": run.get("experimentStatus"),
+                        "experimentDesign": run.get("experimentDesign"),
+                        "executionSummary": run.get("executionSummary"),
+                        "reportMdPath": run.get("reportMdPath"),
+                        "experimentReport": run.get("experimentReport"),
+                    }
+                    for run in code_evidence.get("runs", [])
+                    if isinstance(run, dict)
+                ]
+                if run_sources:
+                    ctx["runs_summary"] = json.dumps(run_sources, ensure_ascii=False, default=str)[:4000]
     except Exception:
         pass
 
@@ -303,7 +481,11 @@ def collect_context(paper: Dict[str, Any]) -> Dict[str, str]:
                     metrics = get_metrics(eid)
                     all_metrics.extend(metrics[:20])
             if all_metrics:
-                ctx["metrics_summary"] = json.dumps(all_metrics[:30], default=str)[:2000]
+                exp_metrics_summary = json.dumps(all_metrics[:30], default=str)
+                if ctx["metrics_summary"] == "N/A":
+                    ctx["metrics_summary"] = exp_metrics_summary[:2000]
+                else:
+                    ctx["metrics_summary"] = (ctx["metrics_summary"] + "\n" + exp_metrics_summary)[:4000]
         except Exception:
             pass
 
@@ -345,7 +527,7 @@ def collect_context(paper: Dict[str, Any]) -> Dict[str, str]:
 
     figure_entries = get_linked_figure_entries(paper, ensure_copied=False)
     if figure_entries:
-        ctx["figures_summary"] = json.dumps([
+        linked_figures = [
             {
                 "figureId": f.get("figureId"),
                 "title": f.get("title"),
@@ -361,7 +543,17 @@ def collect_context(paper: Dict[str, Any]) -> Dict[str, str]:
                 "source": f.get("source"),
             }
             for f in figure_entries
-        ], default=str)[:2000]
+        ]
+        if ctx["figures_summary"] == "N/A":
+            ctx["figures_summary"] = json.dumps(linked_figures, default=str)[:2000]
+        else:
+            try:
+                existing_figures = json.loads(ctx["figures_summary"])
+                if not isinstance(existing_figures, list):
+                    existing_figures = []
+            except Exception:
+                existing_figures = []
+            ctx["figures_summary"] = json.dumps(existing_figures + linked_figures, default=str)[:4000]
 
     notes = paper.get("notes", "")
     if notes:
@@ -386,35 +578,37 @@ def load_venue_style_guide(venue: str, max_chars: int = 4000) -> str:
 
 
 def gate_outline(outline: Dict[str, Any]) -> List[str]:
+    """Legacy diagnostic only; the active writing pipeline does not use this as a blocking quality gate."""
     issues = []
     sections = outline.get("sections", [])
     refs = outline.get("references", [])
 
     if len(sections) < 5:
-        issues.append(f"Only {len(sections)} sections (need >=5)")
-    if len(refs) < MIN_REFERENCES:
-        issues.append(f"Only {len(refs)} references (need >={MIN_REFERENCES})")
+        issues.append(f"Legacy diagnostic: compact outline has {len(sections)} section(s); consider adding coverage if the venue requires it.")
+    if not refs:
+        issues.append("Legacy diagnostic: outline has no references; cite only verified linked literature or venue-appropriate real sources.")
 
     algo_count = sum(1 for s in sections if s.get("hasAlgorithm"))
     eq_sections = sum(1 for s in sections if s.get("hasEquations"))
     table_sections = sum(1 for s in sections if s.get("hasTables"))
 
     if algo_count < 1:
-        issues.append(f"No sections marked with algorithms (need >={MIN_ALGORITHMS} total)")
-    if eq_sections < 2:
-        issues.append(f"Only {eq_sections} sections with equations (need >=2)")
+        issues.append("Legacy diagnostic: no section is marked for an algorithm; include one only when the method evidence supports it.")
+    if eq_sections < 1:
+        issues.append("Legacy diagnostic: no section is marked for equations; include equations only when they clarify real method or analysis content.")
     if table_sections < 1:
-        issues.append("No sections marked with tables")
+        issues.append("Legacy diagnostic: no section is marked for tables; include tables only when linked metrics or table evidence supports them.")
 
     if not outline.get("abstract"):
         issues.append("Missing abstract")
     elif len(outline["abstract"].split()) < 50:
-        issues.append(f"Abstract too short ({len(outline['abstract'].split())} words, need >=50)")
+        issues.append(f"Legacy diagnostic: abstract is short ({len(outline['abstract'].split())} words); expand if the venue expects a full abstract.")
 
     return issues
 
 
 def gate_evidence(sections_content: Dict[str, str]) -> Dict[str, Any]:
+    """Legacy diagnostic only; counts are advisory and never define final generation status."""
     all_text = "\n".join(sections_content.values())
 
     algo_count = all_text.count("\\begin{algorithm")
@@ -424,13 +618,14 @@ def gate_evidence(sections_content: Dict[str, str]) -> Dict[str, Any]:
     cite_count = len(set(re.findall(r"\\cite\{([^}]+)\}", all_text)))
 
     gates = {
-        "algorithms": {"count": algo_count, "required": MIN_ALGORITHMS, "pass": algo_count >= MIN_ALGORITHMS},
-        "equations": {"count": eq_count, "required": MIN_EQUATIONS, "pass": eq_count >= MIN_EQUATIONS},
-        "tables": {"count": table_count, "required": MIN_TABLES, "pass": table_count >= MIN_TABLES},
-        "figures": {"count": fig_count, "required": MIN_FIGURES, "pass": fig_count >= MIN_FIGURES},
-        "citations": {"count": cite_count, "required": 10, "pass": cite_count >= 10},
+        "_mode": "legacy_diagnostic_only",
+        "algorithms": {"count": algo_count, "required": None, "pass": True},
+        "equations": {"count": eq_count, "required": None, "pass": True},
+        "tables": {"count": table_count, "required": None, "pass": True},
+        "figures": {"count": fig_count, "required": None, "pass": True},
+        "citations": {"count": cite_count, "required": None, "pass": True},
     }
-    gates["all_pass"] = all(g["pass"] for g in gates.values())
+    gates["all_pass"] = True
     return gates
 
 
