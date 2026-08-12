@@ -5,6 +5,7 @@ import { AppPageLayout } from '@/components/layout/AppPageLayout'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { LLM_PROVIDERS, getModelsByProvider } from '@/lib/models/providers'
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || ''
 
@@ -16,6 +17,9 @@ const STAGES: { id: Stage; label: string; description: string }[] = [
   { id: 'writing', label: 'Feedback Writing', description: 'Agent loop and revision requests' },
   { id: 'result', label: 'Results', description: 'Files and PDF preview' },
 ]
+
+const PAPER_TYPE_OPTIONS = ['algorithm', 'application', 'survey', 'benchmark', 'system', 'security', 'position']
+const VENUE_OPTIONS = ['icml', 'neurips', 'iclr', 'acl', 'generic', 'challenge_cup']
 
 interface TemplateInfo {
   id: string
@@ -191,9 +195,15 @@ export function PaperWritingWorkspace() {
   const [contextRunIds, setContextRunIds] = useState<string[]>([])
   const [contextExperimentIds, setContextExperimentIds] = useState<string[]>([])
   const [savingContext, setSavingContext] = useState(false)
+  const [savingMetadata, setSavingMetadata] = useState(false)
   const [feedbackRounds, setFeedbackRounds] = useState<FeedbackRound[]>([])
   const [pdfTs, setPdfTs] = useState(Date.now())
   const [loading, setLoading] = useState(true)
+  const [draftTitle, setDraftTitle] = useState('')
+  const [draftPaperType, setDraftPaperType] = useState('algorithm')
+  const [draftVenue, setDraftVenue] = useState('generic')
+  const [draftProvider, setDraftProvider] = useState('')
+  const [draftModel, setDraftModel] = useState('')
 
   const refreshPaper = useCallback(async () => {
     if (!id) return null
@@ -203,6 +213,11 @@ export function PaperWritingWorkspace() {
     setPaper(data)
     setBriefUserEdits(data.briefUserEdits || '')
     setSelectedTemplate(data.templateId || data.targetVenue || '')
+    setDraftTitle(data.title || '')
+    setDraftPaperType(data.paperType || 'algorithm')
+    setDraftVenue(data.targetVenue || 'generic')
+    setDraftProvider(data.providerName || '')
+    setDraftModel(data.model || '')
     setContextProjectId(data.projectId || '')
     setContextRunIds(data.runIds || [])
     setContextExperimentIds(data.experimentIds || [])
@@ -331,12 +346,34 @@ export function PaperWritingWorkspace() {
     }
   }
 
+  const saveMetadata = async () => {
+    if (!paper) return
+    setSavingMetadata(true)
+    try {
+      const resp = await fetch(`${API_BASE}/api/v1/papers/${paper.id}/metadata`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: draftTitle,
+          paperType: draftPaperType,
+          targetVenue: draftVenue,
+          providerName: draftProvider || undefined,
+          model: draftModel || undefined,
+          templateId: selectedTemplate || undefined,
+        }),
+      })
+      if (resp.ok) await refreshPaper()
+    } finally {
+      setSavingMetadata(false)
+    }
+  }
+
   const applyTemplate = async () => {
     if (!paper || !selectedTemplate) return
     await fetch(`${API_BASE}/api/v1/templates/apply`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ paperId: paper.id, templateId: selectedTemplate, title: paper.title }),
+      body: JSON.stringify({ paperId: paper.id, templateId: selectedTemplate, title: draftTitle || paper.title }),
     })
     await loadAll()
   }
@@ -422,6 +459,21 @@ export function PaperWritingWorkspace() {
           saveContext={saveContext}
           savingContext={savingContext}
           goBrief={() => setStage('brief')}
+          draftTitle={draftTitle}
+          setDraftTitle={setDraftTitle}
+          draftPaperType={draftPaperType}
+          setDraftPaperType={setDraftPaperType}
+          draftVenue={draftVenue}
+          setDraftVenue={setDraftVenue}
+          draftProvider={draftProvider}
+          setDraftProvider={(value) => {
+            setDraftProvider(value)
+            setDraftModel(getModelsByProvider(value)[0]?.id || '')
+          }}
+          draftModel={draftModel}
+          setDraftModel={setDraftModel}
+          saveMetadata={saveMetadata}
+          savingMetadata={savingMetadata}
         />
       )
     }
@@ -537,8 +589,21 @@ function StartStage(props: {
   saveContext: () => void
   savingContext: boolean
   goBrief: () => void
+  draftTitle: string
+  setDraftTitle: (value: string) => void
+  draftPaperType: string
+  setDraftPaperType: (value: string) => void
+  draftVenue: string
+  setDraftVenue: (value: string) => void
+  draftProvider: string
+  setDraftProvider: (value: string) => void
+  draftModel: string
+  setDraftModel: (value: string) => void
+  saveMetadata: () => void
+  savingMetadata: boolean
 }) {
   const evidence = props.paper.evidenceJson
+  const modelOptions = getModelsByProvider(props.draftProvider)
   return (
     <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
       <Card className="xl:col-span-1">
@@ -546,10 +611,43 @@ function StartStage(props: {
           <CardTitle className="text-base">Paper and Template</CardTitle>
         </CardHeader>
         <CardContent className="space-y-3 text-sm">
-          <InfoRow label="Title" value={props.paper.title} />
-          <InfoRow label="Type" value={props.paper.paperType} />
-          <InfoRow label="Venue" value={props.paper.targetVenue || 'generic'} />
-          <InfoRow label="Provider" value={[props.paper.providerName, props.paper.model].filter(Boolean).join(' / ') || 'N/A'} />
+          <div className="space-y-1">
+            <label className="text-xs font-medium text-slate-600">Title</label>
+            <input
+              className="w-full rounded-md border bg-white px-2 py-2 text-sm"
+              value={props.draftTitle}
+              onChange={event => props.setDraftTitle(event.target.value)}
+              placeholder="Paper title"
+            />
+          </div>
+          <SelectBlock
+            label="Type"
+            value={props.draftPaperType}
+            onChange={props.setDraftPaperType}
+            options={PAPER_TYPE_OPTIONS.map(type => ({ value: type, label: type }))}
+            emptyLabel="Select type"
+          />
+          <SelectBlock
+            label="Venue"
+            value={props.draftVenue}
+            onChange={props.setDraftVenue}
+            options={VENUE_OPTIONS.map(venue => ({ value: venue, label: venue }))}
+            emptyLabel="Select venue"
+          />
+          <SelectBlock
+            label="Provider"
+            value={props.draftProvider}
+            onChange={props.setDraftProvider}
+            options={LLM_PROVIDERS.map(provider => ({ value: provider.id, label: provider.id }))}
+            emptyLabel="Select provider"
+          />
+          <SelectBlock
+            label="Model"
+            value={props.draftModel}
+            onChange={props.setDraftModel}
+            options={modelOptions.map(model => ({ value: model.id, label: model.id }))}
+            emptyLabel="Select model"
+          />
           <div className="space-y-1">
             <label className="text-xs font-medium text-slate-600">Template</label>
             <div className="flex gap-2">
@@ -557,9 +655,13 @@ function StartStage(props: {
                 <option value="">No template</option>
                 {props.templates.map(template => <option key={template.id} value={template.id}>{template.name}</option>)}
               </select>
-              <Button size="sm" variant="outline" onClick={props.applyTemplate}>Apply</Button>
+              <Button size="sm" variant="outline" onClick={props.applyTemplate}>Apply files</Button>
             </div>
           </div>
+          <Button size="sm" variant="outline" className="w-full" onClick={props.saveMetadata} disabled={props.savingMetadata || !props.draftTitle.trim()}>
+            {props.savingMetadata ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <Save className="mr-1 h-4 w-4" />}
+            Save paper settings
+          </Button>
           <Button className="w-full" onClick={props.goBrief}>Continue to Brief</Button>
         </CardContent>
       </Card>
@@ -704,9 +806,13 @@ function WritingStage(props: {
               <AgentNode icon={<ScrollText className="h-4 w-4" />} title="Simple Review Agent" desc="Checks format and submission readiness" active={!props.paper.simpleReviewPassed} />
             </div>
             <div className="space-y-2 rounded-md border bg-slate-50 p-3">
-              {transfers.map((transfer, index) => (
-                <TransferRow key={`${transfer.from}-${transfer.to}-${index}`} transfer={transfer} index={index + 1} />
-              ))}
+              {transfers.length === 0 ? (
+                <div className="rounded-md border border-dashed bg-white p-3 text-sm text-slate-500">No agent handoff has been recorded yet.</div>
+              ) : (
+                transfers.map((transfer, index) => (
+                  <TransferRow key={`${transfer.from}-${transfer.to}-${index}`} transfer={transfer} index={index + 1} />
+                ))
+              )}
             </div>
           </div>
           <div className="mt-4 flex flex-wrap gap-2">
@@ -849,15 +955,6 @@ function ResultStage(props: {
   )
 }
 
-function InfoRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="grid grid-cols-[96px_1fr] gap-2 text-sm">
-      <span className="text-slate-500">{label}</span>
-      <span className="font-medium text-slate-800">{value}</span>
-    </div>
-  )
-}
-
 function SelectBlock(props: { label: string; value: string; onChange: (value: string) => void; options: { value: string; label: string }[]; emptyLabel: string }) {
   return (
     <div className="space-y-1">
@@ -983,8 +1080,15 @@ function parseStepEvents(logs: PaperLog[]): StepEvent[] {
 }
 
 function buildAgentTransfers(feedbackRounds: FeedbackRound[], paper: PaperRecord, logs: PaperLog[]): AgentTransfer[] {
-  const transfers: AgentTransfer[] = [
-    {
+  const transfers: AgentTransfer[] = []
+  const compileStarted = logs.some(log =>
+    log.message.includes('starting LaTeX compile agent')
+    || log.message.startsWith('latex_compile_agent:')
+    || log.message.startsWith('latex_compile_agent/')
+  ) || feedbackRounds.some(round => round.source === 'latex_compile') || Boolean(paper.compileStatus)
+
+  if (compileStarted) {
+    transfers.push({
       from: 'Writing Agent',
       to: 'LaTeX Compile Agent',
       label: 'TeX source files after writing',
@@ -995,8 +1099,8 @@ function buildAgentTransfers(feedbackRounds: FeedbackRound[], paper: PaperRecord
         compileStatus: paper.compileStatus || 'not compiled',
         recentSteps: parseStepEvents(logs).slice(-6),
       },
-    },
-  ]
+    })
+  }
 
   feedbackRounds.forEach(round => {
     if (round.source === 'latex_compile') {
@@ -1055,7 +1159,7 @@ function TransferRow({ transfer, index }: { transfer: AgentTransfer; index: numb
   return (
     <details className="rounded-md border bg-white p-3">
       <summary className="cursor-pointer">
-        <div className="grid grid-cols-1 gap-2 text-sm lg:grid-cols-[48px_1fr_28px_1fr_1.2fr] lg:items-center">
+        <div className="grid grid-cols-1 gap-2 text-sm lg:grid-cols-[48px_1fr_28px_1fr] lg:items-center">
           <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-indigo-50 text-xs font-medium text-indigo-700">{index}</span>
           <div>
             <div className="text-[10px] uppercase text-slate-500">Source agent</div>
@@ -1066,16 +1170,14 @@ function TransferRow({ transfer, index }: { transfer: AgentTransfer; index: numb
             <div className="text-[10px] uppercase text-slate-500">Target agent</div>
             <div className="font-medium text-slate-800">{transfer.to}</div>
           </div>
-          <div className="min-w-0">
-            <div className="mb-1 flex flex-wrap items-center gap-2">
-              <Badge variant="outline">{transfer.kind}</Badge>
-              <span className="truncate text-slate-700">{transfer.label}</span>
-            </div>
-            <div className="truncate text-xs text-slate-500">{summarizeTransfer(transfer)}</div>
-          </div>
         </div>
       </summary>
       <div className="mt-2 space-y-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge variant="outline">{transfer.kind}</Badge>
+          <span className="text-sm font-medium text-slate-800">{transfer.label}</span>
+        </div>
+        <div className="text-xs text-slate-500">{summarizeTransfer(transfer)}</div>
         {transfer.artifactPath && <div className="font-mono text-xs text-slate-500">{transfer.artifactPath}</div>}
         <pre className="max-h-52 overflow-auto rounded bg-slate-50 p-2 text-[11px] text-slate-700">{jsonPreview(transfer.content, 1200)}</pre>
       </div>

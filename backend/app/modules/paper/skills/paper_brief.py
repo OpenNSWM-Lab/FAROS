@@ -17,6 +17,7 @@ BRIEF_PROMPT = """You are preparing a writing brief before drafting an academic 
 **Venue style guide:** {venue_style_guide}
 **Plan context:** {plan_context}
 **Plan evidence package:** {plan_evidence}
+**Code-stage evidence:** {code_evidence}
 **Project summary:** {project_summary}
 **Experiment metrics:** {metrics_summary}
 **Run evidence:** {runs_summary}
@@ -24,7 +25,7 @@ BRIEF_PROMPT = """You are preparing a writing brief before drafting an academic 
 **User notes:** {user_notes}
 **User brief edits:** {brief_user_edits}
 
-Create a concise, concrete paper writing brief. The brief must guide the outline and section writing. It must not invent unsupported experiments, datasets, baselines, or claims. If a Plan evidence package is present, treat it as the authoritative source for research question, hypothesis, gap, method principle, contribution statements, related work, and planned validation. Use the Venue style guide to adapt the paper angle, content ordering, evidence emphasis, and tone to the target venue.
+Create a concise, concrete paper writing brief. The brief must guide the outline and section writing. It must not invent unsupported experiments, datasets, baselines, or claims. If a Plan evidence package is present, treat it as the authoritative source for research question, hypothesis, gap, method principle, contribution statements, related work, and planned validation. Treat Code-stage evidence, experiment metrics, and run evidence as observed implementation/experiment evidence when present; keep planned validation targets separate from observed results. Use the Venue style guide to adapt the paper angle, content ordering, evidence emphasis, and tone to the target venue.
 
 Return strict JSON:
 {{
@@ -272,6 +273,7 @@ def build_brief(ctx: PaperSkillContext, force: bool = False) -> PaperSkillResult
             venue_style_guide=load_venue_style_guide(ctx.venue)[:2500],
             plan_context=context.get("plan_context", "N/A")[:1500],
             plan_evidence=context.get("plan_evidence", "N/A")[:6000],
+            code_evidence=context.get("code_evidence", "N/A")[:5000],
             project_summary=context.get("project_summary", "N/A")[:1500],
             metrics_summary=context.get("metrics_summary", "N/A")[:1500],
             runs_summary=context.get("runs_summary", "N/A")[:1500],

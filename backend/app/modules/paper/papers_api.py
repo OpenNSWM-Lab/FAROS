@@ -141,6 +141,15 @@ class UpdatePaperContextRequest(BaseModel):
     notes: Optional[str] = None
 
 
+class UpdatePaperMetadataRequest(BaseModel):
+    title: Optional[str] = None
+    paperType: Optional[str] = None
+    targetVenue: Optional[str] = None
+    providerName: Optional[str] = None
+    model: Optional[str] = None
+    templateId: Optional[str] = None
+
+
 class SelectedFigureRequest(BaseModel):
     figureId: str
     title: Optional[str] = None
@@ -234,6 +243,24 @@ async def update_paper_context_endpoint(paper_id: str, req: UpdatePaperContextRe
     if not record:
         raise HTTPException(status_code=404, detail=f"Paper '{paper_id}' not found")
     updates = req.model_dump(exclude_unset=True)
+    return _update_paper(paper_id, updates)
+
+
+@router.patch("/{paper_id}/metadata", status_code=status.HTTP_200_OK)
+async def update_paper_metadata_endpoint(paper_id: str, req: UpdatePaperMetadataRequest):
+    record = _get_paper(paper_id)
+    if not record:
+        raise HTTPException(status_code=404, detail=f"Paper '{paper_id}' not found")
+    updates = req.model_dump(exclude_unset=True)
+    if "title" in updates:
+        title = str(updates.get("title") or "").strip()
+        if not title:
+            raise HTTPException(status_code=400, detail="title cannot be empty")
+        updates["title"] = title
+    if "paperType" in updates and updates["paperType"] not in PAPER_TYPES:
+        raise HTTPException(status_code=400, detail=f"Invalid paperType. Must be one of: {PAPER_TYPES}")
+    if "targetVenue" in updates and updates["targetVenue"] not in VENUES:
+        raise HTTPException(status_code=400, detail=f"Invalid targetVenue. Must be one of: {VENUES}")
     return _update_paper(paper_id, updates)
 
 
