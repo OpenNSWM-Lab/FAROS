@@ -30,6 +30,7 @@ from app.modules.paper.storage import (
     update_paper as _update_paper, list_paper_files as _list_paper_files,
     read_paper_file as _read_paper_file, write_paper_file as _write_paper_file,
     create_paper_zip, get_paper_latex_dir, add_log as _add_log,
+    delete_paper as _delete_paper,
     get_selected_figures as _get_selected_figures,
     remove_selected_figure as _remove_selected_figure,
     select_figure_for_paper as _select_figure_for_paper,
@@ -210,6 +211,19 @@ async def get_paper_endpoint(paper_id: str):
     files = _list_paper_files(paper_id)
     record["fileCount"] = len([f for f in files if not f["isDir"]])
     return record
+
+
+@router.delete("/{paper_id}", status_code=status.HTTP_200_OK)
+async def delete_paper_endpoint(paper_id: str):
+    record = _get_paper(paper_id)
+    if not record:
+        raise HTTPException(status_code=404, detail=f"Paper '{paper_id}' not found")
+    if record.get("status") == "generating":
+        raise HTTPException(status_code=409, detail="Cannot delete a paper while generation is in progress")
+    deleted = _delete_paper(paper_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Paper '{paper_id}' not found")
+    return {"deleted": True, "paperId": paper_id}
 
 
 

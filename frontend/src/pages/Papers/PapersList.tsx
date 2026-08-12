@@ -894,10 +894,33 @@ export function PapersList() {
         }
         await fetchPapers()
         setShowCreate(false)
-        selectPaper(data)
+        navigate(`/papers/${data.id}/start`)
       }
     } catch (err) { console.error(err) }
     finally { setCreating(false) }
+  }
+
+  const deletePaper = async (paper: PaperRecord) => {
+    if (!confirm(`Delete "${paper.title}"? This will remove the paper files and cannot be undone.`)) return
+    try {
+      const resp = await fetch(`${API_BASE}/api/v1/papers/${paper.id}`, { method: 'DELETE' })
+      if (!resp.ok) {
+        const error = await resp.json().catch(() => ({ detail: 'Delete failed' }))
+        alert(error.detail || 'Delete failed')
+        return
+      }
+      if (selectedPaper?.id === paper.id) {
+        setSelectedPaper(null)
+        setPaperFiles([])
+        setSelectedFile('')
+        setFileContent('')
+        setEditedContent('')
+      }
+      await fetchPapers()
+    } catch (err) {
+      console.error(err)
+      alert('Delete failed')
+    }
   }
 
   const applyTemplate = async (templateId: string) => {
@@ -972,8 +995,8 @@ export function PapersList() {
       accentColor="indigo"
       actions={
         <div className="flex gap-2">
-          <Button variant="outline" size="sm" onClick={() => setShowCreate(!showCreate)}>
-            <Plus className="h-4 w-4 mr-1" /> New
+          <Button variant="outline" size="sm" onClick={createPaper} disabled={creating}>
+            {creating ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Plus className="h-4 w-4 mr-1" />} New
           </Button>
           <Button variant="outline" size="sm" onClick={fetchPapers} disabled={loading}>
             <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
@@ -1067,7 +1090,20 @@ export function PapersList() {
                 >
                   <div className="flex items-start justify-between gap-1">
                     <span className="text-xs font-medium truncate">{p.title}</span>
-                    <span className={`px-1 py-0.5 rounded text-[10px] font-medium shrink-0 ${statusColors[p.status] || 'bg-gray-100'}`}>{p.status}</span>
+                    <div className="flex shrink-0 items-center gap-1">
+                      <span className={`px-1 py-0.5 rounded text-[10px] font-medium ${statusColors[p.status] || 'bg-gray-100'}`}>{p.status}</span>
+                      <button
+                        className="inline-flex h-5 w-5 items-center justify-center rounded border border-red-200 bg-white text-red-500 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-40"
+                        title="Delete paper"
+                        disabled={p.status === 'generating'}
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          void deletePaper(p)
+                        }}
+                      >
+                        <Trash2 className="h-3 w-3" />
+                      </button>
+                    </div>
                   </div>
                   <div className="flex items-center gap-1.5 mt-1 text-[10px] text-muted-foreground">
                     <Badge variant="outline" className="text-[10px] py-0">{p.paperType}</Badge>

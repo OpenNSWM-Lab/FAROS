@@ -117,6 +117,14 @@ def update_paper(paper_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, A
     return record
 
 
+def delete_paper(paper_id: str) -> bool:
+    paper_dir = os.path.join(PAPERS_DIR, paper_id)
+    if not os.path.isdir(paper_dir):
+        return False
+    shutil.rmtree(paper_dir)
+    return True
+
+
 def _clean_latex_label_part(value: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9]+", "_", value or "").strip("_").lower()
     return cleaned or "figure"

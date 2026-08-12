@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 from app.modules.paper.skills.base import PaperSkillContext, PaperSkillResult
-from app.modules.paper.skills.latex_compile_support import compile_latex_once
 from app.modules.paper.skills.review_feedback import get_simple_review_feedback
 from app.modules.paper.skills.utils import write_artifact
 from .base import PaperAgent
@@ -20,7 +19,7 @@ class SimpleReviewAgent(PaperAgent):
 
     @staticmethod
     def _passed(review: Dict[str, Any]) -> bool:
-        return bool(review.get("passed")) and not any(
+        return not any(
             str(issue.get("severity", "")).lower() in {"blocking", "major"}
             for issue in review.get("issues", [])
             if isinstance(issue, dict)
@@ -48,20 +47,20 @@ class SimpleReviewAgent(PaperAgent):
             if not round_writing_rewrites:
                 break
 
-            self._run_skill(ctx, "compile_latex_once", compile_latex_once)
+            repair = LatexCompileAgent(self.paper_id, self.log).run(
+                ctx,
+                step_id="10_simple_review_compile_agent",
+                writing_agent=writing_agent,
+            )
+            compile_repair_results.append(
+                {
+                    "summary": repair.summary,
+                    "artifacts": repair.artifacts,
+                    "compileStatus": ctx.get("compile_status"),
+                }
+            )
             if ctx.get("compile_status") != "latexmk":
-                repair = LatexCompileAgent(self.paper_id, self.log).run(
-                    ctx,
-                    step_id="10_simple_review_compile_agent",
-                    writing_agent=writing_agent,
-                )
-                compile_repair_results.append(
-                    {
-                        "summary": repair.summary,
-                        "artifacts": repair.artifacts,
-                        "compileStatus": ctx.get("compile_status"),
-                    }
-                )
+                break
 
         summary_lines = [
             "# Simple Review Agent",
