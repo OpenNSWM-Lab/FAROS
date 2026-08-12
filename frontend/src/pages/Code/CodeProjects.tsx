@@ -4,7 +4,7 @@
  * Lists all code projects with search, create, and generate sample buttons.
  */
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { AppPageLayout } from '@/components/layout/AppPageLayout'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -14,10 +14,10 @@ import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
 import {
   Code2, Search, FolderOpen, Loader2,
-  AlertTriangle, FileCode, Clock, Sparkles, FlaskConical, GitBranch, Trash2
+  AlertTriangle, FileCode, Clock, Sparkles, FlaskConical, GitBranch, Trash2, ArchiveRestore
 } from 'lucide-react'
 import {
-  listProjects, generateSampleProject, deleteProject,
+  listProjects, generateSampleProject, deleteProject, uploadFinishedBundle,
   CodeProjectV2,
 } from '@/lib/api/codeProjects'
 
@@ -44,6 +44,8 @@ export function CodeProjects() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [generating, setGenerating] = useState(false)
+  const [importing, setImporting] = useState(false)
+  const bundleInputRef = useRef<HTMLInputElement>(null)
 
   const loadProjects = async (searchTerm?: string) => {
     try {
@@ -81,6 +83,25 @@ export function CodeProjects() {
     } finally {
       setGenerating(false)
     }
+  }
+
+  const handleImportBundle = async (file: File) => {
+    try {
+      setImporting(true)
+      setError(null)
+      const imported = await uploadFinishedBundle(file)
+      navigate(`/code/projects/${imported.projectId}`)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to import bundle')
+    } finally {
+      setImporting(false)
+    }
+  }
+
+  const handleBundleSelected = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (file) void handleImportBundle(file)
   }
 
   const handleDeleteProject = async (e: React.MouseEvent, projectId: string, title: string) => {
@@ -147,6 +168,17 @@ export function CodeProjects() {
           title="Generate code from a research plan"
         >
           <FlaskConical className="h-4 w-4 mr-1" /> Generate from Plan
+        </Button>
+        <input
+          ref={bundleInputRef}
+          type="file"
+          accept=".zip,application/zip"
+          className="hidden"
+          onChange={handleBundleSelected}
+        />
+        <Button onClick={() => bundleInputRef.current?.click()} disabled={importing} variant="outline">
+          {importing ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <ArchiveRestore className="h-4 w-4 mr-1" />}
+          Import Bundle
         </Button>
         <Button
           onClick={handleGenerateSample}
