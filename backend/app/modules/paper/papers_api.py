@@ -98,6 +98,9 @@ def _record_pdf_render_status(
     pdf_render_mode: Optional[str],
     compile_errors: Optional[str] = None,
 ) -> None:
+    # pdfAvailable means a preview exists; compileStatus records LaTeX build
+    # status; paper status remains the generation quality status and is not
+    # changed by the fallback renderer.
     _update_paper(paper_id, {
         "pdfAvailable": pdf_available,
         "compileStatus": compile_status,
@@ -247,7 +250,7 @@ async def delete_paper_endpoint(paper_id: str):
         raise HTTPException(status_code=409, detail="Cannot delete a paper while generation is in progress")
     deleted = _delete_paper(paper_id)
     if not deleted:
-        raise HTTPException(status_code=404, detail=f"Paper '{paper_id}' not found")
+        return {"deleted": False, "paperId": paper_id}
     return {"deleted": True, "paperId": paper_id}
 
 

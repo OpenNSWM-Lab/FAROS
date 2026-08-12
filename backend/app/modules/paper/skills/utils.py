@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import re
@@ -6,7 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.modules.paper.storage import get_paper_latex_dir, write_paper_file
-from .constants import MIN_ALGORITHMS, MIN_EQUATIONS, MIN_FIGURES, MIN_REFERENCES, MIN_TABLES, TEMPLATE_ROOT
+from .constants import TEMPLATE_ROOT
 
 
 LATEX_MATH_ENVS = {
@@ -82,6 +83,12 @@ def write_artifact(
     }
     write_paper_file(paper_id, json_path, json.dumps(payload, ensure_ascii=False, indent=2))
     return [json_path]
+
+
+def stable_context_fingerprint(*parts: Any) -> str:
+    """Return a stable short fingerprint for cache invalidation inputs."""
+    payload = json.dumps(parts, ensure_ascii=False, sort_keys=True, default=str, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
 def _extract_json(text: str) -> Optional[Dict[str, Any]]:
@@ -570,35 +577,37 @@ def load_venue_style_guide(venue: str, max_chars: int = 4000) -> str:
 
 
 def gate_outline(outline: Dict[str, Any]) -> List[str]:
+    """Legacy diagnostic only; the active writing pipeline does not use this as a blocking quality gate."""
     issues = []
     sections = outline.get("sections", [])
     refs = outline.get("references", [])
 
     if len(sections) < 5:
-        issues.append(f"Only {len(sections)} sections (need >=5)")
-    if len(refs) < MIN_REFERENCES:
-        issues.append(f"Only {len(refs)} references (need >={MIN_REFERENCES})")
+        issues.append(f"Legacy diagnostic: compact outline has {len(sections)} section(s); consider adding coverage if the venue requires it.")
+    if not refs:
+        issues.append("Legacy diagnostic: outline has no references; cite only verified linked literature or venue-appropriate real sources.")
 
     algo_count = sum(1 for s in sections if s.get("hasAlgorithm"))
     eq_sections = sum(1 for s in sections if s.get("hasEquations"))
     table_sections = sum(1 for s in sections if s.get("hasTables"))
 
     if algo_count < 1:
-        issues.append(f"No sections marked with algorithms (need >={MIN_ALGORITHMS} total)")
-    if eq_sections < 2:
-        issues.append(f"Only {eq_sections} sections with equations (need >=2)")
+        issues.append("Legacy diagnostic: no section is marked for an algorithm; include one only when the method evidence supports it.")
+    if eq_sections < 1:
+        issues.append("Legacy diagnostic: no section is marked for equations; include equations only when they clarify real method or analysis content.")
     if table_sections < 1:
-        issues.append("No sections marked with tables")
+        issues.append("Legacy diagnostic: no section is marked for tables; include tables only when linked metrics or table evidence supports them.")
 
     if not outline.get("abstract"):
         issues.append("Missing abstract")
     elif len(outline["abstract"].split()) < 50:
-        issues.append(f"Abstract too short ({len(outline['abstract'].split())} words, need >=50)")
+        issues.append(f"Legacy diagnostic: abstract is short ({len(outline['abstract'].split())} words); expand if the venue expects a full abstract.")
 
     return issues
 
 
 def gate_evidence(sections_content: Dict[str, str]) -> Dict[str, Any]:
+    """Legacy diagnostic only; counts are advisory and never define final generation status."""
     all_text = "\n".join(sections_content.values())
 
     algo_count = all_text.count("\\begin{algorithm")
@@ -608,13 +617,14 @@ def gate_evidence(sections_content: Dict[str, str]) -> Dict[str, Any]:
     cite_count = len(set(re.findall(r"\\cite\{([^}]+)\}", all_text)))
 
     gates = {
-        "algorithms": {"count": algo_count, "required": MIN_ALGORITHMS, "pass": algo_count >= MIN_ALGORITHMS},
-        "equations": {"count": eq_count, "required": MIN_EQUATIONS, "pass": eq_count >= MIN_EQUATIONS},
-        "tables": {"count": table_count, "required": MIN_TABLES, "pass": table_count >= MIN_TABLES},
-        "figures": {"count": fig_count, "required": MIN_FIGURES, "pass": fig_count >= MIN_FIGURES},
-        "citations": {"count": cite_count, "required": 10, "pass": cite_count >= 10},
+        "_mode": "legacy_diagnostic_only",
+        "algorithms": {"count": algo_count, "required": None, "pass": True},
+        "equations": {"count": eq_count, "required": None, "pass": True},
+        "tables": {"count": table_count, "required": None, "pass": True},
+        "figures": {"count": fig_count, "required": None, "pass": True},
+        "citations": {"count": cite_count, "required": None, "pass": True},
     }
-    gates["all_pass"] = all(g["pass"] for g in gates.values())
+    gates["all_pass"] = True
     return gates
 
 

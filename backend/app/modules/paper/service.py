@@ -172,6 +172,12 @@ def generate_paper_outline(paper_id: str, force: bool = True) -> Dict[str, Any]:
 
 
 def _paper_final_status(compile_status: str | None, simple_review_passed: bool) -> str:
+    """Generation status is stricter than preview availability.
+
+    pdfAvailable only means a preview PDF exists, which may come from the
+    fallback renderer. A paper is completed only after latexmk succeeds and the
+    simple review loop has no blocking/major issues.
+    """
     return "completed" if compile_status == "latexmk" and simple_review_passed else "failed"
 
 
@@ -218,8 +224,10 @@ def generate_paper(paper_id: str) -> Dict[str, Any]:
         })
         if final_status == "completed":
             _log("Paper generation completed successfully")
-        else:
+        elif compile_status != "latexmk":
             _log("Paper generation finished with unresolved LaTeX compile errors")
+        else:
+            _log("Paper generation finished with unresolved simple review issues")
 
     except Exception as exc:
         logger.error(f"Paper generation failed: {exc}", exc_info=True)

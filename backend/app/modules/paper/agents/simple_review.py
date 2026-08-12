@@ -265,6 +265,43 @@ class SimpleReviewAgent(PaperAgent):
         artifacts: List[str] = []
         if evidence_usage_review.get("issues"):
             simple_reviews.append(evidence_usage_review)
+            evidence_usage_rewrites: List[Dict[str, Any]] = []
+            evidence_usage_compile_repairs: List[Dict[str, Any]] = []
+            if evidence_usage_review.get("targets") and writing_agent:
+                try:
+                    rewrite_result = writing_agent.apply_feedback(
+                        ctx,
+                        "evidence_usage",
+                        [evidence_usage_review],
+                        feedback_round=1,
+                    )
+                except TypeError:
+                    rewrite_result = writing_agent.apply_feedback(ctx, "evidence_usage", [evidence_usage_review])
+                evidence_usage_rewrites = rewrite_result.data.get("evidence_usage_writing_rewrites", [])
+                writing_rewrites.extend(evidence_usage_rewrites)
+                if evidence_usage_rewrites:
+                    compile_agent = LatexCompileAgent(self.paper_id, self.log)
+                    try:
+                        repair = compile_agent.run(
+                            ctx,
+                            step_id="10_simple_review_compile_agent",
+                            writing_agent=writing_agent,
+                            feedback_round=1,
+                        )
+                    except TypeError:
+                        repair = compile_agent.run(
+                            ctx,
+                            step_id="10_simple_review_compile_agent",
+                            writing_agent=writing_agent,
+                        )
+                    evidence_usage_compile_repairs.append(
+                        {
+                            "summary": repair.summary,
+                            "artifacts": repair.artifacts,
+                            "compileStatus": ctx.get("compile_status"),
+                        }
+                    )
+                    compile_repair_results.extend(evidence_usage_compile_repairs)
             artifacts.extend(self._write_review_artifact(
                 ctx,
                 evidence_usage_review,
@@ -274,6 +311,8 @@ class SimpleReviewAgent(PaperAgent):
                     "source: evidence_usage",
                     f"issues: {len(evidence_usage_review.get('issues', []))}",
                 ],
+                writing_rewrites=evidence_usage_rewrites,
+                compile_repair_results=evidence_usage_compile_repairs,
             ))
         passed = True
 
