@@ -6,6 +6,7 @@ import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
 import { BookOpen, Plus, Download, Code2, Loader2, RefreshCw, Save, Eye, Copy, CheckCircle, ImagePlus, FileText, ListTree, Trash2, Wand2 } from 'lucide-react'
 import { LLM_PROVIDERS, getModelsByProvider } from '@/lib/models/providers'
+import { paperDisplayStatusClass, paperDisplayStatusLabel } from './paperStatus'
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || ''
 
@@ -100,6 +101,8 @@ interface PaperRecord {
   sectionCount?: number
   referenceCount?: number
   figureCount?: number
+  compileStatus?: string | null
+  simpleReviewPassed?: boolean | null
   logs: { timestamp: string; message: string }[]
   fileCount?: number
   createdAt: string
@@ -159,13 +162,6 @@ interface RunRecord {
 }
 
 const PAPER_TYPES = ['algorithm', 'application', 'survey', 'benchmark', 'system', 'security', 'position']
-const statusColors: Record<string, string> = {
-  created: 'bg-gray-100 text-gray-800',
-  generating: 'bg-blue-100 text-blue-800',
-  completed: 'bg-green-100 text-green-800',
-  failed: 'bg-red-100 text-red-800',
-}
-
 const toStringList = (value: unknown): string[] => {
   if (!Array.isArray(value)) return []
   return value.map(item => String(item || '').trim()).filter(Boolean)
@@ -1091,7 +1087,7 @@ export function PapersList() {
                   <div className="flex items-start justify-between gap-1">
                     <span className="text-xs font-medium truncate">{p.title}</span>
                     <div className="flex shrink-0 items-center gap-1">
-                      <span className={`px-1 py-0.5 rounded text-[10px] font-medium ${statusColors[p.status] || 'bg-gray-100'}`}>{p.status}</span>
+                      <span className={`rounded border px-1 py-0.5 text-[10px] font-medium ${paperDisplayStatusClass(p)}`}>{paperDisplayStatusLabel(p)}</span>
                       <button
                         className="inline-flex h-5 w-5 items-center justify-center rounded border border-red-200 bg-white text-red-500 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-40"
                         title="Delete paper"
@@ -1132,7 +1128,7 @@ export function PapersList() {
               <div className="flex items-center gap-3">
                 <span className="font-medium text-sm truncate max-w-xs">{selectedPaper.title}</span>
                 <Badge variant="outline" className="text-xs">{selectedPaper.paperType}</Badge>
-                <span className={`px-1.5 py-0.5 rounded text-xs font-medium ${statusColors[selectedPaper.status] || 'bg-gray-100'}`}>{selectedPaper.status}</span>
+                <span className={`rounded border px-1.5 py-0.5 text-xs font-medium ${paperDisplayStatusClass(selectedPaper)}`}>{paperDisplayStatusLabel(selectedPaper)}</span>
               </div>
               <div className="flex items-center gap-1.5">
                 {templates.length > 0 && (selectedPaper.status === 'created' || selectedPaper.status === 'completed') && (
@@ -1515,11 +1511,17 @@ export function PapersList() {
                     />
                   ) : (
                     <div className="p-4 text-center text-xs text-muted-foreground">
-                      {selectedPaper.status === 'completed'
+                      {paperDisplayStatusLabel(selectedPaper) === 'Review passed'
                         ? 'PDF is being generated...'
-                        : selectedPaper.status === 'generating'
+                        : paperDisplayStatusLabel(selectedPaper) === 'Generating'
                           ? 'Paper generation in progress...'
-                          : 'Generate the paper to see the PDF preview.'}
+                          : paperDisplayStatusLabel(selectedPaper) === 'Loop revising'
+                            ? 'Agent feedback loop is revising the paper...'
+                            : paperDisplayStatusLabel(selectedPaper) === 'Compile failed'
+                              ? 'LaTeX compile failed; review compile feedback before previewing the PDF.'
+                              : paperDisplayStatusLabel(selectedPaper) === 'Review issues'
+                                ? 'Review loop ended with remaining issues.'
+                                : 'Generate the paper to see the PDF preview.'}
                     </div>
                   )}
                 </div>
