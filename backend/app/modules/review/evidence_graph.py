@@ -239,6 +239,54 @@ def build_evidence(artifacts: Dict[str, Any]) -> List[Evidence]:
                 metadata={"experimentId": exp["id"], "figureId": fig.get("id")},
             ))
 
+    structured_evidence = artifacts.get("experimentEvidence") or {}
+    if structured_evidence:
+        evidence.append(Evidence(
+            id=f"evidence_{len(evidence) + 1:03d}",
+            paperId=paper_id,
+            evidenceType="experiment_evidence",
+            sourceModule="experiment",
+            sourcePath="code_project/artifacts/evidence/experiment_evidence.json",
+            summary=(
+                f"ExperimentEvidence status={structured_evidence.get('status', 'unknown')}; "
+                f"codeHash={structured_evidence.get('codeHash', '')}; "
+                f"environmentHash={structured_evidence.get('environmentHash', '')}"
+            ),
+            confidence=0.95,
+            metadata={
+                "status": structured_evidence.get("status"),
+                "codeRunId": structured_evidence.get("codeRunId"),
+                "failures": structured_evidence.get("failures", []),
+            },
+        ))
+        existing_metric_names = {
+            str(item.metadata.get("metricName") or "").lower()
+            for item in evidence
+            if item.evidenceType == "metric"
+        }
+        for metric in _metric_entries(structured_evidence.get("metrics", [])):
+            key = str(metric.get("key") or metric.get("name") or "metric")
+            if key.lower() in existing_metric_names:
+                continue
+            value = metric.get("value", metric.get("mean"))
+            evidence.append(Evidence(
+                id=f"evidence_{len(evidence) + 1:03d}",
+                paperId=paper_id,
+                evidenceType="metric",
+                sourceModule="experiment",
+                sourcePath=str(metric.get("sourcePath") or "experiment_evidence.json"),
+                summary=f"{key} = {value}: {metric.get('definition', '')}",
+                confidence=0.95,
+                metadata={
+                    "metricName": key,
+                    "value": value,
+                    "definition": metric.get("definition", ""),
+                    "split": metric.get("split", ""),
+                    "codeRunId": structured_evidence.get("codeRunId"),
+                },
+            ))
+            existing_metric_names.add(key.lower())
+
     for artifact in artifacts.get("codeArtifacts", []):
         evidence.append(Evidence(
             id=f"evidence_{len(evidence) + 1:03d}",

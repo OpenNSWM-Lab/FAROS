@@ -8,12 +8,28 @@ application can still boot in partially configured environments.
 import os
 import time
 import logging
+from urllib.parse import urlparse
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass
 
 from app.core.settings import get_settings, ProviderConfig
 
 logger = logging.getLogger(__name__)
+
+
+def should_trust_environment_proxy(provider_name: str, base_url: str) -> bool:
+    """Decide whether the OpenAI-compatible client should inherit shell proxies.
+
+    WSL commonly inherits a Windows localhost proxy that is not usable from the
+    Linux network namespace. DashScope is directly reachable in the target
+    deployment, so Qwen bypasses ambient proxies unless explicitly overridden.
+    """
+    explicit = os.environ.get("FAROS_LLM_TRUST_ENV")
+    if explicit is not None:
+        return explicit.strip().lower() in {"1", "true", "yes", "on"}
+
+    hostname = (urlparse(base_url).hostname or "").lower()
+    return provider_name.lower() != "qwen" and not hostname.endswith(".aliyuncs.com")
 
 
 @dataclass
@@ -178,22 +194,28 @@ class ProviderClient:
         **kwargs,
     ):
         """Use the openai SDK directly — avoids litellm's httpx issues on Windows."""
+        import httpx
         from openai import OpenAI
 
-        client = OpenAI(
-            api_key=api_config["api_key"],
-            base_url=api_config["api_base"],
-            timeout=api_config["timeout"],
+        trust_env = should_trust_environment_proxy(
+            self.provider_name, api_config["api_base"]
         )
-        # Merge extra arguments while respecting the SDK's parameter names
-        extra = {k: v for k, v in kwargs.items() if k not in ("api_key", "api_base", "timeout")}
-        return client.chat.completions.create(
-            model=model_name,
-            messages=messages_dict,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            **extra,
-        )
+        with httpx.Client(trust_env=trust_env) as http_client:
+            with OpenAI(
+                api_key=api_config["api_key"],
+                base_url=api_config["api_base"],
+                timeout=api_config["timeout"],
+                http_client=http_client,
+            ) as client:
+                # Merge extra arguments while respecting the SDK's parameter names
+                extra = {k: v for k, v in kwargs.items() if k not in ("api_key", "api_base", "timeout")}
+                return client.chat.completions.create(
+                    model=model_name,
+                    messages=messages_dict,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    **extra,
+                )
 
     def _chat_via_litellm(
         self,

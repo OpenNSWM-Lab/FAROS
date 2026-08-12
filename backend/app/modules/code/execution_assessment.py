@@ -449,6 +449,105 @@ def assess_plan_package(
     )
 
 
+def assess_candidate_execution(
+    *,
+    run_id: str,
+    question_id: str,
+    research_question: str,
+    candidate: Optional[Mapping[str, Any]] = None,
+    inputs: Optional[Mapping[str, Any]] = None,
+    plan_package_id: Optional[str] = None,
+    base_dir: Optional[str] = None,
+) -> ExecutionAssessment:
+    """Adapt an Idea candidate to the strict Code execution assessment input."""
+
+    candidate_data = dict(candidate or {})
+    input_data = dict(inputs or {})
+    raw_specs = candidate_data.get("experimentSpecs") or candidate_data.get("requiredExperiments") or []
+    specs = [dict(item) for item in raw_specs if isinstance(item, Mapping)]
+    protocol = candidate_data.get("evaluationProtocol") or {}
+    if not isinstance(protocol, Mapping):
+        protocol = {}
+
+    metrics: list[str] = []
+    datasets: list[str] = []
+    stop_conditions: list[str] = []
+    for spec in specs:
+        metrics.extend(str(item) for item in spec.get("metrics", []) if item)
+        datasets.extend(str(item) for item in spec.get("datasets", []) if item)
+        stop_conditions.extend(str(item) for item in spec.get("stopConditions", []) if item)
+    metrics.extend(str(item) for item in candidate_data.get("expectedMetrics", []) if item)
+    metrics.extend(str(item) for item in protocol.get("metrics", []) if item)
+    metrics.extend(str(item) for item in input_data.get("validationMetrics", []) if item)
+    datasets.extend(str(item) for item in protocol.get("datasets", []) if item)
+    datasets.extend(str(item) for item in input_data.get("requiredDatasets", []) if item)
+    stop_conditions.extend(str(item) for item in candidate_data.get("stopConditions", []) if item)
+    stop_conditions.extend(str(item) for item in protocol.get("stopConditions", []) if item)
+    stop_conditions.extend(str(item) for item in input_data.get("stopConditions", []) if item)
+    metrics = _unique(metrics)
+    datasets = _unique(datasets)
+    stop_conditions = _unique(stop_conditions)
+
+    available_inputs = _unique(
+        [str(item) for item in input_data.get("availableInputs", []) if item]
+        + [
+            dataset
+            for dataset in datasets
+            if _contains(dataset.lower(), ("synthetic", "generated", "built-in", "toy", "合成", "生成"))
+        ]
+    )
+    method = str(candidate_data.get("proposedMethod") or candidate_data.get("keyInsight") or "").strip()
+    steps: list[dict[str, Any]] = []
+    for index, spec in enumerate(specs, start=1):
+        spec_metrics = _unique(str(item) for item in spec.get("metrics", []) if item) or metrics
+        spec_stops = _unique(str(item) for item in spec.get("stopConditions", []) if item) or stop_conditions
+        steps.append({
+            "id": f"experiment_{index}",
+            "title": str(spec.get("name") or f"Experiment {index}"),
+            "objective": str(spec.get("description") or method or research_question),
+            "inputs": [str(item) for item in spec.get("datasets", []) if item],
+            "method": [method] if method else [],
+            "metrics": spec_metrics,
+            "stopConditions": spec_stops,
+        })
+    if not steps and method:
+        steps.append({
+            "id": "experiment_1",
+            "title": str(candidate_data.get("title") or "Candidate experiment"),
+            "objective": research_question,
+            "method": [method],
+            "metrics": metrics,
+            "stopConditions": stop_conditions,
+        })
+
+    source = {
+        "runId": run_id,
+        "questionId": question_id,
+        "packageId": plan_package_id,
+        "idea": candidate_data,
+        "problemFrame": {
+            "originalQuestion": research_question,
+            "scopedQuestion": research_question,
+        },
+        "researchPlan": {
+            "objective": research_question,
+            "steps": steps,
+            "requiredData": datasets,
+            "requiredResources": [str(item) for item in input_data.get("toolsAndEnvironment", []) if item],
+            "executionClass": candidate_data.get("executionClass", ExecutionClass.NOT_ASSESSED.value),
+        },
+        "availableInputs": available_inputs,
+        "missingInputs": [str(item) for item in input_data.get("missingInputs", []) if item],
+        "artifactRefs": input_data.get("artifactRefs", []),
+    }
+    return assess_execution(
+        source,
+        run_id=run_id,
+        question_id=question_id,
+        base_dir=base_dir,
+    )
+
+
 def execution_gate(assessment: ExecutionAssessment | Mapping[str, Any]) -> ExecutionGateDecision:
     value = assessment if isinstance(assessment, ExecutionAssessment) else ExecutionAssessment.model_validate(assessment)
     allowed = value.executionClass in _READY_CLASSES and value.status == ExecutionStatus.READY and not value.missingInputs
@@ -485,6 +584,7 @@ __all__ = [
     "ExecutionGateDecision",
     "ExecutionGateError",
     "ExecutionStatus",
+    "assess_candidate_execution",
     "assess_execution",
     "assess_plan_package",
     "execution_gate",

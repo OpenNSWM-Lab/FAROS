@@ -9,6 +9,12 @@ backend/tests/*
 !backend/tests/test_paper_prompt_formatting.py
 !backend/tests/test_paper_pr42_regressions.py
 !backend/tests/test_release_smoke.py
+!backend/tests/test_execution_assessment.py
+!backend/tests/test_experiment_evidence.py
+!backend/tests/test_provider_client_proxy.py
+!backend/tests/test_reviewx_cem.py
+!backend/tests/test_reviewx_claim_extractor.py
+!backend/tests/test_reviewx_experiment_feedback.py
 !backend/tests/test_scientific_research_contracts.py
 !backend/tests/test_research_dossier_schema.py
 !backend/tests/test_idea_problem_framing.py
