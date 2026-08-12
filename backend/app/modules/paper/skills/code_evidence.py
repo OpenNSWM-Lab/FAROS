@@ -498,7 +498,6 @@ def materialize_code_artifacts_for_paper(paper: Dict[str, Any], paper_id: str) -
                 "sourcePath": artifact.get("cartRelativePath"),
                 "nodeId": artifact.get("nodeId"),
                 "targetSection": "Experiments",
-                "preview": artifact.get("preview", ""),
             })
 
     return {"figures": figures, "tables": tables, "warnings": warnings}

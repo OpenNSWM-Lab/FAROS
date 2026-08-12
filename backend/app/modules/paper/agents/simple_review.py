@@ -19,6 +19,37 @@ MAX_REVIEW_ITERATIONS = 4
 class SimpleReviewAgent(PaperAgent):
     name = "simple_review_agent"
 
+    def _write_review_artifact(
+        self,
+        ctx: PaperSkillContext,
+        review: Dict[str, Any],
+        review_round: int,
+        summary_lines: List[str],
+        writing_rewrites: List[Dict[str, Any]] | None = None,
+        compile_repair_results: List[Dict[str, Any]] | None = None,
+    ) -> List[str]:
+        review_source = str(review.get("source") or "simple_review")
+        artifact_name = "evidence_usage.json" if review_source == "evidence_usage" else "review.json"
+        return write_artifact(
+            ctx.paper_id,
+            STEP_ID,
+            {
+                "round": review_round,
+                "source": review_source,
+                "review": review,
+                "reviews": [review],
+                "passed": review.get("passed"),
+                "issues": review.get("issues", []),
+                "targets": review.get("targets", []),
+                "writingRewrites": writing_rewrites or [],
+                "compileRepairResults": compile_repair_results or [],
+                "compileStatus": ctx.get("compile_status"),
+                "compileErrors": ctx.get("compile_errors"),
+            },
+            summary_lines,
+            artifact_path=f"artifacts/feedback/round_{max(1, review_round):02d}/{artifact_name}",
+        )
+
     @staticmethod
     def _passed(review: Dict[str, Any]) -> bool:
         return not any(
@@ -231,8 +262,19 @@ class SimpleReviewAgent(PaperAgent):
         writing_rewrites: List[Dict[str, Any]] = []
         compile_repair_results: List[Dict[str, Any]] = []
         evidence_usage_review = self._evidence_usage_review(ctx)
+        artifacts: List[str] = []
         if evidence_usage_review.get("issues"):
             simple_reviews.append(evidence_usage_review)
+            artifacts.extend(self._write_review_artifact(
+                ctx,
+                evidence_usage_review,
+                1,
+                [
+                    "# Simple Review Agent",
+                    "source: evidence_usage",
+                    f"issues: {len(evidence_usage_review.get('issues', []))}",
+                ],
+            ))
         passed = True
 
         for iteration in range(1, MAX_REVIEW_ITERATIONS + 1):
@@ -243,23 +285,45 @@ class SimpleReviewAgent(PaperAgent):
             issue_count = len(review.get("issues", [])) if isinstance(review.get("issues"), list) else 0
             self.log(f"{self.name}/review_feedback: round {iteration}; {issue_count} issue(s) ({elapsed:.1f}s)")
             simple_reviews.append(review)
+            artifacts.extend(self._write_review_artifact(
+                ctx,
+                review,
+                iteration,
+                [
+                    "# Simple Review Agent",
+                    f"round: {iteration}",
+                    f"issues: {issue_count}",
+                ],
+            ))
             passed = self._passed(review)
             if passed:
                 break
 
             round_writing_rewrites: List[Dict[str, Any]] = []
             if writing_agent:
-                rewrite_result = writing_agent.apply_feedback(ctx, "simple_review", [review])
+                try:
+                    rewrite_result = writing_agent.apply_feedback(ctx, "simple_review", [review], feedback_round=iteration)
+                except TypeError:
+                    rewrite_result = writing_agent.apply_feedback(ctx, "simple_review", [review])
                 round_writing_rewrites = rewrite_result.data.get("simple_review_writing_rewrites", [])
                 writing_rewrites.extend(round_writing_rewrites)
             if not round_writing_rewrites:
                 break
 
-            repair = LatexCompileAgent(self.paper_id, self.log).run(
-                ctx,
-                step_id="10_simple_review_compile_agent",
-                writing_agent=writing_agent,
-            )
+            compile_agent = LatexCompileAgent(self.paper_id, self.log)
+            try:
+                repair = compile_agent.run(
+                    ctx,
+                    step_id="10_simple_review_compile_agent",
+                    writing_agent=writing_agent,
+                    feedback_round=iteration + 1,
+                )
+            except TypeError:
+                repair = compile_agent.run(
+                    ctx,
+                    step_id="10_simple_review_compile_agent",
+                    writing_agent=writing_agent,
+                )
             compile_repair_results.append(
                 {
                     "summary": repair.summary,
@@ -278,19 +342,6 @@ class SimpleReviewAgent(PaperAgent):
             f"passed: {passed}",
             f"compile_status: {ctx.get('compile_status')}",
         ]
-        artifacts = write_artifact(
-            ctx.paper_id,
-            STEP_ID,
-            {
-                "reviews": simple_reviews,
-                "writingRewrites": writing_rewrites,
-                "compileRepairResults": compile_repair_results,
-                "passed": passed,
-                "compileStatus": ctx.get("compile_status"),
-                "compileErrors": ctx.get("compile_errors"),
-            },
-            summary_lines,
-        )
         result = PaperSkillResult(
             name=self.name,
             summary=f"{'passed' if passed else 'issues remain'}; {len(writing_rewrites)} writing rewrites",

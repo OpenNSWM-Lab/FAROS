@@ -97,6 +97,7 @@ class LatexCompileAgent(PaperAgent):
         ctx: PaperSkillContext,
         step_id: str = STEP_ID,
         writing_agent: PaperWritingAgent | None = None,
+        feedback_round: int = 1,
     ) -> PaperSkillResult:
         compile_reviews: List[Dict[str, Any]] = []
         writing_rewrites: List[Dict[str, Any]] = []
@@ -117,7 +118,10 @@ class LatexCompileAgent(PaperAgent):
             compile_reviews.append(review)
             round_writing_rewrites: List[Dict[str, Any]] = []
             if writing_agent:
-                rewrite_result = writing_agent.apply_feedback(ctx, "latex_compile", [review])
+                try:
+                    rewrite_result = writing_agent.apply_feedback(ctx, "latex_compile", [review], feedback_round=feedback_round)
+                except TypeError:
+                    rewrite_result = writing_agent.apply_feedback(ctx, "latex_compile", [review])
                 round_writing_rewrites = rewrite_result.data.get("latex_compile_writing_rewrites", [])
                 writing_rewrites.extend(round_writing_rewrites)
             if not round_writing_rewrites:
@@ -135,12 +139,15 @@ class LatexCompileAgent(PaperAgent):
             ctx.paper_id,
             step_id,
             {
+                "round": feedback_round,
+                "source": "latex_compile",
                 "reviews": compile_reviews,
                 "writingRewrites": writing_rewrites,
                 "compileStatus": ctx.get("compile_status"),
                 "compileErrors": ctx.get("compile_errors"),
             },
             summary_lines,
+            artifact_path=f"artifacts/feedback/round_{max(1, feedback_round):02d}/compile.json",
         )
         result = PaperSkillResult(
             name=self.name,
