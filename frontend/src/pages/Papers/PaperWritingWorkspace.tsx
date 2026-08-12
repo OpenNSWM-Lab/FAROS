@@ -6,6 +6,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { LLM_PROVIDERS, getModelsByProvider } from '@/lib/models/providers'
+import { paperDisplayStatusClass, paperDisplayStatusLabel } from './paperStatus'
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || ''
 
@@ -162,13 +163,6 @@ interface AgentTransfer {
   kind: string
   content: unknown
   artifactPath?: string
-}
-
-const statusClass: Record<string, string> = {
-  created: 'border-slate-300 bg-slate-50 text-slate-700',
-  generating: 'border-blue-300 bg-blue-50 text-blue-700',
-  completed: 'border-emerald-300 bg-emerald-50 text-emerald-700',
-  failed: 'border-red-300 bg-red-50 text-red-700',
 }
 
 const validStage = (value?: string): value is Stage => STAGES.some(stage => stage.id === value)
@@ -581,7 +575,7 @@ export function PaperWritingWorkspace() {
       accentColor="indigo"
       actions={
         <div className="flex items-center gap-2">
-          {paper && <Badge variant="outline" className={statusClass[paper.status] || ''}>{paper.status}</Badge>}
+          {paper && <Badge variant="outline" className={paperDisplayStatusClass(paper)}>{paperDisplayStatusLabel(paper)}</Badge>}
           <Link to="/papers">
             <Button variant="outline" size="sm"><ArrowLeft className="mr-1 h-4 w-4" /> Papers</Button>
           </Link>
