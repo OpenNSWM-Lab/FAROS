@@ -1,0 +1,235 @@
+{
+  "schemaVersion": "plan-package/v2",
+  "packageId": "demo_ppkg_math",
+  "createdAt": "2026-06-18T00:00:00Z",
+  "source": {
+    "ideaSessionId": "",
+    "planSessionId": "",
+    "ideaCandidateId": ""
+  },
+  "idea": {
+    "id": "demo_idea",
+    "title": "Math Computation and Visualization Demo",
+    "problem": "Demonstrate basic mathematical computation and data visualization pipeline",
+    "hypothesisStatement": "A simple pipeline computing basic statistics and generating charts",
+    "keyInsight": "Validating the full FAROS Agent execution pipeline end to end",
+    "proposedMethod": "Three-stage pipeline: Stage 1 does basic arithmetic, Stage 2 generates random data and computes statistics, Stage 3 creates matplotlib visualizations."
+  },
+  "background": {
+    "summary": "Demo project for testing the FAROS autonomous agent pipeline with simple math operations.",
+    "motivation": "End-to-end pipeline validation",
+    "currentLimitations": [],
+    "domainContext": [
+      "math",
+      "statistics",
+      "visualization"
+    ]
+  },
+  "stages": [
+    {
+      "id": "stage-1",
+      "title": "Stage 1: Basic Arithmetic Computation",
+      "desc": "Write Python code to perform basic arithmetic operations: addition, multiplication, and generate a simple number sequence.",
+      "dependsOn": [],
+      "steps": [
+        {
+          "id": "step-1-1",
+          "order": 1,
+          "title": "Arithmetic Operations",
+          "desc": "Write a Python script that: (1) computes sum of numbers 1 to 100, (2) computes product of numbers 1 to 10, (3) generates a Fibonacci sequence of length 15. Save results to a JSON file.",
+          "method": "Write and execute a Python script using basic arithmetic and json modules",
+          "inputFrom": [],
+          "outputs": [
+            {
+              "name": "arithmetic_results.json",
+              "type": "json",
+              "desc": "Results of arithmetic operations"
+            }
+          ],
+          "expected": [
+            {
+              "metric": "sum_1_to_100",
+              "target": 5050,
+              "desc": "Sum of 1 to 100 should be 5050"
+            },
+            {
+              "metric": "product_1_to_10",
+              "target": 3628800,
+              "desc": "Product of 1 to 10"
+            },
+            {
+              "metric": "fibonacci_15_length",
+              "target": 15,
+              "desc": "Fibonacci sequence should have 15 numbers"
+            }
+          ],
+          "codeHints": "Use basic Python math operations. No external libraries needed beyond json."
+        },
+        {
+          "id": "step-1-2",
+          "order": 2,
+          "title": "Prime Number Finder",
+          "desc": "Write a Python script that finds all prime numbers between 2 and 200 using the Sieve of Eratosthenes algorithm. Save the list of primes to a JSON file.",
+          "method": "Implement Sieve of Eratosthenes algorithm",
+          "inputFrom": [],
+          "outputs": [
+            {
+              "name": "primes.json",
+              "type": "json",
+              "desc": "List of prime numbers up to 200"
+            }
+          ],
+          "expected": [
+            {
+              "metric": "prime_count_up_to_200",
+              "target": 46,
+              "desc": "There are 46 primes up to 200"
+            }
+          ],
+          "codeHints": "Use a boolean list to mark non-primes. Time complexity O(n log log n)."
+        }
+      ]
+    },
+    {
+      "id": "stage-2",
+      "title": "Stage 2: Data Generation and Statistics",
+      "desc": "Generate random data samples and compute basic statistical measures using the standard library.",
+      "dependsOn": [],
+      "steps": [
+        {
+          "id": "step-2-1",
+          "order": 1,
+          "title": "Statistical Data Generation",
+          "desc": "Write a Python script that: (1) generates 1000 random numbers from a normal distribution (mean=50, std=15), (2) computes mean, median, standard deviation, min, max, (3) saves all statistics to a JSON file. Use only the built-in random and statistics modules.",
+          "method": "Use random.gauss() and statistics module for computation",
+          "inputFrom": [],
+          "outputs": [
+            {
+              "name": "statistics.json",
+              "type": "json",
+              "desc": "Statistical summary of generated data"
+            }
+          ],
+          "expected": [
+            {
+              "metric": "sample_count",
+              "target": 1000,
+              "desc": "1000 data points generated"
+            },
+            {
+              "metric": "mean_near_50",
+              "target": 50,
+              "desc": "Mean should be approximately 50"
+            }
+          ],
+          "codeHints": "Use random.gauss(50, 15) for normal distribution. Use statistics.mean(), statistics.median(), statistics.stdev()."
+        },
+        {
+          "id": "step-2-2",
+          "order": 2,
+          "title": "Data Distribution Analysis",
+          "desc": "Read the statistics from step-2-1. Create a frequency histogram by binning data into 10 equal-width bins. Compute and save the bin counts and bin edges to a JSON file.",
+          "method": "Compute histogram bins manually using min/max range",
+          "inputFrom": [],
+          "outputs": [
+            {
+              "name": "histogram.json",
+              "type": "json",
+              "desc": "Histogram bin counts and edges"
+            }
+          ],
+          "expected": [
+            {
+              "metric": "bin_count",
+              "target": 10,
+              "desc": "Data divided into 10 bins"
+            },
+            {
+              "metric": "total_in_bins",
+              "target": 1000,
+              "desc": "All 1000 data points assigned to bins"
+            }
+          ],
+          "codeHints": "Generate 1000 new random data points. Compute min/max, create 10 equal-width bins, count points in each bin."
+        }
+      ]
+    },
+    {
+      "id": "stage-3",
+      "title": "Stage 3: Visualization and Report",
+      "desc": "Generate visualizations from the computed data and produce a summary report.",
+      "dependsOn": [],
+      "steps": [
+        {
+          "id": "step-3-1",
+          "order": 1,
+          "title": "Data Visualization with Matplotlib",
+          "desc": "Write a Python script that: (1) generates 500 random data points, (2) creates a histogram chart using matplotlib, (3) creates a scatter plot of (x, y=x+noise), (4) saves both charts as PNG files. Install matplotlib if needed.",
+          "method": "Use matplotlib.pyplot to create publication-quality charts",
+          "inputFrom": [],
+          "outputs": [
+            {
+              "name": "histogram.png",
+              "type": "image",
+              "desc": "Histogram of random data"
+            },
+            {
+              "name": "scatter.png",
+              "type": "image",
+              "desc": "Scatter plot with noise"
+            }
+          ],
+          "expected": [
+            {
+              "metric": "charts_generated",
+              "target": 2,
+              "desc": "Two PNG charts generated"
+            }
+          ],
+          "codeHints": "pip install matplotlib if not available. Use plt.hist() and plt.scatter(). Save with plt.savefig()."
+        },
+        {
+          "id": "step-3-2",
+          "order": 2,
+          "title": "Summary Report Generation",
+          "desc": "Write a Python script that generates a summary markdown report (RESEARCH_REPORT.md) describing all computations performed, results obtained, and charts generated. Include the actual computed values from earlier steps if available.",
+          "method": "Generate a structured markdown report with sections",
+          "inputFrom": [],
+          "outputs": [
+            {
+              "name": "RESEARCH_REPORT.md",
+              "type": "markdown",
+              "desc": "Full experiment summary report"
+            }
+          ],
+          "expected": [
+            {
+              "metric": "report_sections",
+              "target": 4,
+              "desc": "Report should have at least 4 sections"
+            }
+          ],
+          "codeHints": "Write a markdown file with sections: Introduction, Methods, Results, Conclusion. Use computed values from the current workspace."
+        }
+      ]
+    }
+  ],
+  "constants": [
+    {
+      "name": "DEMO_MODE",
+      "type": "boolean",
+      "value": true
+    },
+    {
+      "name": "SEED",
+      "type": "integer",
+      "value": 42
+    },
+    {
+      "name": "OUTPUT_FORMAT",
+      "type": "string",
+      "value": "json"
+    }
+  ],
+  "_demo_project_id": "cproj_82d3782f6021"
+}

@@ -7,6 +7,7 @@ import os
 import re
 import uuid
 import shutil
+import tempfile
 import zipfile
 import logging
 from datetime import UTC, datetime
@@ -355,7 +356,11 @@ def read_paper_file(paper_id: str, rel_path: str) -> Optional[str]:
     latex_dir = get_paper_latex_dir(paper_id)
     abs_path = os.path.join(latex_dir, rel_path)
     real = os.path.realpath(abs_path)
-    if not real.startswith(os.path.realpath(latex_dir)):
+    latex_real = os.path.realpath(latex_dir)
+    try:
+        if os.path.commonpath([latex_real, real]) != latex_real:
+            return None
+    except ValueError:
         return None
     if not os.path.isfile(abs_path):
         return None
@@ -408,8 +413,17 @@ def create_paper_zip(paper_id: str) -> Optional[str]:
 def _save_record(paper_id: str, record: Dict):
     paper_dir = os.path.join(PAPERS_DIR, paper_id)
     os.makedirs(paper_dir, exist_ok=True)
-    with open(os.path.join(paper_dir, "meta.json"), "w") as f:
-        json.dump(record, f, indent=2, default=str)
+    target = os.path.join(paper_dir, "meta.json")
+    fd, temporary = tempfile.mkstemp(prefix="meta.", suffix=".tmp", dir=paper_dir)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(record, handle, indent=2, default=str)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, target)
+    finally:
+        if os.path.exists(temporary):
+            os.remove(temporary)
 
 
 def get_paper_figures_dir(paper_id: str) -> str:

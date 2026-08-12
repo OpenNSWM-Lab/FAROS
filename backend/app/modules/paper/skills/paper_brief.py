@@ -141,12 +141,12 @@ def _code_brief_requirements(context: Dict[str, str], code_evidence_obj: Any = N
     if isinstance(code_evidence, dict):
         cart_sources.extend([
             cart for cart in code_evidence.get("cartResults", [])[:3]
-            if isinstance(cart, dict)
+            if isinstance(cart, dict) and cart.get("claimEligible") is True
         ])
     if isinstance(metrics_summary, dict):
         cart_sources.extend([
             cart for cart in metrics_summary.get("cartMetrics", [])[:3]
-            if isinstance(cart, dict)
+            if isinstance(cart, dict) and cart.get("claimEligible") is True
         ])
 
     seen_cart_ids = set()
