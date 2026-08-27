@@ -103,6 +103,16 @@ def model_names(record: dict[str, Any]) -> set[str]:
     return names
 
 
+def llm_call_count(record: dict[str, Any]) -> int:
+    trace = record.get("modelTrace") or {}
+    declared = trace.get("llmCallCount")
+    if declared is not None:
+        return max(0, int(declared or 0))
+    direct = trace.get("llmCalls") or []
+    routed = (trace.get("llmRouting") or {}).get("llmCalls") or []
+    return max(len(direct), len(routed))
+
+
 def summarize_runs(
     records: list[dict[str, Any]],
     selected_keys: set[tuple[str, str, int]],
@@ -116,6 +126,8 @@ def summarize_runs(
     failed = sum(status not in {"completed", "success"} for status in statuses)
     tokens = [float((record.get("modelTrace") or {}).get("estimatedTokenCost", 0) or 0) for record in records]
     latencies = [float(record.get("runnerElapsedMs", 0) or 0) for record in records]
+    call_counts = [llm_call_count(record) for record in records]
+    escalated_tokens = [token for token, calls in zip(tokens, call_counts) if calls > 0]
     budget_exceeded = sum(
         bool((record.get("modelTrace") or {}).get("budgetExceeded")) or token > max_total_tokens
         for record, token in zip(records, tokens)
@@ -144,6 +156,11 @@ def summarize_runs(
         "p95TotalTokens": rounded(percentile(tokens, 0.95)),
         "meanLatencyMs": rounded(statistics.fmean(latencies)) if latencies else None,
         "p95LatencyMs": rounded(percentile(latencies, 0.95)),
+        "llmCallCount": sum(call_counts),
+        "llmEscalatedRunCount": sum(calls > 0 for calls in call_counts),
+        "llmEscalationRate": rounded(sum(calls > 0 for calls in call_counts) / len(records)) if records else None,
+        "localOnlyRunCount": sum(calls == 0 for calls in call_counts),
+        "meanTokensPerEscalatedRun": rounded(statistics.fmean(escalated_tokens)) if escalated_tokens else 0.0,
         "meanFindingCount": rounded(finding_total / len(records)) if records else None,
         "exactQuoteGroundedRate": (
             rounded(grounded_total / finding_total) if grounded_reported and finding_total else None
@@ -251,6 +268,66 @@ def paired_summary(
     }
 
 
+def paired_efficiency_summary(
+    left: str,
+    right: str,
+    records_by_method: dict[str, list[dict[str, Any]]],
+    *,
+    seed: int,
+    iterations: int,
+) -> dict[str, Any]:
+    def keyed(records: list[dict[str, Any]]) -> dict[tuple[str, int], dict[str, Any]]:
+        return {
+            (
+                str(record.get("sampleId") or record.get("paperId") or ""),
+                int(record.get("runnerRepetition", 0) or 0),
+            ): record
+            for record in records
+        }
+
+    left_records = keyed(records_by_method.get(left, []))
+    right_records = keyed(records_by_method.get(right, []))
+    common = sorted(set(left_records) & set(right_records))
+    paired = []
+    for sample_id, repetition in common:
+        a, b = left_records[(sample_id, repetition)], right_records[(sample_id, repetition)]
+        a_tokens = float((a.get("modelTrace") or {}).get("estimatedTokenCost", 0) or 0)
+        b_tokens = float((b.get("modelTrace") or {}).get("estimatedTokenCost", 0) or 0)
+        paired.append({
+            "sampleId": sample_id,
+            "repetition": repetition,
+            "latencyDeltaMs": float(b.get("runnerElapsedMs", 0) or 0) - float(a.get("runnerElapsedMs", 0) or 0),
+            "tokenDelta": b_tokens - a_tokens,
+            "llmCallDelta": llm_call_count(b) - llm_call_count(a),
+            "findingCountDelta": len(b.get("findings") or []) - len(a.get("findings") or []),
+        })
+
+    def summarize(field: str, offset: int) -> dict[str, Any]:
+        values = [float(row[field]) for row in paired]
+        return {
+            "mean": rounded(statistics.fmean(values)) if values else None,
+            "paperClusterBootstrap95": cluster_bootstrap_ci(
+                paired,
+                lambda row: float(row[field]),
+                seed=seed + offset,
+                iterations=iterations,
+            ),
+        }
+
+    return {
+        "methodA": left,
+        "methodB": right,
+        "effectDirection": "methodB-minus-methodA",
+        "expectedPairCount": max(len(left_records), len(right_records)),
+        "observedPairCount": len(paired),
+        "complete": set(left_records) == set(right_records),
+        "latencyDeltaMs": summarize("latencyDeltaMs", 0),
+        "tokenDelta": summarize("tokenDelta", 1),
+        "llmCallDelta": summarize("llmCallDelta", 2),
+        "findingCountDelta": summarize("findingCountDelta", 3),
+    }
+
+
 def analyze(
     comparison_rows: list[dict[str, Any]],
     prediction_rows: list[dict[str, Any]],
@@ -261,6 +338,7 @@ def analyze(
     iterations: int,
     expected_repetitions: int,
     max_total_tokens: int,
+    evaluated_finding_limit: int = 0,
 ) -> dict[str, Any]:
     rows_by_method: dict[str, list[dict[str, Any]]] = defaultdict(list)
     records_by_method: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -305,6 +383,16 @@ def analyze(
         )
         for index, (left, right) in enumerate(itertools.combinations(methods, 2))
     ]
+    efficiency_pairwise = [
+        paired_efficiency_summary(
+            left,
+            right,
+            records_by_method,
+            seed=seed + index * 43,
+            iterations=iterations,
+        )
+        for index, (left, right) in enumerate(itertools.combinations(methods, 2))
+    ]
     run_counts_complete = all(
         summary["runQuality"]["observedRunCount"] == summary["runQuality"]["expectedRunCount"]
         for summary in summaries
@@ -318,6 +406,7 @@ def analyze(
         "noRecordedRunFailures": no_failures,
         "tokenBudgetRespected": budgets_respected,
         "splitExplicitlyNamed": bool(split.strip()),
+        "completeRunPairs": all(item["complete"] for item in efficiency_pairwise),
     }
     return {
         "schemaVersion": "peerqa_alignment_proxy_summary_v1",
@@ -328,8 +417,10 @@ def analyze(
         "methodCount": len(methods),
         "paperCount": len({str(row.get("sampleId") or "") for row in comparison_rows}),
         "questionCount": len(by_pair),
+        "evaluatedFindingLimit": evaluated_finding_limit or None,
         "methods": summaries,
         "pairwise": pairwise,
+        "efficiencyPairwise": efficiency_pairwise,
         "qualityGate": {
             "status": "passed" if all(checks.values()) else "failed",
             "checks": checks,
@@ -343,17 +434,82 @@ def analyze(
     }
 
 
+def attach_protocol_audit(
+    summary: dict[str, Any],
+    protocol_path: Path,
+    *,
+    expected_repetitions: int,
+    max_total_tokens: int,
+) -> None:
+    protocol = json.loads(protocol_path.read_text(encoding="utf-8"))
+    if not isinstance(protocol, dict):
+        raise ValueError("protocol must contain one JSON object")
+    locked_files = protocol.get("lockedFiles") or {}
+    file_checks = {}
+    for name, item in locked_files.items():
+        path = Path(str((item or {}).get("path") or ""))
+        expected_hash = str((item or {}).get("sha256") or "")
+        file_checks[str(name)] = bool(
+            path.is_file() and expected_hash and sha256_file(path) == expected_hash
+        )
+    observed_methods = {str(item.get("method") or "") for item in summary.get("methods") or []}
+    checks = {
+        "paperCountMatches": int(protocol.get("paperCount", -1)) == int(summary.get("paperCount", -2)),
+        "questionCountMatches": int(protocol.get("reviewerQuestionCount", -1)) == int(summary.get("questionCount", -2)),
+        "methodIdsMatch": set(map(str, protocol.get("methods") or [])) == observed_methods,
+        "thresholdMatches": math.isclose(
+            float(protocol.get("automaticAlignmentThreshold", -1)),
+            float(summary.get("automaticAlignmentThreshold", -2)),
+            rel_tol=0,
+            abs_tol=1e-12,
+        ),
+        "repetitionsMatch": int(protocol.get("repetitions", -1)) == expected_repetitions,
+        "tokenBudgetMatches": int(protocol.get("maxTotalTokensPerPaper", -1)) == max_total_tokens,
+        "lockedFileHashesMatch": bool(file_checks) and all(file_checks.values()),
+        "validationSplitHasNoDevelopmentPapers": int(
+            (protocol.get("selection") or {}).get("developmentPapersInThisSplit", -1)
+        ) == 0,
+        "findingLimitMatches": (
+            protocol.get("fairComparisonMaxFindingsPerMethod") is None
+            or int(protocol["fairComparisonMaxFindingsPerMethod"])
+            == int(summary.get("evaluatedFindingLimit") or 0)
+        ),
+    }
+    summary["protocolAudit"] = {
+        "schemaVersion": protocol.get("schemaVersion"),
+        "lockedAt": protocol.get("lockedAt"),
+        "providerName": protocol.get("providerName"),
+        "model": protocol.get("model"),
+        "temperature": protocol.get("temperature"),
+        "repetitions": protocol.get("repetitions"),
+        "sourceCount": protocol.get("sourceCount"),
+        "selection": protocol.get("selection") or {},
+        "fairComparisonMaxFindingsPerMethod": protocol.get("fairComparisonMaxFindingsPerMethod"),
+        "path": str(protocol_path),
+        "sha256": sha256_file(protocol_path),
+        "checks": checks,
+        "lockedFileChecks": file_checks,
+        "amendments": protocol.get("protocolAmendments") or [],
+        "passed": all(checks.values()),
+    }
+    summary["qualityGate"]["checks"]["frozenProtocolVerified"] = all(checks.values())
+    summary["qualityGate"]["status"] = (
+        "passed" if all(summary["qualityGate"]["checks"].values()) else "failed"
+    )
+
+
 def markdown_report(summary: dict[str, Any]) -> str:
     lines = [
         "# PeerQA automatic alignment proxy",
         "",
         f"Split: `{summary['split']}`. Papers: {summary['paperCount']}. "
-        f"Reviewer questions: {summary['questionCount']}.",
+        f"Reviewer questions: {summary['questionCount']}. "
+        f"Evaluated findings per method: {summary.get('evaluatedFindingLimit') or 'all'}.",
         "",
         "> This is a frozen lexical evidence-alignment proxy, not expert review recall or correctness.",
         "",
-        "| Method | Candidate rate | Paper-cluster 95% CI | Mean score | Tokens/run | Latency/run |",
-        "|---|---:|---:|---:|---:|---:|",
+        "| Method | Candidate rate | Paper-cluster 95% CI | Mean score | LLM call rate | Tokens/run | Latency/run |",
+        "|---|---:|---:|---:|---:|---:|---:|",
     ]
     for method in summary["methods"]:
         alignment = method["automaticAlignment"]
@@ -362,7 +518,8 @@ def markdown_report(summary: dict[str, Any]) -> str:
         lines.append(
             f"| {method['method']} | {alignment['candidateRate']:.3f} | "
             f"[{ci[0]:.3f}, {ci[1]:.3f}] | {alignment['meanBestMatchScore']:.3f} | "
-            f"{quality['meanTotalTokens']:.0f} | {quality['meanLatencyMs']:.0f} ms |"
+            f"{quality['llmEscalationRate']:.1%} | {quality['meanTotalTokens']:.0f} | "
+            f"{quality['meanLatencyMs']:.0f} ms |"
         )
     lines.extend(["", "## Paired effects", ""])
     for pair in summary["pairwise"]:
@@ -371,6 +528,17 @@ def markdown_report(summary: dict[str, Any]) -> str:
             f"- `{pair['methodB']}` minus `{pair['methodA']}`: candidate-rate delta "
             f"{pair['candidateRateDelta']:+.3f}, paper-cluster 95% CI [{ci[0]:+.3f}, {ci[1]:+.3f}], "
             f"exact McNemar p={pair['candidateDiscordance']['exactMcNemarPValue']:.4f}."
+        )
+    lines.extend(["", "## Paired efficiency", ""])
+    for pair in summary["efficiencyPairwise"]:
+        latency = pair["latencyDeltaMs"]
+        tokens = pair["tokenDelta"]
+        latency_ci = latency["paperClusterBootstrap95"]
+        token_ci = tokens["paperClusterBootstrap95"]
+        lines.append(
+            f"- `{pair['methodB']}` minus `{pair['methodA']}`: latency "
+            f"{latency['mean']:+.0f} ms [95% CI {latency_ci[0]:+.0f}, {latency_ci[1]:+.0f}]; "
+            f"tokens {tokens['mean']:+.0f} [95% CI {token_ci[0]:+.0f}, {token_ci[1]:+.0f}]."
         )
     lines.extend([
         "",
@@ -394,6 +562,13 @@ def main() -> int:
     parser.add_argument("--bootstrap-iterations", type=int, default=10000)
     parser.add_argument("--expected-repetitions", type=int, default=3)
     parser.add_argument("--max-total-tokens", type=int, default=4000)
+    parser.add_argument(
+        "--evaluated-finding-limit",
+        type=int,
+        default=0,
+        help="Finding prefix used by the comparison exporter; 0 means all findings.",
+    )
+    parser.add_argument("--protocol", help="Optional frozen protocol JSON to hash and verify")
     args = parser.parse_args()
     comparison_path = Path(args.comparison)
     prediction_paths = [Path(path) for path in args.predictions]
@@ -406,12 +581,26 @@ def main() -> int:
         iterations=args.bootstrap_iterations,
         expected_repetitions=args.expected_repetitions,
         max_total_tokens=args.max_total_tokens,
+        evaluated_finding_limit=args.evaluated_finding_limit,
     )
+    if args.protocol:
+        attach_protocol_audit(
+            summary,
+            Path(args.protocol),
+            expected_repetitions=args.expected_repetitions,
+            max_total_tokens=args.max_total_tokens,
+        )
     summary["inputs"] = {
         "comparison": {"path": str(comparison_path), "sha256": sha256_file(comparison_path)},
         "predictions": [
             {"path": str(path), "sha256": sha256_file(path)} for path in prediction_paths
         ],
+        **({
+            "protocol": {
+                "path": str(Path(args.protocol)),
+                "sha256": sha256_file(Path(args.protocol)),
+            }
+        } if args.protocol else {}),
     }
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)

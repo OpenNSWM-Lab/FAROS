@@ -5,6 +5,7 @@ import {
   AlertTriangle,
   ArrowRight,
   BarChart3,
+  BookOpenCheck,
   Bot,
   Check,
   CheckCircle2,
@@ -116,6 +117,64 @@ interface EvidenceArtifact {
   url: string
 }
 
+interface ExternalReviewMethod {
+  methodId: string
+  label: string
+  candidateRate: number
+  candidateRatePaperClusterBootstrap95: [number, number]
+  meanBestMatchScore: number
+  meanTotalTokens: number
+  meanLatencyMs: number
+  llmEscalationRate: number
+  localOnlyRunCount: number
+  meanGeneratedFindingCount: number
+  failedRunCount: number
+  budgetExceededCount: number
+}
+
+interface ExternalReviewEffect {
+  baselineMethodId: string
+  baselineLabel: string
+  candidateRateDelta: number
+  candidateRateDeltaPaperClusterBootstrap95: [number, number]
+  exactMcNemarPValue: number
+  meanLatencyDeltaMs: number
+  latencyDeltaPaperClusterBootstrap95: [number, number]
+  meanTokenDelta: number
+  tokenDeltaPaperClusterBootstrap95: [number, number]
+}
+
+interface ExternalReviewEvidence {
+  available: boolean
+  dataset?: string
+  split?: string
+  paperCount?: number
+  questionCount?: number
+  sourceCount?: number
+  providerName?: string
+  model?: string
+  temperature?: number
+  repetitions?: number
+  protocolHash?: string
+  protocolVerified?: boolean
+  fairTop5?: {
+    qualityGate: string
+    findingLimit: number
+    methods: ExternalReviewMethod[]
+    reviewxEffects: ExternalReviewEffect[]
+  }
+  fullAudit?: {
+    available: boolean
+    qualityGate: string
+    fairMethodComparison: boolean
+    methods: ExternalReviewMethod[]
+    reviewxEffects: ExternalReviewEffect[]
+  }
+  reportUrl?: string
+  fullAuditReportUrl?: string
+  scope?: string
+}
+
 interface DashboardPayload {
   generatedAt: string
   track: {
@@ -215,6 +274,7 @@ interface DashboardPayload {
     datasets: string[]
     scope: string
   }
+  externalReview: ExternalReviewEvidence
   humanGovernance: {
     feedbackId?: string
     signoffs: Record<'plan' | 'repair' | 'conclusion', string>
@@ -259,6 +319,12 @@ const formatNumber = (value: number | undefined, digits = 3) => (
 
 const formatPercent = (value: number | undefined, digits = 1) => (
   typeof value === 'number' && Number.isFinite(value) ? `${(value * 100).toFixed(digits)}%` : '--'
+)
+
+const formatSignedPercent = (value: number | undefined, digits = 1) => (
+  typeof value === 'number' && Number.isFinite(value)
+    ? `${value >= 0 ? '+' : ''}${(value * 100).toFixed(digits)}%`
+    : '--'
 )
 
 const formatValue = (value: unknown) => {
@@ -397,6 +463,32 @@ export function CompetitionEvidence() {
     selected: candidate.selected,
     feasible: candidate.feasible,
   })), [dashboard])
+
+  const peerqaEvidence = useMemo(() => {
+    const evidence = dashboard?.externalReview
+    const fair = evidence?.fairTop5
+    if (!evidence?.available || !fair) return null
+    const reviewx = fair.methods.find((item) => item.methodId.startsWith('reviewx_'))
+    const fullReviewx = evidence.fullAudit?.methods.find((item) => item.methodId.startsWith('reviewx_'))
+    const singleEffect = fair.reviewxEffects.find((item) => item.baselineMethodId.includes('single_prompt'))
+    const rubricEffect = fair.reviewxEffects.find((item) => item.baselineMethodId.includes('rubric'))
+    const fullSingleEffect = evidence.fullAudit?.reviewxEffects.find(
+      (item) => item.baselineMethodId.includes('single_prompt'),
+    )
+    return {
+      chart: fair.methods.map((item) => ({
+        ...item,
+        chartLabel: item.methodId.startsWith('reviewx_')
+          ? 'ReviewX'
+          : item.methodId.includes('rubric') ? 'Rubric' : 'Single',
+      })),
+      reviewx,
+      fullReviewx,
+      singleEffect,
+      rubricEffect,
+      fullSingleEffect,
+    }
+  }, [dashboard])
 
   const headline = useMemo(() => {
     if (!dashboard) return null
@@ -730,6 +822,156 @@ export function CompetitionEvidence() {
                   <p className="mt-3 text-xs leading-relaxed text-slate-500">{dashboard.planning.scope}</p>
                 </div>
               </section>
+
+              {dashboard.externalReview.available && peerqaEvidence && dashboard.externalReview.fairTop5 && (
+                <section className="min-w-0 scroll-mt-20 rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                    <SectionHeading
+                      icon={BookOpenCheck}
+                      title="真实论文外部审稿验证"
+                      detail={`${dashboard.externalReview.paperCount} 篇未参与开发的 PeerQA 论文 · ${dashboard.externalReview.questionCount} 个专家问题 · ${dashboard.externalReview.sourceCount} 个来源`}
+                    />
+                    <div className="flex shrink-0 gap-2">
+                      {dashboard.externalReview.reportUrl && (
+                        <a
+                          href={`${API_BASE_URL}${dashboard.externalReview.reportUrl}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex h-9 items-center gap-2 rounded-md border border-slate-200 px-3 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                        >
+                          <Download className="h-4 w-4" />Top-5 报告
+                        </a>
+                      )}
+                      {dashboard.externalReview.fullAuditReportUrl && (
+                        <a
+                          href={`${API_BASE_URL}${dashboard.externalReview.fullAuditReportUrl}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex h-9 items-center gap-2 rounded-md border border-slate-200 px-3 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                        >
+                          <Download className="h-4 w-4" />完整审计
+                        </a>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="mb-1 flex flex-wrap gap-2 text-xs text-slate-600">
+                    <Badge variant="outline">{dashboard.externalReview.model || 'model unavailable'}</Badge>
+                    <Badge variant="outline">{dashboard.externalReview.repetitions || 0} 次重复</Badge>
+                    <Badge variant={dashboard.externalReview.protocolVerified ? 'secondary' : 'destructive'}>
+                      冻结协议 {dashboard.externalReview.protocolVerified ? 'verified' : 'failed'}
+                    </Badge>
+                  </div>
+
+                  <div className="grid min-w-0 gap-5 xl:grid-cols-[minmax(0,1.35fr)_minmax(280px,0.65fr)]">
+                    <div className="min-w-0">
+                      <div className="h-[250px] w-full">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <BarChart data={peerqaEvidence.chart} margin={{ top: 10, right: 12, left: 0, bottom: 4 }}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                            <XAxis dataKey="chartLabel" tick={{ fontSize: 11 }} />
+                            <YAxis domain={[0, 0.7]} tickFormatter={(value: number) => `${Math.round(value * 100)}%`} tick={{ fontSize: 11 }} />
+                            <Tooltip formatter={(value: number) => formatPercent(value)} />
+                            <Bar dataKey="candidateRate" name="冻结 Top-5 对齐代理" radius={[3, 3, 0, 0]}>
+                              {peerqaEvidence.chart.map((item) => (
+                                <Cell
+                                  key={item.methodId}
+                                  fill={item.methodId.startsWith('reviewx_') ? '#059669' : item.methodId.includes('rubric') ? '#d97706' : '#0284c7'}
+                                />
+                              ))}
+                            </Bar>
+                          </BarChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </div>
+
+                    <div className="min-w-0 border-t border-slate-200 pt-4 xl:border-l xl:border-t-0 xl:pl-5 xl:pt-0">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs font-semibold uppercase text-slate-500">公平 Top-5</span>
+                        <Badge variant={dashboard.externalReview.fairTop5.qualityGate === 'passed' ? 'secondary' : 'destructive'}>
+                          Gate {dashboard.externalReview.fairTop5.qualityGate}
+                        </Badge>
+                      </div>
+                      <div className="mt-2 text-3xl font-semibold text-slate-950">
+                        {formatPercent(peerqaEvidence.reviewx?.candidateRate)}
+                      </div>
+                      <div className="mt-1 text-xs text-slate-500">
+                        论文聚类 95% CI {peerqaEvidence.reviewx
+                          ? `[${formatPercent(peerqaEvidence.reviewx.candidateRatePaperClusterBootstrap95[0])}, ${formatPercent(peerqaEvidence.reviewx.candidateRatePaperClusterBootstrap95[1])}]`
+                          : '--'}
+                      </div>
+                      <div className="mt-4 divide-y divide-slate-100 border-y border-slate-200 text-sm">
+                        <div className="flex items-center justify-between gap-3 py-2">
+                          <span className="text-slate-600">相对单提示</span>
+                          <span className="font-semibold text-emerald-700">{formatSignedPercent(peerqaEvidence.singleEffect?.candidateRateDelta)}</span>
+                        </div>
+                        <div className="flex items-center justify-between gap-3 py-2">
+                          <span className="text-slate-600">相对 rubric</span>
+                          <span className="font-semibold text-emerald-700">{formatSignedPercent(peerqaEvidence.rubricEffect?.candidateRateDelta)}</span>
+                        </div>
+                        <div className="flex items-center justify-between gap-3 py-2">
+                          <span className="text-slate-600">LLM 调用率</span>
+                          <span className="font-semibold text-slate-900">{formatPercent(peerqaEvidence.reviewx?.llmEscalationRate)}</span>
+                        </div>
+                        <div className="flex items-center justify-between gap-3 py-2">
+                          <span className="text-slate-600">相对单提示延迟</span>
+                          <span className="font-semibold text-emerald-700">{formatNumber((peerqaEvidence.singleEffect?.meanLatencyDeltaMs || 0) / 1000, 2)} s</span>
+                        </div>
+                      </div>
+                      <p className="mt-3 text-xs leading-relaxed text-amber-800">
+                        配对 McNemar：单提示 p={formatNumber(peerqaEvidence.singleEffect?.exactMcNemarPValue, 3)}；rubric p={formatNumber(peerqaEvidence.rubricEffect?.exactMcNemarPValue, 3)}。当前为正向趋势，未达显著。
+                      </p>
+                      <div className="mt-4 border-l-2 border-amber-400 pl-3">
+                        <div className="text-xs font-semibold text-amber-900">完整审计上限 · 输出数量不等</div>
+                        <div className="mt-1 text-xl font-semibold text-slate-950">
+                          {formatPercent(peerqaEvidence.fullReviewx?.candidateRate)}
+                        </div>
+                        <div className="mt-1 text-xs text-slate-500">
+                          相对单提示 {peerqaEvidence.fullSingleEffect
+                            ? formatSignedPercent(peerqaEvidence.fullSingleEffect.candidateRateDelta)
+                            : '--'}；不作为公平优越性结论。
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 overflow-x-auto border-t border-slate-200 pt-4">
+                    <table className="w-full min-w-[760px] text-left text-xs">
+                      <thead className="border-b border-slate-200 text-slate-500">
+                        <tr>
+                          <th className="pb-2 font-medium">方法</th>
+                          <th className="pb-2 font-medium">Top-5 代理</th>
+                          <th className="pb-2 font-medium">95% CI</th>
+                          <th className="pb-2 font-medium">LLM 调用</th>
+                          <th className="pb-2 font-medium">tokens/run</th>
+                          <th className="pb-2 font-medium">latency/run</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {dashboard.externalReview.fairTop5.methods.map((method) => (
+                          <tr key={method.methodId} className={method.methodId.startsWith('reviewx_') ? 'bg-emerald-50/60' : ''}>
+                            <td className="py-2.5 pr-4 font-medium text-slate-900">{method.label}</td>
+                            <td className="py-2.5 pr-4">{formatPercent(method.candidateRate)}</td>
+                            <td className="py-2.5 pr-4 text-slate-600">
+                              [{formatPercent(method.candidateRatePaperClusterBootstrap95[0])}, {formatPercent(method.candidateRatePaperClusterBootstrap95[1])}]
+                            </td>
+                            <td className="py-2.5 pr-4">{formatPercent(method.llmEscalationRate)}</td>
+                            <td className="py-2.5 pr-4">{formatNumber(method.meanTotalTokens, 0)}</td>
+                            <td className="py-2.5">{formatNumber(method.meanLatencyMs / 1000, 2)} s</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <div className="mt-4 flex flex-col gap-2 border-t border-slate-200 pt-3 text-xs text-slate-500 sm:flex-row sm:items-center sm:justify-between">
+                    <span>{dashboard.externalReview.scope}</span>
+                    <span className="shrink-0 font-mono" title={dashboard.externalReview.protocolHash}>
+                      protocol {shortHash(dashboard.externalReview.protocolHash)}
+                    </span>
+                  </div>
+                </section>
+              )}
 
               <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
                 <SectionHeading icon={FileCheck2} title="可下载证据清单" detail="公开白名单文件逐项计算 SHA-256；不暴露密钥和原始受限数据" />

@@ -308,6 +308,12 @@ _MULTIDOMAIN_RESULT_PATH = (
     / "reviewx_multidomain"
     / "summary.json"
 )
+_PEERQA_RESULT_ROOT = (
+    Path(__file__).resolve().parents[3]
+    / "data"
+    / "experiments"
+    / "reviewx_peerqa"
+)
 
 
 def _scifact_job_path(job_id: str) -> Path:
@@ -1067,6 +1073,8 @@ async def get_competition_evidence_dashboard_endpoint():
             reliability_summary_path=_RELIABILITY_RESULT_ROOT / "summary.json",
             planning_summary_path=_PLANNING_RESULT_PATH,
             multidomain_summary_path=_MULTIDOMAIN_RESULT_PATH,
+            peerqa_summary_path=_PEERQA_RESULT_ROOT / "top5_summary.json",
+            peerqa_full_audit_summary_path=_PEERQA_RESULT_ROOT / "fullaudit_summary.json",
             feedback_record=registered,
             public_artifacts=_PUBLIC_SCIFACT_ARTIFACTS,
         )
@@ -1076,6 +1084,32 @@ async def get_competition_evidence_dashboard_endpoint():
             status_code=503,
             detail=f"Competition evidence is incomplete or invalid: {exc}",
         ) from exc
+
+
+@router.get(
+    "/reviewx/competition/peerqa/report",
+    summary="Download the frozen fair Top-5 PeerQA proxy report",
+)
+async def get_peerqa_benchmark_report_endpoint():
+    path = _PEERQA_RESULT_ROOT / "top5_report.md"
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="PeerQA benchmark report is unavailable")
+    return FileResponse(path, media_type="text/markdown", filename="reviewx_peerqa_top5_report.md")
+
+
+@router.get(
+    "/reviewx/competition/peerqa/full-audit-report",
+    summary="Download the unequal-output PeerQA full-audit report",
+)
+async def get_peerqa_full_audit_report_endpoint():
+    path = _PEERQA_RESULT_ROOT / "fullaudit_report.md"
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="PeerQA full-audit report is unavailable")
+    return FileResponse(
+        path,
+        media_type="text/markdown",
+        filename="reviewx_peerqa_full_audit_report.md",
+    )
 
 
 @router.get(

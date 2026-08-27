@@ -84,6 +84,138 @@ def _candidate_rows(
     )
 
 
+_PEERQA_METHOD_LABELS = {
+    "qwen_single_prompt_matched_budget": "Qwen single prompt",
+    "qwen_structured_rubric_matched_budget": "Qwen structured rubric",
+    "reviewx_balanced_qwen37_matched_budget": "FAROS ReviewX",
+}
+
+
+def _peerqa_method_rows(summary: Dict[str, Any]) -> list[Dict[str, Any]]:
+    rows = []
+    for item in summary.get("methods") or []:
+        method_id = str(item.get("method") or "")
+        alignment = item.get("automaticAlignment") or {}
+        quality = item.get("runQuality") or {}
+        rows.append({
+            "methodId": method_id,
+            "label": _PEERQA_METHOD_LABELS.get(method_id, method_id),
+            "candidateRate": alignment.get("candidateRate"),
+            "candidateRatePaperClusterBootstrap95": alignment.get(
+                "candidateRatePaperClusterBootstrap95"
+            ),
+            "meanBestMatchScore": alignment.get("meanBestMatchScore"),
+            "meanTotalTokens": quality.get("meanTotalTokens"),
+            "meanLatencyMs": quality.get("meanLatencyMs"),
+            "llmEscalationRate": quality.get("llmEscalationRate"),
+            "localOnlyRunCount": quality.get("localOnlyRunCount"),
+            "meanGeneratedFindingCount": quality.get("meanFindingCount"),
+            "failedRunCount": quality.get("failedRunCount"),
+            "budgetExceededCount": quality.get("budgetExceededCount"),
+        })
+    return rows
+
+
+def _reviewx_pairwise_rows(summary: Dict[str, Any]) -> list[Dict[str, Any]]:
+    efficiency = {
+        (str(item.get("methodA") or ""), str(item.get("methodB") or "")): item
+        for item in summary.get("efficiencyPairwise") or []
+    }
+    rows = []
+    reviewx_id = "reviewx_balanced_qwen37_matched_budget"
+    for item in summary.get("pairwise") or []:
+        left = str(item.get("methodA") or "")
+        right = str(item.get("methodB") or "")
+        if reviewx_id not in {left, right}:
+            continue
+        sign = 1 if right == reviewx_id else -1
+        baseline_id = left if right == reviewx_id else right
+        candidate_ci = item.get("candidateRateDeltaPaperClusterBootstrap95") or [None, None]
+        score_ci = item.get("scoreDeltaPaperClusterBootstrap95") or [None, None]
+        if sign < 0:
+            candidate_ci = [
+                -candidate_ci[1] if candidate_ci[1] is not None else None,
+                -candidate_ci[0] if candidate_ci[0] is not None else None,
+            ]
+            score_ci = [
+                -score_ci[1] if score_ci[1] is not None else None,
+                -score_ci[0] if score_ci[0] is not None else None,
+            ]
+        efficiency_item = efficiency.get((left, right)) or {}
+        latency = efficiency_item.get("latencyDeltaMs") or {}
+        tokens = efficiency_item.get("tokenDelta") or {}
+        latency_ci = latency.get("paperClusterBootstrap95") or [None, None]
+        token_ci = tokens.get("paperClusterBootstrap95") or [None, None]
+        if sign < 0:
+            latency_ci = [
+                -latency_ci[1] if latency_ci[1] is not None else None,
+                -latency_ci[0] if latency_ci[0] is not None else None,
+            ]
+            token_ci = [
+                -token_ci[1] if token_ci[1] is not None else None,
+                -token_ci[0] if token_ci[0] is not None else None,
+            ]
+        rows.append({
+            "baselineMethodId": baseline_id,
+            "baselineLabel": _PEERQA_METHOD_LABELS.get(baseline_id, baseline_id),
+            "candidateRateDelta": sign * float(item.get("candidateRateDelta") or 0),
+            "candidateRateDeltaPaperClusterBootstrap95": candidate_ci,
+            "meanBestMatchScoreDelta": sign * float(item.get("meanBestMatchScoreDelta") or 0),
+            "scoreDeltaPaperClusterBootstrap95": score_ci,
+            "exactMcNemarPValue": (item.get("candidateDiscordance") or {}).get(
+                "exactMcNemarPValue"
+            ),
+            "meanLatencyDeltaMs": sign * float(latency.get("mean") or 0),
+            "latencyDeltaPaperClusterBootstrap95": latency_ci,
+            "meanTokenDelta": sign * float(tokens.get("mean") or 0),
+            "tokenDeltaPaperClusterBootstrap95": token_ci,
+        })
+    return rows
+
+
+def _peerqa_evidence_view(
+    fair_summary: Dict[str, Any],
+    full_audit_summary: Dict[str, Any],
+) -> Dict[str, Any]:
+    if not fair_summary:
+        return {"available": False}
+    protocol = fair_summary.get("protocolAudit") or {}
+    return {
+        "available": True,
+        "dataset": "PeerQA",
+        "split": fair_summary.get("split"),
+        "paperCount": fair_summary.get("paperCount"),
+        "questionCount": fair_summary.get("questionCount"),
+        "sourceCount": protocol.get("sourceCount"),
+        "providerName": protocol.get("providerName"),
+        "model": protocol.get("model"),
+        "temperature": protocol.get("temperature"),
+        "repetitions": protocol.get("repetitions"),
+        "protocolHash": protocol.get("sha256"),
+        "protocolVerified": bool(protocol.get("passed")),
+        "fairTop5": {
+            "qualityGate": (fair_summary.get("qualityGate") or {}).get("status"),
+            "findingLimit": fair_summary.get("evaluatedFindingLimit"),
+            "methods": _peerqa_method_rows(fair_summary),
+            "reviewxEffects": _reviewx_pairwise_rows(fair_summary),
+        },
+        "fullAudit": {
+            "available": bool(full_audit_summary),
+            "qualityGate": (full_audit_summary.get("qualityGate") or {}).get("status"),
+            "fairMethodComparison": False,
+            "methods": _peerqa_method_rows(full_audit_summary),
+            "reviewxEffects": _reviewx_pairwise_rows(full_audit_summary),
+        },
+        "reportUrl": "/api/v1/reviews/reviewx/competition/peerqa/report",
+        "fullAuditReportUrl": "/api/v1/reviews/reviewx/competition/peerqa/full-audit-report",
+        "reportingBoundary": fair_summary.get("reportingBoundary") or {},
+        "scope": (
+            "Frozen lexical evidence-alignment proxy on previously unused real papers; "
+            "blind human labels remain required for expert-recall or correctness claims."
+        ),
+    }
+
+
 def _artifact_manifest(
     case_dir: Path,
     filenames: Iterable[str],
@@ -126,6 +258,8 @@ def build_competition_evidence_dashboard(
     reliability_summary_path: Path,
     planning_summary_path: Path,
     multidomain_summary_path: Optional[Path] = None,
+    peerqa_summary_path: Optional[Path] = None,
+    peerqa_full_audit_summary_path: Optional[Path] = None,
     feedback_record: Optional[Dict[str, Any]] = None,
     public_artifacts: Iterable[str] = (),
 ) -> Dict[str, Any]:
@@ -155,6 +289,16 @@ def build_competition_evidence_dashboard(
     multidomain = (
         _read_json(multidomain_summary_path, required=False)
         if multidomain_summary_path is not None
+        else {}
+    )
+    peerqa = (
+        _read_json(peerqa_summary_path, required=False)
+        if peerqa_summary_path is not None
+        else {}
+    )
+    peerqa_full_audit = (
+        _read_json(peerqa_full_audit_summary_path, required=False)
+        if peerqa_full_audit_summary_path is not None
         else {}
     )
 
@@ -277,6 +421,18 @@ def build_competition_evidence_dashboard(
         and all(item["status"] == "passed" for item in evaluation_matrix)
     )
 
+    limitations = [
+        "The representative case is a public-data computational experiment, not a wet-lab or instrument deployment.",
+        "The final-holdout F1 gain is non-degrading but its paired-bootstrap 95% interval crosses zero.",
+        "The 90-case reliability benchmark uses controlled injected faults and cannot estimate natural-error prevalence.",
+        "Public scientific conclusions remain blocked until real, independent human signoffs are current.",
+    ]
+    if peerqa:
+        limitations.extend([
+            "PeerQA lexical alignment is a candidate-generation proxy, not expert review recall or correctness.",
+            "The PeerQA full-audit view exposes more findings than the baselines and is not a fair output-count comparison.",
+        ])
+
     reliability_methods = []
     for method_id, values in (reliability.get("scores") or {}).items():
         reliability_methods.append({
@@ -370,7 +526,7 @@ def build_competition_evidence_dashboard(
     ]
 
     return {
-        "schemaVersion": "faros-competition-evidence-dashboard/v1",
+        "schemaVersion": "faros-competition-evidence-dashboard/v2",
         "generatedAt": datetime.now(UTC).isoformat(),
         "track": {
             "id": "track-1b",
@@ -450,6 +606,7 @@ def build_competition_evidence_dashboard(
             "qualityGate": multidomain.get("qualityGate"),
             "scope": "Cross-domain stress evidence; it does not establish zero-shot universal transfer.",
         },
+        "externalReview": _peerqa_evidence_view(peerqa, peerqa_full_audit),
         "humanGovernance": {
             "feedbackId": (feedback_record or {}).get("id") or job.get("feedbackId"),
             "signoffs": human_status,
@@ -458,12 +615,7 @@ def build_competition_evidence_dashboard(
             "note": "Pending means no human approval is inferred from automated execution.",
         },
         "evidenceManifest": manifest,
-        "limitations": [
-            "The representative case is a public-data computational experiment, not a wet-lab or instrument deployment.",
-            "The final-holdout F1 gain is non-degrading but its paired-bootstrap 95% interval crosses zero.",
-            "The 90-case reliability benchmark uses controlled injected faults and cannot estimate natural-error prevalence.",
-            "Public scientific conclusions remain blocked until real, independent human signoffs are current.",
-        ],
+        "limitations": limitations,
         "provenanceLegend": [
             {"id": "observed", "label": "真实观测", "description": "由执行记录直接产生并可复算"},
             {"id": "deterministic", "label": "程序判定", "description": "规则、哈希、门禁和统计计算"},
