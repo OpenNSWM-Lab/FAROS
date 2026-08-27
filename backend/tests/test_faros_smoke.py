@@ -4,6 +4,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -34,10 +35,62 @@ from app.faros.memory.research_memory import ResearchMemory
 from app.faros.runtime.package_audit import PackageAuditStore
 from app.faros.runtime.state_store import FarosStateStore
 from app.faros.models.execution import StepState
-from app.faros.runtime.orchestrator import get_orchestrator
+from app.faros.runtime.orchestrator import FarosOrchestrator, get_orchestrator
 from app.faros.verification.rules import VerifierDispatcher
+from app.faros.capabilities.adapters.idea_refinement import IdeaRefinementCapability
+from app.faros.capabilities.adapters.experiment import ExperimentCapability
+from app.faros.capabilities.adapters.paper_drafting import PaperDraftingCapability
+from app.faros.capabilities.adapters.reviewer_simulation import ReviewerSimulationCapability
 
 client = TestClient(app)
+
+
+def test_experiment_metric_collection_normalizes_generated_output(monkeypatch, tmp_path: Path):
+    project_id = 'generated_metrics_contract'
+    repo_dir = tmp_path / 'code_projects' / project_id / 'repo'
+    (repo_dir / 'src').mkdir(parents=True)
+    (repo_dir / 'src' / 'metrics.json').write_text(json.dumps([
+        {
+            'name': 'method_f1',
+            'numeric_value': 0.75,
+            'unit': 'ratio',
+            'definition': 'Method F1 on the held-out split',
+            'split': 'test',
+        }
+    ]))
+    monkeypatch.setattr('app.faros.capabilities.adapters.experiment._DATA_DIR', str(tmp_path))
+
+    metrics = ExperimentCapability()._collect_metrics(
+        project_id,
+        {
+            'stdout': json.dumps([
+                {
+                    'name': 'baseline_f1',
+                    'numeric_value': 0.5,
+                    'unit': 'ratio',
+                    'definition': 'Baseline F1 on the held-out split',
+                    'split': 'test',
+                }
+            ])
+        },
+    )
+
+    assert metrics == [
+        {
+            'name': 'method_f1',
+            'value': 0.75,
+            'unit': 'ratio',
+            'definition': 'Method F1 on the held-out split',
+            'split': 'test',
+        },
+        {
+            'name': 'baseline_f1',
+            'value': 0.5,
+            'unit': 'ratio',
+            'definition': 'Baseline F1 on the held-out split',
+            'split': 'test',
+        },
+    ]
 
 
 def test_faros_routes_are_mounted():
@@ -78,6 +131,7 @@ def test_faros_routes_are_mounted():
         '/api/faros/capabilities',
         '/api/faros/preflight',
         '/api/faros/runs',
+        '/api/faros/runs/{run_id}/execute',
         '/api/faros/runs/{run_id}/resume',
         '/api/faros/runs/{run_id}/steps/{node_id}/skip',
         '/api/faros/runs/{run_id}/steps/{node_id}/retry',
@@ -89,6 +143,41 @@ def test_faros_routes_are_mounted():
     ]
     for prefix in expected_prefixes:
         assert any(path == prefix or path.startswith(prefix + '/') for path in paths), prefix
+
+
+def test_faros_execute_endpoint_schedules_pending_run(monkeypatch):
+    scheduled = {}
+
+    class FakeOrchestrator:
+        def get_run(self, run_id):
+            return {"id": run_id, "status": "pending"}
+
+        def resume_run(self, run_id):
+            scheduled["resumed"] = run_id
+
+    class FakeThread:
+        def __init__(self, *, target, args, daemon):
+            scheduled.update({"target": target, "args": args, "daemon": daemon})
+
+        def start(self):
+            scheduled["started"] = True
+
+    monkeypatch.setattr(
+        "app.faros.api.faros_api.get_orchestrator",
+        lambda: FakeOrchestrator(),
+    )
+    monkeypatch.setattr("app.faros.api.faros_api.threading.Thread", FakeThread)
+
+    response = client.post(
+        "/api/faros/runs/faros_pending/execute",
+        json={"asyncExecution": True},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["executionScheduled"] is True
+    assert scheduled["args"] == ("faros_pending",)
+    assert scheduled["daemon"] is True
+    assert scheduled["started"] is True
 
 
 def test_faros_metadata_endpoints_return_assets():
@@ -820,8 +909,17 @@ def test_agent_executor_uses_human_provider_owned_execution_for_review():
     assert result.verification['providerType'] == 'human'
 
 
-def test_agent_executor_wraps_capability_execution_metadata():
+def test_agent_executor_wraps_capability_execution_metadata(monkeypatch):
     capability = get_capability_registry().get('idea_refinement')
+    monkeypatch.setattr(
+        capability,
+        'execute',
+        lambda _context, _inputs: CapabilityResult(
+            status='completed',
+            outputs={'ideaSessionId': 'idea_metadata_smoke'},
+            verification={},
+        ),
+    )
     agent = get_agent_registry().get('researcher')
     skills = [get_skill_registry().get('literature-grounding'), get_skill_registry().get('idea-analysis')]
     executor = AgentExecutor()
@@ -1055,9 +1153,15 @@ def test_faros_replay_endpoint_resets_completed_subgraph_from_checkpoint():
     assert create.status_code == 201
     run_id = create.json()['id']
 
-    resumed = client.post(f'/api/faros/runs/{run_id}/resume')
-    assert resumed.status_code == 200
-    assert resumed.json()['status'] == 'completed'
+    # Replay state mechanics should not depend on live providers or evidence search.
+    orchestrator = get_orchestrator()
+    for node_id in ('idea', 'experiment', 'paper', 'review'):
+        step = next(item for item in orchestrator.state_store.get_run(run_id)['steps'] if item['node_id'] == node_id)
+        if step['status'] == 'blocked':
+            orchestrator.state_store.update_step(run_id, node_id, {'status': 'ready'})
+        orchestrator.state_store.update_step(run_id, node_id, {'status': 'running'})
+        orchestrator.state_store.update_step(run_id, node_id, {'status': 'completed'})
+    orchestrator.state_store.update_run(run_id, {'status': 'completed'})
 
     replay = client.post(
         f'/api/faros/runs/{run_id}/steps/experiment/replay',
@@ -1344,6 +1448,254 @@ def test_verifier_dispatch_fails_missing_artifact_contract():
     )
     assert verification.status == 'failed'
     assert any(item.rule_id.endswith(':artifacts') and item.status == 'failed' for item in verification.results)
+
+
+def test_verifier_dispatch_empty_policy_still_runs_runtime_baseline():
+    dispatcher = VerifierDispatcher()
+    result = CapabilityResult(
+        status='failed',
+        outputs={'selectedCandidateId': None},
+        artifacts=[],
+        verification={'agentId': 'researcher', 'skillIds': ['idea-analysis']},
+    )
+
+    verification = dispatcher.verify(
+        'idea_refinement',
+        result,
+        verifier_ids=[],
+        pack_ids=[],
+        expected_artifact_types=['idea_session', 'research_dossier'],
+        required_outputs=['selectedCandidateId', 'researchDossier'],
+    )
+
+    assert verification.status == 'failed'
+    assert verification.verifier_ids
+    assert 'status' in verification.verifier_ids
+    output_check = next(item for item in verification.results if item.rule_id.endswith(':outputs'))
+    assert set(output_check.details['missing']) == {'selectedCandidateId', 'researchDossier'}
+
+
+def test_idea_capability_rejects_session_without_evidence_qualified_candidate(monkeypatch):
+    session = SimpleNamespace(
+        id='idea_gate_failed',
+        status=SimpleNamespace(value='awaiting_evidence'),
+        selectedCandidateId=None,
+        trace=None,
+    )
+
+    class FakeIdeaService:
+        def create_session(self, config):
+            return session
+
+        def start_session(self, session_id):
+            return session
+
+        def run_pipeline(self, session_id):
+            return session
+
+        def get_candidates(self, session_id):
+            return []
+
+    monkeypatch.setattr(
+        'app.faros.capabilities.adapters.idea_refinement.get_idea_service',
+        lambda: FakeIdeaService(),
+    )
+    context = ExecutionContext(
+        run_id='faros_gate_test',
+        blueprint_id='ml_paper',
+        profile_id='faros_llm',
+        node_id='idea',
+        capability_id='idea_refinement',
+    )
+
+    result = IdeaRefinementCapability().execute(context, {'seedQuery': 'test topic'})
+
+    assert result.status == 'failed'
+    assert result.outputs['selectedCandidateId'] is None
+    assert result.outputs['candidateCount'] == 0
+    assert any(event['level'] == 'error' for event in result.events)
+
+
+def test_faros_run_merges_profile_defaults_and_preserves_user_overrides():
+    created = client.post(
+        '/api/faros/runs',
+        json={
+            'blueprintId': 'ml_paper',
+            'profileId': 'faros_llm',
+            'executionMode': 'plan',
+            'inputs': {'seedQuery': 'defaults test', 'targetVenue': 'iclr'},
+        },
+    )
+
+    assert created.status_code == 201
+    inputs = created.json()['inputs']
+    assert inputs['targetVenue'] == 'iclr'
+    assert inputs['paperType'] == 'algorithm'
+    assert inputs['reviewerProfile'] == 'reviewx_evidence_auditor'
+    assert inputs['reviewBudgetMode'] == 'balanced'
+
+
+def test_reviewer_capability_uses_reviewx_by_default(monkeypatch):
+    captured = {}
+
+    def fake_create_review(payload):
+        captured.update(payload)
+        return {'id': 'rev_reviewx'}
+
+    def fake_generate_reviewx(review_id):
+        assert review_id == 'rev_reviewx'
+        return {
+            'id': review_id,
+            'status': 'completed',
+            'reviewKind': 'reviewx',
+            'scoreSuggestion': 6,
+            'findings': [{'id': 'finding_1', 'severity': 'major'}],
+            'actionItems': [{'title': 'Add evidence'}],
+        }
+
+    monkeypatch.setattr(
+        'app.faros.capabilities.adapters.reviewer_simulation.create_review',
+        fake_create_review,
+    )
+    monkeypatch.setattr(
+        'app.faros.capabilities.adapters.reviewer_simulation.generate_reviewx',
+        fake_generate_reviewx,
+    )
+    context = ExecutionContext(
+        run_id='faros_reviewx_test',
+        blueprint_id='ml_paper',
+        profile_id='faros_llm',
+        node_id='review',
+        capability_id='reviewer_simulation',
+    )
+
+    result = ReviewerSimulationCapability().execute(context, {'paperId': 'paper_1'})
+
+    assert captured['reviewKind'] == 'reviewx'
+    assert captured['reviewerProfile'] == 'reviewx_evidence_auditor'
+    assert result.status == 'completed'
+    assert result.outputs['reviewKind'] == 'reviewx'
+    assert result.outputs['findingCount'] == 1
+
+
+def test_strict_experiment_and_paper_gates_stop_unsubstantiated_flow():
+    experiment_context = ExecutionContext(
+        run_id='faros_strict_gate',
+        blueprint_id='ml_paper',
+        profile_id='faros_llm',
+        node_id='experiment',
+        capability_id='experiment',
+        settings={'verificationPolicy': {'scientificEvidenceRequired': True}},
+    )
+    experiment_result = ExperimentCapability().execute(
+        experiment_context,
+        {
+            'seedQuery': 'Evaluate an unspecified method',
+            'selectedCandidate': {
+                'id': 'candidate_without_protocol',
+                'title': 'Incomplete candidate',
+                'problem': 'No executable scientific protocol is defined.',
+                'keyInsight': 'An untested idea.',
+            },
+        },
+    )
+
+    assert experiment_result.status == 'failed'
+    assert experiment_result.outputs['experimentStatus'] == 'not_executed'
+    assert 'projectId' not in experiment_result.outputs
+
+    paper_context = experiment_context.model_copy(update={
+        'node_id': 'paper',
+        'capability_id': 'paper_drafting',
+    })
+    with pytest.raises(ValueError, match='experimentEvidence is missing'):
+        PaperDraftingCapability().execute(paper_context, {'title': 'Unsupported paper'})
+
+
+def test_paper_capability_reuses_compiled_failed_paper_for_review_resume(monkeypatch):
+    existing = {
+        'id': 'paper_failed_review',
+        'status': 'failed',
+        'compileStatus': 'latexmk',
+        'pdfAvailable': True,
+    }
+    resumed = {
+        **existing,
+        'status': 'completed',
+        'title': 'Recovered paper',
+        'targetVenue': 'generic',
+        'simpleReviewPassed': True,
+    }
+    calls = []
+    monkeypatch.setattr(
+        'app.faros.capabilities.adapters.paper_drafting.get_paper',
+        lambda paper_id: existing if paper_id == existing['id'] else None,
+    )
+    monkeypatch.setattr(
+        'app.faros.capabilities.adapters.paper_drafting.resume_paper_review',
+        lambda paper_id: calls.append(paper_id) or resumed,
+    )
+    monkeypatch.setattr(
+        'app.faros.capabilities.adapters.paper_drafting.create_paper',
+        lambda _payload: (_ for _ in ()).throw(AssertionError('must not create a replacement paper')),
+    )
+    monkeypatch.setattr(
+        PaperDraftingCapability,
+        '_assemble_result',
+        lambda self, context, paper_id, paper, event_message: CapabilityResult(
+            status='completed', outputs={'paperId': paper_id, 'paperStatus': paper['status']}
+        ),
+    )
+    context = ExecutionContext(
+        run_id='faros_paper_resume',
+        blueprint_id='ml_paper',
+        profile_id='faros_llm',
+        node_id='paper',
+        capability_id='paper_drafting',
+    )
+
+    result = PaperDraftingCapability().execute(
+        context, {'paperId': existing['id'], 'title': 'Recovered paper'}
+    )
+
+    assert result.status == 'completed'
+    assert result.outputs['paperId'] == existing['id']
+    assert calls == [existing['id']]
+
+
+def test_experiment_code_generation_uses_profile_llm_binding(monkeypatch):
+    captured = {}
+    profile = get_profile_registry().get('faros_llm')
+    context = ExecutionContext(
+        run_id='faros_model_binding',
+        blueprint_id='ml_paper',
+        profile_id='faros_llm',
+        node_id='experiment',
+        capability_id='experiment',
+        provider_bindings=profile.capability_bindings,
+    )
+    capability = ExperimentCapability()
+    monkeypatch.setattr(capability, '_assess', lambda context, inputs: SimpleNamespace(status='ready'))
+
+    def fake_materialize_workspace(**kwargs):
+        captured.update(kwargs)
+        return CapabilityResult(status='completed')
+
+    monkeypatch.setattr(capability, '_materialize_workspace', fake_materialize_workspace)
+
+    capability.execute(
+        context,
+        {
+            'selectedCandidate': {
+                'id': 'candidate_1',
+                'title': 'Binding test',
+                'problem': 'Verify model routing.',
+            },
+        },
+    )
+
+    assert captured['provider_name'] == 'qwen'
+    assert captured['model'] == 'qwen3.7-plus-2026-05-26'
 
 def test_verifier_dispatch_supports_policy_packs_and_review_plugin():
     dispatcher = VerifierDispatcher()
@@ -2221,3 +2573,41 @@ def test_skill_rollback_api_returns_rolled_back_status(tmp_path: Path):
     assert payload['status'] == 'rolled_back'
     assert payload['skill']['version'] == '0.1.0'
     registry.uninstall_package('api-rollback-skill')
+
+
+def test_resume_recovers_running_step_left_by_previous_process():
+    run = {
+        'id': 'run_interrupted',
+        'blueprint_id': 'ml_paper',
+        'profile_id': 'faros_llm',
+        'status': 'running',
+        'steps': [
+            {'node_id': 'idea', 'status': 'completed'},
+            {'node_id': 'paper', 'status': 'running', 'retry_count': 0},
+        ],
+    }
+
+    class Store:
+        def get_run(self, _run_id):
+            return run
+
+        def update_run(self, _run_id, updates):
+            run.update(updates)
+            return run
+
+    orchestrator = object.__new__(FarosOrchestrator)
+    orchestrator.state_store = Store()
+    orchestrator.blueprints = SimpleNamespace(get=lambda _blueprint_id: object())
+    orchestrator.event_log = SimpleNamespace(error=lambda *args, **kwargs: None)
+    orchestrator._active_runs = set()
+    orchestrator._refresh_run_step_statuses = lambda *_args, **_kwargs: None
+    orchestrator._update_run_checkpoint = lambda *_args, **_kwargs: None
+    orchestrator.execute_run = lambda _run_id: run
+
+    recovered = orchestrator.resume_run('run_interrupted')
+
+    paper_step = recovered['steps'][1]
+    assert recovered['status'] == 'pending'
+    assert paper_step['status'] == 'ready'
+    assert paper_step['retry_count'] == 1
+    assert paper_step['checkpoint']['status'] == 'retrying'

@@ -57,13 +57,26 @@ class FarosOrchestrator:
         self.verifier = VerifierDispatcher(registry=self.verifier_registry)
         self.preflight_validator = RunPreflightValidator(self.capabilities, self.providers)
         self.agent_executor = AgentExecutor()
+        self._active_runs: set[str] = set()
 
     def preflight_run(self, blueprint_id: str, profile_id: str) -> RunPreflightResult:
         blueprint = self.blueprints.get(blueprint_id)
         profile = self.profiles.get(profile_id)
         return self.preflight_validator.validate(blueprint, profile, self._resolve_node_runtime)
 
-    def create_run(self, blueprint_id: str, profile_id: str, inputs: Dict[str, Any], execution_mode: str = 'execute', runtime_options: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    def create_run(
+        self,
+        blueprint_id: str,
+        profile_id: str,
+        inputs: Dict[str, Any],
+        execution_mode: str = 'execute',
+        runtime_options: Dict[str, Any] | None = None,
+        *,
+        parent_run_id: str | None = None,
+        research_series_id: str | None = None,
+        iteration_number: int = 1,
+        iteration_feedback_id: str | None = None,
+    ) -> Dict[str, Any]:
         blueprint = self.blueprints.get(blueprint_id)
         profile = self.profiles.get(profile_id)
         preflight = self.preflight_validator.validate(blueprint, profile, self._resolve_node_runtime)
@@ -76,24 +89,150 @@ class FarosOrchestrator:
             step.agent_id = runtime_node['agentId']
             step.skill_ids = runtime_node['skillIds']
         runtime_options = self._normalize_runtime_options(runtime_options)
+        resolved_inputs = {**profile.defaults, **inputs}
         run = self.state_store.create_run(
             blueprint_id=blueprint_id,
             profile_id=profile_id,
             execution_mode=execution_mode,
-            inputs=inputs,
+            inputs=resolved_inputs,
             steps=steps,
             preflight=preflight.model_dump(),
             runtime_options=runtime_options,
             checkpoint=self._build_checkpoint_payload(steps, runtime_options),
+            parent_run_id=parent_run_id,
+            research_series_id=research_series_id,
+            iteration_number=iteration_number,
+            iteration_feedback_id=iteration_feedback_id,
         )
         ResearchMemory(self.state_store, run['id'], policy=profile.memory_policy.model_dump())
         self._refresh_run_step_statuses(run['id'], blueprint)
         return self.state_store.get_run(run['id'])
 
+    def create_iteration_run(
+        self,
+        parent_run_id: str,
+        feedback_id: str,
+        iteration_feedback: Dict[str, Any],
+    ) -> tuple[Dict[str, Any], bool]:
+        """Create one idempotent child run carrying ReviewX experiment feedback."""
+
+        parent = self.state_store.get_run(parent_run_id)
+        if not parent:
+            raise FarosNotFoundError(f"FAROS run '{parent_run_id}' not found")
+        if parent.get('status') != 'completed':
+            raise FarosBlockedError(
+                f"FAROS run '{parent_run_id}' must complete before creating an iteration"
+            )
+
+        existing_child = None
+        for candidate in self.state_store.list_runs():
+            if candidate.get('iteration_feedback_id') == feedback_id:
+                existing_child = candidate
+                break
+
+        memory = self.get_run_memory(parent_run_id) or {}
+        memory_data = memory.get('data', {}) if isinstance(memory, dict) else {}
+        inputs = dict(parent.get('inputs') or {})
+        idea_session_id = str(memory_data.get('ideaSessionId') or '').strip()
+        if idea_session_id:
+            inputs['resumeIdeaSessionId'] = idea_session_id
+        reference_run_id = str(iteration_feedback.get('referenceRunId') or '').strip()
+        reference_memory = self.get_run_memory(reference_run_id) if reference_run_id else None
+        reference_memory_data = (
+            reference_memory.get('data', {})
+            if isinstance(reference_memory, dict)
+            else {}
+        )
+        previous_project_id = str(
+            reference_memory_data.get('projectId') or memory_data.get('projectId') or ''
+        ).strip()
+        if previous_project_id:
+            inputs['previousProjectId'] = previous_project_id
+        if reference_run_id:
+            inputs['referenceRunId'] = reference_run_id
+        previous_evidence = memory_data.get('experimentEvidence') or {}
+        if isinstance(previous_evidence, dict):
+            data_hashes = previous_evidence.get('dataHashes') or {}
+            if isinstance(data_hashes, dict) and data_hashes.get('frozen_benchmark'):
+                inputs['frozenBenchmarkFingerprint'] = data_hashes['frozen_benchmark']
+
+        normalized_feedback = {
+            'feedbackId': feedback_id,
+            'sourceRunId': parent_run_id,
+            'decision': iteration_feedback.get('decision'),
+            'rationale': iteration_feedback.get('rationale', ''),
+            'targetSections': list(iteration_feedback.get('targetSections') or []),
+            'metricDeltas': list(iteration_feedback.get('metricDeltas') or []),
+            'nextActions': list(iteration_feedback.get('nextActions') or []),
+            'feedbackComment': iteration_feedback.get('feedbackComment', ''),
+            'optimizationPolicy': dict(iteration_feedback.get('optimizationPolicy') or {}),
+            'guardrailViolations': list(iteration_feedback.get('guardrailViolations') or []),
+            'humanFeedback': dict(iteration_feedback.get('humanFeedback') or {}),
+            'referenceRunId': reference_run_id or None,
+        }
+        inputs['previousRunId'] = parent_run_id
+        inputs['iterationFeedback'] = normalized_feedback
+
+        # ReviewX feedback is carried by the structured iterationFeedback field.
+        # Older rounds appended full feedback paragraphs here, causing prompt growth.
+        inputs['constraints'] = [
+            item
+            for item in (inputs.get('constraints') or [])
+            if not str(item).startswith('ReviewX experiment decision:')
+        ]
+
+        if existing_child is not None:
+            if existing_child.get('status') == 'running':
+                raise FarosBlockedError(
+                    f"FAROS iteration '{existing_child['id']}' is currently running"
+                )
+            if existing_child.get('status') == 'completed':
+                return existing_child, True
+            self.state_store.update_run(existing_child['id'], {'inputs': inputs})
+            child_profile = self.profiles.get(existing_child['profile_id'])
+            child_memory = ResearchMemory(
+                self.state_store,
+                existing_child['id'],
+                policy=child_profile.memory_policy.model_dump(),
+            )
+            child_memory.merge(inputs, scope='run')
+            self.event_log.info(
+                existing_child['id'],
+                'runtime',
+                'Refreshed idempotent iteration with latest ReviewX controller policy',
+                feedbackId=feedback_id,
+            )
+            return self.state_store.get_run(existing_child['id']), True
+
+        iteration_number = int(parent.get('iteration_number') or 1) + 1
+        research_series_id = parent.get('research_series_id') or parent_run_id
+        child = self.create_run(
+            blueprint_id=parent['blueprint_id'],
+            profile_id=parent['profile_id'],
+            inputs=inputs,
+            execution_mode=parent.get('execution_mode', 'execute'),
+            runtime_options=parent.get('runtime_options') or {},
+            parent_run_id=parent_run_id,
+            research_series_id=research_series_id,
+            iteration_number=iteration_number,
+            iteration_feedback_id=feedback_id,
+        )
+        self.event_log.info(
+            child['id'],
+            'runtime',
+            f"Created iteration {iteration_number} from ReviewX feedback",
+            parentRunId=parent_run_id,
+            researchSeriesId=research_series_id,
+            feedbackId=feedback_id,
+        )
+        return child, False
+
     def execute_run(self, run_id: str) -> Dict[str, Any]:
         run = self.state_store.get_run(run_id)
         if not run:
             raise FarosNotFoundError(f"FAROS run '{run_id}' not found")
+        if run_id in self._active_runs:
+            raise FarosBlockedError(f"FAROS run '{run_id}' is already active in this process")
 
         blueprint = self.blueprints.get(run['blueprint_id'])
         profile = self.profiles.get(run['profile_id'])
@@ -108,6 +247,7 @@ class FarosOrchestrator:
                 'error_message': None,
             },
         )
+        self._active_runs.add(run_id)
 
         try:
             while True:
@@ -179,6 +319,8 @@ class FarosOrchestrator:
                         'blueprintName': blueprint.name,
                         'profileName': profile.name,
                         'agentRole': runtime_node['agentRole'],
+                        'verificationPolicy': profile.verification_policy,
+                        'executionMode': run.get('execution_mode', 'execute'),
                     },
                 )
                 agent_plan = AgentExecutionPlan(
@@ -203,6 +345,41 @@ class FarosOrchestrator:
                     required_outputs=self._required_outputs_for_node(blueprint, node.capability),
                 )
                 if verification.status != 'passed':
+                    outputs_summary = {
+                        key: value
+                        for key, value in result.outputs.items()
+                        if key not in {'ideaCandidates', 'actionItems'}
+                    }
+                    self.state_store.update_step(
+                        run_id,
+                        node.id,
+                        {
+                            'status': 'failed',
+                            'agent_id': runtime_node['agentId'],
+                            'skill_ids': runtime_node['skillIds'],
+                            'ended_at': utc_now_iso(),
+                            'outputs_summary': outputs_summary,
+                            'verification': verification.model_dump(),
+                            'error': verification.message,
+                            'checkpoint': {
+                                'status': 'failed',
+                                'at': utc_now_iso(),
+                                'outputKeys': sorted(result.outputs.keys()),
+                                'error': verification.message,
+                            },
+                        },
+                    )
+                    self.artifact_store.add(run_id, result.artifacts)
+                    memory.merge(result.outputs, scope=node.id)
+                    memory.record_step(node.id, result.outputs)
+                    for event in result.events:
+                        level = event.get('level', 'info')
+                        message = event.get('message', f"{node.capability} event")
+                        details = {k: v for k, v in event.items() if k not in {'level', 'message'}}
+                        if level == 'error':
+                            self.event_log.error(run_id, node.id, message, **details)
+                        else:
+                            self.event_log.info(run_id, node.id, message, **details)
                     raise FarosVerificationError(verification.message)
 
                 outputs_summary = {key: value for key, value in result.outputs.items() if key not in {'ideaCandidates', 'actionItems'}}
@@ -269,6 +446,8 @@ class FarosOrchestrator:
                     'error_message': str(exc),
                 },
             )
+        finally:
+            self._active_runs.discard(run_id)
 
     def resume_run(self, run_id: str) -> Dict[str, Any]:
         run = self.state_store.get_run(run_id)
@@ -276,6 +455,32 @@ class FarosOrchestrator:
             raise FarosNotFoundError(f"FAROS run '{run_id}' not found")
         if run.get('status') == 'completed':
             raise ValueError(f"FAROS run '{run_id}' is already completed")
+        if run.get('status') == 'running':
+            if run_id in self._active_runs:
+                raise FarosBlockedError(f"FAROS run '{run_id}' is already active in this process")
+            interrupted_at = utc_now_iso()
+            for step in run.get('steps', []):
+                if step.get('status') == 'running':
+                    step.update({
+                        'status': 'failed',
+                        'ended_at': interrupted_at,
+                        'error': 'Previous process stopped while this step was running.',
+                        'retry_count': int(step.get('retry_count', 0) or 0) + 1,
+                        'checkpoint': {
+                            'status': 'interrupted',
+                            'at': interrupted_at,
+                            'retryCount': int(step.get('retry_count', 0) or 0) + 1,
+                        },
+                    })
+            self.state_store.update_run(
+                run_id,
+                {'steps': run.get('steps', []), 'status': 'failed'},
+            )
+            self.event_log.error(
+                run_id,
+                'runtime',
+                'Recovered interrupted FAROS run after process restart',
+            )
         blueprint = self.blueprints.get(run['blueprint_id'])
         for step in run.get('steps', []):
             if step.get('status') == 'failed':
@@ -421,7 +626,9 @@ class FarosOrchestrator:
 
     def _verify_run_output_contract(self, run_id: str, blueprint: Blueprint) -> Dict[str, Any]:
         final_required = list((blueprint.output_contract or {}).get('finalArtifacts', []) or [])
-        produced = [artifact['type'] for artifact in self.state_store.list_artifacts(run_id)]
+        produced = list(dict.fromkeys(
+            artifact['type'] for artifact in self.state_store.list_artifacts(run_id)
+        ))
         missing = [artifact_type for artifact_type in final_required if artifact_type not in produced]
         if missing:
             return {

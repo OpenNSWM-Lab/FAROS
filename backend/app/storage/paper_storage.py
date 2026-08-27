@@ -7,6 +7,7 @@ import os
 import re
 import uuid
 import shutil
+import tempfile
 import zipfile
 import logging
 from datetime import UTC, datetime
@@ -36,6 +37,9 @@ def _normalize_record(record: Dict[str, Any]) -> Dict[str, Any]:
     record.setdefault("authors", [])
     record.setdefault("logs", [])
     record.setdefault("pdfAvailable", False)
+    record.setdefault("compileStatus", None)
+    record.setdefault("pdfRenderMode", None)
+    record.setdefault("compileErrors", None)
     record.setdefault("briefJson", None)
     record.setdefault("briefUserEdits", "")
     record.setdefault("briefStatus", "missing")
@@ -43,6 +47,8 @@ def _normalize_record(record: Dict[str, Any]) -> Dict[str, Any]:
     record.setdefault("outlineStatus", "missing")
     record.setdefault("evidenceJson", None)
     record.setdefault("evidenceStatus", "missing")
+    record.setdefault("researchDossierPath", None)
+    record.setdefault("evidenceConstraints", [])
     return record
 
 
@@ -73,6 +79,8 @@ def create_paper(data: Dict[str, Any]) -> Dict[str, Any]:
         "outlineStatus": data.get("outlineStatus", "missing"),
         "evidenceJson": data.get("evidenceJson"),
         "evidenceStatus": data.get("evidenceStatus", "missing"),
+        "researchDossierPath": data.get("researchDossierPath"),
+        "evidenceConstraints": data.get("evidenceConstraints", []),
         "pdfAvailable": False,
         "logs": [],
         "createdAt": now,
@@ -115,6 +123,18 @@ def update_paper(paper_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, A
     record["updatedAt"] = _utcnow_iso()
     _save_record(paper_id, record)
     return record
+
+
+def delete_paper(paper_id: str) -> bool:
+    paper_dir = os.path.join(PAPERS_DIR, paper_id)
+    if not os.path.isdir(paper_dir):
+        return False
+    try:
+        shutil.rmtree(paper_dir)
+        return True
+    except OSError as exc:
+        logger.warning("Failed to delete paper %s at %s: %s", paper_id, paper_dir, exc)
+        return False
 
 
 def _clean_latex_label_part(value: str) -> str:
@@ -323,9 +343,16 @@ def get_paper_latex_dir(paper_id: str) -> str:
 
 def write_paper_file(paper_id: str, rel_path: str, content: str):
     latex_dir = get_paper_latex_dir(paper_id)
+    latex_real = os.path.realpath(latex_dir)
     abs_path = os.path.join(latex_dir, rel_path)
+    real = os.path.realpath(abs_path)
+    try:
+        if os.path.commonpath([latex_real, real]) != latex_real:
+            raise ValueError("Invalid path outside paper LaTeX directory")
+    except ValueError as exc:
+        raise ValueError("Invalid path outside paper LaTeX directory") from exc
     os.makedirs(os.path.dirname(abs_path), exist_ok=True)
-    with open(abs_path, "w", encoding="utf-8") as f:
+    with open(real, "w", encoding="utf-8") as f:
         f.write(content)
 
 
@@ -333,7 +360,11 @@ def read_paper_file(paper_id: str, rel_path: str) -> Optional[str]:
     latex_dir = get_paper_latex_dir(paper_id)
     abs_path = os.path.join(latex_dir, rel_path)
     real = os.path.realpath(abs_path)
-    if not real.startswith(os.path.realpath(latex_dir)):
+    latex_real = os.path.realpath(latex_dir)
+    try:
+        if os.path.commonpath([latex_real, real]) != latex_real:
+            return None
+    except ValueError:
         return None
     if not os.path.isfile(abs_path):
         return None
@@ -386,8 +417,17 @@ def create_paper_zip(paper_id: str) -> Optional[str]:
 def _save_record(paper_id: str, record: Dict):
     paper_dir = os.path.join(PAPERS_DIR, paper_id)
     os.makedirs(paper_dir, exist_ok=True)
-    with open(os.path.join(paper_dir, "meta.json"), "w") as f:
-        json.dump(record, f, indent=2, default=str)
+    target = os.path.join(paper_dir, "meta.json")
+    fd, temporary = tempfile.mkstemp(prefix="meta.", suffix=".tmp", dir=paper_dir)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(record, handle, indent=2, default=str)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, target)
+    finally:
+        if os.path.exists(temporary):
+            os.remove(temporary)
 
 
 def get_paper_figures_dir(paper_id: str) -> str:

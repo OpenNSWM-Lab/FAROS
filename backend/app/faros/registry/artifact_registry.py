@@ -36,6 +36,13 @@ def get_artifact_registry() -> ArtifactRegistry:
             required_producer='idea_refinement',
         ))
         _registry.register(ArtifactSchemaSpec(
+            type='research_dossier',
+            description='Scientific question, evidence, hypotheses, and executable research plan.',
+            required_metadata=['runId', 'questionId', 'path'],
+            allowed_uri_prefixes=['file://'],
+            required_producer='idea_refinement',
+        ))
+        _registry.register(ArtifactSchemaSpec(
             type='code_project',
             description='Provisioned project workspace for experiment execution.',
             required_metadata=['projectId', 'language', 'framework'],
@@ -47,6 +54,27 @@ def get_artifact_registry() -> ArtifactRegistry:
             description='Experiment record linked to a project workspace.',
             required_metadata=['experimentId', 'projectId'],
             allowed_uri_prefixes=['experiment://'],
+            required_producer='experiment',
+        ))
+        _registry.register(ArtifactSchemaSpec(
+            type='experiment_report',
+            description='Human-readable report generated from experiment evidence.',
+            required_metadata=['projectId', 'path'],
+            allowed_uri_prefixes=['file://'],
+            required_producer='experiment',
+        ))
+        _registry.register(ArtifactSchemaSpec(
+            type='execution_assessment',
+            description='Scientific executability classification created before sandbox execution.',
+            required_metadata=['runId', 'status', 'executionClass'],
+            allowed_uri_prefixes=['assessment://', 'file://'],
+            required_producer='experiment',
+        ))
+        _registry.register(ArtifactSchemaSpec(
+            type='experiment_evidence',
+            description='Hashed scientific experiment evidence for Paper and Review.',
+            required_metadata=['runId', 'projectId', 'status', 'codeHash', 'environmentHash'],
+            allowed_uri_prefixes=['file://'],
             required_producer='experiment',
         ))
         _registry.register(ArtifactSchemaSpec(

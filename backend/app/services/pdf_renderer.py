@@ -14,7 +14,7 @@ from typing import Dict, List, Optional, Any
 logger = logging.getLogger(__name__)
 
 
-def compile_latex_project(project_dir: str, main_tex: str = "main.tex", engine: str = "auto") -> str:
+def compile_latex_project(project_dir: str, main_tex: str = "main.tex", engine: str = "auto", timeout: int = 180) -> str:
     """Compile a LaTeX paper project using latexmk, returning the generated PDF path."""
     pdf_path = os.path.join(project_dir, os.path.splitext(main_tex)[0] + ".pdf")
     engine_flag = "-pdf"
@@ -27,14 +27,19 @@ def compile_latex_project(project_dir: str, main_tex: str = "main.tex", engine: 
         "-halt-on-error",
         main_tex,
     ]
-    result = subprocess.run(
-        cmd,
-        cwd=project_dir,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
+    try:
+        result = subprocess.run(
+            cmd,
+            cwd=project_dir,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        tail = "\n".join((exc.stdout or "").splitlines()[-20:] + (exc.stderr or "").splitlines()[-20:])
+        raise RuntimeError(f"latexmk timed out after {timeout}s for {main_tex}: {tail[:2000]}") from exc
     if result.returncode != 0 or not os.path.isfile(pdf_path):
         tail = "\n".join((result.stdout or "").splitlines()[-20:] + (result.stderr or "").splitlines()[-20:])
         raise RuntimeError(f"latexmk failed for {main_tex}: {tail[:2000]}")

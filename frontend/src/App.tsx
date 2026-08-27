@@ -14,7 +14,9 @@ const ExperimentsDashboard = lazy(() => import('@/pages/Experiments/ExperimentsD
 const ExperimentDetail = lazy(() => import('@/pages/Experiments/ExperimentDetail').then(m => ({ default: m.ExperimentDetail })))
 const PapersList = lazy(() => import('@/pages/Papers/PapersList').then(m => ({ default: m.PapersList })))
 const PaperEditor = lazy(() => import('@/pages/Papers/PaperEditor').then(m => ({ default: m.PaperEditor })))
+const PaperWritingWorkspace = lazy(() => import('@/pages/Papers/PaperWritingWorkspace').then(m => ({ default: m.PaperWritingWorkspace })))
 const ConsistencyChecker = lazy(() => import('@/pages/Review/ConsistencyChecker').then(m => ({ default: m.ConsistencyChecker })))
+const CompetitionEvidence = lazy(() => import('@/pages/Review/CompetitionEvidence').then(m => ({ default: m.CompetitionEvidence })))
 const ReviewerSimulator = lazy(() => import('@/pages/Review/ReviewerSimulator').then(m => ({ default: m.ReviewerSimulator })))
 const LLMProviders = lazy(() => import('@/pages/Settings/LLMProviders').then(m => ({ default: m.LLMProviders })))
 const Preferences = lazy(() => import('@/pages/Settings/Preferences').then(m => ({ default: m.Preferences })))
@@ -73,9 +75,12 @@ function App() {
 
               {/* Papers */}
               <Route path="/papers" element={<PapersList />} />
-              <Route path="/papers/:id" element={<PaperEditor />} />
+              <Route path="/papers/:id" element={<Navigate to="start" replace />} />
+              <Route path="/papers/:id/:stage" element={<PaperWritingWorkspace />} />
+              <Route path="/papers/legacy/:id" element={<PaperEditor />} />
 
               {/* Review */}
+              <Route path="/review/competition" element={<CompetitionEvidence />} />
               <Route path="/review/consistency" element={<ConsistencyChecker />} />
               <Route path="/review/simulator" element={<ReviewerSimulator />} />
 

@@ -17,8 +17,9 @@ import os
 import re
 import ssl
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Any, Optional
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 import urllib.request
 import urllib.parse
@@ -64,6 +65,26 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def tokenize_topic_text(text: str) -> List[str]:
+    """Tokenize English words and Han text for lightweight topic matching."""
+    normalized = (text or "").lower().replace("-", " ")
+    tokens: List[str] = []
+
+    def _add(token: str) -> None:
+        if token and token not in tokens:
+            tokens.append(token)
+
+    for token in re.findall(r"[a-zA-Z][a-zA-Z0-9]{2,}", normalized):
+        _add(token)
+    for span in re.findall(r"[\u4e00-\u9fff]+", normalized):
+        if len(span) < 2:
+            continue
+        _add(span)
+        for index in range(len(span) - 1):
+            _add(span[index:index + 2])
+    return tokens
+
+
 @dataclass
 class SearchResult:
     """A single search result."""
@@ -78,6 +99,18 @@ class SearchResult:
     citation_count: Optional[int]
     source: str  # "semantic_scholar", "arxiv", "local"
     relevance_score: float = 0.0
+    retrieval_roles: List[str] = field(default_factory=list)
+    matched_queries: List[str] = field(default_factory=list)
+    evidence_tier: str = "unclassified"
+    decisive_anchors: List[str] = field(default_factory=list)
+    relevance_components: Dict[str, float] = field(default_factory=dict)
+    rejection_reason: str = ""
+    must_cite_override: bool = False
+    retrieval_sources: List[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if self.source and self.source not in self.retrieval_sources:
+            self.retrieval_sources.append(self.source)
 
 
 class SemanticScholarSearch:
@@ -96,6 +129,12 @@ class SemanticScholarSearch:
         # Unauthenticated free tier is 100 requests / 5 minutes. Keep a small
         # margin so multi-query idea sessions do not immediately hit 429.
         self.min_request_interval = 1.0 if api_key else 3.2
+        try:
+            self.rate_limit_cooldown_seconds = float(
+                os.getenv("FAROS_SEMANTIC_SCHOLAR_429_COOLDOWN_SECONDS", "180")
+            )
+        except ValueError:
+            self.rate_limit_cooldown_seconds = 180.0
     
     def _rate_limit(self):
         """Ensure we don't exceed rate limits."""
@@ -135,6 +174,11 @@ class SemanticScholarSearch:
                     logger.warning("Semantic Scholar rate limited; retrying in %.1fs", delay)
                     time.sleep(delay)
                     continue
+                if e.code == 429:
+                    self.disabled_until = time.time() + max(
+                        30.0,
+                        self.rate_limit_cooldown_seconds,
+                    )
                 logger.warning(f"Semantic Scholar API error: {e.code} - {e.reason}")
                 return None
             except urllib.error.URLError as e:
@@ -289,7 +333,7 @@ class ArxivSearch:
                 phrase_parts.append(f'all:"{phrase}"')
                 consumed_terms.update(phrase.split())
 
-        tokens = re.findall(r"[a-zA-Z][a-zA-Z0-9-]{2,}|[\u4e00-\u9fff]+", normalized)
+        tokens = tokenize_topic_text(normalized)
         stopwords = {
             "and", "the", "for", "with", "from", "that", "this", "into",
             "using", "based", "how", "can", "are", "what", "when", "where",
@@ -580,7 +624,7 @@ class LocalCorpusSearch:
             "model", "models", "large", "learning", "neural",
         }
         terms: List[str] = []
-        for token in re.findall(r"[a-zA-Z][a-zA-Z0-9]{2,}|[\u4e00-\u9fff]+", normalized):
+        for token in tokenize_topic_text(normalized):
             if token in stopwords:
                 continue
             if token not in terms:
@@ -596,9 +640,9 @@ class LocalCorpusSearch:
         title = paper.get("title", "").lower().replace("-", " ")
         abstract = paper.get("abstract", "").lower().replace("-", " ")
         keywords_text = " ".join(str(k).lower().replace("-", " ") for k in paper.get("keywords", []))
-        title_terms = set(re.findall(r"[a-zA-Z][a-zA-Z0-9]{2,}|[\u4e00-\u9fff]+", title))
-        keyword_terms = set(re.findall(r"[a-zA-Z][a-zA-Z0-9]{2,}|[\u4e00-\u9fff]+", keywords_text))
-        abstract_terms = set(re.findall(r"[a-zA-Z][a-zA-Z0-9]{2,}|[\u4e00-\u9fff]+", abstract))
+        title_terms = set(tokenize_topic_text(title))
+        keyword_terms = set(tokenize_topic_text(keywords_text))
+        abstract_terms = set(tokenize_topic_text(abstract))
 
         title_hits = len(query_terms & title_terms)
         keyword_hits = len(query_terms & keyword_terms)
@@ -719,8 +763,15 @@ class OpenAlexSearch:
 
         self._rate_limit()
 
+        # OpenAlex interprets question marks and asterisks as wildcard syntax.
+        # Natural-language research questions therefore produce HTTP 400 unless
+        # those punctuation characters are removed from stemmed search queries.
+        openalex_query = re.sub(r"[?*]+", " ", str(query or ""))
+        openalex_query = re.sub(r"\s+", " ", openalex_query).strip()
+        if not openalex_query:
+            return []
         params: Dict[str, str] = {
-            "search": query,
+            "search": openalex_query,
             "per-page": str(min(limit, 25)),
         }
         if self.mailto:
@@ -795,7 +846,8 @@ class OpenAlexSearch:
                 arxiv_id=None,
                 citation_count=citation_count,
                 source="openalex",
-                relevance_score=float(work.get("relevance_score") or 0.0),
+                # OpenAlex scores are ranking magnitudes, not normalized probabilities.
+                relevance_score=0.0,
             ))
 
         return results[:limit]
@@ -881,6 +933,335 @@ class WanFangSearch:
         return []
 
 
+class CrossrefSearch:
+    """Crossref search adapter (free, no API key required).
+
+    Crossref indexes 140M+ DOIs from all publishers and disciplines.
+    A ``mailto`` parameter is recommended for the "polite pool" with
+    higher rate limits. Set ``CROSSREF_MAILTO`` in the environment.
+    """
+
+    BASE_URL = "https://api.crossref.org/works"
+
+    def __init__(self, mailto: Optional[str] = None):
+        self.mailto = mailto or os.getenv("CROSSREF_MAILTO", "")
+        self._last_request_time = 0.0
+        self._rate_limit_interval = 1.0  # polite pool: ~1 req/sec
+        self._disabled_until: float = 0.0
+
+    def _rate_limit(self):
+        elapsed = time.time() - self._last_request_time
+        if elapsed < self._rate_limit_interval:
+            time.sleep(self._rate_limit_interval - elapsed)
+        self._last_request_time = time.time()
+
+    def search(self, query: str, limit: int = 10) -> List[SearchResult]:
+        if time.time() < self._disabled_until:
+            return []
+
+        self._rate_limit()
+
+        params: Dict[str, str] = {
+            "query": query,
+            "rows": str(min(limit, 25)),
+            "select": "title,author,abstract,published-print,published-online,container-title,DOI,URL,is-referenced-by-count",
+        }
+        if self.mailto:
+            params["mailto"] = self.mailto
+
+        url = f"{self.BASE_URL}?{urllib.parse.urlencode(params)}"
+
+        try:
+            request = urllib.request.Request(url)
+            with _urlopen(request, timeout=30) as resp:
+                raw = resp.read().decode("utf-8")
+            data = json.loads(raw)
+        except urllib.error.HTTPError as e:
+            if e.code == 429:
+                self._disabled_until = time.time() + 60
+                logger.warning("Crossref rate limited (429), cooling down 60s")
+            else:
+                logger.warning(f"Crossref HTTP error: {e.code}")
+            return []
+        except Exception as e:
+            logger.warning(f"Crossref search failed: {e}")
+            self._disabled_until = time.time() + 30
+            return []
+
+        results = []
+        for item in data.get("message", {}).get("items", []):
+            titles = item.get("title") or []
+            title = titles[0] if titles else ""
+            if not title:
+                continue
+
+            abstract = (item.get("abstract") or "").strip()
+            # Crossref abstracts sometimes have JATS XML tags
+            if abstract:
+                abstract = re.sub(r"<[^>]+>", "", abstract)
+
+            authors: List[str] = []
+            for author in item.get("author", [])[:10]:
+                given = author.get("given", "")
+                family = author.get("family", "")
+                name = f"{given} {family}".strip()
+                if name:
+                    authors.append(name)
+
+            # Year: prefer published-print, fall back to published-online
+            year = None
+            date_parts = (
+                item.get("published-print", {}).get("date-parts")
+                or item.get("published-online", {}).get("date-parts")
+                or item.get("created", {}).get("date-parts")
+            )
+            if date_parts and date_parts[0] and date_parts[0][0]:
+                try:
+                    year = int(date_parts[0][0])
+                except (ValueError, TypeError):
+                    pass
+
+            venue = None
+            container = item.get("container-title") or []
+            if container:
+                venue = container[0]
+
+            doi = item.get("DOI") or ""
+            url_val = item.get("URL") or ""
+            citation_count = item.get("is-referenced-by-count")
+
+            results.append(SearchResult(
+                title=title,
+                authors=authors,
+                abstract=abstract,
+                year=year,
+                venue=venue,
+                url=url_val,
+                doi=doi or None,
+                arxiv_id=None,
+                citation_count=citation_count,
+                source="crossref",
+                relevance_score=float(item.get("score") or 0.0),
+            ))
+
+        return results[:limit]
+
+
+class DblpSearch:
+    """DBLP search adapter (free, no API key required).
+
+    DBLP indexes 6M+ CS publications including conferences (NeurIPS, ICML,
+    ACL, CVPR, etc.) and journals (TPAMI, TACL, etc.). Excellent for
+    computer science and AI research topics.
+
+    API docs: https://dblp.org/faq/How+to+use+the+dblp+search+API.html
+    """
+
+    BASE_URL = "https://dblp.org/search/publ/api"
+
+    def __init__(self):
+        self._last_request_time = 0.0
+        self._rate_limit_interval = 1.0  # be polite to DBLP servers
+
+    def _rate_limit(self):
+        elapsed = time.time() - self._last_request_time
+        if elapsed < self._rate_limit_interval:
+            time.sleep(self._rate_limit_interval - elapsed)
+        self._last_request_time = time.time()
+
+    def search(self, query: str, limit: int = 10) -> List[SearchResult]:
+        self._rate_limit()
+
+        params = {
+            "q": query,
+            "format": "json",
+            "h": str(min(limit, 25)),  # max hits
+            "f": "0",  # offset
+        }
+        url = f"{self.BASE_URL}?{urllib.parse.urlencode(params)}"
+
+        try:
+            request = urllib.request.Request(url)
+            # DBLP SSL chain may not be trusted by all systems; try secure
+            # context first, fall back to unverified on cert failure.
+            try:
+                with _urlopen(request, timeout=30) as resp:
+                    raw = resp.read().decode("utf-8")
+            except urllib.error.URLError as e:
+                if "CERTIFICATE" in str(e) or "SSL" in str(e):
+                    logger.info("DBLP: SSL cert untrusted, retrying with unverified context")
+                    with _urlopen(request, timeout=30, context=_INSECURE_SSL_CONTEXT) as resp:
+                        raw = resp.read().decode("utf-8")
+                else:
+                    raise
+            data = json.loads(raw)
+        except Exception as e:
+            logger.warning(f"DBLP search failed: {e}")
+            return []
+
+        results = []
+        hits = data.get("result", {}).get("hits", {}).get("hit", [])
+        for hit in hits:
+            info = hit.get("info", {})
+            title = info.get("title", "")
+            if not title:
+                continue
+
+            # Authors can be a string or a list
+            authors_raw = info.get("authors", {}).get("author", [])
+            if isinstance(authors_raw, dict):
+                authors_raw = [authors_raw]
+            authors = []
+            for a in authors_raw:
+                name = a.get("text", "") if isinstance(a, dict) else str(a)
+                if name:
+                    authors.append(name)
+
+            year_str = info.get("year", "")
+            year = None
+            if year_str:
+                try:
+                    year = int(year_str)
+                except ValueError:
+                    pass
+
+            venue = info.get("venue") or info.get("journal", "")
+            doi = info.get("doi") or None
+            url_val = info.get("url") or info.get("ee", "")
+            citation_count = None  # DBLP doesn't provide citation counts
+
+            results.append(SearchResult(
+                title=title,
+                authors=authors,
+                abstract="",  # DBLP doesn't provide abstracts
+                year=year,
+                venue=venue,
+                url=url_val,
+                doi=doi,
+                arxiv_id=None,
+                citation_count=citation_count,
+                source="dblp",
+                relevance_score=0.0,
+            ))
+
+        return results[:limit]
+
+
+class CoreSearch:
+    """CORE (core.ac.uk) search adapter.
+
+    CORE indexes 200M+ open access papers from repositories worldwide.
+    Provides full-text access for many papers, making it valuable for
+    downstream RAG / deep reading.
+
+    A free API key is required. Register at https://core.ac.uk/services/api
+    and set ``CORE_API_KEY`` in the environment.
+    When no API key is configured, the adapter is silently disabled.
+    """
+
+    BASE_URL = "https://api.core.ac.uk/v3/search/works"
+
+    def __init__(self, api_key: Optional[str] = None):
+        self.api_key = api_key or os.getenv("CORE_API_KEY")
+        self._enabled = bool(self.api_key)
+        self._last_request_time = 0.0
+        self._rate_limit_interval = 1.0
+        self._disabled_until: float = 0.0
+        if not self._enabled:
+            logger.info("CoreSearch: No API key (set CORE_API_KEY). Adapter disabled.")
+
+    def _rate_limit(self):
+        elapsed = time.time() - self._last_request_time
+        if elapsed < self._rate_limit_interval:
+            time.sleep(self._rate_limit_interval - elapsed)
+        self._last_request_time = time.time()
+
+    def search(self, query: str, limit: int = 10) -> List[SearchResult]:
+        if not self._enabled:
+            return []
+        if time.time() < self._disabled_until:
+            return []
+
+        self._rate_limit()
+
+        # CORE v3 API uses POST with JSON body
+        body = json.dumps({
+            "q": query,
+            "limit": min(limit, 25),
+        }).encode("utf-8")
+
+        url = f"{self.BASE_URL}?limit={min(limit, 25)}"
+
+        try:
+            request = urllib.request.Request(
+                url,
+                data=body,
+                method="POST",
+            )
+            request.add_header("Authorization", f"Bearer {self.api_key}")
+            request.add_header("Content-Type", "application/json")
+            with _urlopen(request, timeout=30) as resp:
+                raw = resp.read().decode("utf-8")
+            data = json.loads(raw)
+        except urllib.error.HTTPError as e:
+            if e.code == 429:
+                self._disabled_until = time.time() + 60
+                logger.warning("CORE rate limited (429), cooling down 60s")
+            else:
+                logger.warning(f"CORE HTTP error: {e.code}")
+            return []
+        except Exception as e:
+            logger.warning(f"CORE search failed: {e}")
+            self._disabled_until = time.time() + 30
+            return []
+
+        results = []
+        for work in data.get("results", []):
+            title = work.get("title") or ""
+            if not title:
+                continue
+
+            abstract = work.get("abstract") or ""
+
+            authors: List[str] = []
+            for author in work.get("authors", [])[:10]:
+                if isinstance(author, dict):
+                    name = author.get("name", "")
+                else:
+                    name = str(author)
+                if name:
+                    authors.append(name)
+
+            year = None
+            year_str = work.get("year") or work.get("publishedDate", "")[:4]
+            if year_str:
+                try:
+                    year = int(year_str)
+                except (ValueError, TypeError):
+                    pass
+
+            venue = work.get("publisher") or work.get("journal", "")
+            doi = work.get("doi") or None
+            url_val = work.get("downloadUrl") or work.get("sourceFulltextUrls", [None])[0] or work.get("id", "")
+            citation_count = None
+
+            results.append(SearchResult(
+                title=title,
+                authors=authors,
+                abstract=abstract,
+                year=year,
+                venue=venue,
+                url=url_val,
+                doi=doi,
+                arxiv_id=None,
+                citation_count=citation_count,
+                source="core",
+                relevance_score=0.0,
+            ))
+
+        return results[:limit]
+
+
 class SearchService:
     """
     Unified search service with fallback support.
@@ -903,12 +1284,18 @@ class SearchService:
         use_openalex: bool = True,
         use_cnki: bool = True,
         use_wanfang: bool = True,
+        use_crossref: bool = True,
+        use_dblp: bool = True,
+        use_core: bool = True,
     ):
         self.semantic_scholar = SemanticScholarSearch(semantic_scholar_key) if use_semantic_scholar else None
         self.arxiv = ArxivSearch() if use_arxiv else None
         self.openalex = OpenAlexSearch() if use_openalex else None
         self.cnki = CNKISearch() if use_cnki else None
         self.wanfang = WanFangSearch() if use_wanfang else None
+        self.crossref = CrossrefSearch() if use_crossref else None
+        self.dblp = DblpSearch() if use_dblp else None
+        self.core = CoreSearch() if use_core else None
         self.local = LocalCorpusSearch(local_corpus_path) if use_local else None
     
     def search(
@@ -918,64 +1305,60 @@ class SearchService:
         sources: Optional[List[str]] = None
     ) -> List[SearchResult]:
         """
-        Search for papers across all available sources.
-        
+        Search for papers across all available sources **in parallel**.
+
         Args:
             query: Search query
             limit: Maximum results per source
-            sources: Optional list of sources to use ["semantic_scholar", "arxiv", "local"]
-            
+            sources: Optional list of sources to use
+
         Returns:
             Combined list of SearchResult objects, deduplicated by title
         """
-        all_results = []
-        sources = sources or ["semantic_scholar", "arxiv", "openalex", "cnki", "wanfang", "local"]
-        
-        # Try Semantic Scholar
-        if "semantic_scholar" in sources and self.semantic_scholar:
-            try:
-                results = self.semantic_scholar.search(query, limit)
-                all_results.extend(results)
-                logger.info(f"Semantic Scholar returned {len(results)} results")
-            except Exception as e:
-                logger.warning(f"Semantic Scholar search failed: {e}")
-        
-        # Try ArXiv
-        if "arxiv" in sources and self.arxiv:
-            try:
-                results = self.arxiv.search(query, limit)
-                all_results.extend(results)
-                logger.info(f"ArXiv returned {len(results)} results")
-            except Exception as e:
-                logger.warning(f"ArXiv search failed: {e}")
-        
-        # Try OpenAlex (free, no key required, indexes global papers)
-        if "openalex" in sources and self.openalex:
-            try:
-                results = self.openalex.search(query, limit)
-                all_results.extend(results)
-                logger.info(f"OpenAlex returned {len(results)} results")
-            except Exception as e:
-                logger.warning(f"OpenAlex search failed: {e}")
-        
-        # Try CNKI (requires API key, disabled if not configured)
-        if "cnki" in sources and self.cnki:
-            try:
-                results = self.cnki.search(query, limit)
-                all_results.extend(results)
-                logger.info(f"CNKI returned {len(results)} results")
-            except Exception as e:
-                logger.warning(f"CNKI search failed: {e}")
-        
-        # Try WanFang (requires API key, disabled if not configured)
-        if "wanfang" in sources and self.wanfang:
-            try:
-                results = self.wanfang.search(query, limit)
-                all_results.extend(results)
-                logger.info(f"WanFang returned {len(results)} results")
-            except Exception as e:
-                logger.warning(f"WanFang search failed: {e}")
-        
+        all_results: List[SearchResult] = []
+        sources = sources or ["semantic_scholar", "arxiv", "openalex", "crossref", "dblp", "core", "cnki", "wanfang", "local"]
+
+        # Build parallel search tasks (exclude local corpus — it's a sync offline fallback)
+        parallel_sources = [s for s in sources if s != "local"]
+        source_map: Dict[str, Any] = {
+            "semantic_scholar": self.semantic_scholar,
+            "arxiv": self.arxiv,
+            "openalex": self.openalex,
+            "crossref": self.crossref,
+            "dblp": self.dblp,
+            "core": self.core,
+            "cnki": self.cnki,
+            "wanfang": self.wanfang,
+        }
+
+        search_tasks: List[tuple] = []
+        for source_name in parallel_sources:
+            searcher = source_map.get(source_name)
+            if searcher:
+                search_tasks.append((source_name, searcher))
+
+        if search_tasks:
+            # P0: Parallelize external search sources.
+            # Each source has its own rate-limit logic, so running them concurrently
+            # cuts wall-clock time from sum(intervals) to max(interval).
+            max_workers = min(len(search_tasks), int(os.getenv("FAROS_SEARCH_PARALLELISM", "5")))
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                future_to_source: Dict[Any, str] = {}
+                for source_name, searcher in search_tasks:
+                    future = executor.submit(
+                        self._safe_search_source, source_name, searcher, query, limit,
+                    )
+                    future_to_source[future] = source_name
+
+                for future in as_completed(future_to_source):
+                    source_name = future_to_source[future]
+                    try:
+                        results: List[SearchResult] = future.result()
+                        all_results.extend(results)
+                        logger.info(f"{source_name} returned {len(results)} results for '{query[:60]}'")
+                    except Exception as e:
+                        logger.warning(f"{source_name} search failed for '{query[:60]}': {e}")
+
         external_results_count = len(all_results)
 
         # Try local corpus only as a strict offline fallback by default. Mixing
@@ -989,7 +1372,7 @@ class SearchService:
                 logger.info(f"Local corpus returned {len(results)} results")
             except Exception as e:
                 logger.warning(f"Local search failed: {e}")
-        
+
         # Deduplicate by normalized title
         seen_titles = set()
         unique_results = []
@@ -998,8 +1381,18 @@ class SearchService:
             if normalized_title not in seen_titles:
                 seen_titles.add(normalized_title)
                 unique_results.append(result)
-        
+
         return unique_results[:limit * 2]  # Return up to 2x limit after dedup
+
+    @staticmethod
+    def _safe_search_source(
+        source_name: str,
+        searcher: Any,
+        query: str,
+        limit: int,
+    ) -> List[SearchResult]:
+        """Search a single source. Static so it is picklable for ThreadPoolExecutor."""
+        return searcher.search(query, limit)
 
 
 # Global service instance
@@ -1022,5 +1415,8 @@ def get_search_service() -> SearchService:
             use_openalex=_env_bool("FAROS_USE_OPENALEX", True),
             use_cnki=_env_bool("FAROS_USE_CNKI", True),
             use_wanfang=_env_bool("FAROS_USE_WANFANG", True),
+            use_crossref=_env_bool("FAROS_USE_CROSSREF", True),
+            use_dblp=_env_bool("FAROS_USE_DBLP", True),
+            use_core=_env_bool("FAROS_USE_CORE", True),
         )
     return _search_service

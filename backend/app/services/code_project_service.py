@@ -268,6 +268,67 @@ def write_project_files(
     return file_count, total_bytes
 
 
+def index_existing_project_files(db: Session, project_id: str) -> Tuple[int, int]:
+    """Index an existing on-disk repository without rewriting its files.
+
+    Import workflows need to preserve binary files and exact hashes, while the
+    normal generation path writes UTF-8 content.  This scanner only registers
+    files already inside the project's managed repo directory.
+    """
+    project = crud.get_project_v2(db, project_id)
+    if not project:
+        raise ValueError(f"Project not found: {project_id}")
+
+    repo_dir = os.path.realpath(_get_project_repo_dir(project_id))
+    if not os.path.isdir(repo_dir):
+        raise ValueError(f"Project repo not found on disk: {repo_dir}")
+
+    crud.delete_project_files(db, project_id)
+    records: List[CodeProjectFileCreate] = []
+    total_bytes = 0
+    ignored_dirs = {".git", "__pycache__", ".pytest_cache", ".venv", "venv", "node_modules"}
+
+    for root, dirs, files in os.walk(repo_dir, followlinks=False):
+        dirs[:] = [name for name in dirs if name not in ignored_dirs]
+        root_real = os.path.realpath(root)
+        if os.path.commonpath([repo_dir, root_real]) != repo_dir:
+            dirs[:] = []
+            continue
+
+        relative_root = os.path.relpath(root_real, repo_dir)
+        if relative_root != ".":
+            records.append(CodeProjectFileCreate(
+                project_id=project_id,
+                path=relative_root.replace(os.sep, "/"),
+                is_dir=True,
+                size=0,
+            ))
+
+        for filename in files:
+            absolute = os.path.realpath(os.path.join(root_real, filename))
+            if os.path.commonpath([repo_dir, absolute]) != repo_dir or not os.path.isfile(absolute):
+                continue
+            relative = os.path.relpath(absolute, repo_dir).replace(os.sep, "/")
+            size = os.path.getsize(absolute)
+            records.append(CodeProjectFileCreate(
+                project_id=project_id,
+                path=relative,
+                is_dir=False,
+                size=size,
+                sha256=_sha256_file(absolute),
+            ))
+            total_bytes += size
+
+    crud.bulk_create_project_files(db, records)
+    file_count = sum(1 for record in records if not record.is_dir)
+    crud.update_project_v2(db, project_id, {
+        "file_count": file_count,
+        "total_size_bytes": total_bytes,
+    })
+    logger.info("Indexed existing project %s: %d files, %d bytes", project_id, file_count, total_bytes)
+    return file_count, total_bytes
+
+
 # ============ File Reading ============
 
 def read_file_content(project_id: str, file_path: str) -> Optional[str]:

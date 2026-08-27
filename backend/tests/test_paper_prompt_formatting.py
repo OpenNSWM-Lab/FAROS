@@ -15,13 +15,17 @@ from app.modules.paper.skills.constants import (
 )
 from app.modules.paper.skills.outline import OUTLINE_PROMPT, build_outline
 from app.modules.paper.skills.paper_brief import BRIEF_PROMPT, build_brief
+from app.modules.paper.skills.review_feedback import get_simple_review_feedback
 from app.modules.paper.skills.section_writers.base import (
+    COMMON_SECTION_INSTRUCTIONS,
     EQUATION_TEMPLATE,
     TABLE_TEMPLATE,
+    build_artifact_requirements,
     render_prompt,
 )
+from app.modules.paper.skills.section_writers.conclusion import ConclusionWriter
 from app.modules.paper.skills.section_writers.method import MethodWriter
-from app.modules.paper.storage import create_paper
+from app.modules.paper.storage import create_paper, get_paper
 
 
 class FakeChatResponse:
@@ -38,7 +42,13 @@ class FakeClient:
 
     def chat(self, messages, **kwargs):
         self.calls.append({"messages": messages, **kwargs})
-        return FakeChatResponse(json.dumps(self.payload))
+        if isinstance(self.payload, list):
+            payload = self.payload[min(len(self.calls) - 1, len(self.payload) - 1)]
+        else:
+            payload = self.payload
+        if isinstance(payload, str):
+            return FakeChatResponse(payload)
+        return FakeChatResponse(json.dumps(payload))
 
 
 def _ctx_for_paper(paper, client, context, paper_brief=None):
@@ -108,6 +118,7 @@ def test_brief_prompt_includes_plan_evidence():
         venue_style_guide="Style",
         plan_context="Plan context",
         plan_evidence="Authoritative package evidence",
+        code_evidence="Code evidence",
         project_summary="Project",
         metrics_summary="Metrics",
         runs_summary="Runs",
@@ -118,6 +129,20 @@ def test_brief_prompt_includes_plan_evidence():
 
     assert "Authoritative package evidence" in rendered
     assert "authoritative source" in rendered
+    assert "lower ECE and Brier Score are better" in rendered
+    assert "trade-off" in rendered
+
+
+def test_outline_prompt_enforces_metric_direction_and_significance_scope():
+    assert "Do not say Brier improved when its value increased" in OUTLINE_PROMPT
+    assert "Do not use \"significant\" without inferential statistics" in OUTLINE_PROMPT
+
+
+def test_section_prompts_separate_literature_from_project_metrics():
+    assert "literature evidence and this paper's experiment evidence" in COMMON_SECTION_INSTRUCTIONS
+    assert "Do not attach a literature citation" in COMMON_SECTION_INSTRUCTIONS
+    assert "Narrow unsupported field-level claims" in COMMON_SECTION_INSTRUCTIONS
+    assert "Do not introduce a new survey of prior work" in ConclusionWriter.prompt_template
 
 
 def test_brief_regenerates_when_existing_is_not_bound_to_plan_evidence():
@@ -148,6 +173,89 @@ def test_brief_regenerates_when_existing_is_not_bound_to_plan_evidence():
     assert client.calls
     assert result.data["paper_brief"]["_evidencePackageId"] == "ppkg_new"
     assert result.data["paper_brief"]["research_question"] == "Evidence research question?"
+
+
+def test_brief_reuses_existing_when_context_fingerprint_matches():
+    paper = create_paper({"title": "Reusable brief paper"})
+    context = {
+        "plan_evidence": "N/A",
+        "code_evidence": "N/A",
+        "metrics_summary": json.dumps({"accuracy": 0.91}),
+        "runs_summary": "N/A",
+        "figures_summary": "N/A",
+        "code_tables_summary": "N/A",
+        "user_notes": "Keep the metric discussion narrow.",
+    }
+    first_client = FakeClient({
+        "research_question": "How well does reuse work?",
+        "core_claim": "Reuse is grounded.",
+        "paper_angle": "algorithm",
+        "target_audience": "reviewers",
+        "contributions": ["Grounded reuse"],
+        "must_use_evidence": [],
+        "must_use_figures": [],
+        "section_priorities": {},
+        "avoid_claims": [],
+    })
+    first = build_brief(_ctx_for_paper(paper, first_client, context), force=False)
+    refreshed = get_paper(paper["id"])
+    second_client = FakeClient({"research_question": "Should not be called"})
+
+    second = build_brief(_ctx_for_paper(refreshed, second_client, context), force=False)
+
+    assert first_client.calls
+    assert second_client.calls == []
+    assert second.data["paper_brief"]["_contextFingerprint"] == first.data["paper_brief"]["_contextFingerprint"]
+    assert second.data["paper_brief"]["research_question"] == "How well does reuse work?"
+
+
+def test_brief_refreshes_when_context_notes_metrics_code_or_figures_change():
+    base_context = {
+        "plan_evidence": "N/A",
+        "code_evidence": json.dumps({"status": "collected", "repo": {"metrics": {"old": 1}}}),
+        "metrics_summary": json.dumps({"accuracy": 0.91}),
+        "runs_summary": "N/A",
+        "figures_summary": json.dumps([{"path": "figures/old.pdf", "label": "fig:old"}]),
+        "code_tables_summary": "N/A",
+        "user_notes": "Original note.",
+    }
+    paper = create_paper({"title": "Refreshing brief paper"})
+    first_client = FakeClient({
+        "research_question": "Old question?",
+        "core_claim": "Old claim.",
+        "paper_angle": "algorithm",
+        "target_audience": "reviewers",
+        "contributions": [],
+        "must_use_evidence": [],
+        "must_use_figures": [],
+        "section_priorities": {},
+        "avoid_claims": [],
+    })
+    build_brief(_ctx_for_paper(paper, first_client, base_context), force=False)
+    refreshed = get_paper(paper["id"])
+    changed_context = {
+        **base_context,
+        "code_evidence": json.dumps({"status": "collected", "repo": {"metrics": {"new": 2}}}),
+        "metrics_summary": json.dumps({"accuracy": 0.95}),
+        "figures_summary": json.dumps([{"path": "figures/new.pdf", "label": "fig:new"}]),
+        "user_notes": "Updated note.",
+    }
+    second_client = FakeClient({
+        "research_question": "New question?",
+        "core_claim": "New claim.",
+        "paper_angle": "algorithm",
+        "target_audience": "reviewers",
+        "contributions": [],
+        "must_use_evidence": [],
+        "must_use_figures": [],
+        "section_priorities": {},
+        "avoid_claims": [],
+    })
+
+    result = build_brief(_ctx_for_paper(refreshed, second_client, changed_context), force=False)
+
+    assert second_client.calls
+    assert result.data["paper_brief"]["research_question"] == "New question?"
 
 
 def test_outline_regenerates_when_existing_is_not_bound_to_plan_evidence():
@@ -195,6 +303,157 @@ def test_outline_regenerates_when_existing_is_not_bound_to_plan_evidence():
     assert result.data["outline"]["title"] == "Evidence aligned outline"
 
 
+def test_outline_reuses_existing_when_context_and_brief_fingerprints_match():
+    paper = create_paper({"title": "Reusable outline paper"})
+    context = {
+        "plan_evidence": "N/A",
+        "code_evidence": "N/A",
+        "metrics_summary": json.dumps({"accuracy": 0.91}),
+        "runs_summary": "N/A",
+        "figures_summary": "N/A",
+        "code_tables_summary": "N/A",
+        "user_notes": "Same note.",
+    }
+    brief = {"research_question": "Same question?", "core_claim": "Same claim."}
+    first_client = FakeClient({
+        "title": "First outline",
+        "authors": ["Auto"],
+        "abstract": "This outline is generated from matching context.",
+        "sections": [{"id": "intro", "title": "Introduction", "keyPoints": [], "minWords": 600}],
+        "references": [],
+        "algorithms": [],
+        "contributions": [],
+    })
+    first = build_outline(_ctx_for_paper(paper, first_client, context, paper_brief=brief), force=False)
+    refreshed = get_paper(paper["id"])
+    second_client = FakeClient({"title": "Should not be called"})
+
+    second = build_outline(_ctx_for_paper(refreshed, second_client, context, paper_brief=brief), force=False)
+
+    assert first_client.calls
+    assert second_client.calls == []
+    assert second.data["outline"]["_contextFingerprint"] == first.data["outline"]["_contextFingerprint"]
+    assert second.data["outline"]["title"] == "First outline"
+
+
+def test_outline_refreshes_when_brief_or_metrics_change():
+    paper = create_paper({"title": "Refreshing outline paper"})
+    context = {
+        "plan_evidence": "N/A",
+        "code_evidence": "N/A",
+        "metrics_summary": json.dumps({"accuracy": 0.91}),
+        "runs_summary": "N/A",
+        "figures_summary": "N/A",
+        "code_tables_summary": "N/A",
+        "user_notes": "Original note.",
+    }
+    first_client = FakeClient({
+        "title": "Old outline",
+        "authors": ["Auto"],
+        "abstract": "Old abstract.",
+        "sections": [{"id": "intro", "title": "Introduction", "keyPoints": [], "minWords": 600}],
+        "references": [],
+        "algorithms": [],
+        "contributions": [],
+    })
+    build_outline(_ctx_for_paper(paper, first_client, context, paper_brief={"research_question": "Old?"}), force=False)
+    refreshed = get_paper(paper["id"])
+    second_client = FakeClient({
+        "title": "New outline",
+        "authors": ["Auto"],
+        "abstract": "New abstract.",
+        "sections": [{"id": "intro", "title": "Introduction", "keyPoints": [], "minWords": 600}],
+        "references": [],
+        "algorithms": [],
+        "contributions": [],
+    })
+
+    result = build_outline(
+        _ctx_for_paper(
+            refreshed,
+            second_client,
+            {**context, "metrics_summary": json.dumps({"accuracy": 0.95})},
+            paper_brief={"research_question": "New?"},
+        ),
+        force=False,
+    )
+
+    assert second_client.calls
+    assert result.data["outline"]["title"] == "New outline"
+
+
+def test_outline_falls_back_when_llm_returns_truncated_json():
+    paper = create_paper({"title": "Truncated outline paper"})
+    client = FakeClient('{"title": "Broken", "abstract": "unfinished')
+    ctx = _ctx_for_paper(
+        paper,
+        client,
+        {"plan_evidence": "N/A", "plan_context": "N/A", "metrics_summary": "N/A"},
+        paper_brief={
+            "research_question": "How should the system adapt retrieval?",
+            "core_claim": "Adaptive retrieval improves the trade-off.",
+            "contributions": ["Adaptive policy", "Code-backed evaluation"],
+        },
+    )
+
+    result = build_outline(ctx, force=False)
+
+    outline = result.data["outline"]
+    assert result.summary == "fallback outline"
+    assert len(outline["sections"]) >= 5
+    assert any(section["id"] == "experiments" and section["hasTables"] for section in outline["sections"])
+
+
+def test_outline_prompt_keeps_figures_and_tables_at_general_description_level():
+    rendered = OUTLINE_PROMPT.format(
+        paper_type="algorithm",
+        venue_name="ICML",
+        title="Example Paper",
+        venue_style_guide="Style",
+        plan_context="Plan context",
+        plan_evidence="Plan evidence",
+        metrics_summary="Metrics",
+        runs_summary="Runs",
+        figures_summary="Figures",
+        paper_brief="Brief",
+        user_notes="Notes",
+        min_refs=MIN_REFERENCES,
+        min_algos=MIN_ALGORITHMS,
+        min_eqs=MIN_EQUATIONS,
+        min_tables=MIN_TABLES,
+        min_figs=MIN_FIGURES,
+    )
+
+    assert "broad purpose of a table/figure" in rendered
+    assert "Do not include concrete values" in rendered
+
+
+def test_simple_review_prompt_audits_brief_must_use_evidence(tmp_path):
+    paper = create_paper({
+        "title": "Review evidence coverage paper",
+        "briefJson": {
+            "research_question": "Question",
+            "core_claim": "Claim",
+            "must_use_evidence": ["Use code result metrics from node_a: accuracy=0.91"],
+            "must_use_figures": [{"path": "figures/result.pdf", "caption": "Result trend"}],
+        },
+    })
+    client = FakeClient({"passed": True, "issues": [], "targets": []})
+    ctx = _ctx_for_paper(paper, client, {"plan_context": "N/A"})
+    ctx.latex_dir = str(tmp_path)
+    (tmp_path / "sections").mkdir()
+    (tmp_path / "sections" / "method.tex").write_text(r"\section{Method}", encoding="utf-8")
+
+    get_simple_review_feedback(ctx, 1)
+
+    prompt = client.calls[0]["messages"][0].content
+    assert "Writing brief requirements to audit" in prompt
+    assert "accuracy=0.91" in prompt
+    assert "minor evidence-usage suggestion" in prompt
+    assert "not blocking issues" in prompt
+    assert "must not be reported as major" in prompt
+
+
 def test_section_prompt_formats_latex_examples_without_key_error():
     eq_req = EQUATION_TEMPLATE.format(n=2)
     table_req = TABLE_TEMPLATE.format(n=1)
@@ -228,6 +487,51 @@ def test_section_prompt_formats_latex_examples_without_key_error():
     assert "\\begin{equation}" in rendered
     assert "\\begin{table}" in rendered
     assert "Write COMPLETE LaTeX content for the method-oriented section" in rendered
+
+
+def test_artifact_requirements_respect_single_equation_request():
+    ctx = _ctx_for_paper(create_paper({"title": "Equation paper"}), FakeClient({}), {"metrics_summary": "N/A"})
+
+    reqs = build_artifact_requirements(
+        ctx,
+        {"minWords": 500, "hasEquations": True, "numEquations": 1, "hasTables": False},
+        "Method",
+        "N/A",
+        [],
+        [],
+    )
+
+    assert "at least 1 numbered equations" in reqs["eq_req"]
+    assert "1 equations" in reqs["requirements_text"]
+
+
+def test_artifact_requirements_do_not_force_tables_without_evidence():
+    ctx = _ctx_for_paper(create_paper({"title": "No table evidence paper"}), FakeClient({}), {"metrics_summary": "N/A", "code_tables_summary": "N/A"})
+
+    reqs = build_artifact_requirements(
+        ctx,
+        {"minWords": 500, "hasEquations": False, "hasTables": True, "keyPoints": ["Discuss results carefully."]},
+        "Experiments",
+        "N/A",
+        [],
+        [],
+    )
+
+    assert reqs["table_req"] == ""
+    assert "tables" not in reqs["requirements_text"]
+
+
+def test_artifact_requirements_allow_tables_with_metric_or_code_table_evidence():
+    paper = create_paper({"title": "Table evidence paper"})
+    metrics_ctx = _ctx_for_paper(paper, FakeClient({}), {"metrics_summary": json.dumps({"accuracy": 0.91}), "code_tables_summary": "N/A"})
+    table_ctx = _ctx_for_paper(paper, FakeClient({}), {"metrics_summary": "N/A", "code_tables_summary": json.dumps([{"path": "tables/results.csv"}])})
+
+    metrics_reqs = build_artifact_requirements(metrics_ctx, {"hasTables": True}, "Experiments", "N/A", [], [])
+    table_reqs = build_artifact_requirements(table_ctx, {"hasTables": True}, "Experiments", "N/A", [], [])
+
+    assert "at least 1 tables" in metrics_reqs["table_req"]
+    assert "linked metrics or code table evidence" in metrics_reqs["table_req"]
+    assert "at least 1 tables" in table_reqs["table_req"]
 
 
 def test_paper_skill_context_uses_extended_llm_timeout():

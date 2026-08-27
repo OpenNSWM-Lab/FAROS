@@ -6,6 +6,7 @@ from .utils import (
     build_bibtex,
     build_main_tex,
     copy_template_assets,
+    ensure_section_label,
     normalize_duplicate_latex_labels,
     normalize_paper_authors,
     sanitize_latex_text_specials,
@@ -36,6 +37,17 @@ def run(ctx: PaperSkillContext) -> PaperSkillResult:
         section_id = section.get("id")
         if not section_id or section_id not in sections_content:
             continue
+        labeled_content, label_added = ensure_section_label(
+            sections_content[section_id], section_id,
+        )
+        if label_added:
+            write_paper_file(ctx.paper_id, f"sections/{section_id}.tex", labeled_content)
+            sections_content[section_id] = labeled_content
+            label_rewrites.append({
+                "section": section_id,
+                "kind": "section_label",
+                "to": f"sec:{section_id}",
+            })
         sanitized_content = sanitize_latex_text_specials(sections_content[section_id])
         if sanitized_content != sections_content[section_id]:
             write_paper_file(ctx.paper_id, f"sections/{section_id}.tex", sanitized_content)
