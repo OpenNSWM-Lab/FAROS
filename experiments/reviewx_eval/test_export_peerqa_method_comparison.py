@@ -41,8 +41,28 @@ class PeerQAMethodComparisonTests(unittest.TestCase):
             {"referenceId": "ref_1", "sampleId": "sample_1", "paperId": "paper_1"},
             {"referenceId": "ref_missing", "sampleId": "sample_2", "paperId": "paper_2"},
         ]
-        with self.assertRaisesRegex(ValueError, "pair count"):
+        with self.assertRaisesRegex(ValueError, "do not cover every reference sample"):
             build_comparison_rows(records, references, threshold=0.01, seed=9)
+
+    def test_partial_export_keeps_only_samples_present_in_every_method(self) -> None:
+        records = [{
+            "sampleId": "sample_1", "method": method, "runnerRepetition": 0,
+            "claimScores": [], "findings": [],
+        } for method in ("method_a", "method_b")]
+        references = [
+            {"referenceId": "ref_1", "sampleId": "sample_1", "paperId": "paper_1"},
+            {"referenceId": "ref_missing", "sampleId": "sample_2", "paperId": "paper_2"},
+        ]
+        rows, choices = build_comparison_rows(
+            records,
+            references,
+            threshold=0.01,
+            seed=9,
+            require_all_references=False,
+        )
+        self.assertEqual(choices, {"sample_1": 0})
+        self.assertEqual(len(rows), 2)
+        self.assertEqual({row["sampleId"] for row in rows}, {"sample_1"})
 
 
 if __name__ == "__main__":
