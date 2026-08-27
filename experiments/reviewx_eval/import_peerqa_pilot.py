@@ -77,12 +77,14 @@ def select_papers(
     questions: list[dict[str, Any]],
     max_papers: int,
     max_per_source: int,
+    excluded_papers: set[str] | None = None,
 ) -> list[str]:
+    excluded_papers = excluded_papers or set()
     text_ids = {str(row["paper_id"]) for row in paragraphs}
     by_paper: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for question in questions:
         paper_id = str(question["paper_id"])
-        if paper_id in text_ids:
+        if paper_id in text_ids and paper_id not in excluded_papers:
             by_paper[paper_id].append(question)
     ranked = sorted(by_paper, key=lambda paper_id: selection_score(by_paper[paper_id]), reverse=True)
     selected = []
@@ -102,6 +104,16 @@ def select_papers(
         if not made_progress:
             break
     return selected
+
+
+def excluded_source_ids(paths: list[Path]) -> set[str]:
+    excluded = set()
+    for path in paths:
+        for row in read_jsonl(path):
+            source_id = row.get("sourcePaperId") or row.get("paper_id")
+            if source_id:
+                excluded.add(str(source_id))
+    return excluded
 
 
 def manuscript(rows: list[dict[str, Any]]) -> str:
@@ -161,6 +173,12 @@ def main() -> int:
     parser.add_argument("--max-papers", type=int, default=20)
     parser.add_argument("--max-per-source", type=int, default=4)
     parser.add_argument("--dev-papers", type=int, default=8)
+    parser.add_argument(
+        "--exclude-samples",
+        action="append",
+        default=[],
+        help="JSONL samples whose sourcePaperId values must not be selected.",
+    )
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
 
@@ -171,7 +189,15 @@ def main() -> int:
     qa_path = input_dir / "qa.jsonl"
     paragraphs = read_jsonl(papers_path)
     questions = read_jsonl(qa_path)
-    selected = select_papers(paragraphs, questions, args.max_papers, args.max_per_source)
+    exclusion_paths = [Path(path) for path in args.exclude_samples]
+    excluded = excluded_source_ids(exclusion_paths)
+    selected = select_papers(
+        paragraphs,
+        questions,
+        args.max_papers,
+        args.max_per_source,
+        excluded_papers=excluded,
+    )
     if not selected:
         raise ValueError("no PeerQA papers with both parsed text and questions were found")
 
@@ -292,6 +318,10 @@ def main() -> int:
             "heldOutPaperCount": len([row for row in samples if row["split"] == "held_out"]),
             "sourceCounts": dict(Counter(source_group(row["sourcePaperId"]) for row in samples)),
             "answerableCounts": dict(Counter(str(row["authorAnswerable"]) for row in references)),
+            "excludedSourcePaperCount": len(excluded),
+            "exclusionFiles": [
+                {"path": str(path), "sha256": sha256_file(path)} for path in exclusion_paths
+            ],
         },
     }
     (output_dir / "selection_manifest.json").write_text(

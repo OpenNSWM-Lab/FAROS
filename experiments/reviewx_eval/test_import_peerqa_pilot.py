@@ -34,6 +34,26 @@ class PeerQAPilotTests(unittest.TestCase):
         self.assertIn("10 percent", content)
         self.assertNotIn("10%", content)
 
+    def test_selection_excludes_previous_source_papers(self) -> None:
+        paragraphs = [
+            {"paper_id": "source/a/1", "idx": 0, "type": "title", "content": "A"},
+            {"paper_id": "source/b/2", "idx": 0, "type": "title", "content": "B"},
+        ]
+        questions = [
+            {"paper_id": "source/a/1", "answerable_mapped": True, "answer_free_form": "x"},
+            {"paper_id": "source/b/2", "answerable_mapped": True, "answer_free_form": "y"},
+        ]
+
+        selected = select_papers(
+            paragraphs,
+            questions,
+            max_papers=2,
+            max_per_source=2,
+            excluded_papers={"source/a/1"},
+        )
+
+        self.assertEqual(selected, ["source/b/2"])
+
 
 if __name__ == "__main__":
     unittest.main()
