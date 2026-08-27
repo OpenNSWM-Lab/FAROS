@@ -205,14 +205,90 @@ def _fixture(tmp_path: Path):
     return case, reliability_path, planning_path, list(artifacts)
 
 
+def _peerqa_fixture(tmp_path: Path) -> tuple[Path, Path]:
+    def method(method_id: str, rate: float, latency: float, calls: float, findings: float):
+        return {
+            "method": method_id,
+            "automaticAlignment": {
+                "candidateRate": rate,
+                "candidateRatePaperClusterBootstrap95": [rate - 0.1, rate + 0.1],
+                "meanBestMatchScore": rate / 3,
+            },
+            "runQuality": {
+                "meanTotalTokens": 3000,
+                "meanLatencyMs": latency,
+                "llmEscalationRate": calls,
+                "localOnlyRunCount": int((1 - calls) * 60),
+                "meanFindingCount": findings,
+                "failedRunCount": 0,
+                "budgetExceededCount": 0,
+            },
+        }
+
+    methods = [
+        method("qwen_single_prompt_matched_budget", 0.42, 20900, 1.0, 5),
+        method("qwen_structured_rubric_matched_budget", 0.44, 20500, 1.0, 4.5),
+        method("reviewx_balanced_qwen37_matched_budget", 0.49, 11800, 0.9, 15.4),
+    ]
+    pairwise = [{
+        "methodA": "qwen_single_prompt_matched_budget",
+        "methodB": "reviewx_balanced_qwen37_matched_budget",
+        "candidateRateDelta": 0.07,
+        "candidateRateDeltaPaperClusterBootstrap95": [-0.09, 0.26],
+        "meanBestMatchScoreDelta": 0.02,
+        "scoreDeltaPaperClusterBootstrap95": [-0.01, 0.07],
+        "candidateDiscordance": {"exactMcNemarPValue": 0.58},
+    }]
+    efficiency = [{
+        "methodA": "qwen_single_prompt_matched_budget",
+        "methodB": "reviewx_balanced_qwen37_matched_budget",
+        "latencyDeltaMs": {"mean": -9100, "paperClusterBootstrap95": [-11150, -7390]},
+        "tokenDelta": {"mean": -15, "paperClusterBootstrap95": [-530, 404]},
+    }]
+    fair = {
+        "split": "fresh_top5",
+        "paperCount": 20,
+        "questionCount": 43,
+        "evaluatedFindingLimit": 5,
+        "methods": methods,
+        "pairwise": pairwise,
+        "efficiencyPairwise": efficiency,
+        "qualityGate": {"status": "passed"},
+        "protocolAudit": {
+            "sha256": "abc",
+            "passed": True,
+            "sourceCount": 7,
+            "providerName": "qwen",
+            "model": "qwen-test",
+            "temperature": 0.2,
+            "repetitions": 3,
+        },
+        "reportingBoundary": {"headlineEligibleAsExpertRecall": False},
+    }
+    full = {
+        **fair,
+        "split": "fresh_full_audit",
+        "evaluatedFindingLimit": None,
+        "methods": [*methods[:-1], method("reviewx_balanced_qwen37_matched_budget", 0.65, 11800, 0.9, 15.4)],
+    }
+    fair_path = tmp_path / "peerqa_top5.json"
+    full_path = tmp_path / "peerqa_full.json"
+    _write(fair_path, fair)
+    _write(full_path, full)
+    return fair_path, full_path
+
+
 def test_competition_dashboard_exposes_one_verified_evidence_story(tmp_path: Path):
     case, reliability, planning, artifacts = _fixture(tmp_path)
+    peerqa, peerqa_full = _peerqa_fixture(tmp_path)
 
     payload = build_competition_evidence_dashboard(
         job={"jobId": "case-1", "model": "qwen3.7-plus-2026-05-26", "feedbackId": "feedback-1"},
         case_dir=case,
         reliability_summary_path=reliability,
         planning_summary_path=planning,
+        peerqa_summary_path=peerqa,
+        peerqa_full_audit_summary_path=peerqa_full,
         feedback_record={
             "id": "feedback-1",
             "humanSignoffs": {"plan": {}, "repair": {}, "conclusion": {}},
@@ -228,6 +304,14 @@ def test_competition_dashboard_exposes_one_verified_evidence_story(tmp_path: Pat
     assert payload["feedbackMetrics"][2]["delta"] > 0
     assert payload["qwen"]["finalHoldoutExposed"] is False
     assert len(payload["evidenceManifest"]) == len(artifacts)
+    assert payload["externalReview"]["available"] is True
+    assert payload["externalReview"]["providerName"] == "qwen"
+    assert payload["externalReview"]["model"] == "qwen-test"
+    assert payload["externalReview"]["temperature"] == 0.2
+    assert payload["externalReview"]["repetitions"] == 3
+    assert payload["externalReview"]["fairTop5"]["findingLimit"] == 5
+    assert payload["externalReview"]["fairTop5"]["reviewxEffects"][0]["meanLatencyDeltaMs"] == -9100
+    assert payload["externalReview"]["fullAudit"]["fairMethodComparison"] is False
 
 
 def test_competition_dashboard_marks_tampered_contract_not_ready(tmp_path: Path):

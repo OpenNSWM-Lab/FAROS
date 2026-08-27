@@ -39,9 +39,21 @@
     "maxOutputTokens": 1600
   },
   "methods": [
-    "qwen_single_prompt_qwen37_matched_budget",
-    "qwen_structured_rubric_qwen37_matched_budget",
+    "qwen_single_prompt_matched_budget",
+    "qwen_structured_rubric_matched_budget",
     "reviewx_balanced_qwen37_matched_budget"
+  ],
+  "protocolAmendments": [
+    {
+      "at": "2026-08-28T00:43:00+08:00",
+      "type": "clerical_method_id_correction",
+      "reason": "Before opening validation scores, replace two descriptive baseline names with the immutable method IDs emitted by their runners. No prompt, model, sample, threshold, repetition, budget, or analysis setting changed."
+    },
+    {
+      "at": "2026-08-28T00:49:00+08:00",
+      "type": "pre_score_secondary_analysis_declaration",
+      "reason": "Before opening validation scores, declare an unequal-output full-audit analysis as an operational upper bound. The frozen Top-5 analysis remains the only fair method comparison."
+    }
   ],
   "primaryMetric": "expert-question coverage after blind human annotation",
   "secondaryProxyMetrics": [
@@ -51,6 +63,14 @@
     "total tokens",
     "run failure rate"
   ],
+  "secondaryOperationalAnalysis": {
+    "name": "ReviewX full-audit coverage upper bound",
+    "reviewxFindingLimit": null,
+    "baselineFindingLimit": 5,
+    "fairMethodComparison": false,
+    "allowedUse": "Characterize the high-recall audit workflow and the cost of presenting the complete local finding set.",
+    "prohibitedUse": "Do not use this unequal-output analysis to claim method superiority."
+  },
   "analysisRule": "Do not tune prompts, thresholds, ranking, or budgets after opening predictions from this split. Report all failures and confidence intervals.",
   "reportingBoundary": "Automatic alignment is a retrieval-oriented proxy for candidate generation, not expert recall or review correctness."
 }
