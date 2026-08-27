@@ -167,3 +167,57 @@ def test_plan_schema_repair_regenerates_without_truncated_assistant_json(monkeyp
     assert len(calls) == 2
     assert [message.role for message in calls[1][0]] == ["system", "user", "user"]
     assert all(call_kwargs["max_tokens"] <= 4096 for _, call_kwargs in calls)
+
+
+def test_segmented_service_keeps_successful_sections_when_one_stage_times_out(
+    monkeypatch,
+    plan_package,
+):
+    stage_two_calls = 0
+
+    class FakeClient:
+        def chat(self, *, messages, **_kwargs):
+            nonlocal stage_two_calls
+            prompt = messages[-1].content
+            if prompt.startswith("Strengthen only"):
+                return SimpleNamespace(
+                    text=json.dumps(
+                        {
+                            "researchQuestion": plan_package.researchQuestion,
+                            "hypothesis": plan_package.hypothesis,
+                            "constants": {"resourceBudget": "2 GPU hours"},
+                        }
+                    )
+                )
+            context_json = prompt.split("\n", 1)[1].split("\nRepair", 1)[0]
+            context = json.loads(context_json)
+            stage = context["stageRole"]
+            if stage["id"] == "stage-2":
+                stage_two_calls += 1
+                raise TimeoutError("stage timeout")
+            return SimpleNamespace(text=json.dumps({"stage": stage}))
+
+    monkeypatch.setattr(
+        "app.services.plan_package_service.get_provider_client",
+        lambda _name: FakeClient(),
+    )
+    monkeypatch.setattr(
+        "app.services.plan_package_service.get_llm_task_scheduler",
+        lambda: SimpleNamespace(run=lambda _task, fn, **_kwargs: fn()),
+    )
+    session = SimpleNamespace(
+        config=SimpleNamespace(providerName="fake", model="fake-model")
+    )
+    service = PlanPackageService()
+
+    service._apply_segmented_llm_plan_fields(
+        plan_package,
+        session,
+        max_steps_per_stage=3,
+    )
+
+    assert plan_package.constants["resourceBudget"] == "2 GPU hours"
+    assert plan_package.generation.llmUsedSections == ["implementationPlan"]
+    assert plan_package.generation.fallbackUsed is True
+    assert "segment_fallback:stage-2:TimeoutError" in plan_package.generation.warnings
+    assert stage_two_calls == 2

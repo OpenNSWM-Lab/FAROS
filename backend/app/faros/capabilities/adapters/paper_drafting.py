@@ -1,14 +1,16 @@
 import os
+import json
 from typing import Any, Dict
 
+from app.contracts import ExecutionStatus, ExperimentEvidence
 from app.faros.capabilities.base import BaseCapability
 from app.faros.models.artifact import ArtifactRecord
 from app.faros.models.capability import CapabilityResult
 from app.faros.models.execution import ExecutionContext
 from app.faros.models.profile import CapabilityBinding
 from app.faros.models.provider import ProviderResult, ProviderTask
-from app.modules.paper.service import generate_paper
-from app.modules.paper.storage import add_log, create_paper, create_paper_zip, get_paper_latex_dir, list_paper_files, update_paper, write_paper_file
+from app.modules.paper.service import generate_paper, resume_paper_review
+from app.modules.paper.storage import add_log, create_paper, create_paper_zip, get_paper, get_paper_latex_dir, list_paper_files, update_paper, write_paper_file
 
 
 class PaperDraftingCapability(BaseCapability):
@@ -17,6 +19,25 @@ class PaperDraftingCapability(BaseCapability):
     default_agent_id = "writer"
     default_skill_ids = ["paper-outline", "section-drafting", "latex-assembly"]
     artifact_types = ["paper_record", "latex_project", "latex_zip", "paper_pdf"]
+
+    @staticmethod
+    def _require_experiment_evidence(inputs: Dict[str, Any]) -> ExperimentEvidence:
+        payload = inputs.get("experimentEvidence")
+        if not payload:
+            raise ValueError("Paper drafting is blocked: experimentEvidence is missing.")
+        evidence = ExperimentEvidence.model_validate(payload)
+        if evidence.status != ExecutionStatus.EXECUTED:
+            details = "; ".join(evidence.failures) or evidence.status.value
+            raise ValueError(f"Paper drafting is blocked by experiment evidence: {details}")
+        if not evidence.metrics:
+            raise ValueError("Paper drafting is blocked: no scientific metrics are available.")
+        invalid = [item.name for item in evidence.metrics if not item.definition.strip() or not item.sourcePath.strip()]
+        if invalid:
+            raise ValueError(
+                "Paper drafting is blocked: metric definitions or source paths are missing for "
+                + ", ".join(invalid)
+            )
+        return evidence
 
     def build_provider_task(self, context: ExecutionContext, inputs: Dict[str, Any], binding: CapabilityBinding) -> ProviderTask | None:
         if binding.provider_type != 'tool':
@@ -34,6 +55,10 @@ class PaperDraftingCapability(BaseCapability):
         )
 
     def execute(self, context: ExecutionContext, inputs: Dict[str, Any]) -> CapabilityResult:
+        strict_evidence = bool(
+            (context.settings.get("verificationPolicy") or {}).get("scientificEvidenceRequired")
+        )
+        experiment_evidence = self._require_experiment_evidence(inputs) if strict_evidence else None
         binding = context.get_binding() or context.get_binding(self.capability_id)
         provider_name = binding.provider if binding else inputs.get("providerName", "moonshot")
         model = binding.model if binding and binding.model else inputs.get("model", "moonshot-v1-8k")
@@ -47,6 +72,27 @@ class PaperDraftingCapability(BaseCapability):
             notes_parts.append(f"Key insight: {selected_candidate.get('keyInsight', '')}")
         if inputs.get("notes"):
             notes_parts.append(inputs["notes"])
+        if experiment_evidence is not None:
+            notes_parts.append(
+                "Authoritative experiment evidence (use only these observed metrics): "
+                + json.dumps(experiment_evidence.model_dump(mode="json"), ensure_ascii=False)
+            )
+
+        requested_paper_id = str(inputs.get("paperId") or "").strip()
+        requested_paper = get_paper(requested_paper_id) if requested_paper_id else None
+        if (
+            requested_paper
+            and requested_paper.get("status") == "failed"
+            and requested_paper.get("compileStatus") == "latexmk"
+            and requested_paper.get("pdfAvailable")
+        ):
+            paper = resume_paper_review(requested_paper_id)
+            return self._assemble_result(
+                context,
+                requested_paper_id,
+                paper,
+                event_message=f"Paper review resumed for {requested_paper_id}",
+            )
 
         record = create_paper(
             {
@@ -57,9 +103,11 @@ class PaperDraftingCapability(BaseCapability):
                 "projectId": inputs.get("projectId"),
                 "experimentIds": inputs.get("experimentIds", []),
                 "figureIds": inputs.get("figureIds", []),
-                "runIds": inputs.get("runIds", []),
+                "runIds": list(dict.fromkeys([*(inputs.get("runIds") or []), context.run_id])),
                 "providerName": provider_name,
                 "model": model,
+                "researchDossierPath": inputs.get("researchDossierPath"),
+                "evidenceConstraints": inputs.get("constraints", []),
                 "notes": "\n".join(part for part in notes_parts if part),
             }
         )
@@ -68,6 +116,8 @@ class PaperDraftingCapability(BaseCapability):
         return self._assemble_result(context, record['id'], paper, event_message=f"Paper drafting completed for {record['id']}")
 
     def consume_provider_result(self, context: ExecutionContext, inputs: Dict[str, Any], provider_result: ProviderResult) -> CapabilityResult:
+        if (context.settings.get("verificationPolicy") or {}).get("scientificEvidenceRequired"):
+            self._require_experiment_evidence(inputs)
         payload = provider_result.payload
         selected_candidate = inputs.get("selectedCandidate") or {}
         title = payload.get('title') or inputs.get("title") or selected_candidate.get("title") or inputs.get("seedQuery") or "FAROS Draft"
@@ -80,9 +130,11 @@ class PaperDraftingCapability(BaseCapability):
                 "projectId": inputs.get("projectId"),
                 "experimentIds": inputs.get("experimentIds", []),
                 "figureIds": inputs.get("figureIds", []),
-                "runIds": inputs.get("runIds", []),
+                "runIds": list(dict.fromkeys([*(inputs.get("runIds") or []), context.run_id])),
                 "providerName": provider_result.provider,
                 "model": provider_result.model,
+                "researchDossierPath": inputs.get("researchDossierPath"),
+                "evidenceConstraints": inputs.get("constraints", []),
                 "notes": provider_result.text,
             }
         )
@@ -97,6 +149,9 @@ class PaperDraftingCapability(BaseCapability):
             'status': payload.get('paperStatus', 'prepared'),
             'outlineJson': payload.get('outlineJson'),
             'pdfAvailable': True,
+            'compileStatus': payload.get('compileStatus') or 'provider_placeholder',
+            'pdfRenderMode': payload.get('pdfRenderMode') or 'provider_placeholder',
+            'compileErrors': payload.get('compileErrors'),
         }) or create_paper({})
         return self._assemble_result(context, record['id'], paper, event_message=provider_result.text or f"Tool-backed paper drafting completed for {record['id']}")
 

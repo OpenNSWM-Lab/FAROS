@@ -1,16 +1,16 @@
 {
   "id": "ml_paper",
   "name": "ML Paper Workflow",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "domain": "machine-learning",
-  "description": "A FAROS blueprint for LLM-domain research workflows with explicit agent and skill bindings.",
+  "description": "An evidence-gated FAROS workflow from research dossier through execution, paper drafting, and ReviewX.",
   "workflow": [
     {
       "id": "idea",
       "capability": "idea_refinement",
       "agent": "researcher",
       "skills": ["literature-grounding", "idea-analysis"],
-      "outputs": ["ideaSessionId", "selectedCandidateId", "selectedCandidate"],
+      "outputs": ["ideaSessionId", "selectedCandidateId", "selectedCandidate", "researchDossier"],
       "name": "Idea Refinement",
       "description": "Run the idea pipeline and select a candidate."
     },
@@ -19,7 +19,7 @@
       "capability": "experiment",
       "agent": "experimenter",
       "skills": ["experiment-scaffold", "artifact-packaging"],
-      "outputs": ["projectId", "experimentId", "experimentIds"],
+      "outputs": ["projectId", "experimentId", "experimentIds", "executionAssessment", "experimentEvidence"],
       "name": "Experiment Workspace",
       "description": "Provision a code project and experiment record for the workflow."
     },
@@ -48,16 +48,16 @@
     {"from": "paper", "to": "review"}
   ],
   "artifact_schema": {
-    "idea_refinement": ["idea_session"],
-    "experiment": ["code_project", "experiment_record"],
+    "idea_refinement": ["idea_session", "research_dossier"],
+    "experiment": ["code_project", "experiment_record", "experiment_report", "execution_assessment", "experiment_evidence"],
     "paper_drafting": ["paper_record", "latex_project", "latex_zip", "paper_pdf"],
     "reviewer_simulation": ["review_report"]
   },
   "verification_rules": [
-    {"capability": "idea_refinement", "requires": ["ideaSessionId", "selectedCandidateId"]},
-    {"capability": "experiment", "requires": ["projectId", "experimentId"]},
+    {"capability": "idea_refinement", "requires": ["ideaSessionId", "selectedCandidateId", "researchDossier"]},
+    {"capability": "experiment", "requires": ["projectId", "experimentId", "executionAssessment", "experimentEvidence"]},
     {"capability": "paper_drafting", "requires": ["paperId", "paperStatus"]},
-    {"capability": "reviewer_simulation", "requires": ["reviewId", "reviewStatus"]}
+    {"capability": "reviewer_simulation", "requires": ["reviewId", "reviewStatus"], "packs": ["review_quality"]}
   ],
   "writing_constraints": {
     "supportedVenues": ["icml", "neurips", "iclr", "acl", "generic"]

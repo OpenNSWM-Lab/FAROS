@@ -77,3 +77,26 @@ def test_step_map_uses_recorded_duration_seconds_when_milliseconds_are_absent():
 
     assert mapped["noveltyCheck"]["durationMs"] == 12500
     assert mapped["noveltyCheck"]["durationSeconds"] == 12.5
+
+
+def test_plan_quality_summary_reports_segment_and_content_quality(plan_package):
+    plan_package.generation.fallbackUsed = True
+    plan_package.generation.llmUsedSections = ["implementationPlan"]
+    plan_package.generation.llmReviewerUsed = True
+    plan_package.generation.warnings = [
+        "segment_fallback:stage-2:TimeoutError"
+    ]
+    plan_package.stages[2].steps[0].expected[0].target = (
+        "specified before implementation"
+    )
+
+    summary = eval_script.plan_quality_summary(plan_package, 12.3456)
+
+    assert summary["elapsedSeconds"] == 12.346
+    assert summary["segmentFallbacks"] == [
+        "segment_fallback:stage-2:TimeoutError"
+    ]
+    assert summary["placeholderValues"] == ["specified before implementation"]
+    assert summary["expectedMetricCount"] == 4
+    assert summary["llmReviewerUsed"] is True
+    assert summary["criticalNullPaths"] == []

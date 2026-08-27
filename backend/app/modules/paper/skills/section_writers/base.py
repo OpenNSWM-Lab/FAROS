@@ -47,16 +47,11 @@ TABLE_TEMPLATE = """- MUST include at least {n} tables using:
 \\toprule ... \\midrule ... \\bottomrule
 \\end{{tabular}}
 \\end{{table}}
-Tables must be grounded in linked metrics where available; do not invent unsupported benchmark numbers."""
+Tables must use only linked metrics or code table evidence provided in the prompt. Do not invent unsupported benchmark numbers, datasets, baselines, or measurements."""
 
-FIGURE_TEMPLATE = """- MUST reference figures using:
-\\begin{figure}[t]
-\\centering
-\\includegraphics[width=\\linewidth]{figures/fig_name.pdf}
-\\caption{Figure caption}
-\\label{fig:name}
-\\end{figure}
-Reference each figure in the text. If figures list concrete paths, labels, or captions, use those exact values instead of inventing filenames."""
+FIGURE_TEMPLATE = """- MUST reference only the concrete figures listed in Section-selected figures or Available paper figures.
+- Use the exact listed path, label, and caption.
+- Do not invent figure filenames, labels, captions, or placeholder figures."""
 
 
 COMMON_SECTION_INSTRUCTIONS = """Global requirements:
@@ -64,6 +59,10 @@ COMMON_SECTION_INSTRUCTIONS = """Global requirements:
 - Write ONLY the requested section: "\\section{{{section_title}}}". Do not generate any other top-level \\section headings, title, abstract, references, appendix, or full-paper outline.
 - Do not use bilingual section headings such as "Introduction / 引言"; use the exact requested section title.
 - Use only supported claims from the brief, outline, metrics, runs, figures, and references provided in the prompt.
+- Evidence-scope constraints are mandatory: {{evidence_constraints}}
+- Never claim human annotation, expert review, real-world validation, external datasets, or statistical significance unless that exact evidence appears in the supplied run artifacts. If validation is synthetic/local, state that limitation explicitly.
+- Treat literature evidence and this paper's experiment evidence as different sources: cite literature only for claims about prior work, and point to the paper's table, figure, or executed artifact for this paper's measured results. Do not attach a literature citation to make an observed project metric appear externally validated.
+- Do not write broad claims that "most", "current", or "state-of-the-art" methods fail, overlook a mechanism, or are poorly calibrated unless the supplied bibliography metadata directly supports that exact comparison. Narrow unsupported field-level claims to the concrete baseline and benchmark evaluated here.
 - If Section-selected figures is not N/A, include every listed figure exactly once using its exact path, label, and caption.
 - Return ONLY valid LaTeX content, with no markdown fences or explanations.
 """
@@ -108,11 +107,12 @@ class SectionDraftRequest:
             "contributions": json.dumps(self.contributions, ensure_ascii=False),
             "requirements": self.requirements_text,
             "venue_style_guide": load_venue_style_guide(self.ctx.venue)[:2500],
-            "metrics_data": self.context.get("metrics_summary", "N/A")[:1200],
-            "runs_data": self.context.get("runs_summary", "N/A")[:1500],
-            "figures_data": self.figures_data[:1500],
-            "section_figures_data": self.section_figures_data[:1500],
-            "paper_brief": json.dumps(self.paper_brief, ensure_ascii=False)[:1800] if self.paper_brief else "N/A",
+            "metrics_data": self.context.get("metrics_summary", "N/A")[:4000],
+            "runs_data": self.context.get("runs_summary", "N/A")[:2500],
+            "code_tables_data": self.context.get("code_tables_summary", "N/A")[:3000],
+            "figures_data": self.figures_data[:3000],
+            "section_figures_data": self.section_figures_data[:3000],
+            "paper_brief": json.dumps(self.paper_brief, ensure_ascii=False)[:3000] if self.paper_brief else "N/A",
             "prev_context": self.prev_context[:700],
             "refs_summary": self.refs_summary,
             "min_words": str(self.min_words),
@@ -120,6 +120,7 @@ class SectionDraftRequest:
             "eq_req": self.eq_req,
             "table_req": self.table_req,
             "fig_req": self.fig_req,
+            "evidence_constraints": self.context.get("evidence_constraints", "N/A"),
         }
 
 
@@ -160,7 +161,7 @@ class SectionWriter:
     kind = "generic"
     prompt_template = ""
     temperature = 0.4
-    max_tokens = 6000
+    max_tokens = 3500
 
     def build_prompt(self, request: SectionDraftRequest) -> str:
         if request.ctx.venue == "challenge_cup":
@@ -171,6 +172,10 @@ class SectionWriter:
             COMMON_SECTION_INSTRUCTIONS
             .replace("{{section_title}}", request.section_title)
             .replace("{{language_instruction}}", language_instruction)
+            .replace(
+                "{{evidence_constraints}}",
+                request.context.get("evidence_constraints", "N/A"),
+            )
         )
         return common + "\n" + render_prompt(self.prompt_template, request.prompt_values())
 
@@ -196,16 +201,28 @@ def build_artifact_requirements(
 ) -> Dict[str, Any]:
     algorithm_template = ICML_ALGORITHM_TEMPLATE if ctx.venue == "icml" else ALGORITHM2E_TEMPLATE
     algo_req = algorithm_template if section.get("hasAlgorithm") else ""
-    n_eq = section.get("numEquations", 2 if section.get("hasEquations") else 0)
-    eq_req = EQUATION_TEMPLATE.format(n=max(n_eq, 2)) if section.get("hasEquations") else ""
-    n_tab = 2 if section.get("hasTables") else 0
-    table_req = TABLE_TEMPLATE.format(n=n_tab) if n_tab > 0 else ""
-    fig_descs = section.get("figureDescriptions", [])
+    try:
+        n_eq = int(section.get("numEquations", 1 if section.get("hasEquations") else 0) or 0)
+    except (TypeError, ValueError):
+        n_eq = 1 if section.get("hasEquations") else 0
+    eq_req = EQUATION_TEMPLATE.format(n=max(n_eq, 1)) if section.get("hasEquations") else ""
+    context = ctx.get("context", {}) or {}
+    has_metric_or_table_evidence = any(
+        context.get(key, "N/A") not in {"", "N/A", None}
+        for key in ("metrics_summary", "code_tables_summary")
+    )
+    key_points_text = " ".join(str(item) for item in section.get("keyPoints", []) if item).lower()
+    key_points_request_table = any(term in key_points_text for term in ("table", "tabular", "表格", "表"))
+    try:
+        n_tab = int(section.get("numTables") or 0)
+    except (TypeError, ValueError):
+        n_tab = 0
+    if section.get("hasTables") and n_tab <= 0 and (has_metric_or_table_evidence or key_points_request_table):
+        n_tab = 1
+    table_req = TABLE_TEMPLATE.format(n=max(n_tab, 1)) if n_tab > 0 else ""
     section_lower = section_title.lower()
     figures_needed = (
         bool(section_figures)
-        or section.get("hasFigures")
-        or fig_descs
         or (
             figures_summary != "N/A"
             and figures_for_prompt
@@ -217,7 +234,7 @@ def build_artifact_requirements(
     requirements = [
         f"Min {section.get('minWords', 500)} words",
         "Include algorithm" if section.get("hasAlgorithm") else "",
-        f"{n_eq} equations" if n_eq else "",
+        f"{max(n_eq, 1)} equations" if section.get("hasEquations") else "",
         f"{n_tab} tables" if n_tab else "",
         "Include figures" if fig_req else "",
     ]

@@ -1,4 +1,6 @@
 import os
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -340,6 +342,42 @@ def test_paper_latex_templates_support_generated_algorithm_keywords():
         assert "algorithm2e" in template
         assert r"\SetKw{KwAnd}{and}" in template
         assert r"\SetKw{Return}{return}" in template
+
+
+def test_generic_latex_template_compiles_without_algorithm2e(tmp_path):
+    pdflatex = shutil.which("pdflatex")
+    if not pdflatex:
+        pytest.skip("pdflatex is not installed")
+    template = (TEMPLATE_ROOT / "generic" / "main.tex").read_text(encoding="utf-8")
+    assert r"\IfFileExists{algorithm2e.sty}" in template
+    rendered = (
+        template.replace("%%TITLE%%", "FAROS Compile Smoke Test")
+        .replace("%%AUTHORS%%", "FAROS")
+        .replace("%%ABSTRACT%%", "Template fallback smoke test.")
+        .replace(
+            "%%SECTION_INPUTS%%",
+            "\\section{Method}\n"
+            "\\begin{algorithm}\n"
+            "\\caption{Fallback algorithm}\n"
+            "\\SetAlgoLined\n"
+            "\\KwIn{Input data}\n"
+            "\\KwOut{Measured result}\n"
+            "\\For{$i=1$ \\KwTo $2$}{Measure $i$\\;}\n"
+            "\\Return{result}\n"
+            "\\end{algorithm}\n",
+        )
+    )
+    (tmp_path / "main.tex").write_text(rendered, encoding="utf-8")
+    completed = subprocess.run(
+        [pdflatex, "-interaction=nonstopmode", "-halt-on-error", "main.tex"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert completed.returncode == 0, completed.stdout[-4000:]
+    assert (tmp_path / "main.pdf").is_file()
 
 
 def test_latex_templates_include_section_input_anchor():

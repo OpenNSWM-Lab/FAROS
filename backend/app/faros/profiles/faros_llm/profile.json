@@ -1,13 +1,13 @@
 {
   "id": "faros_llm",
   "name": "FAROS Qwen Runtime",
-  "version": "0.3.0",
-  "description": "Qwen-backed FAROS profile for the Alibaba Bailian AI Scientist challenge workflow.",
+  "version": "0.4.1",
+  "description": "Qwen-backed FAROS profile with strict scientific evidence gates and ReviewX auditing.",
   "capability_bindings": {
     "idea_refinement": {
       "provider_type": "llm",
       "provider": "qwen",
-      "model": "qwen-max",
+      "model": "qwen3.7-plus-2026-05-26",
       "options": {}
     },
     "experiment": {
@@ -18,13 +18,13 @@
     "paper_drafting": {
       "provider_type": "llm",
       "provider": "qwen",
-      "model": "qwen-max",
+      "model": "qwen3.7-plus-2026-05-26",
       "options": {}
     },
     "reviewer_simulation": {
       "provider_type": "llm",
       "provider": "qwen",
-      "model": "qwen-max",
+      "model": "qwen3.7-plus-2026-05-26",
       "options": {}
     }
   },
@@ -33,7 +33,7 @@
       "agent_id": "researcher",
       "provider_type": "llm",
       "preferred_provider": "qwen",
-      "preferred_model": "qwen-max",
+      "preferred_model": "qwen3.7-plus-2026-05-26",
       "skill_overrides": [
         "literature-grounding",
         "idea-analysis"
@@ -54,7 +54,7 @@
       "agent_id": "writer",
       "provider_type": "llm",
       "preferred_provider": "qwen",
-      "preferred_model": "qwen-max",
+      "preferred_model": "qwen3.7-plus-2026-05-26",
       "skill_overrides": [
         "paper-outline",
         "section-drafting",
@@ -66,7 +66,7 @@
       "agent_id": "reviewer",
       "provider_type": "llm",
       "preferred_provider": "qwen",
-      "preferred_model": "qwen-max",
+      "preferred_model": "qwen3.7-plus-2026-05-26",
       "skill_overrides": [
         "review-critique",
         "consistency-audit"
@@ -96,10 +96,14 @@
   "defaults": {
     "paperType": "algorithm",
     "targetVenue": "generic",
-    "reviewerProfile": "senior_reviewer"
+    "reviewerProfile": "reviewx_evidence_auditor",
+    "reviewBudgetMode": "balanced",
+    "reviewAblationMode": "full"
   },
   "verification_policy": {
-    "mode": "baseline"
+    "mode": "scientific_strict",
+    "packs": ["runtime_baseline"],
+    "scientificEvidenceRequired": true
   },
   "memory_policy": {
     "mode": "persistent",

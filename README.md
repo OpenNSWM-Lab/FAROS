@@ -9,7 +9,7 @@
   <img src="https://img.shields.io/badge/Phase-1.1.0--rc1-7c3aed?style=for-the-badge" alt="1.1.0-rc1">
   <img src="https://img.shields.io/badge/Python-3.11%2B-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/Node.js-18%2B-339933?style=for-the-badge&logo=node.js&logoColor=white" alt="Node 18+">
-  <img src="https://img.shields.io/badge/Tests-backend%20smoke-16a34a?style=for-the-badge&logo=pytest&logoColor=white" alt="Backend smoke tests">
+  <img src="https://img.shields.io/badge/Tests-10%20passed-16a34a?style=for-the-badge&logo=pytest&logoColor=white" alt="10 passed">
   <img src="https://img.shields.io/badge/Domain-LLM%20Research-d97706?style=for-the-badge" alt="LLM Research">
 </p>
 
@@ -65,6 +65,8 @@ It is already a runnable AutoResearch runtime, but it is not yet the final cross
 - First blueprint: `ml_paper`
 - First profile: `faros_llm`
 - Complete LLM workflow: `idea -> experiment -> paper -> review`
+- ReviewX experiment feedback loop with auditable evidence and iteration control
+- Reproducible SciFact two-round competition case with preregistration and Qwen planning
 - Existing module-native APIs for `idea`, `code`, `paper`, `review`, `platform`
 - Venue-aware LaTeX paper generation
 
@@ -75,7 +77,7 @@ It is already a runnable AutoResearch runtime, but it is not yet the final cross
 
 - full DAG scheduling and parallel orchestration
 - generalized non-LLM provider ecosystem
-- full experiment execution and evaluation loop
+- generalized experiment execution across arbitrary scientific domains
 - FAROS frontend console
 - DB-backed FAROS runtime metadata
 - mature cross-domain blueprint library
@@ -195,7 +197,7 @@ flowchart LR
 ## 🗂️ Repository Layout
 
 ```text
-FAROS/
+github-v1/
   backend/
     app/
       faros/
@@ -272,7 +274,8 @@ Important:
 - the default frontend backend target is `http://127.0.0.1:8005`
 - real LLM execution is only ready when `/api/system/version` reports `llm.configured=true`
 
-See [docs/DEVELOPER_GUIDE.md](docs/DEVELOPER_GUIDE.md) for developer setup notes and [docs/FAROS_TODO.md](docs/FAROS_TODO.md) for the current roadmap.
+See [docs/FAROS_DEPLOYMENT_GUIDE.md](docs/FAROS_DEPLOYMENT_GUIDE.md) for the full deployment checklist and environment-variable reference.
+For copy-ready shell commands, see [docs/FAROS_PRODUCTION_COMMANDS.md](docs/FAROS_PRODUCTION_COMMANDS.md).
 
 ### Useful Endpoints
 
@@ -370,7 +373,7 @@ bash frontend/scripts/check_frontend_release.sh
 
 ### Current Validation State
 
-- `backend/tests`: backend smoke and ranking checks
+- `github-v1/backend/tests` in `aist`: `10 passed`
 - FAROS runtime routes mounted
 - plan-mode FAROS run creation verified
 - LLM-domain FAROS workflow skeleton wired through `idea -> experiment -> paper -> review`
@@ -397,8 +400,8 @@ These parts should be treated as the release baseline:
 ## 📌 Important TODO
 
 The most important next steps after this release are:
-- replace the current `experiment` scaffold with true code synthesis and execution for the LLM domain
-- connect experiment outputs to metrics ingestion, figure generation, and run tracking
+- generalize the current executable experiment and evidence pipeline beyond the LLM/SciFact cases
+- expose the ReviewX competition case through a production deployment with human sign-off
 - replace linear graph execution with a real DAG runtime
 - add stronger verification beyond required-key checks
 - add a dedicated FAROS frontend console
@@ -428,11 +431,10 @@ It is already usable as a runtime baseline for LLM-domain AutoResearch workflows
 
 # GitHub Stars
 
-<h2 align="center">⭐ GitHub Stars</h2>
-
 <p align="center">
-  <img 
-    src="https://img.shields.io/github/stars/OpenNSWM-Lab/FAROS?style=for-the-badge"
-    alt="GitHub Stars"
-  />
+  <a href="https://star-history.com/#OpenNSWM-Lab/FAROS&Date">
+    <img src="https://api.star-history.com/svg?repos=OpenNSWM-Lab/FAROS&type=Date" alt="Star History Chart" width="100%"/>
+  </a>
+</p>
+  <sub>Built with care for the research community.</sub>
 </p>
