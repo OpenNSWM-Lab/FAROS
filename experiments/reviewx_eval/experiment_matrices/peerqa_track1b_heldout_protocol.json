@@ -14,12 +14,19 @@
   "selectionSeed": 20260711,
   "shuffleSeed": 20260827,
   "automaticAlignmentThreshold": 0.12,
-  "fairComparisonMaxFindingsPerMethod": 6,
+  "fairComparisonMaxFindingsPerMethod": 5,
   "budget": {
     "maxTotalTokensPerPaper": 4000,
-    "maxInputCharactersForOneShotBaselines": 8000,
-    "maxOutputTokensForOneShotBaselines": 1800,
-    "maxFindingsForOneShotBaselines": 6
+    "singlePrompt": {
+      "maxInputCharacters": 6800,
+      "maxOutputTokens": 1600,
+      "maxFindings": 5
+    },
+    "structuredRubric": {
+      "maxInputCharacters": 6800,
+      "maxOutputTokens": 1600,
+      "maxFindings": 5
+    }
   },
   "methods": [
     {
@@ -48,5 +55,10 @@
     "latency",
     "total tokens"
   ],
+  "developmentDiagnostics": {
+    "qwenMaxLegacyOutputLimit": 1800,
+    "qwen37ObservedBudgetOverrun": true,
+    "resolution": "Use 6800 input characters, 1600 output tokens, and at most five ranked findings for both one-shot baselines. This prevents length-truncated JSON and defines a readable Top-5 comparison under the same 4000 total-token cap."
+  },
   "reportingBoundary": "Automatic alignment is an objective retrieval proxy for candidate generation, not expert recall or review correctness."
 }
