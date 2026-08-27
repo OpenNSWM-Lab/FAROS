@@ -56,6 +56,29 @@ class PeerQAHumanEvalTests(unittest.TestCase):
         self.assertEqual(blind["sourcePaperId"], "")
         self.assertEqual(blind["automaticMatchScore"], "")
 
+    def test_max_findings_applies_same_output_cap_to_alignment(self) -> None:
+        reference = {
+            "referenceId": "ref_1", "sampleId": "sample_1", "paperId": "paper_1",
+            "reviewerQuestion": "Where is the BFGS runtime evidence?", "evidenceSentences": [],
+        }
+        record = {
+            "sampleId": "sample_1",
+            "findings": [
+                {"id": "f1", "claimId": "c1", "title": "Unrelated concern"},
+                {"id": "f2", "claimId": "c2", "title": "Missing BFGS runtime evidence"},
+            ],
+            "claimScores": [
+                {"claimId": "c1", "text": "An unrelated passage."},
+                {"claimId": "c2", "text": "The BFGS runtime is faster."},
+            ],
+        }
+
+        capped = build_rows([record], [reference], threshold=0.12, max_findings=1)
+        uncapped = build_rows([record], [reference], threshold=0.12)
+
+        self.assertEqual(capped[0]["findingId"], "NO_MATCH")
+        self.assertEqual(uncapped[0]["findingId"], "f2")
+
 
 if __name__ == "__main__":
     unittest.main()

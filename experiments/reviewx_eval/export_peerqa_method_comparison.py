@@ -67,11 +67,29 @@ def select_repetitions(records: list[dict[str, Any]], seed: int) -> tuple[list[d
 
 def build_comparison_rows(
     records: list[dict[str, Any]], references: list[dict[str, Any]], threshold: float, seed: int,
+    *, require_all_references: bool = True, max_findings: int = 0,
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
     selected, choices = select_repetitions(records, seed)
+    selected_sample_ids = set(choices)
+    selected_references = [
+        reference for reference in references
+        if str(reference.get("sampleId") or "") in selected_sample_ids
+    ]
+    if require_all_references and len(selected_references) != len(references):
+        missing_sample_ids = sorted({
+            str(reference.get("sampleId") or "")
+            for reference in references
+            if str(reference.get("sampleId") or "") not in selected_sample_ids
+        })
+        raise ValueError(
+            "predictions do not cover every reference sample: "
+            + ", ".join(missing_sample_ids[:10])
+        )
     rows = []
     for record in selected:
-        method_rows = build_rows([record], references, threshold)
+        method_rows = build_rows(
+            [record], selected_references, threshold, max_findings=max_findings,
+        )
         for row in method_rows:
             reference_key = str(row["annotationId"])
             method = str(record["method"])
@@ -95,9 +113,10 @@ def build_comparison_rows(
         repetitions = {int(row["selectedRepetition"]) for row in pair_rows}
         if len(repetitions) != 1:
             raise ValueError(f"comparison pair {pair_id} uses inconsistent repetitions")
-    if len(grouped) != len(references):
+    if len(grouped) != len(selected_references):
         raise ValueError(
-            f"comparison pair count {len(grouped)} does not match reference count {len(references)}"
+            f"comparison pair count {len(grouped)} does not match selected reference count "
+            f"{len(selected_references)}"
         )
     return rows, choices
 
@@ -124,10 +143,28 @@ def main() -> int:
     parser.add_argument("--threshold", type=float, default=0.12)
     parser.add_argument("--selection-seed", type=int, default=20260711)
     parser.add_argument("--shuffle-seed", type=int, default=20260712)
+    parser.add_argument(
+        "--max-findings",
+        type=int,
+        default=0,
+        help="Use only the first N ranked findings per method; 0 keeps all findings.",
+    )
+    parser.add_argument(
+        "--allow-partial",
+        action="store_true",
+        help="Export only references for prediction samples present in every method.",
+    )
     args = parser.parse_args()
     records = [row for path in args.predictions for row in read_jsonl(Path(path))]
     references = read_jsonl(Path(args.references))
-    rows, choices = build_comparison_rows(records, references, args.threshold, args.selection_seed)
+    rows, choices = build_comparison_rows(
+        records,
+        references,
+        args.threshold,
+        args.selection_seed,
+        require_all_references=not args.allow_partial,
+        max_findings=args.max_findings,
+    )
     prefix = Path(args.output_prefix)
     answer_csv = prefix.with_name(prefix.name + "_answer_key.csv")
     answer_jsonl = prefix.with_name(prefix.name + "_answer_key.jsonl")
@@ -146,6 +183,10 @@ def main() -> int:
         "selectionSeed": args.selection_seed, "shuffleSeed": args.shuffle_seed,
         "threshold": args.threshold, "taskCount": len(rows),
         "pairCount": len({row["comparisonPairId"] for row in rows}),
+        "sourceReferenceCount": len(references),
+        "selectedReferenceCount": len(rows) // len({str(row["method"]) for row in rows}),
+        "partialExport": args.allow_partial,
+        "maxFindingsPerMethod": args.max_findings or None,
         "methods": sorted({str(row["method"]) for row in rows}),
         "methodTaskCounts": dict(sorted(method_counts.items())),
         "selectedRepetitions": choices,

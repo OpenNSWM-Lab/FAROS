@@ -2,7 +2,7 @@ from app.modules.review.cem_guidance import annotate_risk_tree_with_mismatch
 from app.modules.review.cem_guidance import build_cem_budget_plan
 from app.modules.review.evidence_verifier import verify_claim_evidence
 from app.modules.review.mismatch_scorer import build_mismatch_report
-from app.modules.review.model_router import _build_severity_budget_plan
+from app.modules.review.model_router import _build_severity_budget_plan, rank_findings_for_review
 from app.modules.review.reviewx_models import (
     Claim,
     Evidence,
@@ -366,6 +366,32 @@ def test_severity_baseline_budget_plan_is_not_mismatch_guided():
     assert plan["policy"] == "severity_confidence_baseline"
     assert plan["selectedFindingIds"] == ["finding_001"]
     assert plan["allocations"][0]["drivers"] == ["severity", "confidence"]
+
+
+def test_review_findings_are_ranked_by_recorded_cem_priority():
+    low_priority_blocker = _finding(id="finding_blocker", severity="blocker", confidence=1.0)
+    high_priority_citation = _finding(
+        id="finding_citation", severity="minor", confidence=0.4, riskType="citation_mismatch"
+    )
+    trace = {
+        "budgetAllocations": [
+            {"findingId": "finding_blocker", "priority": 0.6},
+            {"findingId": "finding_citation", "priority": 0.9},
+        ]
+    }
+
+    ranked = rank_findings_for_review([low_priority_blocker, high_priority_citation], trace)
+
+    assert [finding.id for finding in ranked] == ["finding_citation", "finding_blocker"]
+
+
+def test_review_finding_rank_falls_back_to_severity_and_confidence():
+    minor = _finding(id="finding_minor", severity="minor", confidence=0.5)
+    major = _finding(id="finding_major", severity="major", confidence=0.7)
+
+    ranked = rank_findings_for_review([minor, major], {})
+
+    assert [finding.id for finding in ranked] == ["finding_major", "finding_minor"]
 
 
 def test_citation_semantic_verifier_flags_off_topic_citation():

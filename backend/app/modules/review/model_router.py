@@ -112,6 +112,35 @@ def refine_findings_with_budget(
     return findings, trace
 
 
+def rank_findings_for_review(
+    findings: List[Finding], routing_trace: Dict[str, Any] | None,
+) -> List[Finding]:
+    """Put the most consequential CEM-routed findings first for UI and evaluation."""
+    allocations = {
+        str(item.get("findingId") or ""): item
+        for item in (routing_trace or {}).get("budgetAllocations", [])
+        if isinstance(item, dict)
+    }
+    severity_bonus = {"blocker": 0.35, "major": 0.22, "minor": 0.08, "info": 0.0}
+    severity_rank = {"blocker": 0, "major": 1, "minor": 2, "info": 3}
+
+    def key(finding: Finding) -> tuple[float, int, float, str]:
+        allocation = allocations.get(finding.id, {})
+        fallback = min(
+            1.0,
+            float(finding.confidence or 0) + severity_bonus.get(finding.severity, 0.0),
+        )
+        priority = float(allocation.get("priority", fallback) or 0)
+        return (
+            -priority,
+            severity_rank.get(finding.severity, 9),
+            -float(finding.confidence or 0),
+            finding.id,
+        )
+
+    return sorted(findings, key=key)
+
+
 def _select_findings(findings: List[Finding], budget_plan: Dict[str, Any]) -> List[Finding]:
     selected_ids = set(budget_plan.get("selectedFindingIds", []))
     if not selected_ids:
