@@ -17,11 +17,13 @@ from app.modules.paper.skills.outline import OUTLINE_PROMPT, build_outline
 from app.modules.paper.skills.paper_brief import BRIEF_PROMPT, build_brief
 from app.modules.paper.skills.review_feedback import get_simple_review_feedback
 from app.modules.paper.skills.section_writers.base import (
+    COMMON_SECTION_INSTRUCTIONS,
     EQUATION_TEMPLATE,
     TABLE_TEMPLATE,
     build_artifact_requirements,
     render_prompt,
 )
+from app.modules.paper.skills.section_writers.conclusion import ConclusionWriter
 from app.modules.paper.skills.section_writers.method import MethodWriter
 from app.modules.paper.storage import create_paper, get_paper
 
@@ -127,6 +129,20 @@ def test_brief_prompt_includes_plan_evidence():
 
     assert "Authoritative package evidence" in rendered
     assert "authoritative source" in rendered
+    assert "lower ECE and Brier Score are better" in rendered
+    assert "trade-off" in rendered
+
+
+def test_outline_prompt_enforces_metric_direction_and_significance_scope():
+    assert "Do not say Brier improved when its value increased" in OUTLINE_PROMPT
+    assert "Do not use \"significant\" without inferential statistics" in OUTLINE_PROMPT
+
+
+def test_section_prompts_separate_literature_from_project_metrics():
+    assert "literature evidence and this paper's experiment evidence" in COMMON_SECTION_INSTRUCTIONS
+    assert "Do not attach a literature citation" in COMMON_SECTION_INSTRUCTIONS
+    assert "Narrow unsupported field-level claims" in COMMON_SECTION_INSTRUCTIONS
+    assert "Do not introduce a new survey of prior work" in ConclusionWriter.prompt_template
 
 
 def test_brief_regenerates_when_existing_is_not_bound_to_plan_evidence():

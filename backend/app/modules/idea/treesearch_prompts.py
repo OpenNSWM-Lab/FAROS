@@ -31,8 +31,9 @@ Respond in JSON format with the following fields:
   "approach": "High-level methodology",
   "expectedOutcomes": ["outcome1", "outcome2"],
   "requiredExperiments": [
-    {{"name": "...", "description": "...", "metrics": ["..."], "datasets": ["..."]}}
+    {{"name": "...", "description": "...", "metrics": ["..."], "datasets": ["..."], "stopConditions": ["..."]}}
   ],
+  "baselines": ["named control or prior method"],
   "risks": [
     {{"risk": "...", "mitigation": "..."}}
   ]
@@ -91,7 +92,8 @@ ARGUMENTS:
   "abstract": "...",
   "approach": "...",
   "expectedOutcomes": ["..."],
-  "requiredExperiments": [{{"name": "...", "description": "...", "metrics": ["..."], "datasets": ["..."]}}],
+  "requiredExperiments": [{{"name": "...", "description": "...", "metrics": ["..."], "datasets": ["..."], "stopConditions": ["..."]}}],
+  "baselines": ["named control or prior method"],
   "risks": [{{"risk": "...", "mitigation": "..."}}]
 }}}}
 

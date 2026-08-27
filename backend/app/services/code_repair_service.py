@@ -14,6 +14,7 @@ Enhanced with backup/rollback support and expanded deterministic rules.
 
 from __future__ import annotations
 
+import ast
 import json
 import logging
 import os
@@ -70,8 +71,14 @@ class CodeRepairService:
         "4. If the error is a SyntaxError, fix the syntax.\n"
         "5. If the error is about missing modules, add pip install comments at the top.\n"
         "6. Wrap your fix in ```python ... ``` code fence.\n"
-        "7. If the code looks like a FastAPI app, add a `if __name__ == '__main__':` block at the end "
-        "   that runs `import uvicorn; uvicorn.run(app, host='127.0.0.1', port=8000)` so it can be tested."
+        "7. Return the complete corrected file, including all original experiment outputs and contracts. "
+        "Never shorten the file into a simplified example or remove metrics, evaluation records, tests, or the main method.\n"
+        "8. If the code looks like a FastAPI app, add a `if __name__ == '__main__':` block at the end "
+        "   that runs `import uvicorn; uvicorn.run(app, host='127.0.0.1', port=8000)` so it can be tested.\n"
+        "9. For scientific experiments, never delete, weaken, bypass, or catch metric guardrail "
+        "assertions. Fix the method or calibration logic that violates them.\n"
+        "10. Never hard-code labels, predictions, probabilities, metrics, or expected outcomes. "
+        "Preserve frozen benchmark loading and positive-class semantics exactly."
     )
 
     def __init__(self, provider_name: str = "qwen", model: str = "qwen-max"):
@@ -97,12 +104,7 @@ class CodeRepairService:
         """
         report = AutoFixReport(project_id=project_id)
 
-        try:
-            client = ProviderClient(self.provider_name)
-        except ProviderError as e:
-            logger.error("Cannot initialize provider for auto-fix: %s", e)
-            report.summary = f"Provider not available: {e}"
-            return report
+        client: Optional[ProviderClient] = None
 
         # Phase 0: Fix all Python files with relative imports (common issue)
         all_py_files = list(Path(repo_dir).rglob("*.py"))
@@ -182,6 +184,18 @@ class CodeRepairService:
                     continue
 
                 # Phase 2: Try LLM-based fix
+                if client is None:
+                    try:
+                        client = ProviderClient(self.provider_name)
+                    except ProviderError as e:
+                        logger.error("Cannot initialize provider for auto-fix: %s", e)
+                        report.fixes_applied.append(FixResult(
+                            step_name=step_name,
+                            error_before=stderr[:500],
+                            file_path=file_path,
+                            fix_description=f"Provider not available: {e}",
+                        ))
+                        continue
                 fix = self._generate_llm_fix(client, step_name, file_path, original_content, stderr, stdout)
                 fix.original_content = original_content
                 if fix and fix.new_content and fix.new_content != original_content:
@@ -219,18 +233,33 @@ class CodeRepairService:
 
     def _find_error_files(self, stderr: str, repo_dir: str) -> List[str]:
         """Extract file paths from error traceback."""
-        files = []
+        files: List[str] = []
+        repo_root = Path(repo_dir).resolve()
         # Pattern: File "path/to/file.py", line N
         pattern = re.compile(r'File\s+"([^"]+\.py)"', re.MULTILINE)
         for m in pattern.finditer(stderr):
-            fpath = m.group(1)
-            # Convert absolute path to relative
-            if fpath.startswith(repo_dir):
-                fpath = os.path.relpath(fpath, repo_dir).replace("\\", "/")
-            # Only include files within the project
-            if not fpath.startswith("..") and not fpath.startswith("<"):
-                if fpath not in files:
-                    files.append(fpath)
+            raw_path = Path(m.group(1))
+            candidates: List[Path] = []
+            if raw_path.is_absolute():
+                try:
+                    candidates.append(raw_path.resolve().relative_to(repo_root))
+                except ValueError:
+                    # Subprocess sandboxes copy the repository into a temporary
+                    # directory. Recover the repository-relative suffix from
+                    # traceback paths such as `.sandbox_x/src/main.py`.
+                    parts = raw_path.parts
+                    for anchor in ("src", "tests", "scripts"):
+                        if anchor in parts:
+                            candidates.append(Path(*parts[parts.index(anchor):]))
+            else:
+                candidates.append(raw_path)
+
+            for candidate in candidates:
+                normalized = candidate.as_posix()
+                if normalized.startswith("../") or normalized.startswith("<"):
+                    continue
+                if (repo_root / candidate).is_file() and normalized not in files:
+                    files.append(normalized)
         return files
 
     def _apply_deterministic_fixes(
@@ -328,6 +357,14 @@ class CodeRepairService:
             if m:
                 logger.info("Detected f-string syntax error: %s", m.group(0)[:60])
 
+        # Rule 8: NumPy 2 removed the deprecated trapz alias.
+        if (
+            "module 'numpy' has no attribute 'trapz'" in stderr
+            or 'module "numpy" has no attribute "trapz"' in stderr
+        ) and "np.trapz(" in fixed:
+            fixed = fixed.replace("np.trapz(", "np.trapezoid(")
+            desc_parts.append("replaced removed np.trapz with np.trapezoid")
+
         if fixed != original:
             return FixResult(
                 step_name=step_name,
@@ -355,17 +392,20 @@ class CodeRepairService:
             f"## Failed Step: {step_name}\n\n"
             f"### Error Output (stderr)\n```\n{stderr[:2000]}\n```\n\n"
             + (f"### Stdout\n```\n{stdout[:800]}\n```\n\n" if stdout.strip() else "")
-            + f"### File to Fix: `{file_path}`\n```python\n{original_content[:4000]}\n```\n\n"
+            + f"### File to Fix: `{file_path}`\n```python\n{original_content[:20000]}\n```\n\n"
             + "Return ONLY the corrected file content inside a ```python code fence. "
-            + "Do not explain. Fix syntax, relative imports, missing imports, and add __main__ if needed."
+            + "Do not explain. Preserve the full file and all scientific artifact contracts; change only what the traceback requires."
         )
 
         try:
             response = client.chat(
-                messages=[ChatMessage(role="user", content=prompt)],
+                messages=[
+                    ChatMessage(role="system", content=self.FIX_SYSTEM_PROMPT),
+                    ChatMessage(role="user", content=prompt),
+                ],
                 model=self.model,
                 temperature=0.1,
-                max_tokens=4000,
+                max_tokens=8000,
             )
         except ProviderError as e:
             logger.error("LLM fix request failed: %s", e)
@@ -398,6 +438,18 @@ class CodeRepairService:
                     new_content="",
                 )
 
+        validation_error = self._validate_llm_repair(original_content, new_content)
+        if validation_error:
+            return FixResult(
+                step_name=step_name,
+                error_before=stderr[:500],
+                file_path=file_path,
+                fix_description=f"Rejected unsafe LLM repair: {validation_error}",
+                original_content=original_content,
+                new_content="",
+                method="llm",
+            )
+
         desc = self._summarize_fix(original_content, new_content)
 
         return FixResult(
@@ -409,6 +461,34 @@ class CodeRepairService:
             new_content=new_content,
             method="llm",
         )
+
+    @staticmethod
+    def _validate_llm_repair(original: str, repaired: str) -> str:
+        """Reject truncated or contract-dropping whole-file rewrites."""
+        try:
+            ast.parse(repaired)
+        except SyntaxError as exc:
+            return f"invalid Python syntax: {exc.msg}"
+        original_lines = max(len(original.splitlines()), 1)
+        repaired_lines = len(repaired.splitlines())
+        if original_lines >= 80 and repaired_lines < int(original_lines * 0.7):
+            return f"file was truncated from {original_lines} to {repaired_lines} lines"
+        contract_tokens = (
+            "def main",
+            "if __name__",
+            "metrics.json",
+            "evaluation_records.json",
+            "frozen_benchmark.json",
+            "faros-evaluation/v1",
+            "faros-benchmark/v1",
+        )
+        missing = [
+            token for token in contract_tokens
+            if token in original and token not in repaired
+        ]
+        if missing:
+            return "removed required contracts: " + ", ".join(missing)
+        return ""
 
     @staticmethod
     def _generate_diff(file_path: str, original: str, fixed: str) -> List[str]:

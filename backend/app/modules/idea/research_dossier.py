@@ -273,9 +273,11 @@ def _candidate_to_research_plan(
     # Step 2: Experiment / method execution
     exp_metrics: List[str] = []
     exp_inputs: List[str] = []
+    exp_stop_conditions: List[str] = []
     for exp in candidate.experimentSpecs:
         exp_metrics.extend(exp.metrics)
         exp_inputs.extend(exp.datasets)
+        exp_stop_conditions.extend(exp.stopConditions)
 
     steps.append(
         ResearchPlanStep(
@@ -288,7 +290,7 @@ def _candidate_to_research_plan(
             method=[candidate.proposedMethod or "Controlled comparison"],
             outputs=["metrics.json", "run.log", "analysis_report"],
             metrics=exp_metrics or candidate.expectedMetrics or ["accuracy", "efficiency"],
-            stopConditions=["All experiments complete or budget exhausted"],
+            stopConditions=exp_stop_conditions or ["All experiments complete or budget exhausted"],
             dependencies=[f"step_{candidate.id}_1"],
             risks=[r.risk for r in candidate.risks] or ["Experiment may not converge"],
         )

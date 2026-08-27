@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import re
 from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
@@ -51,12 +52,32 @@ class ExperimentFeedbackResult(BaseModel):
     iterationDecision: ExperimentIterationDecision
 
 
+def experiment_metric_snapshot(experiment: ExperimentEvidence) -> List[Dict[str, Any]]:
+    """Return stable numeric metric identities for series-level control."""
+
+    snapshot: List[Dict[str, Any]] = []
+    for metric in experiment.metrics:
+        if not _numeric(metric.value):
+            continue
+        method_name, _canonical_name = _metric_identity(metric)
+        display_name = _metric_display_name(metric.name)
+        name = f"{method_name}:{display_name}" if method_name else display_name
+        snapshot.append({
+            "name": name,
+            "value": float(metric.value),
+            "unit": metric.unit,
+            "split": metric.split,
+        })
+    return snapshot
+
+
 def review_experiment_feedback(
     dossier: ResearchDossier,
     experiment: ExperimentEvidence,
     *,
     execution_assessment: Optional[ExecutionAssessment] = None,
     previous_experiment: Optional[ExperimentEvidence] = None,
+    same_research_series: bool = False,
 ) -> ExperimentFeedbackResult:
     """Audit one experiment round and decide how the research plan should proceed.
 
@@ -144,10 +165,15 @@ def review_experiment_feedback(
             "Run the approved experiment or explicitly stop with a documented execution constraint.",
         )
 
+    has_content_addressed_records = any(
+        bool(ref.contentHash)
+        and str(ref.uri).replace("\\", "/").lower().endswith("evaluation_records.json")
+        for ref in experiment.artifactRefs
+    )
     design_checks = {
         "method_present": bool(experiment.method.strip()),
         "baseline_present": bool(experiment.baseline.strip()),
-        "data_provenance_present": bool(experiment.dataHashes),
+        "data_provenance_present": bool(experiment.dataHashes) or has_content_addressed_records,
         "logs_present": bool(experiment.logRefs),
         "reproducibility_hashes_present": bool(experiment.codeHash and experiment.environmentHash),
     }
@@ -192,7 +218,12 @@ def review_experiment_feedback(
         )
 
     observed = {metric.name: metric for metric in experiment.metrics}
+    observed_canonical = {
+        _canonical_metric_name(_metric_display_name(metric.name))
+        for metric in experiment.metrics
+    }
     expected = _expected_metric_names(dossier, execution_assessment)
+    expected_canonical = {_canonical_metric_name(name) for name in expected}
     check("metrics_present", bool(observed), f"observed={sorted(observed)}")
     if not observed:
         add_finding(
@@ -204,7 +235,10 @@ def review_experiment_feedback(
             "Export metrics with names, definitions, values, splits, and source paths.",
         )
 
-    missing_expected = sorted(expected - set(observed))
+    missing_expected = sorted(
+        name for name in expected
+        if _canonical_metric_name(name) not in observed_canonical
+    )
     check("expected_metrics_observed", not missing_expected, f"missing={missing_expected}")
     if missing_expected:
         add_finding(
@@ -248,29 +282,50 @@ def review_experiment_feedback(
     if experiment.unsupportedClaims:
         add_finding(
             "EXPERIMENT_UNSUPPORTED_CLAIMS",
-            Severity.MAJOR,
+            Severity.INFO,
             TargetModule.IDEA,
             "hypotheses",
-            "The experiment explicitly leaves claims unsupported: "
+            "The executed artifacts do not by themselves establish the broader scientific claim: "
             + "; ".join(experiment.unsupportedClaims[:3]),
-            "Narrow or revise the hypothesis and update the next experiment to discriminate the remaining claims.",
+            "Interpret the metrics within scope, or narrow the next hypothesis to the effect directly tested by the experiment.",
         )
 
     metric_deltas = _metric_deltas(previous_experiment, experiment)
+    benchmark_comparable = True
     if previous_experiment is not None:
         previous_matches = (
-            previous_experiment.runId == experiment.runId
-            and previous_experiment.questionId == experiment.questionId
+            same_research_series
+            or (
+                previous_experiment.runId == experiment.runId
+                and previous_experiment.questionId == experiment.questionId
+            )
         )
-        check("previous_experiment_ids_match", previous_matches)
+        check(
+            "previous_experiment_research_series_match",
+            previous_matches,
+            "lineage" if same_research_series else "contract_ids",
+        )
         if not previous_matches:
             add_finding(
                 "PREVIOUS_EXPERIMENT_ID_MISMATCH",
                 Severity.BLOCKER,
                 TargetModule.PLATFORM,
                 "previousExperimentEvidence.runId",
-                "The comparison round belongs to a different research run.",
-                "Compare only iterations of the same run and question.",
+                "The comparison round does not belong to the same research series.",
+                "Compare only parent and child iterations from the same research series.",
+            )
+        benchmark_comparable, benchmark_detail = _benchmark_comparability(
+            previous_experiment, experiment,
+        )
+        check("iteration_benchmark_comparable", benchmark_comparable, benchmark_detail)
+        if not benchmark_comparable:
+            add_finding(
+                "ITERATION_BENCHMARK_CHANGED",
+                Severity.MAJOR,
+                TargetModule.CODE,
+                "experimentEvidence.dataHashes",
+                "The evaluation samples changed between experiment rounds, so metric deltas are descriptive but not a controlled comparison.",
+                "Freeze and reuse the same evaluation inputs, labels, split, and seed before attributing metric changes to the method revision.",
             )
         comparable = bool(metric_deltas)
         check("iteration_has_comparable_metrics", comparable)
@@ -296,11 +351,12 @@ def review_experiment_feedback(
     scores = _dimension_scores(
         ids_match=ids_match,
         design_checks=design_checks,
-        expected_count=len(expected),
-        observed_expected_count=len(expected & set(observed)),
+        expected_count=len(expected_canonical),
+        observed_expected_count=len(expected_canonical & observed_canonical),
         metric_count=len(observed),
         metric_deltas=metric_deltas,
         has_previous=previous_experiment is not None,
+        benchmark_comparable=benchmark_comparable,
     )
     gate_status = _gate_status(findings)
     assessment = QualityAssessment(
@@ -325,19 +381,68 @@ def _expected_metric_names(
     dossier: ResearchDossier,
     execution_assessment: Optional[ExecutionAssessment],
 ) -> set[str]:
-    names = {
+    assessed_names = {
+        metric.strip()
+        for metric in (execution_assessment.validationMetrics if execution_assessment else [])
+        if metric.strip()
+    }
+    if assessed_names:
+        return assessed_names
+    return {
         metric.strip()
         for step in dossier.researchPlan.steps
         for metric in step.metrics
         if metric.strip()
     }
-    if execution_assessment is not None:
-        names.update(metric.strip() for metric in execution_assessment.validationMetrics if metric.strip())
-    return names
 
 
 def _numeric(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+_METHOD_NAMES = ("baseline", "method", "proposed", "control", "treatment")
+
+
+def _metric_display_name(name: str) -> str:
+    value = str(name or "").strip()
+    for method in _METHOD_NAMES:
+        stripped = re.sub(
+            rf"^{method}[\s_\-:/]+",
+            "",
+            value,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+        if stripped != value:
+            return stripped
+    return value
+
+
+def _canonical_metric_name(name: str) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", "_", str(name or "").lower()).strip("_")
+    aliases = {
+        "expected_calibration_error_ece": "expected_calibration_error",
+        "ece": "expected_calibration_error",
+        "f1": "f1_score",
+        "roc_auc": "auroc",
+        "area_under_the_receiver_operating_characteristic_curve": "auroc",
+    }
+    return aliases.get(normalized, normalized)
+
+
+def _metric_identity(metric: Any) -> tuple[str, str]:
+    raw_name = str(metric.name or "").strip()
+    method_name = ""
+    for candidate in _METHOD_NAMES:
+        if re.match(rf"^{candidate}[\s_\-:/]+", raw_name, re.IGNORECASE):
+            method_name = candidate
+            break
+    if not method_name:
+        split_tokens = set(
+            re.sub(r"[^a-z0-9]+", "_", str(metric.split or "").lower()).strip("_").split("_")
+        )
+        method_name = next((name for name in _METHOD_NAMES if name in split_tokens), "")
+    return method_name, _canonical_metric_name(_metric_display_name(raw_name))
 
 
 def _metric_deltas(
@@ -346,19 +451,33 @@ def _metric_deltas(
 ) -> List[MetricDelta]:
     if previous is None:
         return []
-    previous_metrics = {metric.name: metric for metric in previous.metrics if _numeric(metric.value)}
-    current_metrics = {metric.name: metric for metric in current.metrics if _numeric(metric.value)}
+    previous_metrics = {
+        _metric_identity(metric): metric
+        for metric in previous.metrics
+        if _numeric(metric.value)
+    }
+    current_metrics = {
+        _metric_identity(metric): metric
+        for metric in current.metrics
+        if _numeric(metric.value)
+    }
     deltas: List[MetricDelta] = []
-    for name in sorted(set(previous_metrics) & set(current_metrics)):
-        before = float(previous_metrics[name].value)
-        after = float(current_metrics[name].value)
+    for identity in sorted(set(previous_metrics) & set(current_metrics)):
+        previous_metric = previous_metrics[identity]
+        current_metric = current_metrics[identity]
+        before = float(previous_metric.value)
+        after = float(current_metric.value)
         if not (math.isfinite(before) and math.isfinite(after)):
             continue
         delta = after - before
         relative = None if before == 0 else delta / abs(before)
+        method_name, _canonical_name = identity
+        display_name = _metric_display_name(current_metric.name)
+        if method_name:
+            display_name = f"{method_name}:{display_name}"
         deltas.append(
             MetricDelta(
-                name=name,
+                name=display_name,
                 previous=before,
                 current=after,
                 delta=round(delta, 12),
@@ -366,6 +485,49 @@ def _metric_deltas(
             )
         )
     return deltas
+
+
+def _benchmark_comparability(
+    previous: ExperimentEvidence,
+    current: ExperimentEvidence,
+) -> tuple[bool, str]:
+    previous_fingerprint = previous.dataHashes.get("frozen_benchmark")
+    current_fingerprint = current.dataHashes.get("frozen_benchmark")
+    if previous_fingerprint or current_fingerprint:
+        if not previous_fingerprint or not current_fingerprint:
+            return False, "frozen_benchmark_fingerprint_missing"
+        if previous_fingerprint != current_fingerprint:
+            return False, "frozen_benchmark_fingerprint_changed"
+        return True, "frozen_benchmark_fingerprint_match"
+
+    previous_classification = (
+        (previous.metricAudit or {}).get("schemaVersion") == "faros-evaluation/v1"
+    )
+    current_classification = (
+        (current.metricAudit or {}).get("schemaVersion") == "faros-evaluation/v1"
+    )
+    if previous_classification or current_classification:
+        return False, "classification_iteration_requires_frozen_benchmark"
+
+    previous_count = (previous.metricAudit or {}).get("recordCount")
+    current_count = (current.metricAudit or {}).get("recordCount")
+    if (
+        isinstance(previous_count, int)
+        and isinstance(current_count, int)
+        and previous_count != current_count
+    ):
+        return False, f"record_count={previous_count}->{current_count}"
+
+    shared_hashes = sorted(set(previous.dataHashes) & set(current.dataHashes))
+    changed_hashes = [
+        key for key in shared_hashes
+        if previous.dataHashes.get(key) != current.dataHashes.get(key)
+    ]
+    if changed_hashes:
+        return False, "changed_data_hashes=" + ",".join(changed_hashes)
+    if "evaluation_inputs" in shared_hashes:
+        return True, "evaluation_inputs_hash_match"
+    return True, "no_conflicting_benchmark_evidence"
 
 
 def _dimension_scores(
@@ -377,12 +539,17 @@ def _dimension_scores(
     metric_count: int,
     metric_deltas: List[MetricDelta],
     has_previous: bool,
+    benchmark_comparable: bool,
 ) -> Dict[str, float]:
     reproducibility = sum(bool(value) for value in design_checks.values()) / len(design_checks)
     metric_completeness = (
         observed_expected_count / expected_count if expected_count else (1.0 if metric_count else 0.0)
     )
-    iteration_readiness = 1.0 if metric_deltas else (0.5 if not has_previous and metric_count else 0.0)
+    iteration_readiness = (
+        1.0 if metric_deltas and benchmark_comparable
+        else 0.5 if not has_previous and metric_count
+        else 0.0
+    )
     return {
         "artifactTraceability": round((1.0 if ids_match else 0.0) * reproducibility, 3),
         "metricCompleteness": round(metric_completeness, 3),
@@ -394,7 +561,7 @@ def _dimension_scores(
 def _gate_status(findings: List[QualityFinding]) -> GateStatus:
     if any(finding.severity == Severity.BLOCKER for finding in findings):
         return GateStatus.FAIL
-    if findings:
+    if any(finding.severity in {Severity.MAJOR, Severity.MINOR} for finding in findings):
         return GateStatus.WARN
     return GateStatus.PASS
 
@@ -477,8 +644,22 @@ def _feedback_comment(
             for item in metric_deltas[:5]
         )
         parts.append(f"Observed metric changes: {delta_text}.")
-    if findings:
-        parts.append("Required corrections: " + "; ".join(finding.description for finding in findings[:5]))
-    else:
+    corrective_findings = [
+        finding for finding in findings if finding.severity != Severity.INFO
+    ]
+    informational_findings = [
+        finding for finding in findings if finding.severity == Severity.INFO
+    ]
+    if corrective_findings:
+        parts.append(
+            "Required corrections: "
+            + "; ".join(finding.description for finding in corrective_findings[:5])
+        )
+    if informational_findings:
+        parts.append(
+            "Scope notes: "
+            + "; ".join(finding.description for finding in informational_findings[:5])
+        )
+    if not findings:
         parts.append("No deterministic reproducibility or plan-alignment blocker was found.")
     return " ".join(parts)

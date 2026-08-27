@@ -2,6 +2,7 @@ from app.models.idea import RawPaper
 from app.modules.idea.service import (
     _evaluate_evidence_gate_v2,
     _evaluate_paper_quality_gate,
+    _merge_coverage_report_with_gate,
     _normalize_coverage_report,
     _verify_coverage_dimension_support,
 )
@@ -306,3 +307,193 @@ def test_coverage_report_drops_transferable_gap_support_but_keeps_method_support
     assert dimensions["gap"]["status"] == "missing"
     assert dimensions["method"]["supportingPaperIds"] == ["raw_transfer"]
     assert report["passed"] is False
+
+
+def test_exact_combination_absence_is_accepted_as_supported_novelty_gap():
+    gate = {
+        "passed": True,
+        "hardBlocked": False,
+        "errors": [],
+        "warnings": [],
+        "gapSignalCount": 4,
+        "minGapSignalCount": 1,
+    }
+    report = {
+        "passed": False,
+        "hardBlocked": True,
+        "overallEvidenceScore": 0.55,
+        "missingRequiredDimensions": [],
+        "blockingIssues": [
+            "No direct evidence comparing the specific combination of entity, numeric, "
+            "negation, and semantic signals against lexical-overlap baselines."
+        ],
+        "warnings": [],
+        "dimensions": [
+            {"key": "method", "required": True, "supportingPaperIds": ["paper_method"]},
+            {"key": "evaluation", "required": True, "supportingPaperIds": ["paper_eval"]},
+            {"key": "limitation", "required": True, "supportingPaperIds": ["paper_limit"]},
+        ],
+    }
+
+    merged = _merge_coverage_report_with_gate(gate, report)
+
+    assert merged["passed"] is True
+    assert merged["errors"] == []
+    assert merged["coverageReport"]["noveltyGapAccepted"] is True
+    assert merged["coverageReport"]["blockingIssues"] == []
+
+
+def test_generic_missing_method_evidence_remains_blocked():
+    gate = {
+        "passed": True,
+        "hardBlocked": False,
+        "errors": [],
+        "warnings": [],
+        "gapSignalCount": 4,
+        "minGapSignalCount": 1,
+    }
+    report = {
+        "passed": False,
+        "hardBlocked": True,
+        "overallEvidenceScore": 0.55,
+        "missingRequiredDimensions": [],
+        "blockingIssues": ["No direct method evidence exists for the proposed detector."],
+        "warnings": [],
+        "dimensions": [
+            {"key": "method", "required": True, "supportingPaperIds": ["paper_method"]},
+            {"key": "evaluation", "required": True, "supportingPaperIds": ["paper_eval"]},
+            {"key": "limitation", "required": True, "supportingPaperIds": ["paper_limit"]},
+        ],
+    }
+
+    merged = _merge_coverage_report_with_gate(gate, report)
+
+    assert merged["passed"] is False
+    assert any("No direct method evidence" in error for error in merged["errors"])
+
+
+def test_novelty_gap_cannot_bypass_missing_required_dimension():
+    gate = {
+        "passed": True,
+        "hardBlocked": False,
+        "errors": [],
+        "warnings": [],
+        "gapSignalCount": 4,
+        "minGapSignalCount": 1,
+    }
+    report = {
+        "passed": False,
+        "hardBlocked": True,
+        "overallEvidenceScore": 0.55,
+        "missingRequiredDimensions": ["evaluation"],
+        "blockingIssues": ["No prior work evaluated the exact combination of signals."],
+        "warnings": [],
+        "dimensions": [
+            {"key": "method", "required": True, "supportingPaperIds": ["paper_method"]},
+            {"key": "evaluation", "required": True, "supportingPaperIds": []},
+            {"key": "limitation", "required": True, "supportingPaperIds": ["paper_limit"]},
+        ],
+    }
+
+    merged = _merge_coverage_report_with_gate(gate, report)
+
+    assert merged["passed"] is False
+    assert any("missing required dimensions evaluation" in error for error in merged["errors"])
+
+
+def test_supported_novelty_gap_accepts_missing_exact_framework_and_comparison():
+    gate = {
+        "passed": True,
+        "hardBlocked": False,
+        "errors": [],
+        "warnings": [],
+        "gapSignalCount": 8,
+        "minGapSignalCount": 1,
+    }
+    report = {
+        "passed": False,
+        "hardBlocked": True,
+        "overallEvidenceScore": 0.5,
+        "missingRequiredDimensions": [],
+        "blockingIssues": [
+            "Missing direct evidence for the specific combination of entity, numeric, "
+            "negation, and semantic consistency signals in a single framework.",
+            "Lack of evaluation data comparing calibrated detection performance against "
+            "lexical-overlap baselines in scientific domains.",
+        ],
+        "warnings": [],
+        "dimensions": [
+            {"key": "method", "required": True, "supportingPaperIds": ["paper_method"]},
+            {"key": "evaluation", "required": True, "supportingPaperIds": ["paper_eval"]},
+            {"key": "limitation", "required": True, "supportingPaperIds": ["paper_limit"]},
+        ],
+    }
+
+    merged = _merge_coverage_report_with_gate(gate, report)
+
+    assert merged["passed"] is True
+    assert merged["coverageReport"]["noveltyGapIssues"] == report["blockingIssues"]
+
+
+def test_supported_cross_domain_gap_is_not_mistaken_for_missing_foundation():
+    gate = {
+        "passed": True,
+        "hardBlocked": False,
+        "errors": [],
+        "warnings": [],
+        "gapSignalCount": 12,
+        "minGapSignalCount": 1,
+    }
+    report = {
+        "passed": False,
+        "hardBlocked": True,
+        "overallEvidenceScore": 0.48,
+        "missingRequiredDimensions": [],
+        "blockingIssues": [
+            "Missing direct evidence for 'negation' consistency signals in the context "
+            "of atomic claim decomposition.",
+            "Lack of evaluation data specific to 'AI-generated scientific reviews' "
+            "rather than general QA or medical domains.",
+        ],
+        "warnings": [],
+        "dimensions": [
+            {"key": "method", "required": True, "supportingPaperIds": ["paper_method"]},
+            {"key": "evaluation", "required": True, "supportingPaperIds": ["paper_eval"]},
+            {"key": "limitation", "required": True, "supportingPaperIds": ["paper_limit"]},
+        ],
+    }
+
+    merged = _merge_coverage_report_with_gate(gate, report)
+
+    assert merged["passed"] is True
+    assert merged["coverageReport"]["noveltyGapAccepted"] is True
+
+
+def test_complete_foundation_above_novelty_threshold_passes_without_blockers():
+    gate = {
+        "passed": True,
+        "hardBlocked": False,
+        "errors": [],
+        "warnings": [],
+        "gapSignalCount": 20,
+        "minGapSignalCount": 1,
+    }
+    report = {
+        "passed": False,
+        "hardBlocked": True,
+        "overallEvidenceScore": 0.45,
+        "missingRequiredDimensions": [],
+        "blockingIssues": [],
+        "warnings": ["The integrated target-domain method is not present in one paper."],
+        "dimensions": [
+            {"key": "method", "required": True, "supportingPaperIds": ["paper_method"]},
+            {"key": "evaluation", "required": True, "supportingPaperIds": ["paper_eval"]},
+            {"key": "limitation", "required": True, "supportingPaperIds": ["paper_limit"]},
+        ],
+    }
+
+    merged = _merge_coverage_report_with_gate(gate, report)
+
+    assert merged["passed"] is True
+    assert merged["coverageReport"]["noveltyGapAccepted"] is True
+    assert merged["coverageReport"]["noveltyGapIssues"] == []

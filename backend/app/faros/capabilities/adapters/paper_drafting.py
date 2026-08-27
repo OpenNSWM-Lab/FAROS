@@ -9,8 +9,8 @@ from app.faros.models.capability import CapabilityResult
 from app.faros.models.execution import ExecutionContext
 from app.faros.models.profile import CapabilityBinding
 from app.faros.models.provider import ProviderResult, ProviderTask
-from app.modules.paper.service import generate_paper
-from app.modules.paper.storage import add_log, create_paper, create_paper_zip, get_paper_latex_dir, list_paper_files, update_paper, write_paper_file
+from app.modules.paper.service import generate_paper, resume_paper_review
+from app.modules.paper.storage import add_log, create_paper, create_paper_zip, get_paper, get_paper_latex_dir, list_paper_files, update_paper, write_paper_file
 
 
 class PaperDraftingCapability(BaseCapability):
@@ -78,6 +78,22 @@ class PaperDraftingCapability(BaseCapability):
                 + json.dumps(experiment_evidence.model_dump(mode="json"), ensure_ascii=False)
             )
 
+        requested_paper_id = str(inputs.get("paperId") or "").strip()
+        requested_paper = get_paper(requested_paper_id) if requested_paper_id else None
+        if (
+            requested_paper
+            and requested_paper.get("status") == "failed"
+            and requested_paper.get("compileStatus") == "latexmk"
+            and requested_paper.get("pdfAvailable")
+        ):
+            paper = resume_paper_review(requested_paper_id)
+            return self._assemble_result(
+                context,
+                requested_paper_id,
+                paper,
+                event_message=f"Paper review resumed for {requested_paper_id}",
+            )
+
         record = create_paper(
             {
                 "title": title,
@@ -90,6 +106,8 @@ class PaperDraftingCapability(BaseCapability):
                 "runIds": list(dict.fromkeys([*(inputs.get("runIds") or []), context.run_id])),
                 "providerName": provider_name,
                 "model": model,
+                "researchDossierPath": inputs.get("researchDossierPath"),
+                "evidenceConstraints": inputs.get("constraints", []),
                 "notes": "\n".join(part for part in notes_parts if part),
             }
         )
@@ -115,6 +133,8 @@ class PaperDraftingCapability(BaseCapability):
                 "runIds": list(dict.fromkeys([*(inputs.get("runIds") or []), context.run_id])),
                 "providerName": provider_result.provider,
                 "model": provider_result.model,
+                "researchDossierPath": inputs.get("researchDossierPath"),
+                "evidenceConstraints": inputs.get("constraints", []),
                 "notes": provider_result.text,
             }
         )

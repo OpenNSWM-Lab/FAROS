@@ -240,8 +240,9 @@ Respond in JSON format:
       "approach": "...",
       "expectedOutcomes": ["outcome1", "outcome2"],
       "requiredExperiments": [
-        {{"name": "...", "description": "...", "metrics": ["metric1"], "datasets": ["dataset1"]}}
+        {{"name": "...", "description": "...", "metrics": ["metric1"], "datasets": ["dataset1"], "stopConditions": ["explicit completion or abort criterion"]}}
       ],
+      "baselines": ["named control or prior method"],
       "risks": [
         {{"risk": "...", "mitigation": "..."}}
       ]

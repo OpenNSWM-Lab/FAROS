@@ -105,6 +105,7 @@ def collect_reviewx_artifacts(paper_id: str) -> Dict[str, Any]:
             "src/main.py",
             "configs/experiment.json",
             "metrics.json",
+            "evaluation_records.json",
             "experiment_report.md",
             "artifacts/evidence/run_manifest.json",
             "artifacts/evidence/environment.json",

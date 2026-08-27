@@ -317,6 +317,7 @@ class ExperimentEvidence(ContractModel):
     method: str = ""
     baseline: str = ""
     metrics: List[MetricEvidence] = Field(default_factory=list)
+    metricAudit: Dict[str, Any] = Field(default_factory=dict)
     logRefs: List[str] = Field(default_factory=list)
     artifactRefs: List[ArtifactRef] = Field(default_factory=list)
     supportedClaims: List[str] = Field(default_factory=list)

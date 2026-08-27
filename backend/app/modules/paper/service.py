@@ -12,7 +12,7 @@ from typing import Any, Callable, Dict
 
 from app.core.settings import get_settings
 from app.llm.provider_client import get_provider_client
-from app.modules.paper.agents import PaperAgentOrchestrator
+from app.modules.paper.agents import PaperAgentOrchestrator, PaperWritingAgent, SimpleReviewAgent
 from app.modules.paper.storage import add_log, get_paper, get_paper_latex_dir, update_paper
 from app.modules.paper.skills import PaperSkillContext
 from app.modules.paper.skills.collect_context import run as collect_context_skill
@@ -242,6 +242,49 @@ def generate_paper(paper_id: str) -> Dict[str, Any]:
         add_log(paper_id, f"FAILED: {str(exc)[:500]}")
         raise
 
+    return get_paper(paper_id)
+
+
+def resume_paper_review(paper_id: str) -> Dict[str, Any]:
+    """Re-run only final review for an already compiled failed paper."""
+    paper = get_paper(paper_id)
+    if not paper:
+        raise ValueError(f"Paper not found: {paper_id}")
+    if paper.get("compileStatus") != "latexmk" or not paper.get("pdfAvailable"):
+        raise ValueError("Paper review resume requires a successfully compiled PDF.")
+
+    step_log: list[Dict[str, Any]] = []
+
+    def _log(msg: str) -> None:
+        add_log(paper_id, msg)
+        step_log.append({"time": time.time(), "msg": msg})
+        logger.info("[%s] %s", paper_id, msg)
+
+    update_paper(paper_id, {"status": "generating", "simpleReviewPassed": False})
+    ctx = _build_skill_context(paper_id, paper, step_log)
+    ctx.update("plan_evidence", paper.get("evidenceJson") or {})
+    ctx.update("outline", paper.get("outlineJson") or {})
+    ctx.update("compile_status", paper.get("compileStatus"))
+    ctx.update("compile_errors", paper.get("compileErrors"))
+    ctx.update("pdf_available", bool(paper.get("pdfAvailable")))
+
+    _log("Paper review resume: reusing compiled manuscript")
+    writing_agent = PaperWritingAgent(paper_id, _log)
+    result = SimpleReviewAgent(paper_id, _log).run(ctx, writing_agent=writing_agent)
+    simple_review_passed = bool(result.data.get("simple_review_passed"))
+    final_status = _paper_final_status(ctx.get("compile_status"), simple_review_passed)
+    update_paper(paper_id, {
+        "status": final_status,
+        "simpleReviewPassed": simple_review_passed,
+        "compileStatus": ctx.get("compile_status"),
+        "compileErrors": ctx.get("compile_errors"),
+        "pdfAvailable": bool(ctx.get("pdf_available")),
+    })
+    _log(
+        "Paper review resume completed successfully"
+        if final_status == "completed"
+        else "Paper review resume finished with unresolved issues"
+    )
     return get_paper(paper_id)
 
 

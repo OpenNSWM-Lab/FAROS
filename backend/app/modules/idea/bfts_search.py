@@ -173,7 +173,10 @@ def _path_seed_to_idea_node(
             ChatMessage(role="system", content=BFTS_SEED_SYSTEM),
             ChatMessage(role="user", content=user_prompt),
         ]
-        response = client.chat(messages=messages, model=model, max_tokens=1500)
+        response = client.chat(
+            messages=messages, model=model, max_tokens=1500,
+            structured_output=True,
+        )
 
         # Parse the idea JSON from response
         import json, re
@@ -201,7 +204,9 @@ def _path_seed_to_idea_node(
             title=idea_data.get("title", f"Idea from {seed.templateType}"),
             hypothesis=idea_data.get("hypothesis", idea_data.get("problem", "")),
             abstract=idea_data.get("abstract", ""),
+            approach=idea_data.get("approach", ""),
             experiments=idea_data.get("requiredExperiments", idea_data.get("experiments", [])),
+            baselines=idea_data.get("baselines", []),
             risks=idea_data.get("risks", []),
         )
         return node
@@ -290,7 +295,7 @@ def _nodes_to_candidates(
             evidenceSummary=graph_evidence.evidenceSummary,
         )
 
-        proposed_method = (node.abstract or "").strip()
+        proposed_method = (node.approach or node.abstract or "").strip()
         experiment_summaries = []
         for experiment in node.experiments or []:
             if isinstance(experiment, dict):
@@ -351,6 +356,7 @@ def _nodes_to_candidates(
                     description=e.get("description", "") if isinstance(e, dict) else "",
                     metrics=e.get("metrics", []) if isinstance(e, dict) else [],
                     datasets=e.get("datasets", []) if isinstance(e, dict) else [],
+                    stopConditions=e.get("stopConditions", []) if isinstance(e, dict) else [],
                 )
                 for e in (node.experiments or [])
             ],
@@ -360,10 +366,12 @@ def _nodes_to_candidates(
                     description=e.get("description", "") if isinstance(e, dict) else "",
                     metrics=e.get("metrics", []) if isinstance(e, dict) else [],
                     datasets=e.get("datasets", []) if isinstance(e, dict) else [],
+                    stopConditions=e.get("stopConditions", []) if isinstance(e, dict) else [],
                 )
                 for e in (node.experiments or [])
             ],
             expectedMetrics=[],
+            baselines=node.baselines,
             draftPlan=DraftPlan(
                 researchQuestion=node.hypothesis or "",
                 hypothesis=node.hypothesis or "",
@@ -596,7 +604,9 @@ class BFTSSearchTree:
                 title=result_node.title,
                 hypothesis=result_node.hypothesis,
                 abstract=result_node.abstract,
+                approach=result_node.approach,
                 experiments=result_node.experiments,
+                baselines=result_node.baselines,
                 risks=result_node.risks,
                 noveltyScore=result_node.noveltyScore,
                 feasibilityScore=result_node.feasibilityScore,

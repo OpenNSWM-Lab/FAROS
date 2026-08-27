@@ -70,6 +70,7 @@ def _review_json(ctx: PaperSkillContext, prompt: str, max_tokens: int = 6000) ->
         temperature=0.15,
         max_tokens=max_tokens,
         timeout=ctx.llm_timeout(),
+        structured_output=True,
     )
     parsed = _extract_json(response.text)
     if not isinstance(parsed, dict):

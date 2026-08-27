@@ -175,7 +175,10 @@ class ReasoningKGBuilder:
                 ChatMessage(role="user", content=user_prompt),
             ]
 
-            response = client.chat(messages, model=session.config.model, max_tokens=2000)
+            response = client.chat(
+                messages, model=session.config.model, max_tokens=2000,
+                structured_output=True,
+            )
 
             data = _extract_json_from_text(response.text)
 
@@ -400,7 +403,10 @@ class ReasoningKGBuilder:
                 ChatMessage(role="user", content=user_prompt),
             ]
 
-            response = client.chat(messages, model=session.config.model, max_tokens=2000)
+            response = client.chat(
+                messages, model=session.config.model, max_tokens=2000,
+                structured_output=True,
+            )
 
             data = _extract_json_from_text(response.text)
 

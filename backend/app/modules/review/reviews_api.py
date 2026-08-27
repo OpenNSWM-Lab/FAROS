@@ -12,10 +12,14 @@ Endpoints:
 import json
 import logging
 import threading
+import uuid
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Dict, Optional, List
+from types import SimpleNamespace
+from typing import Any, Dict, Literal, Optional, List
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Header, HTTPException, Query, status
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from app.core.settings import get_settings
@@ -23,7 +27,14 @@ from app.contracts import ExecutionAssessment, ExperimentEvidence, QualityAssess
 from app.modules.review.experiment_feedback import (
     ExperimentFeedbackResult,
     ExperimentIterationDecision,
+    experiment_metric_snapshot,
     review_experiment_feedback,
+)
+from app.modules.review.experiment_series import (
+    ExperimentLoopPolicy,
+    ExperimentSeriesProgress,
+    evaluate_experiment_series,
+    iteration_controller_feedback,
 )
 from app.modules.review.experiment_feedback_storage import (
     create_experiment_feedback,
@@ -31,6 +42,26 @@ from app.modules.review.experiment_feedback_storage import (
     list_experiment_feedback,
     update_experiment_feedback,
 )
+from app.modules.review.human_signoff import (
+    decide_human_signoff,
+    human_signoff_state,
+    publication_ready,
+    require_human_signoff,
+    signoff_required,
+)
+from app.modules.review.human_feedback import (
+    human_feedback_comment,
+    human_feedback_state,
+    iteration_decision_with_human_feedback,
+    require_human_feedback_applied,
+)
+from app.modules.review.human_feedback_verification import (
+    decide_human_condition_verification,
+    human_condition_verification_state,
+)
+from app.modules.review.audit_chain import record_audit_integrity
+from app.modules.review.competition_evidence import build_competition_evidence_dashboard
+from app.modules.review.reviewer_auth import ReviewAuthenticationError, authorize_reviewer
 from app.modules.review.storage import (
     create_review as _create_review, get_review as _get_review,
     list_reviews as _list_reviews, update_review as _update_review,
@@ -71,6 +102,7 @@ class RunExperimentFeedbackRequest(BaseModel):
     experimentEvidence: ExperimentEvidence
     executionAssessment: Optional[ExecutionAssessment] = None
     previousExperimentEvidence: Optional[ExperimentEvidence] = None
+    sameResearchSeries: bool = False
     planPackageId: Optional[str] = None
     applyToPlanPackage: bool = False
 
@@ -102,7 +134,18 @@ class RunStoredExperimentFeedbackResponse(RunExperimentFeedbackResponse):
     feedbackId: str
     createdAt: str
     runId: str
+    runKind: str = "platform"
+    parentRunId: Optional[str] = None
+    researchSeriesId: Optional[str] = None
+    iterationNumber: int = 1
     sourceArtifacts: Dict[str, str] = Field(default_factory=dict)
+    metricSnapshot: List[Dict[str, Any]] = Field(default_factory=list)
+    benchmarkFingerprint: Optional[str] = None
+    loopPolicy: Optional[ExperimentLoopPolicy] = None
+    loopProgress: Optional[ExperimentSeriesProgress] = None
+    humanSignoffs: Dict[str, Any] = Field(default_factory=dict)
+    humanFeedback: Dict[str, Any] = Field(default_factory=dict)
+    humanConditionVerifications: Dict[str, Any] = Field(default_factory=dict)
 
 
 class ReviseExperimentPlanRequest(BaseModel):
@@ -121,9 +164,371 @@ class ReviseExperimentPlanResponse(BaseModel):
 class CreateNextExperimentRunResponse(BaseModel):
     feedbackId: str
     runId: str
-    planPackageId: str
+    planPackageId: Optional[str] = None
     status: str
     reused: bool = False
+    runKind: str = "platform"
+    researchSeriesId: Optional[str] = None
+    iterationNumber: int = 1
+
+
+class AdvanceExperimentLoopRequest(BaseModel):
+    policy: ExperimentLoopPolicy
+    applyToPlanPackage: bool = False
+
+
+class HumanSignoffDecisionRequest(BaseModel):
+    status: Literal["approved", "rejected", "changes_requested"]
+    reviewerRole: str = Field(min_length=2, max_length=80)
+    reviewerId: str = Field(min_length=2, max_length=120)
+    rationale: str = Field(min_length=3, max_length=2000)
+    conditions: List[str] = Field(default_factory=list, max_length=20)
+    targetSections: List[str] = Field(default_factory=list, max_length=20)
+
+
+class HumanSignoffResponse(BaseModel):
+    feedbackId: str
+    humanSignoffs: Dict[str, Any]
+    humanFeedback: Dict[str, Any]
+    humanConditionVerifications: Dict[str, Any]
+    publicationReady: bool
+
+
+class ApplyHumanFeedbackRequest(BaseModel):
+    generationMode: Literal["deterministic", "hybrid"] = "deterministic"
+    reviewerMode: Literal["deterministic", "hybrid"] = "deterministic"
+
+
+class ApplyHumanFeedbackResponse(BaseModel):
+    feedbackId: str
+    feedbackHash: str
+    status: str
+    applied: bool
+    reused: bool = False
+    targetSections: List[str] = Field(default_factory=list)
+    requiredActions: List[str] = Field(default_factory=list)
+    planRevision: Optional[Dict[str, Any]] = None
+    humanSignoffs: Dict[str, Any]
+    humanFeedback: Dict[str, Any]
+    humanConditionVerifications: Dict[str, Any]
+
+
+class HumanConditionVerificationRequest(BaseModel):
+    status: Literal["passed", "failed", "waived"]
+    verifierRole: str = Field(min_length=2, max_length=80)
+    verifierId: str = Field(min_length=2, max_length=120)
+    rationale: str = Field(min_length=3, max_length=2000)
+    evidenceArtifactIds: List[str] = Field(default_factory=list, max_length=20)
+
+
+class HumanConditionVerificationResponse(BaseModel):
+    feedbackId: str
+    humanConditionVerifications: Dict[str, Any]
+    humanSignoffs: Dict[str, Any]
+    publicationReady: bool
+
+
+class RunSciFactCompetitionCaseRequest(BaseModel):
+    reuseLatest: bool = True
+    model: Literal["qwen3.7-plus-2026-05-26"] = "qwen3.7-plus-2026-05-26"
+    bootstrapSamples: int = Field(default=2000, ge=200, le=10000)
+
+
+class SciFactCompetitionCaseJob(BaseModel):
+    jobId: str
+    status: Literal["queued", "running", "completed", "failed"]
+    createdAt: str
+    updatedAt: str
+    model: str
+    bootstrapSamples: int
+    reused: bool = False
+    runId: Optional[str] = None
+    qualityGate: Optional[str] = None
+    summaryUrl: Optional[str] = None
+    reportUrl: Optional[str] = None
+    feedbackId: Optional[str] = None
+    error: Optional[str] = None
+
+
+class ReliabilityBenchmarkSummary(BaseModel):
+    runId: str
+    qualityGate: str
+    datasets: List[str]
+    totalCases: int
+    faultyCases: int
+    cleanCases: int
+    scores: Dict[str, Any]
+    repairEvaluation: Dict[str, Any]
+    qwenModel: Optional[str] = None
+    qwenUsage: Dict[str, int] = Field(default_factory=dict)
+    qwenMisses: List[Dict[str, Any]] = Field(default_factory=list)
+    reportUrl: str
+
+
+_SCIFACT_CASE_ROOT = (
+    Path(__file__).resolve().parents[3]
+    / "data"
+    / "competition_cases"
+    / "reviewx_scifact"
+)
+_SCIFACT_JOB_LOCK = threading.Lock()
+_PUBLIC_SCIFACT_ARTIFACTS = {
+    "summary.json",
+    "competition_report.md",
+    "preregistration.json",
+    "round_2_plan.json",
+    "plan_delta_contract.json",
+    "candidate_diagnostics.json",
+    "qwen_iteration_plan.json",
+    "qwen_trace.json",
+    "timeline.json",
+    "execution_timing.json",
+    "experiment_series.json",
+    "reviewx_round_1.json",
+    "reviewx_round_2.json",
+    "human_signoff.json",
+}
+_RELIABILITY_RESULT_ROOT = (
+    Path(__file__).resolve().parents[3]
+    / "data"
+    / "experiments"
+    / "reviewx_reliability"
+)
+_PLANNING_RESULT_PATH = (
+    Path(__file__).resolve().parents[3]
+    / "data"
+    / "experiments"
+    / "reviewx_planning"
+    / "stability_summary.json"
+)
+_MULTIDOMAIN_RESULT_PATH = (
+    Path(__file__).resolve().parents[3]
+    / "data"
+    / "experiments"
+    / "reviewx_multidomain"
+    / "summary.json"
+)
+
+
+def _scifact_job_path(job_id: str) -> Path:
+    return _SCIFACT_CASE_ROOT / "jobs" / f"{job_id}.json"
+
+
+def _write_scifact_job(job: Dict[str, Any]) -> Dict[str, Any]:
+    path = _scifact_job_path(str(job["jobId"]))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    job["updatedAt"] = datetime.now(UTC).isoformat()
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(job, ensure_ascii=True, indent=2), encoding="utf-8")
+    temporary.replace(path)
+    return job
+
+
+def _load_scifact_job(job_id: str) -> Optional[Dict[str, Any]]:
+    path = _scifact_job_path(job_id)
+    if not path.is_file():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _list_scifact_jobs() -> List[Dict[str, Any]]:
+    jobs_dir = _SCIFACT_CASE_ROOT / "jobs"
+    if not jobs_dir.is_dir():
+        return []
+    records = [
+        record
+        for path in jobs_dir.glob("*.json")
+        if (record := _load_scifact_job(path.stem)) is not None
+    ]
+    return sorted(records, key=lambda item: str(item.get("updatedAt") or ""), reverse=True)
+
+
+def _register_scifact_human_review(job: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Register one completed SciFact case in the common ReviewX approval flow."""
+
+    if job.get("status") != "completed" or not job.get("runId"):
+        return None
+    feedback_id = str(job.get("feedbackId") or "")
+    if feedback_id:
+        existing = get_experiment_feedback(feedback_id)
+        if existing is not None:
+            if existing.get("enforceReviewerSeparation") is not True:
+                existing = update_experiment_feedback(
+                    existing["id"], {"enforceReviewerSeparation": True},
+                )
+            return existing
+
+    existing_records = list_experiment_feedback(run_id=str(job["runId"]), limit=20)
+    existing = next(
+        (
+            record for record in existing_records
+            if record.get("competitionCaseJobId") == job.get("jobId")
+        ),
+        None,
+    )
+    if existing is not None:
+        if existing.get("enforceReviewerSeparation") is not True:
+            existing = update_experiment_feedback(
+                existing["id"], {"enforceReviewerSeparation": True},
+            )
+        job["feedbackId"] = existing["id"]
+        _write_scifact_job(job)
+        return existing
+
+    output_dir = _SCIFACT_CASE_ROOT / "runs" / str(job["jobId"])
+    try:
+        summary = json.loads((output_dir / "summary.json").read_text(encoding="utf-8"))
+        review_two = json.loads((output_dir / "reviewx_round_2.json").read_text(encoding="utf-8"))
+        series = json.loads((output_dir / "experiment_series.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("SciFact human review requires valid summary, round-two review, and series artifacts") from exc
+
+    quality_assessment = QualityAssessment.model_validate(
+        review_two.get("qualityAssessment") or {}
+    )
+    iteration_decision = ExperimentIterationDecision.model_validate(
+        review_two.get("iterationDecision") or {}
+    )
+    artifact_names = sorted(
+        filename for filename in _PUBLIC_SCIFACT_ARTIFACTS
+        if (output_dir / filename).is_file()
+    )
+    source_artifacts = {
+        filename: f"scifact:{job['jobId']}:{filename}"
+        for filename in artifact_names
+    }
+    artifact_base = f"/api/v1/reviews/reviewx/competition/scifact/jobs/{job['jobId']}/artifacts"
+    metric_snapshot = [
+        {
+            "name": delta.name,
+            "value": delta.current,
+            "split": "SciFact official dev holdout",
+        }
+        for delta in iteration_decision.metricDeltas
+    ]
+    stored = create_experiment_feedback({
+        "runId": str(job["runId"]),
+        "runKind": "faros",
+        "parentRunId": f"{job['runId']}_r1",
+        "researchSeriesId": str(job["runId"]),
+        "iterationNumber": 2,
+        "scientificRunId": quality_assessment.runId,
+        "questionId": quality_assessment.questionId,
+        "planPackageId": None,
+        "sourceArtifacts": source_artifacts,
+        "sourceArtifactUrls": {
+            filename: f"{artifact_base}/{filename}" for filename in artifact_names
+        },
+        "qualityAssessment": quality_assessment.model_dump(mode="json"),
+        "iterationDecision": iteration_decision.model_dump(mode="json"),
+        "metricSnapshot": metric_snapshot,
+        "benchmarkFingerprint": summary.get("benchmarkFingerprint"),
+        "loopProgress": series,
+        "planFeedback": PlanFeedbackApplication(
+            reason="Competition case uses its preregistered round-two plan; no PlanPackage write is required.",
+        ).model_dump(mode="json"),
+        "competitionCaseJobId": str(job["jobId"]),
+        "competitionCase": "SciFact",
+        "enforceReviewerSeparation": True,
+    })
+    job["feedbackId"] = stored["id"]
+    _write_scifact_job(job)
+    return stored
+
+
+def _run_scifact_case(job_id: str, model: str, bootstrap_samples: int) -> None:
+    job = _load_scifact_job(job_id)
+    if job is None:
+        return
+    job["status"] = "running"
+    _write_scifact_job(job)
+    try:
+        from experiments.reviewx_scifact.closed_loop import run_closed_loop
+        from experiments.reviewx_scifact.run import ensure_dataset
+
+        backend_data = Path(__file__).resolve().parents[3] / "data"
+        dataset_root = ensure_dataset(backend_data / "external" / "scifact", download=True)
+        output_dir = _SCIFACT_CASE_ROOT / "runs" / job_id
+        summary = run_closed_loop(
+            dataset_root,
+            output_dir,
+            model=model,
+            bootstrap_samples=bootstrap_samples,
+        )
+        job.update({
+            "status": "completed",
+            "runId": summary["runId"],
+            "qualityGate": summary["qualityGate"]["status"],
+            "summaryUrl": (
+                f"/api/v1/reviews/reviewx/competition/scifact/jobs/{job_id}"
+                "/artifacts/summary.json"
+            ),
+            "reportUrl": (
+                f"/api/v1/reviews/reviewx/competition/scifact/jobs/{job_id}"
+                "/artifacts/competition_report.md"
+            ),
+        })
+        registered = _register_scifact_human_review(job)
+        if registered is not None:
+            job["feedbackId"] = registered["id"]
+        _write_scifact_job(job)
+    except Exception:
+        logger.exception("SciFact competition case %s failed", job_id)
+        job.update({
+            "status": "failed",
+            "error": "Execution failed. Inspect the server log; credentials are not returned by this API.",
+        })
+        _write_scifact_job(job)
+
+
+def _stored_feedback_response(record: Dict[str, Any]) -> RunStoredExperimentFeedbackResponse:
+    return RunStoredExperimentFeedbackResponse(
+        qualityAssessment=QualityAssessment.model_validate(record.get("qualityAssessment") or {}),
+        iterationDecision=ExperimentIterationDecision.model_validate(
+            record.get("iterationDecision") or {}
+        ),
+        planFeedback=PlanFeedbackApplication.model_validate(record.get("planFeedback") or {}),
+        feedbackId=str(record["id"]),
+        createdAt=str(record.get("createdAt") or ""),
+        runId=str(record.get("runId") or ""),
+        runKind=str(record.get("runKind") or "platform"),
+        parentRunId=record.get("parentRunId"),
+        researchSeriesId=record.get("researchSeriesId"),
+        iterationNumber=int(record.get("iterationNumber") or 1),
+        sourceArtifacts=dict(record.get("sourceArtifacts") or {}),
+        metricSnapshot=list(record.get("metricSnapshot") or []),
+        benchmarkFingerprint=record.get("benchmarkFingerprint"),
+        loopPolicy=(
+            ExperimentLoopPolicy.model_validate(record["loopPolicy"])
+            if record.get("loopPolicy")
+            else None
+        ),
+        loopProgress=(
+            ExperimentSeriesProgress.model_validate(record["loopProgress"])
+            if record.get("loopProgress")
+            else None
+        ),
+        humanSignoffs=human_signoff_state(record),
+        humanFeedback=human_feedback_state(record),
+        humanConditionVerifications=human_condition_verification_state(record),
+    )
+
+
+def _require_iteration_signoffs(record: Dict[str, Any]) -> None:
+    require_human_feedback_applied(record)
+    require_human_signoff(record, "plan")
+    if signoff_required(record, "repair"):
+        require_human_signoff(record, "repair")
+
+
+class AdvanceExperimentLoopResponse(BaseModel):
+    feedbackId: str
+    currentRunId: str
+    nextRunId: Optional[str] = None
+    progress: ExperimentSeriesProgress
 
 
 def _reviewx_finding_to_dto(finding: Dict[str, Any], review: Dict[str, Any]) -> Dict[str, Any]:
@@ -523,6 +928,197 @@ async def get_reviewx_eval_record_endpoint(
 
 
 @router.post(
+    "/reviewx/competition/scifact/jobs",
+    response_model=SciFactCompetitionCaseJob,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Start or reuse the auditable SciFact two-round competition case",
+)
+async def start_scifact_competition_case_endpoint(
+    req: RunSciFactCompetitionCaseRequest,
+) -> SciFactCompetitionCaseJob:
+    with _SCIFACT_JOB_LOCK:
+        jobs = _list_scifact_jobs()
+        if req.reuseLatest:
+            latest = next(
+                (
+                    item for item in jobs
+                    if item.get("status") == "completed"
+                    and item.get("qualityGate") == "passed"
+                ),
+                None,
+            )
+            if latest is not None:
+                registered = _register_scifact_human_review(latest)
+                if registered is not None:
+                    latest["feedbackId"] = registered["id"]
+                return SciFactCompetitionCaseJob.model_validate({
+                    **latest,
+                    "reused": True,
+                })
+        active = next(
+            (item for item in jobs if item.get("status") in {"queued", "running"}),
+            None,
+        )
+        if active is not None:
+            return SciFactCompetitionCaseJob.model_validate({
+                **active,
+                "reused": True,
+            })
+        now = datetime.now(UTC).isoformat()
+        job_id = f"scifact_case_{uuid.uuid4().hex[:12]}"
+        job = _write_scifact_job({
+            "jobId": job_id,
+            "status": "queued",
+            "createdAt": now,
+            "updatedAt": now,
+            "model": req.model,
+            "bootstrapSamples": req.bootstrapSamples,
+            "reused": False,
+            "runId": None,
+            "qualityGate": None,
+            "summaryUrl": None,
+            "reportUrl": None,
+            "error": None,
+        })
+        worker = threading.Thread(
+            target=_run_scifact_case,
+            args=(job_id, req.model, req.bootstrapSamples),
+            name=f"faros-{job_id}",
+            daemon=True,
+        )
+        worker.start()
+        return SciFactCompetitionCaseJob.model_validate(job)
+
+
+@router.get(
+    "/reviewx/competition/scifact/jobs/latest",
+    response_model=SciFactCompetitionCaseJob,
+    summary="Get the latest SciFact competition case job",
+)
+async def get_latest_scifact_competition_case_endpoint() -> SciFactCompetitionCaseJob:
+    jobs = _list_scifact_jobs()
+    if not jobs:
+        raise HTTPException(status_code=404, detail="No SciFact competition case has run yet")
+    job = jobs[0]
+    registered = _register_scifact_human_review(job)
+    if registered is not None:
+        job["feedbackId"] = registered["id"]
+    return SciFactCompetitionCaseJob.model_validate(job)
+
+
+@router.get(
+    "/reviewx/competition/scifact/jobs/{job_id}",
+    response_model=SciFactCompetitionCaseJob,
+    summary="Get one SciFact competition case job",
+)
+async def get_scifact_competition_case_endpoint(job_id: str) -> SciFactCompetitionCaseJob:
+    job = _load_scifact_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"SciFact competition job '{job_id}' not found")
+    registered = _register_scifact_human_review(job)
+    if registered is not None:
+        job["feedbackId"] = registered["id"]
+    return SciFactCompetitionCaseJob.model_validate(job)
+
+
+@router.get(
+    "/reviewx/competition/scifact/jobs/{job_id}/artifacts/{filename}",
+    summary="Download a public, non-secret SciFact competition artifact",
+)
+async def get_scifact_competition_artifact_endpoint(job_id: str, filename: str):
+    if filename not in _PUBLIC_SCIFACT_ARTIFACTS:
+        raise HTTPException(status_code=404, detail="Artifact is not on the public evidence allowlist")
+    job = _load_scifact_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"SciFact competition job '{job_id}' not found")
+    path = _SCIFACT_CASE_ROOT / "runs" / job_id / filename
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail=f"Artifact '{filename}' is not available")
+    media_type = "application/json" if filename.endswith(".json") else "text/markdown"
+    return FileResponse(path, media_type=media_type, filename=filename)
+
+
+@router.get(
+    "/reviewx/competition/dashboard",
+    summary="Get the verified track-1B evidence dashboard",
+)
+async def get_competition_evidence_dashboard_endpoint():
+    jobs = _list_scifact_jobs()
+    job = next(
+        (
+            item for item in jobs
+            if item.get("status") == "completed"
+            and (_SCIFACT_CASE_ROOT / "runs" / str(item.get("jobId"))).is_dir()
+        ),
+        None,
+    )
+    if job is None:
+        raise HTTPException(
+            status_code=404,
+            detail="No completed SciFact competition case is available",
+        )
+    try:
+        registered = _register_scifact_human_review(job)
+        if registered is not None:
+            job["feedbackId"] = registered["id"]
+        return build_competition_evidence_dashboard(
+            job=job,
+            case_dir=_SCIFACT_CASE_ROOT / "runs" / str(job["jobId"]),
+            reliability_summary_path=_RELIABILITY_RESULT_ROOT / "summary.json",
+            planning_summary_path=_PLANNING_RESULT_PATH,
+            multidomain_summary_path=_MULTIDOMAIN_RESULT_PATH,
+            feedback_record=registered,
+            public_artifacts=_PUBLIC_SCIFACT_ARTIFACTS,
+        )
+    except (FileNotFoundError, json.JSONDecodeError, ValueError) as exc:
+        logger.warning("Competition evidence dashboard is incomplete: %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail=f"Competition evidence is incomplete or invalid: {exc}",
+        ) from exc
+
+
+@router.get(
+    "/reviewx/competition/reliability/latest",
+    response_model=ReliabilityBenchmarkSummary,
+    summary="Get the latest public ReviewX reliability benchmark result",
+)
+async def get_latest_reliability_benchmark_endpoint() -> ReliabilityBenchmarkSummary:
+    path = _RELIABILITY_RESULT_ROOT / "summary.json"
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="No reliability benchmark result is available")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=503, detail="Reliability benchmark result is unreadable") from exc
+    return ReliabilityBenchmarkSummary(
+        runId=str(payload.get("runId") or ""),
+        qualityGate=str((payload.get("qualityGate") or {}).get("status") or "unknown"),
+        datasets=[str(item) for item in payload.get("datasets") or []],
+        totalCases=int((payload.get("caseAudit") or {}).get("total") or 0),
+        faultyCases=int((payload.get("caseAudit") or {}).get("faulty") or 0),
+        cleanCases=int((payload.get("caseAudit") or {}).get("clean") or 0),
+        scores=dict(payload.get("scores") or {}),
+        repairEvaluation=dict(payload.get("repairEvaluation") or {}),
+        qwenModel=(payload.get("qwenTrace") or {}).get("model"),
+        qwenUsage=dict((payload.get("qwenTrace") or {}).get("totalUsage") or {}),
+        qwenMisses=list(payload.get("qwenMisses") or []),
+        reportUrl="/api/v1/reviews/reviewx/competition/reliability/report",
+    )
+
+
+@router.get(
+    "/reviewx/competition/reliability/report",
+    summary="Download the public ReviewX reliability benchmark report",
+)
+async def get_reliability_benchmark_report_endpoint():
+    path = _RELIABILITY_RESULT_ROOT / "experiment_report.md"
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Reliability benchmark report is unavailable")
+    return FileResponse(path, media_type="text/markdown", filename="reviewx_reliability_report.md")
+
+
+@router.post(
     "/reviewx/experiment-feedback",
     response_model=RunExperimentFeedbackResponse,
     summary="Audit experiment evidence and route the next research iteration",
@@ -537,6 +1133,7 @@ async def run_experiment_feedback_endpoint(
         req.experimentEvidence,
         execution_assessment=req.executionAssessment,
         previous_experiment=req.previousExperimentEvidence,
+        same_research_series=req.sameResearchSeries,
     )
     application = PlanFeedbackApplication(
         requested=req.applyToPlanPackage,
@@ -597,14 +1194,14 @@ def _load_run_contract_artifact(
     *,
     require_platform_run_match: bool = True,
 ):
+    from app.faros.runtime.state_store import FarosStateStore
     from app.storage.artifact_storage import get_storage as get_artifact_storage
 
     artifact_storage = get_artifact_storage()
+    artifact = None
     if artifact_id:
         artifact = artifact_storage.get(artifact_id)
-        if artifact is None:
-            raise HTTPException(status_code=404, detail=f"Artifact '{artifact_id}' not found")
-        if require_platform_run_match and artifact.runId != run_id:
+        if artifact is not None and require_platform_run_match and artifact.runId != run_id:
             raise HTTPException(
                 status_code=422,
                 detail=f"Artifact '{artifact_id}' belongs to run '{artifact.runId}', not '{run_id}'",
@@ -615,16 +1212,54 @@ def _load_run_contract_artifact(
             for item in artifact_storage.list_by_run(run_id)
             if Path(item.filename).name.lower() == filename.lower()
         ]
-        if not candidates:
-            raise HTTPException(
-                status_code=422,
-                detail={
-                    "message": f"Run '{run_id}' is missing required ReviewX evidence",
-                    "requiredFilename": filename,
-                    "runId": run_id,
-                },
+        artifact = candidates[0] if candidates else None
+
+    if artifact is None:
+        state_store = FarosStateStore()
+        candidate_run_ids = [run_id]
+        if artifact_id and not require_platform_run_match:
+            candidate_run_ids.extend(
+                item["id"] for item in state_store.list_runs() if item.get("id") != run_id
             )
-        artifact = candidates[0]
+        faros_candidates = []
+        for candidate_run_id in candidate_run_ids:
+            for item in state_store.list_artifacts(candidate_run_id):
+                uri = str(item.get("uri") or "")
+                if not uri.startswith("file://"):
+                    continue
+                if artifact_id and item.get("id") != artifact_id:
+                    continue
+                if not artifact_id and Path(uri.removeprefix("file://")).name.lower() != filename.lower():
+                    continue
+                faros_candidates.append((candidate_run_id, item))
+        if faros_candidates:
+            artifact_run_id, item = faros_candidates[0]
+            if require_platform_run_match and artifact_run_id != run_id:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Artifact '{item.get('id')}' belongs to run '{artifact_run_id}', not '{run_id}'",
+                )
+            raw_path = Path(str(item["uri"]).removeprefix("file://"))
+            if not raw_path.is_absolute():
+                raw_path = Path(__file__).resolve().parents[3] / "data" / raw_path
+            artifact = SimpleNamespace(
+                id=item["id"],
+                runId=artifact_run_id,
+                filename=raw_path.name,
+                storagePath=str(raw_path),
+            )
+
+    if artifact is None:
+        if artifact_id:
+            raise HTTPException(status_code=404, detail=f"Artifact '{artifact_id}' not found")
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": f"Run '{run_id}' is missing required ReviewX evidence",
+                "requiredFilename": filename,
+                "runId": run_id,
+            },
+        )
 
     path = Path(artifact.storagePath)
     if not path.is_file():
@@ -643,6 +1278,41 @@ def _load_run_contract_artifact(
     return artifact, model
 
 
+def _faros_run_lineage(run_id: str) -> Optional[Dict[str, Any]]:
+    from app.faros.runtime.state_store import FarosStateStore
+
+    store = FarosStateStore()
+    get_run = getattr(store, "get_run", None)
+    run = get_run(run_id) if callable(get_run) else None
+    if run is None:
+        return None
+    inputs = run.get("inputs") or {}
+    iteration_feedback = (
+        inputs.get("iterationFeedback")
+        if isinstance(inputs.get("iterationFeedback"), dict)
+        else {}
+    )
+    return {
+        "runKind": "faros",
+        "parentRunId": run.get("parent_run_id"),
+        "researchSeriesId": run.get("research_series_id") or run_id,
+        "iterationNumber": int(run.get("iteration_number") or 1),
+        "inheritedHumanFeedback": dict(
+            iteration_feedback.get("humanFeedback") or {}
+        ),
+    }
+
+
+def _faros_runs_share_series(current_run_id: str, previous_run_id: str) -> bool:
+    current = _faros_run_lineage(current_run_id)
+    previous = _faros_run_lineage(previous_run_id)
+    return bool(
+        current
+        and previous
+        and current["researchSeriesId"] == previous["researchSeriesId"]
+    )
+
+
 @router.post(
     "/reviewx/runs/{run_id}/experiment-feedback",
     response_model=RunStoredExperimentFeedbackResponse,
@@ -653,6 +1323,19 @@ async def run_stored_experiment_feedback_endpoint(
     req: RunStoredExperimentFeedbackRequest,
 ) -> RunStoredExperimentFeedbackResponse:
     """Resolve contract artifacts produced by the integrated FAROS run."""
+
+    default_artifact_selection = not any((
+        req.dossierArtifactId,
+        req.executionAssessmentArtifactId,
+        req.experimentEvidenceArtifactId,
+        req.previousExperimentArtifactId,
+        req.planPackageId,
+        req.applyToPlanPackage,
+    ))
+    if default_artifact_selection:
+        existing = list_experiment_feedback(run_id=run_id, limit=1)
+        if existing:
+            return _stored_feedback_response(existing[0])
 
     dossier_artifact, dossier = _load_run_contract_artifact(
         run_id,
@@ -690,7 +1373,9 @@ async def run_stored_experiment_feedback_endpoint(
         if not missing_optional:
             raise
 
+    lineage = _faros_run_lineage(run_id)
     previous_experiment = None
+    previous_artifact_run_id = None
     if req.previousExperimentArtifactId:
         previous_artifact, previous_experiment = _load_run_contract_artifact(
             run_id,
@@ -700,6 +1385,7 @@ async def run_stored_experiment_feedback_endpoint(
             require_platform_run_match=False,
         )
         source_artifacts["previousExperimentEvidence"] = previous_artifact.id
+        previous_artifact_run_id = previous_artifact.runId
     else:
         from app.storage.artifact_storage import get_storage as get_artifact_storage
 
@@ -717,6 +1403,20 @@ async def run_stored_experiment_feedback_endpoint(
                 earlier_evidence[0].id,
             )
             source_artifacts["previousExperimentEvidence"] = previous_artifact.id
+            previous_artifact_run_id = previous_artifact.runId
+        elif lineage and lineage.get("parentRunId"):
+            previous_artifact, previous_experiment = _load_run_contract_artifact(
+                lineage["parentRunId"],
+                "experiment_evidence.json",
+                ExperimentEvidence,
+            )
+            source_artifacts["previousExperimentEvidence"] = previous_artifact.id
+            previous_artifact_run_id = previous_artifact.runId
+
+    same_research_series = bool(
+        previous_artifact_run_id
+        and _faros_runs_share_series(run_id, previous_artifact_run_id)
+    )
 
     plan_package_id = req.planPackageId or (
         execution_assessment.planPackageId if execution_assessment else None
@@ -727,20 +1427,39 @@ async def run_stored_experiment_feedback_endpoint(
             experimentEvidence=evidence,
             executionAssessment=execution_assessment,
             previousExperimentEvidence=previous_experiment,
+            sameResearchSeries=same_research_series,
             planPackageId=plan_package_id,
             applyToPlanPackage=req.applyToPlanPackage,
         )
     )
+    if lineage and not plan_package_id:
+        response.planFeedback.reason = (
+            "This FAROS run has no PlanPackage; ReviewX feedback will be injected "
+            "directly into the next iteration run."
+        )
     stored = create_experiment_feedback(
         {
             "runId": run_id,
+            "runKind": "faros" if lineage else "platform",
+            "parentRunId": lineage.get("parentRunId") if lineage else None,
+            "researchSeriesId": lineage.get("researchSeriesId") if lineage else run_id,
+            "iterationNumber": lineage.get("iterationNumber", 1) if lineage else 1,
             "scientificRunId": dossier.runId,
             "questionId": dossier.questionId,
             "planPackageId": plan_package_id,
             "sourceArtifacts": source_artifacts,
             "qualityAssessment": response.qualityAssessment.model_dump(mode="json"),
             "iterationDecision": response.iterationDecision.model_dump(mode="json"),
+            "metricSnapshot": experiment_metric_snapshot(evidence),
+            "benchmarkFingerprint": str(
+                evidence.dataHashes.get("frozen_benchmark") or ""
+            ) or None,
             "planFeedback": response.planFeedback.model_dump(mode="json"),
+            "inheritedHumanFeedback": (
+                lineage.get("inheritedHumanFeedback") or {}
+                if lineage
+                else {}
+            ),
         }
     )
     return RunStoredExperimentFeedbackResponse(
@@ -748,7 +1467,28 @@ async def run_stored_experiment_feedback_endpoint(
         feedbackId=stored["id"],
         createdAt=stored["createdAt"],
         runId=run_id,
+        runKind="faros" if lineage else "platform",
+        parentRunId=lineage.get("parentRunId") if lineage else None,
+        researchSeriesId=lineage.get("researchSeriesId") if lineage else run_id,
+        iterationNumber=lineage.get("iterationNumber", 1) if lineage else 1,
         sourceArtifacts=source_artifacts,
+        metricSnapshot=experiment_metric_snapshot(evidence),
+        benchmarkFingerprint=str(
+            evidence.dataHashes.get("frozen_benchmark") or ""
+        ) or None,
+        loopPolicy=(
+            ExperimentLoopPolicy.model_validate(stored["loopPolicy"])
+            if stored.get("loopPolicy")
+            else None
+        ),
+        loopProgress=(
+            ExperimentSeriesProgress.model_validate(stored["loopProgress"])
+            if stored.get("loopProgress")
+            else None
+        ),
+        humanSignoffs=human_signoff_state(stored),
+        humanFeedback=human_feedback_state(stored),
+        humanConditionVerifications=human_condition_verification_state(stored),
     )
 
 
@@ -758,10 +1498,466 @@ async def run_stored_experiment_feedback_endpoint(
 )
 async def list_experiment_feedback_endpoint(
     runId: Optional[str] = None,
+    researchSeriesId: Optional[str] = None,
     limit: int = Query(default=20, ge=1, le=100),
 ):
-    records = list_experiment_feedback(run_id=runId, limit=limit)
+    records = list_experiment_feedback(
+        run_id=runId,
+        research_series_id=researchSeriesId,
+        limit=limit,
+    )
+    if researchSeriesId:
+        records = _latest_feedback_per_run(records)
+    records = [
+        {
+            **record,
+            "humanSignoffs": human_signoff_state(record),
+            "humanFeedback": human_feedback_state(record),
+            "humanConditionVerifications": human_condition_verification_state(record),
+        }
+        for record in records
+    ]
     return {"records": records, "total": len(records)}
+
+
+@router.get(
+    "/reviewx/experiment-feedback/{feedback_id}",
+    response_model=RunStoredExperimentFeedbackResponse,
+    summary="Get one persisted ReviewX experiment feedback record",
+)
+async def get_experiment_feedback_endpoint(
+    feedback_id: str,
+) -> RunStoredExperimentFeedbackResponse:
+    record = get_experiment_feedback(feedback_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"Experiment feedback '{feedback_id}' not found")
+    return _stored_feedback_response(record)
+
+
+@router.get(
+    "/reviewx/experiment-feedback/{feedback_id}/signoffs",
+    response_model=HumanSignoffResponse,
+    summary="Get hash-bound human signoffs for one ReviewX feedback record",
+)
+async def get_experiment_signoffs_endpoint(feedback_id: str) -> HumanSignoffResponse:
+    record = get_experiment_feedback(feedback_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"Experiment feedback '{feedback_id}' not found")
+    return HumanSignoffResponse(
+        feedbackId=feedback_id,
+        humanSignoffs=human_signoff_state(record),
+        humanFeedback=human_feedback_state(record),
+        humanConditionVerifications=human_condition_verification_state(record),
+        publicationReady=publication_ready(record),
+    )
+
+
+@router.put(
+    "/reviewx/experiment-feedback/{feedback_id}/signoffs/{stage}",
+    response_model=HumanSignoffResponse,
+    summary="Record one hash-bound human decision for a ReviewX stage",
+)
+async def decide_experiment_signoff_endpoint(
+    feedback_id: str,
+    stage: Literal["plan", "repair", "conclusion"],
+    req: HumanSignoffDecisionRequest,
+    authorization: Optional[str] = Header(default=None),
+) -> HumanSignoffResponse:
+    record = get_experiment_feedback(feedback_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"Experiment feedback '{feedback_id}' not found")
+    try:
+        authorize_reviewer(
+            stage=stage,
+            reviewer_role=req.reviewerRole,
+            reviewer_id=req.reviewerId,
+            authorization=authorization if isinstance(authorization, str) else None,
+            technical_test=record.get("reviewPurpose") == "technical_test",
+        )
+        signoffs = decide_human_signoff(
+            record,
+            stage=stage,
+            status=req.status,
+            reviewer_role=req.reviewerRole,
+            reviewer_id=req.reviewerId,
+            rationale=req.rationale,
+            conditions=req.conditions,
+            target_sections=req.targetSections,
+        )
+    except ReviewAuthenticationError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    updated = update_experiment_feedback(feedback_id, {"humanSignoffs": signoffs})
+    return HumanSignoffResponse(
+        feedbackId=feedback_id,
+        humanSignoffs=human_signoff_state(updated),
+        humanFeedback=human_feedback_state(updated),
+        humanConditionVerifications=human_condition_verification_state(updated),
+        publicationReady=publication_ready(updated),
+    )
+
+
+@router.post(
+    "/reviewx/experiment-feedback/{feedback_id}/human-feedback/apply",
+    response_model=ApplyHumanFeedbackResponse,
+    summary="Apply explicit human change requests to the next experiment contract",
+)
+async def apply_experiment_human_feedback_endpoint(
+    feedback_id: str,
+    req: ApplyHumanFeedbackRequest,
+) -> ApplyHumanFeedbackResponse:
+    record = get_experiment_feedback(feedback_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"Experiment feedback '{feedback_id}' not found")
+    state = human_feedback_state(record)
+    if not state["requiresApplication"]:
+        raise HTTPException(status_code=409, detail="No human change request is waiting to be applied")
+    if state["applied"]:
+        return ApplyHumanFeedbackResponse(
+            feedbackId=feedback_id,
+            feedbackHash=state["feedbackHash"],
+            status=str((state["application"] or {}).get("status") or "applied"),
+            applied=True,
+            reused=True,
+            targetSections=state["targetSections"],
+            requiredActions=state["requiredActions"],
+            planRevision=record.get("planRevision"),
+            humanSignoffs=human_signoff_state(record),
+            humanFeedback=state,
+            humanConditionVerifications=human_condition_verification_state(record),
+        )
+
+    package_id = record.get("planPackageId")
+    plan_revision = None
+    application_status = "queued_for_iteration"
+    previous_application = record.get("humanFeedbackApplication") or {}
+    previously_applied_ids = set(previous_application.get("appliedDecisionIds") or [])
+    new_items = [
+        item
+        for item in state["items"]
+        if item["decisionId"] not in previously_applied_ids
+    ]
+    incremental_state = {**state, "items": new_items}
+    if package_id:
+        from app.services.plan_package_service import (
+            PlanPackageConflictError,
+            PlanPackageNotFoundError,
+            get_plan_package_service,
+        )
+
+        service = get_plan_package_service()
+        try:
+            service.add_feedback(
+                package_id,
+                section_path="humanExperimentFeedback",
+                display_label="ReviewX human experiment feedback",
+                source_view="reviewx",
+                target_sections=state["targetSections"] or None,
+                feedback_type="correction",
+                comment=human_feedback_comment(incremental_state),
+                severity="blocking",
+                requested_action="revise",
+            )
+            package = service.revise(
+                package_id,
+                generation_mode=req.generationMode,
+                target_sections=state["targetSections"] or None,
+                reviewer_mode=req.reviewerMode,
+            )
+        except PlanPackageNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except PlanPackageConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        revision = package.revisions[-1] if package.revisions else None
+        plan_revision = {
+            "revisionId": revision.id if revision else None,
+            "changedSections": revision.changedSections if revision else [],
+            "generationMode": req.generationMode,
+            "source": "human_feedback",
+        }
+        application_status = "applied_to_plan"
+
+    application = {
+        "feedbackHash": state["feedbackHash"],
+        "status": application_status,
+        "targetSections": state["targetSections"],
+        "requiredActions": state["requiredActions"],
+        "appliedDecisionIds": [item["decisionId"] for item in state["items"]],
+        "appliedAt": datetime.now(UTC).isoformat(),
+        "planPackageId": package_id,
+    }
+    updates: Dict[str, Any] = {"humanFeedbackApplication": application}
+    if plan_revision is not None:
+        updates["planRevision"] = plan_revision
+    updated = update_experiment_feedback(feedback_id, updates)
+    updated_state = human_feedback_state(updated)
+    return ApplyHumanFeedbackResponse(
+        feedbackId=feedback_id,
+        feedbackHash=updated_state["feedbackHash"],
+        status=application_status,
+        applied=updated_state["applied"],
+        targetSections=updated_state["targetSections"],
+        requiredActions=updated_state["requiredActions"],
+        planRevision=plan_revision,
+        humanSignoffs=human_signoff_state(updated),
+        humanFeedback=updated_state,
+        humanConditionVerifications=human_condition_verification_state(updated),
+    )
+
+
+@router.put(
+    "/reviewx/experiment-feedback/{feedback_id}/human-feedback/conditions/{condition_id}",
+    response_model=HumanConditionVerificationResponse,
+    summary="Verify one inherited human acceptance condition against run artifacts",
+)
+async def decide_human_condition_verification_endpoint(
+    feedback_id: str,
+    condition_id: str,
+    req: HumanConditionVerificationRequest,
+    authorization: Optional[str] = Header(default=None),
+) -> HumanConditionVerificationResponse:
+    record = get_experiment_feedback(feedback_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"Experiment feedback '{feedback_id}' not found")
+    try:
+        authorize_reviewer(
+            stage="condition",
+            reviewer_role=req.verifierRole,
+            reviewer_id=req.verifierId,
+            authorization=authorization if isinstance(authorization, str) else None,
+            technical_test=record.get("reviewPurpose") == "technical_test",
+        )
+        verifications = decide_human_condition_verification(
+            record,
+            condition_id=condition_id,
+            status=req.status,
+            verifier_role=req.verifierRole,
+            verifier_id=req.verifierId,
+            rationale=req.rationale,
+            evidence_artifact_ids=req.evidenceArtifactIds,
+        )
+    except ReviewAuthenticationError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    updated = update_experiment_feedback(
+        feedback_id,
+        {"humanFeedbackVerifications": verifications},
+    )
+    return HumanConditionVerificationResponse(
+        feedbackId=feedback_id,
+        humanConditionVerifications=human_condition_verification_state(updated),
+        humanSignoffs=human_signoff_state(updated),
+        publicationReady=publication_ready(updated),
+    )
+
+
+@router.get(
+    "/reviewx/experiment-feedback/{feedback_id}/evidence-bundle",
+    summary="Download a draft or human-approved ReviewX evidence bundle",
+)
+async def get_experiment_evidence_bundle_endpoint(
+    feedback_id: str,
+    release: Literal["draft", "official"] = "draft",
+):
+    record = get_experiment_feedback(feedback_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"Experiment feedback '{feedback_id}' not found")
+    if release == "official" and not publication_ready(record):
+        raise HTTPException(
+            status_code=409,
+            detail="Official evidence bundles require an approved, current conclusion signoff and no ReviewX blockers",
+        )
+    signoffs = human_signoff_state(record)
+    return {
+        "schemaVersion": "reviewx-human-approved-evidence/v1",
+        "release": release,
+        "watermark": None if release == "official" else "DRAFT_NOT_HUMAN_APPROVED",
+        "feedbackId": feedback_id,
+        "runId": record.get("runId"),
+        "researchSeriesId": record.get("researchSeriesId"),
+        "questionId": record.get("questionId"),
+        "sourceArtifacts": record.get("sourceArtifacts") or {},
+        "sourceArtifactUrls": record.get("sourceArtifactUrls") or {},
+        "benchmarkFingerprint": record.get("benchmarkFingerprint"),
+        "metricSnapshot": record.get("metricSnapshot") or [],
+        "qualityAssessment": record.get("qualityAssessment") or {},
+        "iterationDecision": record.get("iterationDecision") or {},
+        "humanSignoffs": signoffs,
+        "humanFeedback": human_feedback_state(record),
+        "humanConditionVerifications": human_condition_verification_state(record),
+        "auditIntegrity": record_audit_integrity(record),
+        "publicationReady": publication_ready(record),
+        "generatedAt": datetime.now(UTC).isoformat(),
+    }
+
+
+def _latest_feedback_per_run(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Keep the latest audit per immutable FAROS run while preserving order."""
+
+    seen: set[str] = set()
+    unique: List[Dict[str, Any]] = []
+    for record in records:
+        run_id = str(record.get("runId") or record.get("id") or "")
+        if run_id in seen:
+            continue
+        seen.add(run_id)
+        unique.append(record)
+    return unique
+
+
+def _backfill_feedback_metric_snapshots(
+    records: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Upgrade feedback written before metric snapshots became persistent."""
+
+    upgraded: List[Dict[str, Any]] = []
+    for record in records:
+        if (
+            record.get("metricSnapshot")
+            and record.get("benchmarkFingerprint")
+        ) or not record.get("runId"):
+            upgraded.append(record)
+            continue
+        try:
+            _artifact, evidence = _load_run_contract_artifact(
+                str(record["runId"]),
+                "experiment_evidence.json",
+                ExperimentEvidence,
+            )
+        except HTTPException:
+            upgraded.append(record)
+            continue
+        updates: Dict[str, Any] = {}
+        if not record.get("metricSnapshot"):
+            snapshot = experiment_metric_snapshot(evidence)
+            if snapshot:
+                updates["metricSnapshot"] = snapshot
+        if not record.get("benchmarkFingerprint"):
+            fingerprint = str(evidence.dataHashes.get("frozen_benchmark") or "")
+            if fingerprint:
+                updates["benchmarkFingerprint"] = fingerprint
+        if updates:
+            record = update_experiment_feedback(record["id"], updates)
+        upgraded.append(record)
+    return upgraded
+
+
+@router.post(
+    "/reviewx/experiment-series/{research_series_id}/progress",
+    response_model=ExperimentSeriesProgress,
+    summary="Evaluate controlled progress across a ReviewX experiment series",
+)
+async def evaluate_experiment_series_endpoint(
+    research_series_id: str,
+    policy: ExperimentLoopPolicy,
+) -> ExperimentSeriesProgress:
+    records = list_experiment_feedback(
+        research_series_id=research_series_id,
+        limit=100,
+    )
+    records = _latest_feedback_per_run(records)
+    records = _backfill_feedback_metric_snapshots(records)
+    return evaluate_experiment_series(research_series_id, records, policy)
+
+
+@router.post(
+    "/reviewx/runs/{run_id}/experiment-loop/advance",
+    response_model=AdvanceExperimentLoopResponse,
+    summary="Audit a completed FAROS round and create its next controlled iteration",
+)
+async def advance_experiment_loop_endpoint(
+    run_id: str,
+    req: AdvanceExperimentLoopRequest,
+) -> AdvanceExperimentLoopResponse:
+    lineage = _faros_run_lineage(run_id)
+    if lineage is None:
+        raise HTTPException(status_code=409, detail="Controlled loop advance currently requires a FAROS run")
+
+    existing = list_experiment_feedback(run_id=run_id, limit=1)
+    if existing:
+        feedback_record = existing[0]
+    else:
+        feedback = await run_stored_experiment_feedback_endpoint(
+            run_id,
+            RunStoredExperimentFeedbackRequest(
+                applyToPlanPackage=req.applyToPlanPackage,
+            ),
+        )
+        feedback_record = get_experiment_feedback(feedback.feedbackId) or {}
+
+    series_id = str(lineage.get("researchSeriesId") or run_id)
+    records = list_experiment_feedback(research_series_id=series_id, limit=100)
+    records = _latest_feedback_per_run(records)
+    records = _backfill_feedback_metric_snapshots(records)
+    feedback_record = next(
+        (record for record in records if record.get("id") == feedback_record.get("id")),
+        feedback_record,
+    )
+    progress = evaluate_experiment_series(series_id, records, req.policy)
+    update_experiment_feedback(
+        str(feedback_record["id"]),
+        {
+            "loopPolicy": req.policy.model_dump(mode="json"),
+            "loopProgress": progress.model_dump(mode="json"),
+        },
+    )
+    if progress.status != "continue":
+        return AdvanceExperimentLoopResponse(
+            feedbackId=str(feedback_record["id"]),
+            currentRunId=run_id,
+            progress=progress,
+        )
+
+    try:
+        _require_iteration_signoffs(feedback_record)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    controller = iteration_controller_feedback(req.policy, progress)
+    decision = dict(feedback_record.get("iterationDecision") or {})
+    next_actions = list(decision.get("nextActions") or [])
+    if controller["nextAction"] not in next_actions:
+        next_actions.append(controller["nextAction"])
+    decision["nextActions"] = next_actions
+    decision["optimizationPolicy"] = controller["policy"]
+    decision["guardrailViolations"] = controller["guardrailViolations"]
+    decision["referenceRunId"] = controller["referenceRunId"]
+    decision = iteration_decision_with_human_feedback(feedback_record, decision)
+    update_experiment_feedback(
+        str(feedback_record["id"]),
+        {"controllerFeedback": controller, "controllerDecision": decision},
+    )
+
+    from app.faros.errors import FarosBlockedError, FarosNotFoundError
+    from app.faros.runtime.orchestrator import get_orchestrator
+
+    try:
+        next_run, _reused = get_orchestrator().create_iteration_run(
+            run_id,
+            str(feedback_record["id"]),
+            decision,
+        )
+    except FarosNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except FarosBlockedError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    update_experiment_feedback(str(feedback_record["id"]), {"nextRunId": next_run["id"]})
+    return AdvanceExperimentLoopResponse(
+        feedbackId=str(feedback_record["id"]),
+        currentRunId=run_id,
+        nextRunId=next_run["id"],
+        progress=progress,
+    )
 
 
 @router.post(
@@ -784,6 +1980,10 @@ async def revise_experiment_plan_endpoint(
             status_code=409,
             detail="Attach the ReviewX correction to the PlanPackage before revising it",
         )
+    try:
+        human_feedback = require_human_feedback_applied(record)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     from app.services.plan_package_service import (
         PlanPackageConflictError,
@@ -791,7 +1991,10 @@ async def revise_experiment_plan_endpoint(
         get_plan_package_service,
     )
 
-    target_sections = record.get("iterationDecision", {}).get("targetSections") or None
+    target_sections = list(dict.fromkeys([
+        *(record.get("iterationDecision", {}).get("targetSections") or []),
+        *(human_feedback.get("targetSections") or []),
+    ])) or None
     try:
         package = get_plan_package_service().revise(
             package_id,
@@ -833,15 +2036,73 @@ async def create_next_experiment_run_endpoint(
     record = get_experiment_feedback(feedback_id)
     if record is None:
         raise HTTPException(status_code=404, detail=f"Experiment feedback '{feedback_id}' not found")
+    decision = record.get("iterationDecision", {}).get("decision")
+    try:
+        _require_iteration_signoffs(record)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    run_kind = record.get("runKind") or (
+        "faros" if str(record.get("runId") or "").startswith("faros_") else "platform"
+    )
     package_id = record.get("planPackageId")
+    if run_kind == "faros":
+        from app.faros.errors import FarosBlockedError, FarosNotFoundError
+        from app.faros.runtime.orchestrator import get_orchestrator
+
+        orchestrator = get_orchestrator()
+        existing_next_run_id = record.get("nextRunId")
+        if existing_next_run_id:
+            existing = orchestrator.get_run(existing_next_run_id)
+            if existing is not None:
+                return CreateNextExperimentRunResponse(
+                    feedbackId=feedback_id,
+                    runId=existing["id"],
+                    planPackageId=package_id,
+                    status=existing["status"],
+                    reused=True,
+                    runKind="faros",
+                    researchSeriesId=existing.get("research_series_id"),
+                    iterationNumber=int(existing.get("iteration_number") or 1),
+                )
+        try:
+            iteration_decision = iteration_decision_with_human_feedback(
+                record,
+                record.get("iterationDecision") or {},
+            )
+            next_run, reused = orchestrator.create_iteration_run(
+                record["runId"],
+                feedback_id,
+                iteration_decision,
+            )
+        except FarosNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except FarosBlockedError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        update_experiment_feedback(
+            feedback_id,
+            {
+                "nextRunId": next_run["id"],
+                "nextIterationNumber": int(next_run.get("iteration_number") or 1),
+            },
+        )
+        return CreateNextExperimentRunResponse(
+            feedbackId=feedback_id,
+            runId=next_run["id"],
+            planPackageId=package_id,
+            status=next_run["status"],
+            reused=reused,
+            runKind="faros",
+            researchSeriesId=next_run.get("research_series_id"),
+            iterationNumber=int(next_run.get("iteration_number") or 1),
+        )
+
     if not package_id:
         raise HTTPException(status_code=409, detail="The feedback record is not linked to a PlanPackage")
-
-    decision = record.get("iterationDecision", {}).get("decision")
     if decision == "revise_plan" and not record.get("planRevision"):
         raise HTTPException(status_code=409, detail="Revise the PlanPackage before creating the next run")
-    if decision == "needs_human":
-        raise HTTPException(status_code=409, detail="A human decision is required before creating the next run")
 
     from app.models.run import RunType
     from app.schemas.run import RunCreate
@@ -889,6 +2150,7 @@ async def create_next_experiment_run_endpoint(
         runId=next_run.id,
         planPackageId=package_id,
         status=next_run.status.value,
+        runKind="platform",
     )
 
 

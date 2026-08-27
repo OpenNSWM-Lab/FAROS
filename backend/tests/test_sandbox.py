@@ -11,6 +11,7 @@ Covers:
 import asyncio
 import os
 import time
+from pathlib import Path
 
 import pytest
 
@@ -87,6 +88,21 @@ class TestSubprocessSandbox:
         assert result.timed_out is False
         assert result.duration_ms > 0
 
+        await sb.teardown(sid)
+
+    @pytest.mark.asyncio
+    async def test_execute_syncs_evaluation_records_back(self, temp_repo_dir):
+        sb = SubprocessSandbox()
+        sid = await sb.setup(temp_repo_dir)
+
+        result = await sb.execute(
+            sid,
+            "python -c \"open('evaluation_records.json', 'w').write('{\\\"records\\\": []}')\"",
+            timeout=30,
+        )
+
+        assert result.success is True
+        assert (Path(temp_repo_dir) / "evaluation_records.json").read_text() == '{"records": []}'
         await sb.teardown(sid)
 
     @pytest.mark.asyncio

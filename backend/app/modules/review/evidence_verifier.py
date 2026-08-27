@@ -11,11 +11,18 @@ import math
 import re
 from typing import Any, Dict, Iterable, List, Optional
 
+from app.modules.review.guardrails import find_guardrail_conflicts
 from app.modules.review.reviewx_models import Claim, Evidence, EvidenceVerification
 
 
 _NUMERIC_RE = re.compile(r"\b(\d+(?:\.\d+)?)\s*(%|percent|x|times|k|ms|s|tokens?|accuracy|f1|auc)?\b", re.IGNORECASE)
 _BASELINE_RE = re.compile(r"\b(baselines?|ablation|compare|comparison|outperform|state-of-the-art|sota)\b", re.IGNORECASE)
+_COMPARISON_LIMITATION_RE = re.compile(
+    r"\b(?:should not|must not|cannot|can't|does not|do not|not)\b.{0,100}"
+    r"\b(?:generaliz\w*|outperform\w*|superior\w*|state-of-the-art|sota)\b|"
+    r"\bwithout further (?:evaluation|testing|validation)\b",
+    re.IGNORECASE,
+)
 _CITATION_RE = re.compile(r"\\cite[p|t]?\{[^}]+\}")
 _DOMAIN_RISK_TERMS = {
     "clinical", "triage", "legal", "financial", "finance", "risk", "scoring",
@@ -52,8 +59,13 @@ def verify_claim_evidence(
         if claim_numbers:
             verifications.append(_verify_numeric_claim(paper["id"], claim, linked, claim_numbers, len(verifications)))
 
-        if _BASELINE_RE.search(claim.text):
+        if _BASELINE_RE.search(claim.text) and not _COMPARISON_LIMITATION_RE.search(claim.text):
             verifications.append(_verify_baseline_claim(paper["id"], claim, linked, len(verifications)))
+
+        if claim.claimType == "performance":
+            metric_audit = _verify_metric_audit(paper["id"], claim, linked, len(verifications))
+            if metric_audit:
+                verifications.append(metric_audit)
 
         if citation_keys:
             verifications.append(_verify_citation_semantics(
@@ -394,6 +406,52 @@ def _verify_numeric_claim(
             observedEvidence=[_evidence_label(ev) for ev in metric_evidence],
         )
 
+    percentages = [
+        float(value)
+        for value in re.findall(r"(?<![\w.])(\d+(?:\.\d+)?)\s*(?:%|percent\b)", claim.text, re.IGNORECASE)
+    ]
+    observed_by_metric: Dict[str, Dict[str, tuple[Evidence, float]]] = {}
+    for ev, value in observed:
+        name = re.sub(
+            r"[^a-z0-9]+", "_", str(ev.metadata.get("metricName") or "").lower()
+        ).strip("_")
+        method_name = ""
+        for prefix in ("baseline", "method", "proposed"):
+            if name == prefix or name.startswith(f"{prefix}_"):
+                method_name = "method" if prefix == "proposed" else prefix
+                name = name[len(prefix):].strip("_")
+                break
+        if method_name and name:
+            observed_by_metric.setdefault(name, {})[method_name] = (ev, value)
+    for percentage in percentages:
+        for metric_name, methods in observed_by_metric.items():
+            if "baseline" not in methods or "method" not in methods:
+                continue
+            baseline_ev, baseline_value = methods["baseline"]
+            method_ev, method_value = methods["method"]
+            if baseline_value == 0:
+                continue
+            relative_change = abs(method_value - baseline_value) / abs(baseline_value) * 100.0
+            if math.isclose(percentage, relative_change, rel_tol=0.08, abs_tol=0.75):
+                return EvidenceVerification(
+                    id=_verification_id(index),
+                    paperId=paper_id,
+                    claimId=claim.id,
+                    verifierType="numeric_metric",
+                    supportStatus="supported",
+                    verdict=(
+                        f"The claimed {percentage:g}% change is compatible with the linked "
+                        f"baseline/method values for {metric_name}: {baseline_value:g} -> {method_value:g}."
+                    ),
+                    evidenceIds=[baseline_ev.id, method_ev.id],
+                    confidence=0.88,
+                    expectedEvidence=[f"relative {metric_name} change near {percentage:g}%"],
+                    observedEvidence=[
+                        _evidence_label(baseline_ev),
+                        _evidence_label(method_ev),
+                    ],
+                )
+
     for claim_value in claim_numbers:
         for ev, observed_value in observed:
             if _numbers_compatible(claim_value, observed_value):
@@ -465,6 +523,29 @@ def _verify_baseline_claim(paper_id: str, claim: Claim, linked: List[Evidence], 
 
 
 def _verify_citation_context(paper_id: str, claim: Claim, linked: List[Evidence], index: int) -> EvidenceVerification:
+    direct_evidence = [
+        ev for ev in linked
+        if ev.evidenceType in {
+            "metric", "metric_audit", "experiment_evidence", "experiment_report",
+            "experiment_record", "code", "code_artifact",
+        }
+    ]
+    if direct_evidence:
+        return EvidenceVerification(
+            id=_verification_id(index),
+            paperId=paper_id,
+            claimId=claim.id,
+            verifierType="citation_context",
+            supportStatus="supported",
+            verdict=(
+                "The claim is linked to FAROS-local experiment or code evidence; "
+                "a bibliography citation is not required for the project's own result."
+            ),
+            evidenceIds=[ev.id for ev in direct_evidence[:5]],
+            confidence=0.82,
+            expectedEvidence=["local experiment metric, audit, report, or code artifact"],
+            observedEvidence=[_evidence_label(ev) for ev in direct_evidence[:5]],
+        )
     citation_evidence = [ev for ev in linked if ev.evidenceType in {"citation", "bibliography"}]
     if citation_evidence:
         return EvidenceVerification(
@@ -499,23 +580,63 @@ def _verify_guardrail(
     avoid_claims: List[str],
     index: int,
 ) -> Optional[EvidenceVerification]:
-    claim_text = claim.text.lower()
-    for avoid in avoid_claims:
-        tokens = _keywords(str(avoid))
-        if tokens and sum(1 for token in tokens if token in claim_text) >= max(1, min(3, len(tokens) // 2)):
-            return EvidenceVerification(
-                id=_verification_id(index),
-                paperId=paper_id,
-                claimId=claim.id,
-                verifierType="brief_guardrail",
-                supportStatus="contradicted",
-                verdict=f"The claim overlaps with an avoid_claim guardrail: {avoid}",
-                evidenceIds=[],
-                confidence=0.88,
-                expectedEvidence=["claim wording consistent with paper brief guardrails"],
-                observedEvidence=[str(avoid)],
-            )
+    conflicts = find_guardrail_conflicts(claim.text, avoid_claims)
+    if conflicts:
+        avoid = conflicts[0]
+        return EvidenceVerification(
+            id=_verification_id(index),
+            paperId=paper_id,
+            claimId=claim.id,
+            verifierType="brief_guardrail",
+            supportStatus="contradicted",
+            verdict=f"The claim conflicts with an avoid_claim guardrail: {avoid}",
+            evidenceIds=[],
+            confidence=0.9,
+            expectedEvidence=["claim wording consistent with paper brief guardrails"],
+            observedEvidence=[avoid],
+        )
     return None
+
+
+def _verify_metric_audit(
+    paper_id: str,
+    claim: Claim,
+    linked: List[Evidence],
+    index: int,
+) -> Optional[EvidenceVerification]:
+    audits = [item for item in linked if item.evidenceType == "metric_audit"]
+    if not audits:
+        return None
+    failed = [item for item in audits if item.metadata.get("status") == "failed"]
+    if failed:
+        errors = [str(item) for item in failed[0].metadata.get("errors", [])]
+        return EvidenceVerification(
+            id=_verification_id(index),
+            paperId=paper_id,
+            claimId=claim.id,
+            verifierType="metric_semantics",
+            supportStatus="contradicted",
+            verdict=(
+                "The experiment's independently recomputed metric audit failed: "
+                + ("; ".join(errors[:3]) if errors else "reported and recomputed results disagree.")
+            ),
+            evidenceIds=[item.id for item in failed],
+            confidence=0.99,
+            expectedEvidence=["matching per-record predictions and aggregate metrics"],
+            observedEvidence=[_evidence_label(item) for item in failed],
+        )
+    return EvidenceVerification(
+        id=_verification_id(index),
+        paperId=paper_id,
+        claimId=claim.id,
+        verifierType="metric_semantics",
+        supportStatus="supported",
+        verdict="FAROS independently reproduced the linked classification aggregates from per-record predictions.",
+        evidenceIds=[item.id for item in audits],
+        confidence=0.96,
+        expectedEvidence=["matching per-record predictions and aggregate metrics"],
+        observedEvidence=[_evidence_label(item) for item in audits],
+    )
 
 
 def _verify_high_stakes_scope(

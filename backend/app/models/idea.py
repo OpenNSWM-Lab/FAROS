@@ -196,6 +196,7 @@ class ExperimentSpec(BaseModel):
     description: str
     metrics: List[str] = Field(default_factory=list)
     datasets: List[str] = Field(default_factory=list)
+    stopConditions: List[str] = Field(default_factory=list)
 
 
 class CandidateScores(BaseModel):
@@ -275,6 +276,7 @@ class IdeaCandidate(BaseModel):
     requiredExperiments: List[ExperimentSpec] = Field(default_factory=list, description="Backward compat alias for experimentSpecs")
     experimentSpecs: List[ExperimentSpec] = Field(default_factory=list, description="PDF v5: experiment specifications")
     expectedMetrics: List[str] = Field(default_factory=list)
+    baselines: List[str] = Field(default_factory=list, description="Named controls or prior methods used for comparison")
 
     # Draft plan material for PlanPackage generation
     draftPlan: Optional[DraftPlan] = None
@@ -771,7 +773,9 @@ class IdeaNode(BaseModel):
     title: str = ""
     hypothesis: str = ""
     abstract: str = ""
+    approach: str = ""
     experiments: List[Dict[str, Any]] = Field(default_factory=list)
+    baselines: List[str] = Field(default_factory=list)
     risks: List[Dict[str, str]] = Field(default_factory=list)
 
     # Scoring (computed by BFTSSearchTree._score_node)

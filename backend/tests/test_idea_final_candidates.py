@@ -882,7 +882,7 @@ def test_select_final_candidates_warns_when_only_one_direction_passes(tmp_path):
     assert "Final shortlist lacks direction diversity" in result["summary"]["warnings"][0]
 
 
-def test_select_final_candidates_marks_insufficient_final_count(tmp_path):
+def test_select_final_candidates_allows_one_strong_candidate_handoff(tmp_path):
     service = _service(tmp_path)
     top = _candidate(
         "cand_only_final",
@@ -909,11 +909,13 @@ def test_select_final_candidates_marks_insufficient_final_count(tmp_path):
 
     assert result["finalCandidateIds"] == [top.id]
     assert result["summary"]["targetFinalCandidateCount"] == 2
-    assert result["summary"]["qualityStatus"] == "insufficient_final_candidates"
-    assert result["summary"]["requiresRegeneration"] is True
+    assert result["summary"]["qualityStatus"] == "ready"
+    assert result["summary"]["requiresRegeneration"] is False
+    assert result["summary"]["shortlistIncomplete"] is True
+    assert "strongest approved candidate" in result["summary"]["warnings"][-1]
 
 
-def test_target_final_candidate_count_remains_two_with_one_ranked_candidate(tmp_path):
+def test_target_final_candidate_count_respects_requested_maximum(tmp_path):
     service = _service(tmp_path)
     session = IdeaSession(
         id="idea_target_two",
@@ -924,7 +926,7 @@ def test_target_final_candidate_count_remains_two_with_one_ranked_candidate(tmp_
     )
     only = _candidate("cand_only", session.id, title="Citation faithful RAG verifier")
 
-    assert service._target_final_candidate_count(session, [only]) == 2
+    assert service._target_final_candidate_count(session, [only]) == 1
 
 
 def test_resume_session_transitions_waiting_session_to_running(tmp_path):

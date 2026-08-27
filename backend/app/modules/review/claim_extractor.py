@@ -186,14 +186,21 @@ def extract_claims(artifacts: Dict[str, Any]) -> List[Claim]:
             riskHints=risk_hints,
         ))
 
+    latex_files = artifacts.get("latexFiles", [])
+    has_manuscript = any(
+        isinstance(item, dict) and str(item.get("content") or "").strip()
+        for item in latex_files
+    )
     brief = paper.get("briefJson") or {}
-    if isinstance(brief, dict):
+    # The brief is planning state and can become stale after evidence-driven
+    # manuscript rewrites. Review it only when no manuscript exists yet.
+    if isinstance(brief, dict) and not has_manuscript:
         if brief.get("core_claim"):
             add_claim(str(brief["core_claim"]), "paper.meta.json", "Brief", None, "brief.core_claim")
         for contribution in brief.get("contributions", []) or []:
             add_claim(str(contribution), "paper.meta.json", "Brief", None, "brief.contribution")
 
-    for latex_file in artifacts.get("latexFiles", []):
+    for latex_file in latex_files:
         section = "Preamble"
         for line_no, raw_line in enumerate(latex_file.get("content", "").splitlines(), 1):
             match = _SECTION_RE.search(raw_line)

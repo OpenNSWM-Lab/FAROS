@@ -23,6 +23,10 @@ from app.modules.code.execution_assessment import assess_candidate_execution
 from app.modules.code.storage import get_session_context
 from app.modules.platform.storage import create_experiment, ingest_metrics
 from app.services.experiment_evidence_service import build_experiment_evidence
+from app.services.experiment_benchmark_service import (
+    inherit_frozen_benchmark,
+    load_frozen_benchmark,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +49,33 @@ def _run_async_from_sync(factory):
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
         return executor.submit(lambda: asyncio.run(factory())).result()
+
+
+def _benchmark_generation_context(
+    repo_dir: str, audit: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Add a compact, non-secret schema example to the generation contract."""
+    payload, loaded_audit = load_frozen_benchmark(repo_dir)
+    if payload is None or loaded_audit.get("status") != "passed":
+        return audit
+    records = payload.get("records") if isinstance(payload.get("records"), list) else []
+    return {
+        **audit,
+        "featureSchema": payload.get("feature_schema"),
+        "sampleRecord": records[0] if records else None,
+    }
+
+
+def _inherit_iteration_entrypoint(source_project_id: str, target_project_id: str) -> bool:
+    """Seed a controlled iteration from its selected feasible implementation."""
+
+    source = Path(_DATA_DIR) / "code_projects" / source_project_id / "repo" / "src" / "main.py"
+    target = Path(_DATA_DIR) / "code_projects" / target_project_id / "repo" / "src" / "main.py"
+    if not source.is_file():
+        return False
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(source.read_bytes())
+    return True
 
 
 class ExperimentCapability(BaseCapability):
@@ -109,7 +140,9 @@ class ExperimentCapability(BaseCapability):
 
     def _generate_code_via_agent(
         self, project_id: str, idea_session_id: str | None, selected_candidate: Dict[str, Any],
-        language: str, framework: str, provider_name: str = "qwen", model: str = "qwen-max",
+        language: str, framework: str, provider_name: str = "qwen", model: str = "qwen3.7-plus-2026-05-26",
+        iteration_feedback: Dict[str, Any] | None = None,
+        frozen_benchmark: Dict[str, Any] | None = None,
     ) -> bool:
         """Attempt to generate real code via AgentKernel. Returns True if successful."""
         try:
@@ -119,14 +152,21 @@ class ExperimentCapability(BaseCapability):
                 logger.info("No research candidate — skipping AgentKernel code generation")
                 return False
 
+            generation_options = {
+                "idea_session_id": idea_session_id,
+                "provider_name": provider_name,
+                "model": model,
+                "language": language,
+                "framework": framework,
+                "existing_project_id": project_id,
+            }
+            if iteration_feedback:
+                generation_options["iteration_feedback"] = iteration_feedback
+            if frozen_benchmark:
+                generation_options["frozen_benchmark"] = frozen_benchmark
             generate_project_from_research_candidate(
                 selected_candidate,
-                idea_session_id=idea_session_id,
-                provider_name=provider_name,
-                model=model,
-                language=language,
-                framework=framework,
-                existing_project_id=project_id,
+                **generation_options,
             )
             logger.info("AgentKernel code generation completed for project %s", project_id)
             return True
@@ -258,11 +298,151 @@ class ExperimentCapability(BaseCapability):
 
         return result
 
+    @staticmethod
+    def _execution_attempt_summary(result: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "exitCode": result.get("exit_code"),
+            "durationSeconds": result.get("duration_seconds"),
+            "command": result.get("command"),
+            "stderrTail": str(result.get("stderr") or "")[-1000:],
+        }
+
+    def _repair_failed_execution(
+        self,
+        project_id: str,
+        exec_result: Dict[str, Any],
+        provider_name: str,
+        model: str,
+    ) -> Dict[str, Any]:
+        """Repair generated source after a failed execution.
+
+        Deterministic compatibility fixes are attempted before the repair
+        service makes an additional LLM call.
+        """
+        from app.services.code_repair_service import CodeRepairService
+
+        repo_dir = os.path.join(_DATA_DIR, "code_projects", project_id, "repo")
+        report = CodeRepairService(provider_name=provider_name, model=model).auto_fix(
+            project_id=project_id,
+            repo_dir=repo_dir,
+            failed_steps=[{
+                "name": "FAROS experiment execution",
+                "stderr": str(exec_result.get("stderr") or ""),
+                "stdout": str(exec_result.get("stdout") or ""),
+            }],
+        )
+        applied = [fix for fix in report.fixes_applied if fix.applied]
+        return {
+            "attempted": True,
+            "iterations": report.iterations,
+            "applied": bool(applied),
+            "summary": report.summary,
+            "fixes": [
+                {
+                    "filePath": fix.file_path,
+                    "description": fix.fix_description,
+                    "method": fix.method,
+                }
+                for fix in applied
+            ],
+        }
+
+    def _execute_project_with_repair(
+        self,
+        project_id: str,
+        language: str,
+        provider_name: str,
+        model: str,
+    ) -> tuple[Dict[str, Any], Dict[str, Any], List[Dict[str, Any]]]:
+        """Execute generated code and run bounded repairs for distinct failures."""
+        self._clear_experiment_outputs(project_id)
+        exec_result = self._execute_project(project_id, language)
+        attempts = [self._execution_attempt_summary(exec_result)]
+        repair = {
+            "attempted": False,
+            "iterations": 0,
+            "applied": False,
+            "summary": "Execution succeeded without repair.",
+            "fixes": [],
+        }
+        summaries: List[str] = []
+        for _repair_round in range(2):
+            if exec_result.get("exit_code") == 0 or not exec_result.get("command"):
+                break
+            previous_result = exec_result
+            current_repair = self._repair_failed_execution(
+                project_id, exec_result, provider_name, model,
+            )
+            repair["attempted"] = True
+            repair["iterations"] += int(current_repair.get("iterations") or 0)
+            repair["fixes"].extend(current_repair.get("fixes") or [])
+            summaries.append(str(current_repair.get("summary") or ""))
+            if not current_repair.get("applied"):
+                break
+            repair["applied"] = True
+            self._clear_experiment_outputs(project_id)
+            exec_result = self._execute_project(project_id, language)
+            attempts.append(self._execution_attempt_summary(exec_result))
+            if exec_result.get("exit_code") == 0 and not self._collect_metrics(
+                project_id, exec_result,
+            ):
+                from app.services.code_repair_service import rollback_file
+
+                repo_dir = os.path.join(
+                    _DATA_DIR, "code_projects", project_id, "repo"
+                )
+                rolled_back = False
+                for fix in current_repair.get("fixes", []):
+                    relative_path = str(fix.get("filePath") or "").strip()
+                    if relative_path:
+                        rolled_back = rollback_file(
+                            os.path.join(repo_dir, relative_path)
+                        ) or rolled_back
+                repair["rejected"] = True
+                repair["rolledBack"] = rolled_back
+                summaries.append(
+                    "Rejected and rolled back repair because the process exited 0 "
+                    "without scientific metrics."
+                )
+                exec_result = previous_result
+                break
+        if summaries:
+            repair["summary"] = " ".join(item for item in summaries if item)
+        return exec_result, repair, attempts
+
+    @staticmethod
+    def _clear_experiment_outputs(project_id: str) -> None:
+        """Prevent failed retries from being audited against stale derived files."""
+
+        repo_dir = Path(_DATA_DIR) / "code_projects" / project_id / "repo"
+        for relative_path in (
+            "metrics.json",
+            "evaluation_records.json",
+            "experiment_report.md",
+            "outputs/metrics.json",
+            "results/metrics.json",
+            "artifacts/metrics.json",
+            "src/metrics.json",
+        ):
+            path = repo_dir / relative_path
+            if path.is_file():
+                path.unlink()
+
     # ---- metrics collection ----
 
     def _collect_metrics(self, project_id: str, exec_result: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Collect metrics from project execution output and disk files."""
         metrics: List[Dict[str, Any]] = []
+
+        def normalize_metric(item: Any) -> Dict[str, Any] | None:
+            if not isinstance(item, dict) or "name" not in item:
+                return None
+            normalized = dict(item)
+            if "value" not in normalized and "numeric_value" in normalized:
+                normalized["value"] = normalized.pop("numeric_value")
+            if "value" not in normalized:
+                return None
+            return normalized
 
         # 1. Parse common metric artifact locations and canonicalize later.
         repo_dir = os.path.join(_DATA_DIR, "code_projects", project_id, "repo")
@@ -271,6 +451,7 @@ class ExperimentCapability(BaseCapability):
             os.path.join(repo_dir, "outputs", "metrics.json"),
             os.path.join(repo_dir, "results", "metrics.json"),
             os.path.join(repo_dir, "artifacts", "metrics.json"),
+            os.path.join(repo_dir, "src", "metrics.json"),
         ]
         seen_metrics: set[tuple[str, str]] = set()
         for metrics_path in metric_paths:
@@ -280,10 +461,11 @@ class ExperimentCapability(BaseCapability):
                 parsed = json.loads(Path(metrics_path).read_text(encoding="utf-8"))
                 items = parsed if isinstance(parsed, list) else [parsed]
                 for item in items:
-                    if isinstance(item, dict) and "name" in item and "value" in item:
-                        key = (str(item["name"]), str(item.get("split") or ""))
+                    normalized = normalize_metric(item)
+                    if normalized:
+                        key = (str(normalized["name"]), str(normalized.get("split") or ""))
                         if key not in seen_metrics:
-                            metrics.append(item)
+                            metrics.append(normalized)
                             seen_metrics.add(key)
             except (json.JSONDecodeError, TypeError):
                 pass
@@ -292,13 +474,14 @@ class ExperimentCapability(BaseCapability):
         if exec_result.get("stdout"):
             try:
                 parsed = json.loads(exec_result["stdout"].strip())
-                if isinstance(parsed, dict) and parsed.get("metrics"):
-                    for m in parsed["metrics"]:
-                        if isinstance(m, dict) and "name" in m and "value" in m:
-                            key = (str(m["name"]), str(m.get("split") or ""))
-                            if key not in seen_metrics:
-                                metrics.append(m)
-                                seen_metrics.add(key)
+                stdout_metrics = parsed if isinstance(parsed, list) else parsed.get("metrics", []) if isinstance(parsed, dict) else []
+                for item in stdout_metrics:
+                    normalized = normalize_metric(item)
+                    if normalized:
+                        key = (str(normalized["name"]), str(normalized.get("split") or ""))
+                        if key not in seen_metrics:
+                            metrics.append(normalized)
+                            seen_metrics.add(key)
             except (json.JSONDecodeError, TypeError):
                 pass
 
@@ -426,6 +609,7 @@ class ExperimentCapability(BaseCapability):
         description = selected_candidate.get("problem") or inputs.get("notes") or ""
         language = inputs.get("language", "python")
         framework = inputs.get("framework", "FastAPI")
+        llm_binding = context.get_binding("idea_refinement")
         return self._materialize_workspace(
             context=context, title=title, description=description,
             language=language, framework=framework, paper_type=paper_type,
@@ -438,8 +622,8 @@ class ExperimentCapability(BaseCapability):
             inputs=inputs,
             selected_candidate=selected_candidate,
             assessment=assessment,
-            provider_name=(context.get_binding(self.capability_id).provider if context.get_binding(self.capability_id) else "qwen"),
-            model=(context.get_binding(self.capability_id).model if context.get_binding(self.capability_id) and context.get_binding(self.capability_id).model else "qwen-max"),
+            provider_name=llm_binding.provider if llm_binding else "qwen",
+            model=llm_binding.model if llm_binding and llm_binding.model else "qwen3.7-plus-2026-05-26",
             strict_evidence=strict_evidence,
         )
 
@@ -453,6 +637,7 @@ class ExperimentCapability(BaseCapability):
         if strict_evidence and assessment.status != ExecutionStatus.READY:
             return self._blocked_assessment_result(context, assessment)
         payload = provider_result.payload
+        llm_binding = context.get_binding("idea_refinement")
         selected_candidate = inputs.get("selectedCandidate") or {}
         session_id = inputs.get("ideaSessionId")
         candidate_id = inputs.get("selectedCandidateId")
@@ -472,8 +657,12 @@ class ExperimentCapability(BaseCapability):
             inputs=inputs,
             selected_candidate=selected_candidate,
             assessment=assessment,
-            provider_name=provider_result.provider,
-            model=provider_result.model or "qwen-max",
+            provider_name=llm_binding.provider if llm_binding else "qwen",
+            model=(
+                llm_binding.model
+                if llm_binding and llm_binding.model
+                else "qwen3.7-plus-2026-05-26"
+            ),
             strict_evidence=strict_evidence,
         )
 
@@ -488,42 +677,172 @@ class ExperimentCapability(BaseCapability):
         selected_candidate: Dict[str, Any] | None = None,
         assessment=None,
         provider_name: str = "qwen",
-        model: str = "qwen-max",
+        model: str = "qwen3.7-plus-2026-05-26",
         strict_evidence: bool = False,
     ) -> CapabilityResult:
         inputs = inputs or {}
         selected_candidate = selected_candidate or {}
         init_db()
 
-        with get_session_context() as db:
-            project = code_project_service.create_project(
-                db=db,
-                title=project_title_override or f"{title} [{language}]",
-                description=description,
+        previous_evidence = inputs.get("experimentEvidence") or {}
+        requested_project_id = str(inputs.get("projectId") or "").strip()
+        previous_project_id = str(inputs.get("previousProjectId") or "").strip()
+        requested_repo_dir = os.path.join(_DATA_DIR, "code_projects", requested_project_id, "repo")
+        reuse_failed_project = (
+            requested_project_id
+            and isinstance(previous_evidence, dict)
+            and previous_evidence.get("status") == ExecutionStatus.FAILED.value
+            and os.path.isdir(requested_repo_dir)
+        )
+        frozen_benchmark: Dict[str, Any] | None = None
+        if reuse_failed_project:
+            project_id = requested_project_id
+            project_title = str(inputs.get("projectTitle") or title)
+            agent_generated = bool(inputs.get("agentGenerated", False))
+            logger.info("Reusing failed experiment project %s for evidence retry", project_id)
+            _payload, existing_benchmark = load_frozen_benchmark(requested_repo_dir)
+            expected_fingerprint = str(
+                inputs.get("frozenBenchmarkFingerprint") or ""
+            )
+            if (
+                existing_benchmark.get("status") == "passed"
+                and (
+                    not expected_fingerprint
+                    or existing_benchmark.get("fingerprint") == expected_fingerprint
+                )
+            ):
+                frozen_benchmark = _benchmark_generation_context(
+                    requested_repo_dir, existing_benchmark
+                )
+            else:
+                if previous_project_id:
+                    inherited = inherit_frozen_benchmark(
+                        source_repo_dir=os.path.join(
+                            _DATA_DIR, "code_projects", previous_project_id, "repo"
+                        ),
+                        target_repo_dir=requested_repo_dir,
+                        expected_fingerprint=expected_fingerprint,
+                    )
+                    if inherited.get("status") == "passed":
+                        frozen_benchmark = _benchmark_generation_context(
+                            requested_repo_dir, inherited
+                        )
+            if previous_project_id:
+                _inherit_iteration_entrypoint(previous_project_id, project_id)
+            agent_generated = self._generate_code_via_agent(
+                project_id=project_id,
+                idea_session_id=session_id,
+                selected_candidate=selected_candidate,
                 language=language,
                 framework=framework,
-                source_idea_session_id=session_id,
-                source_candidate_id=candidate_id,
+                provider_name=provider_name,
+                model=model,
+                iteration_feedback=(
+                    inputs.get("iterationFeedback")
+                    if isinstance(inputs.get("iterationFeedback"), dict)
+                    else None
+                ),
+                frozen_benchmark=frozen_benchmark,
             )
-            project_id = project.id
-            project_title = project.title
+        else:
+            with get_session_context() as db:
+                project = code_project_service.create_project(
+                    db=db,
+                    title=project_title_override or f"{title} [{language}]",
+                    description=description,
+                    language=language,
+                    framework=framework,
+                    source_idea_session_id=session_id,
+                    source_candidate_id=candidate_id,
+                )
+                project_id = project.id
+                project_title = project.title
 
-            # Write scaffold files first
-            code_project_service.write_project_files(db, project.id, files)
+                # Write scaffold files first
+                code_project_service.write_project_files(db, project.id, files)
 
-        # Attempt AgentKernel code generation
-        agent_generated = self._generate_code_via_agent(
+            if previous_project_id:
+                previous_repo_dir = os.path.join(
+                    _DATA_DIR, "code_projects", previous_project_id, "repo"
+                )
+                inherited = inherit_frozen_benchmark(
+                    source_repo_dir=previous_repo_dir,
+                    target_repo_dir=os.path.join(
+                        _DATA_DIR, "code_projects", project_id, "repo"
+                    ),
+                    expected_fingerprint=str(
+                        inputs.get("frozenBenchmarkFingerprint") or ""
+                    ),
+                )
+                if inherited.get("status") == "passed":
+                    frozen_benchmark = _benchmark_generation_context(
+                        os.path.join(_DATA_DIR, "code_projects", project_id, "repo"),
+                        inherited,
+                    )
+                else:
+                    logger.warning(
+                        "Could not inherit frozen benchmark from project %s: %s",
+                        previous_project_id,
+                        "; ".join(inherited.get("errors") or []),
+                    )
+
+            if previous_project_id:
+                _inherit_iteration_entrypoint(previous_project_id, project_id)
+
+            # Attempt AgentKernel code generation
+            agent_generated = self._generate_code_via_agent(
+                project_id=project_id,
+                idea_session_id=session_id,
+                selected_candidate=selected_candidate,
+                language=language,
+                framework=framework,
+                provider_name=provider_name,
+                model=model,
+                iteration_feedback=(
+                    inputs.get("iterationFeedback")
+                    if isinstance(inputs.get("iterationFeedback"), dict)
+                    else None
+                ),
+                frozen_benchmark=frozen_benchmark,
+            )
+
+        if (
+            (frozen_benchmark or isinstance(inputs.get("iterationFeedback"), dict))
+            and not agent_generated
+        ):
+            raise RuntimeError(
+                "Controlled experiment code generation failed; refusing to execute stale code."
+            )
+
+        repo_dir = os.path.join(_DATA_DIR, "code_projects", project_id, "repo")
+
+        # Execute generated code. A failed first attempt may be repaired and
+        # retried once; both attempts remain visible in the runtime summary.
+        exec_result, repair_report, execution_attempts = self._execute_project_with_repair(
             project_id=project_id,
-            idea_session_id=session_id,
-            selected_candidate=selected_candidate,
             language=language,
-            framework=framework,
             provider_name=provider_name,
             model=model,
         )
 
-        # Execute the generated code
-        exec_result = self._execute_project(project_id, language)
+        if frozen_benchmark:
+            _payload, post_execution_benchmark = load_frozen_benchmark(repo_dir)
+            expected_fingerprint = str(frozen_benchmark.get("fingerprint") or "")
+            if post_execution_benchmark.get("fingerprint") != expected_fingerprint:
+                integrity_failure = (
+                    "Experiment code modified or replaced the inherited frozen benchmark; "
+                    "the original benchmark was restored and this execution is invalid."
+                )
+                exec_result.setdefault("integrity_failures", []).append(integrity_failure)
+                previous_project_id = str(inputs.get("previousProjectId") or "").strip()
+                if previous_project_id:
+                    inherit_frozen_benchmark(
+                        source_repo_dir=os.path.join(
+                            _DATA_DIR, "code_projects", previous_project_id, "repo"
+                        ),
+                        target_repo_dir=repo_dir,
+                        expected_fingerprint=expected_fingerprint,
+                    )
 
         # Collect metrics
         metrics = self._collect_metrics(project_id, exec_result)
@@ -579,6 +898,7 @@ class ExperimentCapability(BaseCapability):
             metrics=metrics,
             execution_result=exec_result,
             expected_claims=[str(expected_claim)] if expected_claim else [],
+            require_ablation=bool(frozen_benchmark),
         )
         if evidence.status == ExecutionStatus.EXECUTED:
             experiment_status = "completed"
@@ -618,6 +938,12 @@ class ExperimentCapability(BaseCapability):
         ]
         if agent_generated:
             events.append({"level": "info", "message": "AgentKernel code generation succeeded"})
+        if repair_report.get("attempted"):
+            events.append({
+                "level": "info" if repair_report.get("applied") else "error",
+                "message": repair_report.get("summary") or "Generated-code repair attempted",
+                "repair": repair_report,
+            })
         if execution_attempted:
             events.append({
                 "level": "info",
@@ -636,6 +962,13 @@ class ExperimentCapability(BaseCapability):
                 "message": "Experiment evidence gate failed: " + "; ".join(evidence.failures),
                 "failures": evidence.failures,
             })
+        if frozen_benchmark:
+            events.append({
+                "level": "info",
+                "message": "Inherited frozen experiment benchmark",
+                "benchmarkFingerprint": frozen_benchmark.get("fingerprint"),
+                "benchmarkRecordCount": frozen_benchmark.get("recordCount"),
+            })
 
         return CapabilityResult(
             status="completed" if evidence.status == ExecutionStatus.EXECUTED or not strict_evidence else "failed",
@@ -651,6 +984,7 @@ class ExperimentCapability(BaseCapability):
                 "executionAssessmentPath": f"code_projects/{project_id}/repo/artifacts/evidence/execution_assessment.json",
                 "experimentEvidence": evidence.model_dump(mode="json"),
                 "experimentEvidencePath": f"code_projects/{project_id}/repo/artifacts/evidence/experiment_evidence.json",
+                "frozenBenchmark": evidence.metricAudit.get("benchmarkAudit", {}),
                 "figures": figures,
                 "figurePaths": [f["path"] for f in figures],
                 "experimentDesign": experiment_design,
@@ -660,6 +994,9 @@ class ExperimentCapability(BaseCapability):
                     "exitCode": exec_result.get("exit_code"),
                     "durationSeconds": exec_result.get("duration_seconds"),
                     "command": exec_result.get("command"),
+                    "attemptCount": len(execution_attempts),
+                    "attempts": execution_attempts,
+                    "repair": repair_report,
                 },
                 "agentGenerated": agent_generated,
             },

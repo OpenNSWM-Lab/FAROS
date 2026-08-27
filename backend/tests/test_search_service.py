@@ -1,6 +1,7 @@
 import json
 import time
 import urllib.error
+import urllib.parse
 
 from app.services import search_service as search_service_module
 from app.services.search_service import LocalCorpusSearch, OpenAlexSearch, SemanticScholarSearch
@@ -69,3 +70,29 @@ def test_openalex_does_not_treat_provider_rank_as_normalized_relevance(monkeypat
     results = OpenAlexSearch().search("Dream of the Red Chamber ending", limit=1)
 
     assert results[0].relevance_score == 0.0
+
+
+def test_openalex_removes_question_wildcards_from_natural_language_query(monkeypatch):
+    requested_urls = []
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return b'{"results":[]}'
+
+    def fake_urlopen(request, **_kwargs):
+        requested_urls.append(request.full_url)
+        return FakeResponse()
+
+    monkeypatch.setattr(search_service_module, "_urlopen", fake_urlopen)
+
+    OpenAlexSearch().search("Can calibrated review improve? *", limit=1)
+
+    parsed = urllib.parse.urlparse(requested_urls[0])
+    search_query = urllib.parse.parse_qs(parsed.query)["search"][0]
+    assert search_query == "Can calibrated review improve"
