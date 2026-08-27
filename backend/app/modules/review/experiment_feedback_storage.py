@@ -39,6 +39,9 @@ def create_experiment_feedback(record: Dict[str, Any]) -> Dict[str, Any]:
         "createdAt": now,
         "updatedAt": now,
     }
+    from app.modules.review.human_signoff import initialize_human_signoffs
+
+    stored["humanSignoffs"] = initialize_human_signoffs(stored)
     return _write(stored)
 
 
@@ -52,7 +55,11 @@ def get_experiment_feedback(record_id: str) -> Optional[Dict[str, Any]]:
         return None
 
 
-def list_experiment_feedback(run_id: Optional[str] = None, limit: int = 20) -> List[Dict[str, Any]]:
+def list_experiment_feedback(
+    run_id: Optional[str] = None,
+    research_series_id: Optional[str] = None,
+    limit: int = 20,
+) -> List[Dict[str, Any]]:
     if not _STORAGE_DIR.is_dir():
         return []
     records: List[Dict[str, Any]] = []
@@ -62,6 +69,8 @@ def list_experiment_feedback(run_id: Optional[str] = None, limit: int = 20) -> L
         except (OSError, json.JSONDecodeError):
             continue
         if run_id and record.get("runId") != run_id:
+            continue
+        if research_series_id and record.get("researchSeriesId") != research_series_id:
             continue
         records.append(record)
     records.sort(key=lambda item: item.get("createdAt", ""), reverse=True)

@@ -300,12 +300,23 @@ class SubprocessSandbox(SandboxBackend):
         if not workspace or not source or os.path.abspath(workspace) == os.path.abspath(source):
             return
 
-        allowed_files = {"metrics.json", "results.json", "experiment_report.md"}
+        allowed_files = {
+            "metrics.json",
+            "results.json",
+            "evaluation_records.json",
+            "experiment_report.md",
+        }
         allowed_dirs = {"artifacts", "figures", "outputs", "results", "logs"}
         for name in allowed_files:
             src = Path(workspace) / name
             if src.is_file():
                 dst = Path(source) / name
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
+        for relative_name in ("data/frozen_benchmark.json",):
+            src = Path(workspace) / relative_name
+            if src.is_file():
+                dst = Path(source) / relative_name
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src, dst)
         for name in allowed_dirs:

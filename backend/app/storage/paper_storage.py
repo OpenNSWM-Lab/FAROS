@@ -47,6 +47,8 @@ def _normalize_record(record: Dict[str, Any]) -> Dict[str, Any]:
     record.setdefault("outlineStatus", "missing")
     record.setdefault("evidenceJson", None)
     record.setdefault("evidenceStatus", "missing")
+    record.setdefault("researchDossierPath", None)
+    record.setdefault("evidenceConstraints", [])
     return record
 
 
@@ -77,6 +79,8 @@ def create_paper(data: Dict[str, Any]) -> Dict[str, Any]:
         "outlineStatus": data.get("outlineStatus", "missing"),
         "evidenceJson": data.get("evidenceJson"),
         "evidenceStatus": data.get("evidenceStatus", "missing"),
+        "researchDossierPath": data.get("researchDossierPath"),
+        "evidenceConstraints": data.get("evidenceConstraints", []),
         "pdfAvailable": False,
         "logs": [],
         "createdAt": now,

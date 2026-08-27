@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 
@@ -33,6 +34,148 @@ def _load_package_raw(package_id: str) -> Optional[Dict[str, Any]]:
         return None
     with open(path, "r", encoding="utf-8") as handle:
         return json.load(handle)
+
+
+def _load_research_dossier(path_value: Any) -> Optional[Dict[str, Any]]:
+    path = os.path.realpath(str(path_value or ""))
+    data_root = os.path.realpath(_data_dir())
+    if not path or os.path.commonpath([path, data_root]) != data_root or not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            dossier = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return None
+    return dossier if isinstance(dossier, dict) else None
+
+
+def _collect_dossier_evidence(paper: Dict[str, Any], max_papers: int) -> Optional[Dict[str, Any]]:
+    dossier = _load_research_dossier(paper.get("researchDossierPath"))
+    if not dossier:
+        return None
+    evidence_map = _as_dict(dossier.get("evidenceMap"))
+    problem_frame = _as_dict(dossier.get("problemFrame"))
+    research_question = str(
+        problem_frame.get("scopedQuestion") or problem_frame.get("originalQuestion") or ""
+    )
+    ranking_context = " ".join((
+        research_question,
+        json.dumps(dossier.get("hypotheses") or [], ensure_ascii=False),
+        str(_as_dict(dossier.get("researchPlan")).get("objective") or ""),
+    ))
+    stopwords = {
+        "a", "an", "and", "are", "as", "at", "be", "by", "can", "compared",
+        "does", "for", "from", "in", "into", "is", "of", "on", "or", "than",
+        "that", "the", "their", "this", "to", "with", "ai", "generated", "improve",
+    }
+    query_terms = {
+        token
+        for token in re.findall(r"[a-z0-9]+", ranking_context.lower())
+        if len(token) > 2 and token not in stopwords
+    }
+    query_stems = {token[:6] for token in query_terms if len(token) >= 6}
+    domain_weights = {
+        "halluc": 10,
+        "unsupp": 5,
+        "claim": 4,
+        "factua": 4,
+        "calibr": 3,
+        "consis": 3,
+        "decomp": 3,
+        "scient": 3,
+        "entity": 2,
+        "negati": 2,
+        "numeri": 2,
+        "review": 2,
+        "semant": 2,
+        "lexica": 1,
+    }
+
+    def weighted_overlap(candidate_stems: set[str]) -> int:
+        return sum(
+            domain_weights.get(stem, 1)
+            for stem in query_stems.intersection(candidate_stems)
+        )
+
+    core_stems = {"halluc", "unsupp", "claim", "factua"}.intersection(query_stems)
+
+    def dossier_rank(item: Dict[str, Any]) -> Tuple[bool, int, int, int, float]:
+        title_terms = set(re.findall(r"[a-z0-9]+", str(item.get("title") or "").lower()))
+        body_terms = set(re.findall(
+            r"[a-z0-9]+",
+            f"{item.get('title', '')} {item.get('summary', '')}".lower(),
+        ))
+        title_stems = {token[:6] for token in title_terms if len(token) >= 6}
+        body_stems = {token[:6] for token in body_terms if len(token) >= 6}
+        return (
+            bool(item.get("verified")),
+            weighted_overlap(body_stems.intersection(core_stems)),
+            len(query_terms.intersection(title_terms)) + weighted_overlap(title_stems),
+            len(query_terms.intersection(body_terms)) + weighted_overlap(body_stems),
+            float(item.get("relevanceScore") or 0),
+        )
+
+    ranked: List[Dict[str, Any]] = []
+    quotas = (("supportingEvidence", "support", 8), ("counterEvidence", "counter", 3), ("contextualEvidence", "context", 2))
+    seen: set[str] = set()
+    for field, role, quota in quotas:
+        candidates = sorted(
+            [item for item in _as_list(evidence_map.get(field)) if isinstance(item, dict)],
+            key=dossier_rank,
+            reverse=True,
+        )
+        selected = 0
+        for item in candidates:
+            title = str(item.get("title") or "").strip()
+            identity = str(item.get("doi") or item.get("url") or title).strip().lower()
+            if not title or not identity or identity in seen:
+                continue
+            seen.add(identity)
+            ranked.append({
+                "paperId": item.get("id") or f"dossier_ref_{len(ranked) + 1}",
+                "title": title,
+                "authors": _as_list(item.get("authors"))[:8],
+                "year": item.get("year"),
+                "venue": item.get("venue") or item.get("sourceType") or "",
+                "url": item.get("url") or (f"https://doi.org/{item['doi']}" if item.get("doi") else ""),
+                "doi": item.get("doi") or "",
+                "role": role,
+                "relevanceScore": item.get("relevanceScore", 0),
+                "summary": _compact_text(item.get("summary", ""), 800),
+                "verified": bool(item.get("verified")),
+            })
+            selected += 1
+            if selected >= quota or len(ranked) >= max_papers:
+                break
+        if len(ranked) >= max_papers:
+            break
+    hypotheses = [item for item in _as_list(dossier.get("hypotheses")) if isinstance(item, dict)]
+    research_plan = _as_dict(dossier.get("researchPlan"))
+    return {
+        "schemaVersion": "paper-plan-evidence/v1",
+        "status": "collected",
+        "resolution": {
+            "source": "faros_research_dossier",
+            "researchDossierPath": paper.get("researchDossierPath"),
+            "runId": dossier.get("runId"),
+        },
+        "idea": hypotheses[0] if hypotheses else {},
+        "researchQuestion": research_question,
+        "hypothesis": (hypotheses[0].get("statement") or hypotheses[0].get("hypothesis") or "") if hypotheses else "",
+        "background": {
+            "summary": " ".join(str(item) for item in _as_list(evidence_map.get("consensus"))),
+            "currentLimitations": _as_list(evidence_map.get("disputedClaims")),
+        },
+        "literature": {
+            "summary": f"FAROS research dossier supplied {len(ranked)} verified supporting, counter, and contextual sources.",
+            "coverage": {"source": "research_dossier", "selected": len(ranked)},
+            "keyPapers": ranked,
+        },
+        "gap": {"summary": " ".join(str(item) for item in _as_list(evidence_map.get("unresolvedGaps")))},
+        "validationPlan": _as_list(research_plan.get("steps")),
+        "evidenceTrace": {"dossierRunId": dossier.get("runId"), "questionId": dossier.get("questionId")},
+        "warnings": ["Literature evidence was resolved from the FAROS research dossier because no PlanPackage was linked."],
+    }
 
 
 def _iter_package_raw() -> Iterable[Dict[str, Any]]:
@@ -240,6 +383,9 @@ def _summarize_paper(
 def collect_plan_evidence_for_paper(paper: Dict[str, Any], max_papers: int = 12) -> Dict[str, Any]:
     package, resolution = resolve_plan_package_for_paper(paper)
     if not package:
+        dossier_evidence = _collect_dossier_evidence(paper, max_papers)
+        if dossier_evidence:
+            return dossier_evidence
         return {
             "schemaVersion": "paper-plan-evidence/v1",
             "status": "missing",

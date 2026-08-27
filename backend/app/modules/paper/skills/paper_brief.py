@@ -27,6 +27,8 @@ BRIEF_PROMPT = """You are preparing a writing brief before drafting an academic 
 
 Create a concise, concrete paper writing brief. The brief must guide the outline and section writing. It must not invent unsupported experiments, datasets, baselines, or claims. If a Plan evidence package is present, treat it as the authoritative source for research question, hypothesis, gap, method principle, contribution statements, related work, and planned validation. Treat Code-stage evidence, experiment metrics, and run evidence as observed implementation/experiment evidence when present; keep planned validation targets separate from observed results. Use the Venue style guide to adapt the paper angle, content ordering, evidence emphasis, and tone to the target venue.
 
+Metric direction is mandatory: lower ECE and Brier Score are better; higher F1 and AUROC are better. Compare the exact baseline and method values before using words such as improve, reduce, outperform, or superior. If metric directions disagree, describe the result as a trade-off and list both improved and degraded metrics. Never call a change statistically significant unless repeated-run inferential statistics are present in the supplied artifacts.
+
 Return strict JSON:
 {{
   "research_question": "...",
@@ -393,6 +395,8 @@ def _fallback_brief(ctx: PaperSkillContext, context: Dict[str, str], brief_user_
         "avoid_claims": [
             "Do not invent datasets, baselines, or experimental results.",
             "Do not claim state-of-the-art performance without explicit evidence.",
+            "Do not generalize a result beyond the exact evaluated baseline and benchmark.",
+            "Do not use literature citations as evidence for this project's observed metric values.",
         ],
         "user_brief_edits": brief_user_edits,
     }
@@ -473,6 +477,7 @@ def build_brief(ctx: PaperSkillContext, force: bool = False) -> PaperSkillResult
                 temperature=0.25,
                 max_tokens=3000,
                 timeout=ctx.llm_timeout(),
+                structured_output=True,
             )
             parsed = _extract_json(resp.text)
             if not parsed:

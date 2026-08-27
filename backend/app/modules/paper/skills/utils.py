@@ -309,6 +309,7 @@ def collect_context(paper: Dict[str, Any]) -> Dict[str, str]:
         "figures_summary": "N/A",
         "code_tables_summary": "N/A",
         "user_notes": "N/A",
+        "evidence_constraints": "N/A",
     }
 
     plan_link_id = paper.get("planLinkId")
@@ -558,6 +559,11 @@ def collect_context(paper: Dict[str, Any]) -> Dict[str, str]:
     notes = paper.get("notes", "")
     if notes:
         ctx["user_notes"] = notes[:1000]
+    constraints = paper.get("evidenceConstraints")
+    if isinstance(constraints, list) and constraints:
+        ctx["evidence_constraints"] = json.dumps(
+            [str(item) for item in constraints], ensure_ascii=False,
+        )[:2000]
 
     return ctx
 
@@ -1031,6 +1037,24 @@ def normalize_duplicate_latex_labels(
         normalized_sections[section_id] = token_re.sub(replace_token, content)
 
     return normalized_sections, rewrites
+
+
+def ensure_section_label(content: str, section_id: str) -> Tuple[str, bool]:
+    """Give generated sections a stable target for cross-references."""
+
+    safe_id = re.sub(r"[^A-Za-z0-9:_.-]+", "_", str(section_id)).strip("_")
+    if not safe_id:
+        return content, False
+    label = rf"\label{{sec:{safe_id}}}"
+    if label in content:
+        return content, False
+    normalized, count = re.subn(
+        r"(\\section\*?\{[^}]+\}\s*)",
+        lambda match: match.group(1) + label + "\n",
+        content,
+        count=1,
+    )
+    return normalized, bool(count)
 
 
 def normalize_paper_authors(value: Any) -> List[str]:

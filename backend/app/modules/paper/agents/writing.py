@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from collections import OrderedDict
 from typing import Any, Dict
 from typing import Callable, List
@@ -9,6 +10,7 @@ from app.modules.paper.skills.base import PaperSkillContext, PaperSkillResult
 from app.modules.paper.skills.leader import build_writing_skill_chain
 from app.modules.paper.skills.section_rewrite import rewrite_section
 from app.modules.paper.skills.utils import write_artifact
+from app.modules.paper.storage import read_paper_file, write_paper_file
 from .base import PaperAgent
 
 
@@ -74,6 +76,22 @@ class PaperWritingAgent(PaperAgent):
             )
         return header + "\n".join(f"- {message}" for message in messages[:8])
 
+    @staticmethod
+    def _neutralize_unsupported_significance(content: str) -> str:
+        content = re.sub(
+            r"\bsignificantly\s+(?=(?:improv\w*|reduc\w*|lower\w*|higher\w*|"
+            r"better\b|worse\b|outperform\w*))",
+            "",
+            content,
+            flags=re.IGNORECASE,
+        )
+        return re.sub(
+            r"\bstatistically significant(?:ly)?\b",
+            "observed",
+            content,
+            flags=re.IGNORECASE,
+        )
+
     def apply_feedback(
         self,
         ctx: PaperSkillContext,
@@ -99,6 +117,16 @@ class PaperWritingAgent(PaperAgent):
             except Exception as exc:
                 warnings.append(f"{section_id}: {str(exc)[:300]}")
                 continue
+            if (
+                source == "evidence_usage"
+                and any("statistical-significance" in message for message in messages)
+            ):
+                normalized = self._neutralize_unsupported_significance(
+                    result.data.get("content", "")
+                )
+                if normalized != result.data.get("content", ""):
+                    result.data["content"] = normalized
+                    write_paper_file(ctx.paper_id, result.data["path"], normalized)
             self._apply_result_data(ctx, result)
             rewrites.append(
                 {
@@ -109,6 +137,28 @@ class PaperWritingAgent(PaperAgent):
                     "warnings": result.warnings,
                 }
             )
+
+            if section_id == "abstract":
+                main_tex = read_paper_file(ctx.paper_id, "main.tex")
+                if main_tex:
+                    abstract_body = re.sub(
+                        r"^\s*\\section\*?\{[^}]*\}\s*",
+                        "",
+                        result.data.get("content", ""),
+                        count=1,
+                    )
+                    abstract_body = re.sub(
+                        r"^\s*\\label\{sec:abstract\}\s*", "", abstract_body, count=1,
+                    ).strip()
+                    synchronized, count = re.subn(
+                        r"(\\begin\{abstract\}\s*).*?(\s*\\end\{abstract\})",
+                        lambda match: match.group(1) + abstract_body + match.group(2),
+                        main_tex,
+                        count=1,
+                        flags=re.DOTALL,
+                    )
+                    if count:
+                        write_paper_file(ctx.paper_id, "main.tex", synchronized)
 
         artifact_suffix = {
             "latex_compile": "compile",

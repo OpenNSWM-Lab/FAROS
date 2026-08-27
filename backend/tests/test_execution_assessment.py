@@ -44,6 +44,28 @@ def test_missing_named_dataset_blocks_execution():
     assert "PrivateReviewBench" in result.missingInputs[0]
 
 
+def test_local_synthetic_constraint_overrides_candidate_external_dataset_suggestion():
+    result = assess_candidate_execution(
+        run_id="run_local_synthetic",
+        question_id="question_local_synthetic",
+        research_question="Evaluate calibrated unsupported-claim detection.",
+        candidate=_candidate(
+            datasets=["SciFact", "Custom AI-generated review dataset"],
+            metrics=["F1", "expected calibration error"],
+            text="Implement a Python algorithm and benchmark pipeline.",
+        ),
+        inputs={
+            "availableInputs": ["locally generated fixed-seed synthetic claim-evidence records"],
+            "constraints": ["Use a deterministic fixed-seed synthetic benchmark generated locally"],
+        },
+    )
+
+    assert result.status == ExecutionStatus.READY
+    assert result.executionClass == ExecutionClass.COMPUTATIONAL_READY
+    assert result.missingInputs == []
+    assert "SciFact" not in result.availableInputs
+
+
 def test_ethics_and_proof_tasks_are_not_auto_executed():
     ethics = assess_candidate_execution(
         run_id="run_3",

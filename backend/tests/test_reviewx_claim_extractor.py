@@ -1,6 +1,31 @@
 from app.modules.review.claim_extractor import extract_claims
 
 
+def test_final_manuscript_claims_supersede_stale_brief_claims():
+    artifacts = {
+        "paper": {
+            "id": "paper_final",
+            "briefJson": {
+                "core_claim": "The stale brief claims Brier Score improved by 99 percent.",
+                "contributions": ["The stale plan contribution outperforms every baseline."],
+            },
+        },
+        "latexFiles": [{
+            "path": "sections/results.tex",
+            "content": (
+                "\\section{Results}\n"
+                "Our method reduces ECE from 0.270 to 0.226 on the executed benchmark."
+            ),
+        }],
+    }
+
+    claims = extract_claims(artifacts)
+
+    assert claims
+    assert all(claim.sourceSpan.section != "Brief" for claim in claims)
+    assert all("99 percent" not in claim.text for claim in claims)
+
+
 def test_claim_selection_keeps_late_high_risk_claim_and_section_coverage():
     introduction = "\n".join(
         f"We propose analysis component number {index} for the research workflow."

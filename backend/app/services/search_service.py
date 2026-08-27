@@ -763,8 +763,15 @@ class OpenAlexSearch:
 
         self._rate_limit()
 
+        # OpenAlex interprets question marks and asterisks as wildcard syntax.
+        # Natural-language research questions therefore produce HTTP 400 unless
+        # those punctuation characters are removed from stemmed search queries.
+        openalex_query = re.sub(r"[?*]+", " ", str(query or ""))
+        openalex_query = re.sub(r"\s+", " ", openalex_query).strip()
+        if not openalex_query:
+            return []
         params: Dict[str, str] = {
-            "search": query,
+            "search": openalex_query,
             "per-page": str(min(limit, 25)),
         }
         if self.mailto:

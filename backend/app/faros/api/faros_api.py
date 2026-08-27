@@ -5,7 +5,7 @@ from typing import Any, Dict, Literal
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
-from app.faros.errors import FarosError, FarosNotFoundError
+from app.faros.errors import FarosBlockedError, FarosError, FarosNotFoundError
 from app.faros.registry.agent_registry import get_agent_registry
 from app.faros.registry.artifact_registry import get_artifact_registry
 from app.faros.registry.blueprint_registry import get_blueprint_registry
@@ -72,6 +72,10 @@ class CreateFarosRunRequest(FarosBindingRequest):
     asyncExecution: bool = True
     runtimeOptions: Dict[str, Any] = Field(default_factory=dict)
     inputs: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ExecuteFarosRunRequest(BaseModel):
+    asyncExecution: bool = True
 
 
 class SkillPackageRequest(BaseModel):
@@ -470,6 +474,27 @@ async def get_run(run_id: str) -> Dict[str, Any]:
     if not run:
         raise _http_error_from_exception(FarosNotFoundError(f"FAROS run '{run_id}' not found"))
     return run
+
+
+@router.post('/runs/{run_id}/execute')
+async def execute_pending_run(run_id: str, req: ExecuteFarosRunRequest) -> Dict[str, Any]:
+    orchestrator = get_orchestrator()
+    run = orchestrator.get_run(run_id)
+    if not run:
+        raise _http_error_from_exception(FarosNotFoundError(f"FAROS run '{run_id}' not found"))
+    if run.get('status') == 'completed':
+        raise _http_error_from_exception(ValueError(f"FAROS run '{run_id}' is already completed"))
+    if run.get('status') == 'running':
+        raise _http_error_from_exception(FarosBlockedError(f"FAROS run '{run_id}' is already running"))
+
+    if req.asyncExecution:
+        thread = threading.Thread(target=orchestrator.resume_run, args=(run_id,), daemon=True)
+        thread.start()
+        return {**run, 'executionScheduled': True}
+    try:
+        return orchestrator.resume_run(run_id)
+    except Exception as exc:
+        _raise_http_error(exc)
 
 
 @router.post('/runs/{run_id}/resume')

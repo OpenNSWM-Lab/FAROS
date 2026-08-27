@@ -22,4 +22,5 @@ Mandatory requirements:
 - Use citations sparingly; cite only references that support concluding context.
 {{fig_req}}
 - Do not claim state-of-the-art performance unless explicitly supported by the linked evidence.
+- Do not introduce a new survey of prior work or a new field-level gap in the conclusion. State exactly which baseline, benchmark, metrics, and limitations support the conclusion.
 """

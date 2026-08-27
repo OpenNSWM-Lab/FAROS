@@ -36,6 +36,13 @@ def get_artifact_registry() -> ArtifactRegistry:
             required_producer='idea_refinement',
         ))
         _registry.register(ArtifactSchemaSpec(
+            type='research_dossier',
+            description='Scientific question, evidence, hypotheses, and executable research plan.',
+            required_metadata=['runId', 'questionId', 'path'],
+            allowed_uri_prefixes=['file://'],
+            required_producer='idea_refinement',
+        ))
+        _registry.register(ArtifactSchemaSpec(
             type='code_project',
             description='Provisioned project workspace for experiment execution.',
             required_metadata=['projectId', 'language', 'framework'],

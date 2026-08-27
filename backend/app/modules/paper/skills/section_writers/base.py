@@ -59,6 +59,10 @@ COMMON_SECTION_INSTRUCTIONS = """Global requirements:
 - Write ONLY the requested section: "\\section{{{section_title}}}". Do not generate any other top-level \\section headings, title, abstract, references, appendix, or full-paper outline.
 - Do not use bilingual section headings such as "Introduction / 引言"; use the exact requested section title.
 - Use only supported claims from the brief, outline, metrics, runs, figures, and references provided in the prompt.
+- Evidence-scope constraints are mandatory: {{evidence_constraints}}
+- Never claim human annotation, expert review, real-world validation, external datasets, or statistical significance unless that exact evidence appears in the supplied run artifacts. If validation is synthetic/local, state that limitation explicitly.
+- Treat literature evidence and this paper's experiment evidence as different sources: cite literature only for claims about prior work, and point to the paper's table, figure, or executed artifact for this paper's measured results. Do not attach a literature citation to make an observed project metric appear externally validated.
+- Do not write broad claims that "most", "current", or "state-of-the-art" methods fail, overlook a mechanism, or are poorly calibrated unless the supplied bibliography metadata directly supports that exact comparison. Narrow unsupported field-level claims to the concrete baseline and benchmark evaluated here.
 - If Section-selected figures is not N/A, include every listed figure exactly once using its exact path, label, and caption.
 - Return ONLY valid LaTeX content, with no markdown fences or explanations.
 """
@@ -116,6 +120,7 @@ class SectionDraftRequest:
             "eq_req": self.eq_req,
             "table_req": self.table_req,
             "fig_req": self.fig_req,
+            "evidence_constraints": self.context.get("evidence_constraints", "N/A"),
         }
 
 
@@ -156,7 +161,7 @@ class SectionWriter:
     kind = "generic"
     prompt_template = ""
     temperature = 0.4
-    max_tokens = 6000
+    max_tokens = 3500
 
     def build_prompt(self, request: SectionDraftRequest) -> str:
         if request.ctx.venue == "challenge_cup":
@@ -167,6 +172,10 @@ class SectionWriter:
             COMMON_SECTION_INSTRUCTIONS
             .replace("{{section_title}}", request.section_title)
             .replace("{{language_instruction}}", language_instruction)
+            .replace(
+                "{{evidence_constraints}}",
+                request.context.get("evidence_constraints", "N/A"),
+            )
         )
         return common + "\n" + render_prompt(self.prompt_template, request.prompt_values())
 

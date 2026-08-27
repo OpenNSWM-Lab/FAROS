@@ -65,6 +65,8 @@ It is already a runnable AutoResearch runtime, but it is not yet the final cross
 - First blueprint: `ml_paper`
 - First profile: `faros_llm`
 - Complete LLM workflow: `idea -> experiment -> paper -> review`
+- ReviewX experiment feedback loop with auditable evidence and iteration control
+- Reproducible SciFact two-round competition case with preregistration and Qwen planning
 - Existing module-native APIs for `idea`, `code`, `paper`, `review`, `platform`
 - Venue-aware LaTeX paper generation
 
@@ -75,7 +77,7 @@ It is already a runnable AutoResearch runtime, but it is not yet the final cross
 
 - full DAG scheduling and parallel orchestration
 - generalized non-LLM provider ecosystem
-- full experiment execution and evaluation loop
+- generalized experiment execution across arbitrary scientific domains
 - FAROS frontend console
 - DB-backed FAROS runtime metadata
 - mature cross-domain blueprint library
@@ -398,8 +400,8 @@ These parts should be treated as the release baseline:
 ## 📌 Important TODO
 
 The most important next steps after this release are:
-- replace the current `experiment` scaffold with true code synthesis and execution for the LLM domain
-- connect experiment outputs to metrics ingestion, figure generation, and run tracking
+- generalize the current executable experiment and evidence pipeline beyond the LLM/SciFact cases
+- expose the ReviewX competition case through a production deployment with human sign-off
 - replace linear graph execution with a real DAG runtime
 - add stronger verification beyond required-key checks
 - add a dedicated FAROS frontend console

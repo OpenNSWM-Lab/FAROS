@@ -488,6 +488,25 @@ def assess_candidate_execution(
     datasets = _unique(datasets)
     stop_conditions = _unique(stop_conditions)
 
+    constraints_text = " ".join(
+        str(item) for item in input_data.get("constraints", []) if item
+    ).lower()
+    local_synthetic_mode = (
+        "synthetic" in constraints_text
+        and any(token in constraints_text for token in ("local", "generated", "fixed-seed", "fixed seed"))
+    )
+    if local_synthetic_mode:
+        declared_synthetic_inputs = [
+            str(item)
+            for item in input_data.get("availableInputs", [])
+            if _contains(str(item).lower(), ("synthetic", "generated", "toy", "合成", "生成"))
+        ]
+        datasets = _unique(declared_synthetic_inputs) or [
+            dataset
+            for dataset in datasets
+            if _contains(dataset.lower(), ("synthetic", "generated", "toy", "合成", "生成"))
+        ]
+
     available_inputs = _unique(
         [str(item) for item in input_data.get("availableInputs", []) if item]
         + [

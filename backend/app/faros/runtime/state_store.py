@@ -48,6 +48,10 @@ class FarosStateStore:
         preflight: Optional[Dict[str, Any]] = None,
         runtime_options: Optional[Dict[str, Any]] = None,
         checkpoint: Optional[Dict[str, Any]] = None,
+        parent_run_id: Optional[str] = None,
+        research_series_id: Optional[str] = None,
+        iteration_number: int = 1,
+        iteration_feedback_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         run_id = f"faros_{uuid.uuid4().hex[:12]}"
         record = FarosRunRecord(
@@ -57,6 +61,10 @@ class FarosStateStore:
             status="planned" if execution_mode == "plan" else "pending",
             execution_mode=execution_mode,
             created_at=datetime.now(timezone.utc).isoformat(),
+            parent_run_id=parent_run_id,
+            research_series_id=research_series_id or run_id,
+            iteration_number=iteration_number,
+            iteration_feedback_id=iteration_feedback_id,
             inputs=inputs,
             runtime_options=runtime_options or {},
             steps=steps,
@@ -125,8 +133,24 @@ class FarosStateStore:
         return json.loads(path.read_text())
 
     def append_artifacts(self, run_id: str, artifacts: List[Dict[str, Any]]) -> None:
-        existing = self.list_artifacts(run_id)
-        existing.extend(artifacts)
+        existing: List[Dict[str, Any]] = []
+        positions: Dict[str, int] = {}
+        for artifact in self.list_artifacts(run_id):
+            artifact_id = str(artifact.get('id') or '')
+            if artifact_id and artifact_id in positions:
+                existing[positions[artifact_id]] = artifact
+                continue
+            if artifact_id:
+                positions[artifact_id] = len(existing)
+            existing.append(artifact)
+        for artifact in artifacts:
+            artifact_id = str(artifact.get('id') or '')
+            if artifact_id and artifact_id in positions:
+                existing[positions[artifact_id]] = artifact
+                continue
+            if artifact_id:
+                positions[artifact_id] = len(existing)
+            existing.append(artifact)
         self._save_json(self._artifacts_path(run_id), existing)
 
     def get_memory(self, run_id: str) -> Dict[str, Any]:

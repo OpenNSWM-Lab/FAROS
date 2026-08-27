@@ -4,7 +4,11 @@ from typing import Any, Dict, List, Tuple
 
 from app.modules.paper.storage import update_paper
 from .base import PaperSkillContext, PaperSkillResult
-from .utils import LATEX_MATH_ENVS, sanitize_latex_text_specials
+from .utils import (
+    LATEX_MATH_ENVS,
+    normalize_duplicate_latex_labels,
+    sanitize_latex_text_specials,
+)
 
 
 UNICODE_LATEX_REPLACEMENTS: Dict[str, Tuple[str, str]] = {
@@ -224,6 +228,92 @@ def _fix_math_operator_subscripts(content: str) -> Tuple[str, List[Dict[str, Any
     return normalized, rewrites
 
 
+def _restore_corrupted_superscript_stars(content: str) -> Tuple[str, List[Dict[str, Any]]]:
+    """Undo Markdown emphasis accidentally created from two math `^*` tokens."""
+
+    marker = r"^\emph{"
+    normalized = content
+    rewrites: List[Dict[str, Any]] = []
+    search_from = 0
+    while True:
+        start = normalized.find(marker, search_from)
+        if start < 0:
+            break
+        opening_brace = start + len(marker) - 1
+        depth = 1
+        cursor = opening_brace + 1
+        while cursor < len(normalized) and depth:
+            char = normalized[cursor]
+            backslashes = 0
+            check = cursor - 1
+            while check >= 0 and normalized[check] == "\\":
+                backslashes += 1
+                check -= 1
+            escaped = backslashes % 2 == 1
+            if not escaped and char == "{":
+                depth += 1
+            elif not escaped and char == "}":
+                depth -= 1
+            cursor += 1
+        if depth:
+            search_from = opening_brace + 1
+            continue
+        original = normalized[start:cursor]
+        inner = normalized[opening_brace + 1 : cursor - 1]
+        replacement = "^*" + inner + "*"
+        normalized = normalized[:start] + replacement + normalized[cursor:]
+        rewrites.append({
+            "kind": "restore_superscript_star",
+            "from": original,
+            "to": replacement,
+        })
+        search_from = start + len(replacement)
+    return normalized, rewrites
+
+
+def _redirect_unique_missing_refs(
+    sections_content: Dict[str, str],
+) -> Tuple[Dict[str, str], List[Dict[str, str]]]:
+    """Redirect a dangling ref only when one suffixed label is unambiguous."""
+
+    label_re = re.compile(r"\\label\{([^}]+)\}")
+    ref_re = re.compile(r"\\(eqref|ref|autoref|pageref|cref|Cref)\{([^}]+)\}")
+    labels = {
+        label
+        for content in sections_content.values()
+        for label in label_re.findall(content)
+    }
+    rewrites: List[Dict[str, str]] = []
+    normalized: Dict[str, str] = {}
+    for section_id, content in sections_content.items():
+        def replace_ref(match: re.Match[str]) -> str:
+            command, raw = match.group(1), match.group(2)
+            parts = [part.strip() for part in raw.split(",")]
+            redirected: List[str] = []
+            changed = False
+            for value in parts:
+                if value in labels:
+                    redirected.append(value)
+                    continue
+                candidates = sorted(label for label in labels if label.startswith(value + ":"))
+                if len(candidates) == 1:
+                    redirected.append(candidates[0])
+                    changed = True
+                    rewrites.append({
+                        "section": section_id,
+                        "from": value,
+                        "to": candidates[0],
+                    })
+                else:
+                    redirected.append(value)
+            if not changed:
+                return match.group(0)
+            return f"\\{command}{{{', '.join(redirected)}}}"
+
+        normalized[section_id] = ref_re.sub(replace_ref, content)
+    return normalized, rewrites
+
+
 def _remove_duplicate_abstract_input(content: str) -> Tuple[str, List[Dict[str, Any]]]:
     if "\\begin{abstract}" not in content:
         return content, []
@@ -303,6 +393,32 @@ def preflight_latex_project(latex_dir: str) -> List[Dict[str, Any]]:
             continue
     original_contents = dict(file_contents)
 
+    section_paths = {
+        os.path.splitext(os.path.basename(path))[0]: path
+        for path in tex_files
+        if os.path.relpath(path, latex_dir).split(os.sep)[0] == "sections"
+    }
+    normalized_sections, duplicate_label_rewrites = normalize_duplicate_latex_labels({
+        section_id: file_contents[path]
+        for section_id, path in section_paths.items()
+        if path in file_contents
+    })
+    for section_id, content in normalized_sections.items():
+        file_contents[section_paths[section_id]] = content
+    rewrites.extend(
+        {"file": f"sections/{rewrite['section']}.tex", "kind": "duplicate_label", **rewrite}
+        for rewrite in duplicate_label_rewrites
+    )
+    redirected_sections, redirected_ref_rewrites = _redirect_unique_missing_refs(
+        normalized_sections
+    )
+    for section_id, content in redirected_sections.items():
+        file_contents[section_paths[section_id]] = content
+    rewrites.extend(
+        {"file": f"sections/{rewrite['section']}.tex", "kind": "dangling_ref", **rewrite}
+        for rewrite in redirected_ref_rewrites
+    )
+
     main_path = os.path.join(latex_dir, "main.tex")
     if main_path in file_contents:
         combined_tex = "\n".join(file_contents.values())
@@ -320,10 +436,15 @@ def preflight_latex_project(latex_dir: str) -> List[Dict[str, Any]]:
     for path, content in file_contents.items():
         original = original_contents.get(path, content)
         file_rewrites: List[Dict[str, Any]] = []
-        sanitized = sanitize_latex_text_specials(content)
-        if sanitized != content:
-            file_rewrites.append({"kind": "text_specials"})
-            content = sanitized
+        content, step_rewrites = _restore_corrupted_superscript_stars(content)
+        file_rewrites.extend(step_rewrites)
+        # main.tex is trusted template code. Escaping its comments and macro
+        # parameters turns `%` and `##1` into invalid preamble text.
+        if os.path.basename(path) != "main.tex":
+            sanitized = sanitize_latex_text_specials(content)
+            if sanitized != content:
+                file_rewrites.append({"kind": "text_specials"})
+                content = sanitized
         content, step_rewrites = _replace_unicode_latex_chars(content)
         file_rewrites.extend(step_rewrites)
         content, step_rewrites = _fix_algorithm_text_math_lines(content)
@@ -345,6 +466,18 @@ def preflight_latex_project(latex_dir: str) -> List[Dict[str, Any]]:
     return rewrites
 
 
+def latex_log_quality_errors(compile_log: str) -> List[str]:
+    errors = []
+    for pattern, message in (
+        (r"LaTeX Warning: (?:Reference|Citation) `[^']+'[^\n]*undefined", "undefined references or citations remain"),
+        (r"LaTeX Warning: Label `[^']+' multiply defined", "duplicate labels remain"),
+        (r"There were undefined references", "undefined references remain"),
+    ):
+        if re.search(pattern, compile_log):
+            errors.append(message)
+    return list(dict.fromkeys(errors))
+
+
 def compile_latex_once(ctx: PaperSkillContext) -> PaperSkillResult:
     pdf_path = os.path.join(ctx.latex_dir, "main.pdf")
     status = "unknown"
@@ -355,6 +488,16 @@ def compile_latex_once(ctx: PaperSkillContext) -> PaperSkillResult:
     try:
         from app.services.pdf_renderer import compile_latex_project
         compile_latex_project(ctx.latex_dir)
+        log_path = os.path.join(ctx.latex_dir, "main.log")
+        if os.path.isfile(log_path):
+            with open(log_path, "r", encoding="utf-8", errors="replace") as handle:
+                compile_log = handle.read()
+            unresolved = latex_log_quality_errors(compile_log)
+            if unresolved:
+                raise RuntimeError(
+                    "LaTeX quality gate failed: "
+                    + "; ".join(dict.fromkeys(unresolved))
+                )
         if os.path.isfile(pdf_path):
             size = os.path.getsize(pdf_path)
         update_paper(ctx.paper_id, {

@@ -6,6 +6,7 @@ import re
 from collections import Counter
 from typing import Any, Dict, List, Optional
 
+from app.modules.review.guardrails import find_guardrail_conflicts
 from app.modules.review.reviewx_models import Claim, Evidence, EvidenceVerification, Finding, RiskNode
 
 
@@ -52,14 +53,7 @@ def _is_external_claim(paper: Dict[str, Any], claim: Claim) -> bool:
 
 
 def _avoid_claim_hits(claim: Claim, avoid_claims: List[str]) -> List[str]:
-    text = claim.text.lower()
-    hits = []
-    for avoid in avoid_claims:
-        avoid_text = str(avoid).lower()
-        tokens = [t for t in re.findall(r"[a-z][a-z0-9_-]{4,}", avoid_text) if t not in {"claim", "without"}]
-        if tokens and sum(1 for t in tokens if t in text) >= max(1, min(3, len(tokens) // 2)):
-            hits.append(str(avoid))
-    return hits
+    return find_guardrail_conflicts(claim.text, avoid_claims)
 
 
 def analyze_reviewx_risks(
@@ -235,7 +229,11 @@ def _claim_support_status(verifications: List[EvidenceVerification]) -> str | No
 def _risk_type_for_claim(claim: Claim, verifications: List[EvidenceVerification]) -> str:
     if any(v.verifierType == "citation_semantic" and v.supportStatus in {"unsupported", "contradicted"} for v in verifications):
         return "citation_mismatch"
-    if any(v.verifierType == "numeric_metric" and v.supportStatus == "contradicted" for v in verifications):
+    if any(
+        v.verifierType in {"numeric_metric", "metric_semantics"}
+        and v.supportStatus == "contradicted"
+        for v in verifications
+    ):
         return "metric_mismatch"
     if any(v.supportStatus == "needs_human_verification" for v in verifications):
         return "citation_uncertainty"

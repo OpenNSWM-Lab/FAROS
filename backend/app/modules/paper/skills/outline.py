@@ -31,6 +31,7 @@ Generate a DETAILED paper outline. You MUST include:
 - References: if the Plan evidence package includes literature.keyPapers, the references array MUST contain only those evidence papers. Otherwise include at least {min_refs} real, well-known papers in the field using authors, title, venue, and year; do not invent DOIs, and add "note": "to verify" if uncertain.
 - Mark whether sections generally need algorithms, equations, tables, or figures. You may describe only the broad purpose of a table/figure and the intended analysis direction, such as "main result comparison table" or "ablation analysis figure". Do not include concrete values, filenames, paths, labels, captions, or full table/figure content in the outline.
 - Preserve the Paper writing brief's research question, core claim, must-use evidence, and avoid-claims constraints. If a Plan evidence package is present, keep the outline aligned to its research question, hypothesis, gap, principle, contribution statements, literature, and planned validation stages.
+- Audit metric direction before writing the abstract or key points: lower ECE and Brier Score are better, while higher F1 and AUROC are better. If one metric improves and another degrades, state the trade-off explicitly. Do not say Brier improved when its value increased, or F1/AUROC improved when their values decreased. Do not use "significant" without inferential statistics from repeated runs.
 - Do not invent author names. If explicit authors are not provided by the paper record or user notes, use ["Anonymous"].
 
 Return strict JSON:
@@ -86,7 +87,7 @@ Schema:
   "contributions": []
 }}
 
-Use 5-7 sections. Keep text concise. For tables/figures, include only broad purpose and analysis direction; do not include concrete values, paths, labels, captions, or full contents. For challenge_cup, use Chinese section titles and Chinese prose.
+Use 5-7 sections. Keep text concise. For tables/figures, include only broad purpose and analysis direction; do not include concrete values, paths, labels, captions, or full contents. Lower ECE and Brier Score are better; higher F1 and AUROC are better. State mixed directions as a trade-off and never use "significant" without supplied inferential statistics. For challenge_cup, use Chinese section titles and Chinese prose.
 """
 
 DEFAULT_REFERENCES: List[Dict[str, Any]] = []
@@ -232,6 +233,7 @@ def _compact_outline_retry(ctx: PaperSkillContext, paper_brief: Dict[str, Any], 
         temperature=0.2,
         max_tokens=3500,
         timeout=ctx.llm_timeout(),
+        structured_output=True,
     )
     parsed = _extract_json(resp.text)
     return parsed if isinstance(parsed, dict) and parsed.get("sections") else None
@@ -412,7 +414,8 @@ def build_outline(ctx: PaperSkillContext, force: bool = False) -> PaperSkillResu
 
         resp = ctx.client.chat(
             messages=[ChatMessage(role="user", content=outline_prompt)],
-            model=ctx.model, temperature=0.4, max_tokens=8000, timeout=ctx.llm_timeout(),
+            model=ctx.model, temperature=0.4, max_tokens=4000, timeout=ctx.llm_timeout(),
+            structured_output=True,
         )
         parsed = _extract_json(resp.text)
         if not parsed or "sections" not in parsed:

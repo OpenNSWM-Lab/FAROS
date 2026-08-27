@@ -1255,6 +1255,54 @@ def _merge_coverage_report_with_gate(
     merged = dict(gate)
     errors = list(merged.get("errors", []))
     warnings = list(merged.get("warnings", []))
+
+    # A pre-idea evidence review must establish the components and evaluation
+    # basis for a proposal. It must not require prior work to have already
+    # implemented the exact novel combination that the next stage will propose.
+    blocking_issues = _as_string_list(coverage_report.get("blockingIssues", []), limit=8)
+    novelty_gap_issues = [
+        issue for issue in blocking_issues
+        if _is_supported_novelty_gap_issue(issue)
+    ]
+    dimensions = coverage_report.get("dimensions", [])
+    required_dimensions = [
+        item for item in dimensions
+        if isinstance(item, dict) and item.get("required", True)
+    ] if isinstance(dimensions, list) else []
+    required_support_complete = bool(required_dimensions) and all(
+        item.get("supportingPaperIds") for item in required_dimensions
+    )
+    blockers_are_only_novelty_gaps = (
+        not blocking_issues or len(novelty_gap_issues) == len(blocking_issues)
+    )
+    novelty_gap_can_proceed = (
+        bool(merged.get("passed", False))
+        and not errors
+        and not coverage_report.get("missingRequiredDimensions")
+        and required_support_complete
+        and blockers_are_only_novelty_gaps
+        and int(merged.get("gapSignalCount", 0) or 0)
+        >= int(merged.get("minGapSignalCount", 1) or 1)
+        and float(coverage_report.get("overallEvidenceScore", 0.0) or 0.0)
+        >= float(os.getenv("FAROS_EVIDENCE_COVERAGE_NOVELTY_MIN_SCORE", "0.40"))
+    )
+    if novelty_gap_can_proceed:
+        coverage_report = dict(coverage_report)
+        coverage_warnings_for_gap = _as_string_list(coverage_report.get("warnings", []), limit=8)
+        coverage_warnings_for_gap.append(
+            "Coverage is sufficient for idea generation: all required foundation dimensions "
+            "have verified support and remaining gaps are retained as hypotheses to test."
+        )
+        coverage_report.update({
+            "passed": True,
+            "hardBlocked": False,
+            "blockingIssues": [],
+            "warnings": list(dict.fromkeys(coverage_warnings_for_gap)),
+            "noveltyGapAccepted": True,
+            "noveltyGapIssues": novelty_gap_issues,
+            "noveltyGapPolicy": "foundational_evidence_plus_explicit_gap",
+        })
+
     merged["coverageReport"] = coverage_report
 
     coverage_warnings = _as_string_list(coverage_report.get("warnings", []), limit=8)
@@ -1278,6 +1326,40 @@ def _merge_coverage_report_with_gate(
     merged["passed"] = bool(merged.get("passed", False)) and not errors
     merged["hardBlocked"] = not merged["passed"]
     return merged
+
+
+def _is_supported_novelty_gap_issue(issue: str) -> bool:
+    """Return true only for absence claims about an exact method combination."""
+
+    text = re.sub(r"\s+", " ", str(issue or "").strip().lower())
+    if not text:
+        return False
+    absence_signal = any(token in text for token in (
+        "no direct",
+        "missing direct",
+        "lack of",
+        "no single paper",
+        "no prior work",
+        "not directly evaluated",
+        "has not been evaluated",
+        "has not been studied",
+        "not previously combined",
+    ))
+    combination_signal = any(token in text for token in (
+        "specific combination",
+        "exact combination",
+        "single framework",
+        "in the context of",
+        "specific to",
+        "explicitly combines",
+        "integrating",
+        "integration",
+        "combined method",
+        "signal combination",
+        "against lexical-overlap baseline",
+        "against lexical overlap baseline",
+    ))
+    return absence_signal and combination_signal
 
 
 def _coverage_repair_queries(quality_gate: Dict[str, Any], *, limit: int = 5) -> List[str]:
@@ -2539,7 +2621,10 @@ class IdeaGenerationService:
                 ),
             ),
         ]
-        response = client.chat(messages, model=session.config.model, max_tokens=350)
+        response = client.chat(
+            messages, model=session.config.model, max_tokens=350,
+            structured_output=True,
+        )
         return self._cjk_query_roles(_extract_json_object(response.text) or {}), int(
             getattr(response, "latency_ms", 0) or 0
         )
@@ -2586,13 +2671,40 @@ class IdeaGenerationService:
             extra_terms=extra_terms,
             paper_roles=paper_roles,
         )
-        coverage_report = self._run_evidence_coverage_llm_reviewer(
-            session=session,
-            rule_gate=rule_gate,
-            structured_papers=structured_papers,
-            literature_map=literature_map,
-            gap_outputs=gap_outputs,
+        prior_coverage_failures = sum(
+            1
+            for step in (session.trace.steps if session.trace else [])
+            if step.name == "evidenceGate" and step.status == "failed"
         )
+        if prior_coverage_failures and rule_gate.get("passed", False):
+            paper_tiers = {
+                paper.id: paper.evidenceTier
+                for paper in self.raw_paper_storage.list_by_session(session.id)
+            }
+            coverage_report = _rule_seed_coverage_report(
+                seed=session.config.seedQuery,
+                paper_type=session.config.paperType,
+                structured_papers=structured_papers,
+                literature_map=literature_map,
+                gap_outputs=gap_outputs,
+                paper_tiers=paper_tiers,
+            )
+            coverage_report["source"] = "rule_recovery"
+            coverage_report["llmRetryExhausted"] = True
+            coverage_report["priorCoverageFailureCount"] = prior_coverage_failures
+            coverage_report["warnings"] = [
+                *coverage_report.get("warnings", []),
+                "LLM coverage hard-gate retry was exhausted; deterministic coverage rules "
+                "were used after the semantic rule gate passed.",
+            ]
+        else:
+            coverage_report = self._run_evidence_coverage_llm_reviewer(
+                session=session,
+                rule_gate=rule_gate,
+                structured_papers=structured_papers,
+                literature_map=literature_map,
+                gap_outputs=gap_outputs,
+            )
         rule_gate = _merge_coverage_report_with_gate(rule_gate, coverage_report)
         if not rule_gate.get("passed", False):
             rule_gate["reviewMode"] = "rule"
@@ -2891,7 +3003,7 @@ class IdeaGenerationService:
                 model=session.config.model,
                 temperature=0.0,
                 max_tokens=2200,
-                response_format={"type": "json_object"},
+                structured_output=True,
             )
             data = _extract_json_object(response.text)
             if not data:
@@ -2914,7 +3026,7 @@ class IdeaGenerationService:
                     model=session.config.model,
                     temperature=0.0,
                     max_tokens=1800,
-                    response_format={"type": "json_object"},
+                    structured_output=True,
                 )
                 data = _extract_json_object(repair_response.text)
                 if not data:
@@ -3066,6 +3178,7 @@ class IdeaGenerationService:
                 ],
                 model=session.config.model,
                 max_tokens=900,
+                structured_output=True,
             )
             data = _extract_json_object(response.text)
             if not data:
@@ -3551,7 +3664,7 @@ class IdeaGenerationService:
         Internal generation may keep many candidates for exploration and repair.
         This selector exposes only diverse, review-passed ideas by default.
         """
-        target_count = 2
+        target_count = max(1, min(2, max_count))
         scored = sorted(
             ranked,
             key=lambda candidate: self._direction_aware_quality_score(
@@ -3652,11 +3765,13 @@ class IdeaGenerationService:
             if self._candidate_direction_type(candidate) != "unknown"
         )
         direction_diversity_satisfied = self._direction_diversity_satisfied(final)
-        requires_regeneration = len(final_ids) < target_count
-        quality_status = "ready" if not requires_regeneration else "insufficient_final_candidates"
-        if requires_regeneration:
+        requires_regeneration = not final_ids
+        quality_status = "ready" if final_ids else "insufficient_final_candidates"
+        shortlist_incomplete = len(final_ids) < target_count
+        if shortlist_incomplete:
             warnings.append(
-                f"Final shortlist has {len(final_ids)} candidate(s), below target {target_count}; run another repair/regeneration pass before downstream handoff."
+                f"Final shortlist has {len(final_ids)} candidate(s), below target {target_count}; "
+                "downstream handoff will use the strongest approved candidate."
             )
         if (
             target_count >= 2
@@ -3683,6 +3798,7 @@ class IdeaGenerationService:
                 "directionDiversitySatisfied": direction_diversity_satisfied,
                 "qualityStatus": quality_status,
                 "requiresRegeneration": requires_regeneration,
+                "shortlistIncomplete": shortlist_incomplete,
                 "warnings": warnings,
                 "qualityScores": final_scores,
             },
@@ -3693,9 +3809,9 @@ class IdeaGenerationService:
         session: IdeaSession,
         ranked: List[IdeaCandidate],
     ) -> int:
-        """Target at least two user-facing ideas when the pool can support it."""
+        """Target up to two user-facing ideas without exceeding the request."""
 
-        return 2
+        return max(1, min(2, session.config.maxCandidates))
 
     def _current_final_ready_candidates(
         self,
@@ -4134,9 +4250,9 @@ class IdeaGenerationService:
                 for step_name, step_func in pipeline_steps[start_index:]:
                     session = self._run_step(session, step_name, step_func)
 
-                if len(session.finalCandidateIds) < 2:
+                if not session.finalCandidateIds:
                     raise AwaitingIdeasError(
-                        "Idea session cannot complete with fewer than two approved candidates"
+                        "Idea session cannot complete without an approved candidate"
                     )
 
                 # Mark completed
@@ -4263,7 +4379,10 @@ class IdeaGenerationService:
                 ChatMessage(role="user", content=user_prompt)
             ]
 
-            response = client.chat(messages, model=session.config.model, max_tokens=500)
+            response = client.chat(
+                messages, model=session.config.model, max_tokens=500,
+                structured_output=True,
+            )
 
             # Parse JSON response. If the model wraps JSON in text/fences, recover
             # the object; if parsing still fails, use deterministic clean queries.
@@ -5081,7 +5200,10 @@ class IdeaGenerationService:
                 ChatMessage(role="system", content=prompts.NOVELTY_CHECK_SYSTEM),
                 ChatMessage(role="user", content=user_prompt)
             ]
-            response = client.chat(messages, model=session.config.model, max_tokens=800)
+            response = client.chat(
+                messages, model=session.config.model, max_tokens=800,
+                structured_output=True,
+            )
             try:
                 data = json.loads(response.text)
                 covered_areas = data.get("coveredAreas", [])
@@ -5274,7 +5396,10 @@ class IdeaGenerationService:
                 ChatMessage(role="system", content=prompts.GAP_ANALYSIS_SYSTEM),
                 ChatMessage(role="user", content=user_prompt),
             ]
-            response = client.chat(messages, model=session.config.model, max_tokens=1000)
+            response = client.chat(
+                messages, model=session.config.model, max_tokens=1000,
+                structured_output=True,
+            )
             try:
                 data = json.loads(response.text)
                 gap_analysis = data.get("gapAnalysis", [])
@@ -5915,7 +6040,10 @@ class IdeaGenerationService:
                     ),
                 ),
             ]
-            response = client.chat(messages, model=session.config.model, max_tokens=1400)
+            response = client.chat(
+                messages, model=session.config.model, max_tokens=1400,
+                structured_output=True,
+            )
             data = _extract_json_object(getattr(response, "text", "") or "")
             directions = self._normalize_seed_research_directions(
                 data,
@@ -6067,7 +6195,10 @@ class IdeaGenerationService:
                     ]
 
                     try:
-                        response = client.chat(messages, model=session.config.model, max_tokens=2200)
+                        response = client.chat(
+                            messages, model=session.config.model, max_tokens=2200,
+                            structured_output=True,
+                        )
                         total_latency_ms += int(getattr(response, "latency_ms", 0) or 0)
                         direction_candidates = self._parse_ideas_json(
                             session.id,
@@ -6114,7 +6245,10 @@ class IdeaGenerationService:
                     ChatMessage(role="user", content=user_prompt)
                 ]
 
-                response = client.chat(messages, model=session.config.model, max_tokens=3000)
+                response = client.chat(
+                    messages, model=session.config.model, max_tokens=3000,
+                    structured_output=True,
+                )
                 total_latency_ms += int(getattr(response, "latency_ms", 0) or 0)
 
                 # Parse ideas from response
@@ -6220,6 +6354,7 @@ class IdeaGenerationService:
                             description=exp.get("description", ""),
                             metrics=_coerce_strict_text_list(exp.get("metrics", [])),
                             datasets=_coerce_strict_text_list(exp.get("datasets", [])),
+                            stopConditions=_coerce_strict_text_list(exp.get("stopConditions", [])),
                         ))
                     
                     # Parse risks
@@ -6248,7 +6383,9 @@ class IdeaGenerationService:
                         scoringMethod="pending",
                         risks=risks,
                         requiredExperiments=experiments,
+                        experimentSpecs=experiments,
                         expectedMetrics=expected_outcomes,
+                        baselines=_coerce_strict_text_list(idea.get("baselines", [])),
                         draftPlan=DraftPlan(
                             researchQuestion=idea.get("problem", ""),
                             hypothesis=hypothesis,
@@ -6959,9 +7096,9 @@ class IdeaGenerationService:
             "qualityLoopSummary": session.qualityLoopSummary,
         }
 
-        if len(session.finalCandidateIds) < 2:
+        if not session.finalCandidateIds:
             raise AwaitingIdeasError(
-                "Idea review gate requires at least two approved final candidates",
+                "Idea review gate requires at least one approved final candidate",
                 inputs=inputs,
                 outputs=outputs,
             )
@@ -8154,7 +8291,7 @@ class IdeaGenerationService:
             model=session.config.model,
             temperature=0.25,
             max_tokens=2400,
-            response_format={"type": "json_object"},
+            structured_output=True,
         )
         candidates = self._parse_ideas_json(session.id, response.text or "", 1)
         if not candidates:
@@ -8196,7 +8333,10 @@ class IdeaGenerationService:
         ]
 
         client = get_provider_client(provider_name)
-        response = client.chat(messages, model=model, max_tokens=1200)
+        response = client.chat(
+            messages, model=model, max_tokens=1200,
+            structured_output=True,
+        )
 
         # Parse JSON response
         try:

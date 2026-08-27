@@ -103,8 +103,15 @@ def sanitize_markdown_inline_code_for_latex(content: str) -> Tuple[str, List[str
 def sanitize_markdown_emphasis_for_latex(content: str) -> Tuple[str, List[str]]:
     warnings: List[str] = []
 
-    sanitized, bold_count = re.subn(r"\*\*([^*\n]{1,200})\*\*", r"\\textbf{\1}", content or "")
-    sanitized, italic_count = re.subn(r"(?<!\*)\*([^*\n]{1,120})\*(?!\*)", r"\\emph{\1}", sanitized)
+    # Asterisks inside `$...$` commonly denote a selected item (for example
+    # `e^*`). Never let Markdown emphasis span cross a math delimiter or start
+    # at a superscript star.
+    sanitized, bold_count = re.subn(r"\*\*([^*$\n]{1,200})\*\*", r"\\textbf{\1}", content or "")
+    sanitized, italic_count = re.subn(
+        r"(?<![\*^])\*([^*$\n]{1,120})\*(?!\*)",
+        r"\\emph{\1}",
+        sanitized,
+    )
     if bold_count or italic_count:
         warnings.append(f"Converted {bold_count + italic_count} Markdown emphasis span(s) to LaTeX.")
     return sanitized, warnings

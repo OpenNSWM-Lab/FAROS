@@ -208,6 +208,7 @@ Method: {method}
 Baseline(s): {baselines}
 Required metrics: {metrics}
 Datasets: {datasets}
+Frozen benchmark contract: {benchmark_contract}
 
 Strict requirements:
 1. Return only complete Python source code for src/main.py, without Markdown fences.
@@ -215,10 +216,14 @@ Strict requirements:
 3. Use a fixed random seed and a deterministic synthetic-data or computational experiment.
 4. Implement both the declared method and baseline. Compute all values at runtime; never hard-code outcomes.
 5. Evaluate on a held-out test split when data is involved.
-6. Write repo-root metrics.json as a JSON list. Every item must contain name, numeric value, unit, definition, and split.
+6. Write metrics.json in the current working directory (the repository root) as a JSON list. Open exactly "metrics.json", not a path derived from __file__. Every item must contain the exact keys name, value, unit, definition, and split; value must be numeric.
 7. Metric names or splits must distinguish the baseline from the proposed method.
 8. Print the same metric list as JSON and exit nonzero on an invalid or non-finite result.
 9. Include a main() function and an if __name__ == "__main__" guard.
+10. If the required metrics include precision, recall, F1, unsupported-claim rate, calibration error, Brier score, or AUROC, also write evaluation_records.json. It must be a JSON object with schema_version "faros-evaluation/v1", positive_label, positive_class, decision_threshold (normally 0.5), and records. Each record's top-level label is the ground-truth class. Its predictions object must be keyed by the exact metric method prefixes (for example baseline and method); every prediction must use exactly {{"label": <predicted class>, "probability": <positive-class probability>}}. Derive each prediction label from that method's probability and decision_threshold; never copy the ground-truth label into a prediction. Do not use predicted_label or predictedLabel as the output key. Use positive_class "unsupported" for unsupported-claim detection. Compute expected calibration error with 10 equal-width bins. FAROS will independently recompute the aggregate metrics from these records.
+11. For those classification metrics, use data/frozen_benchmark.json as the only evaluation set. If it exists, load it unchanged and never regenerate, relabel, reorder, omit, or add evaluation samples. If it does not exist, create it once with schema_version "faros-benchmark/v1", benchmark_id, task, positive_label, positive_class, integer seed, generator_version, feature_schema, and records. Every frozen record must contain sample_id, split, features, and label. evaluation_records.json must contain the exact same sample_id, split, and label values plus predictions, but no generated replacement samples. Probabilities must always mean the declared positive_class; invert consistency/support scores when positive_class is "unsupported".
+12. In an inherited-benchmark iteration, make a substantive method revision tied to the ReviewX feedback and include at least one named ablation prediction alongside the exact "baseline" and "method" predictions. The ablation must remove or neutralize a specific method component, use the same frozen records, and emit the same audited classification metrics with its own prefix. If the implemented method contains genuine stochastic fitting or sampling, evaluate deterministic seeds 13, 37, and 73 and expose their per-record predictions; otherwise state the deterministic design in code and do not fabricate seed variation.
+13. Keep experimental conclusions identifiable from metric names: use "baseline", "method", and "ablation_<component>" prefixes consistently in both metrics.json and evaluation_records.json. Do not label a tuned variant as a baseline, and do not claim improvement when the computed metric is unchanged or worse.
 """
 
 
@@ -233,6 +238,8 @@ def generate_project_from_research_candidate(
     language: str = "python",
     framework: str = "numpy",
     existing_project_id: Optional[str] = None,
+    iteration_feedback: Optional[Dict[str, Any]] = None,
+    frozen_benchmark: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Bridge an Idea candidate into the established Plan-based Code agent."""
 
@@ -241,6 +248,42 @@ def generate_project_from_research_candidate(
     title = str(candidate.get("title") or "Research Project")
     problem = str(candidate.get("problem") or candidate.get("hypothesisStatement") or "")
     method = str(candidate.get("proposedMethod") or candidate.get("keyInsight") or "")
+    iteration_feedback = iteration_feedback or {}
+    feedback_actions = [
+        str(item).strip()
+        for item in iteration_feedback.get("nextActions", [])
+        if str(item).strip()
+    ]
+    feedback_comment = str(iteration_feedback.get("feedbackComment") or "").strip()
+    optimization_policy = iteration_feedback.get("optimizationPolicy") or {}
+    guardrail_violations = iteration_feedback.get("guardrailViolations") or []
+    human_feedback = iteration_feedback.get("humanFeedback") or {}
+    if feedback_comment or feedback_actions or human_feedback:
+        feedback_lines = [
+            "ReviewX iteration requirements (must change the next executable experiment):"
+        ]
+        if feedback_comment:
+            feedback_lines.append(feedback_comment)
+        feedback_lines.extend(f"- {item}" for item in feedback_actions)
+        if optimization_policy:
+            feedback_lines.append(
+                "Treat optimizationPolicy as a machine-checkable objective; do not trade off "
+                "a guardrail metric to improve the primary metric: "
+                f"{json.dumps(optimization_policy, ensure_ascii=True, sort_keys=True)}"
+            )
+        if guardrail_violations:
+            feedback_lines.append(
+                "The previous round violated these hard constraints and the executable method "
+                "must address them explicitly: "
+                f"{json.dumps(guardrail_violations, ensure_ascii=True, sort_keys=True)}"
+            )
+        if human_feedback:
+            feedback_lines.append(
+                "The following constraints came from an explicit human review and must be "
+                "implemented and made verifiable in the next evidence bundle: "
+                f"{json.dumps(human_feedback, ensure_ascii=True, sort_keys=True)}"
+            )
+        method = f"{method}\n\n" + "\n".join(feedback_lines)
     specs = candidate.get("experimentSpecs") or candidate.get("requiredExperiments") or []
     metrics = [
         str(metric)
@@ -269,7 +312,12 @@ def generate_project_from_research_candidate(
             "methodology": {"description": method, "metrics": metrics, "datasets": datasets},
             "expected_outcomes": {"metrics": metrics},
         },
-        evaluationProtocol={"metrics": metrics, "datasets": datasets},
+        evaluationProtocol={
+            "metrics": metrics,
+            "datasets": datasets,
+            "iterationFeedback": iteration_feedback,
+            "frozenBenchmark": frozen_benchmark or {},
+        },
         baselines=[str(item) for item in (candidate.get("baselines") or [])],
     )
     session = PlanSession(
@@ -301,6 +349,7 @@ def generate_project_from_research_candidate(
         enable_github=False,
         existing_project_id=existing_project_id,
         scientific_mode=True,
+        frozen_benchmark=frozen_benchmark,
     )
 
 def generate_project_from_plan(
@@ -314,6 +363,7 @@ def generate_project_from_plan(
     enable_github: bool = False,
     existing_project_id: Optional[str] = None,
     scientific_mode: bool = False,
+    frozen_benchmark: Optional[Dict[str, Any]] = None,
 ) -> str:
     """
     Main entry point: generate a code project from a plan candidate.
@@ -399,6 +449,8 @@ def generate_project_from_plan(
                 abstract=abstract,
                 method=method,
                 candidate=candidate,
+                frozen_benchmark=frozen_benchmark,
+                existing_source=files_dict.get("src/main.py"),
             )
         else:
             _set_status(project_id, "blueprint", "running", "Designing project structure...")
@@ -535,7 +587,12 @@ def _clean_generated_source(text: str) -> str:
     return content + "\n"
 
 
-def _scientific_entrypoint_issues(content: str) -> List[str]:
+def _scientific_entrypoint_issues(
+    content: str,
+    *,
+    require_classification_records: bool = False,
+    frozen_benchmark: Optional[Dict[str, Any]] = None,
+) -> List[str]:
     issues: List[str] = []
     tree = None
     try:
@@ -544,6 +601,24 @@ def _scientific_entrypoint_issues(content: str) -> List[str]:
     except SyntaxError as exc:
         issues.append(f"syntax error: {exc.msg}")
     if tree is not None:
+        literal_bindings = {
+            target.id: node.value.value
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.Assign, ast.AnnAssign))
+            for target in (
+                node.targets if isinstance(node, ast.Assign) else [node.target]
+            )
+            if isinstance(target, ast.Name)
+            and isinstance(node.value, ast.Constant)
+        }
+
+        def resolve_literal(node: ast.AST | None) -> Any:
+            if isinstance(node, ast.Constant):
+                return node.value
+            if isinstance(node, ast.Name):
+                return literal_bindings.get(node.id)
+            return None
+
         imported_roots = {
             alias.name.split(".", 1)[0]
             for node in ast.walk(tree)
@@ -562,10 +637,120 @@ def _scientific_entrypoint_issues(content: str) -> List[str]:
         )
         if unsupported:
             issues.append("unsupported dependencies: " + ", ".join(unsupported))
+        expected_positive_class = (
+            str(frozen_benchmark.get("positiveClass") or "")
+            if frozen_benchmark
+            else ""
+        )
+        expected_positive_label = (
+            frozen_benchmark.get("positiveLabel") if frozen_benchmark else None
+        )
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Dict):
+                continue
+            fields = {
+                key.value: value
+                for key, value in zip(node.keys, node.values)
+                if isinstance(key, ast.Constant) and isinstance(key.value, str)
+            }
+            declared_class = resolve_literal(fields.get("positive_class"))
+            if (
+                expected_positive_class
+                and declared_class is not None
+                and str(declared_class) != expected_positive_class
+            ):
+                issues.append(
+                    "positive_class must match the inherited frozen benchmark exactly: "
+                    f"{expected_positive_class}"
+                )
+            declared_label = resolve_literal(fields.get("positive_label"))
+            if (
+                expected_positive_label is not None
+                and declared_label is not None
+                and declared_label != expected_positive_label
+            ):
+                issues.append(
+                    "positive_label must match the inherited frozen benchmark exactly: "
+                    f"{expected_positive_label}"
+                )
+            truth_label = fields.get("label")
+            prediction_groups = fields.get("predictions")
+            if truth_label is None or not isinstance(prediction_groups, ast.Dict):
+                continue
+            truth_expression = ast.dump(truth_label, include_attributes=False)
+            for prediction in prediction_groups.values:
+                if not isinstance(prediction, ast.Dict):
+                    continue
+                prediction_fields = {
+                    key.value: value
+                    for key, value in zip(prediction.keys, prediction.values)
+                    if isinstance(key, ast.Constant) and isinstance(key.value, str)
+                }
+                predicted_label = prediction_fields.get("label")
+                if predicted_label is None:
+                    issues.append(
+                        "each prediction object must use the exact key 'label' for its predicted class"
+                    )
+                    break
+                if (
+                    ast.dump(predicted_label, include_attributes=False) == truth_expression
+                ):
+                    issues.append(
+                        "prediction labels must be derived from model probabilities, not copied from ground truth"
+                    )
+                    break
+        if frozen_benchmark:
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call) or not node.args:
+                    continue
+                if not isinstance(node.func, ast.Name) or node.func.id != "open":
+                    continue
+                path = str(resolve_literal(node.args[0]) or "")
+                mode_node = node.args[1] if len(node.args) > 1 else None
+                if mode_node is None:
+                    mode_node = next(
+                        (item.value for item in node.keywords if item.arg == "mode"),
+                        None,
+                    )
+                mode = str(resolve_literal(mode_node) or "r")
+                if path.endswith("frozen_benchmark.json") and any(
+                    marker in mode for marker in ("w", "a", "x", "+")
+                ):
+                    issues.append(
+                        "inherited frozen_benchmark.json must be opened read-only; remove all "
+                        "creation/write fallback code and raise an error if the file is missing"
+                    )
     if re.search(r"^\s*(?:from\s+src\b|import\s+src\b)", content, re.MULTILINE):
         issues.append("local src imports are forbidden")
     if "metrics.json" not in content or "json.dump" not in content:
         issues.append("the program must write metrics.json with json.dump")
+    if require_classification_records:
+        required_record_tokens = (
+            "evaluation_records.json",
+            "faros-evaluation/v1",
+            "frozen_benchmark.json",
+            "sample_id",
+            "features",
+            "split",
+            "positive_label",
+            "positive_class",
+            "predictions",
+            "probability",
+        )
+        creation_tokens = (
+            ()
+            if frozen_benchmark
+            else ("faros-benchmark/v1", "benchmark_id", "generator_version", "feature_schema")
+        )
+        missing = [
+            token for token in (*required_record_tokens, *creation_tokens)
+            if token not in content
+        ]
+        if missing:
+            issues.append(
+                "classification experiments must write auditable evaluation records; missing: "
+                + ", ".join(missing)
+            )
     if "if __name__" not in content or "def main" not in content:
         issues.append("main() and the __main__ guard are required")
     return issues
@@ -573,8 +758,16 @@ def _scientific_entrypoint_issues(content: str) -> List[str]:
 
 def _step_synthesize_scientific_entrypoint(
     *, client, model: str, title: str, abstract: str, method: str, candidate: CandidatePlan,
+    frozen_benchmark: Optional[Dict[str, Any]] = None,
+    existing_source: Optional[str] = None,
 ) -> str:
     protocol = candidate.evaluationProtocol or {}
+    requested_metrics = [str(item).lower() for item in protocol.get("metrics") or []]
+    require_classification_records = any(
+        token in metric
+        for metric in requested_metrics
+        for token in ("precision", "recall", "f1", "unsupported", "calibration", "brier", "auroc", "roc_auc")
+    )
     prompt = SCIENTIFIC_ENTRYPOINT_PROMPT.format(
         title=title,
         abstract=abstract,
@@ -582,9 +775,36 @@ def _step_synthesize_scientific_entrypoint(
         baselines=json.dumps(candidate.baselines, ensure_ascii=False),
         metrics=json.dumps(protocol.get("metrics") or [], ensure_ascii=False),
         datasets=json.dumps(protocol.get("datasets") or [], ensure_ascii=False),
+        benchmark_contract=(
+            "An inherited immutable benchmark is already present at data/frozen_benchmark.json. "
+            "Open it read-only and evaluate every record exactly once. Do not generate, rewrite, "
+            "replace, hash-check, or repair the benchmark; FAROS validates its canonical fingerprint "
+            f"externally as {frozen_benchmark.get('fingerprint', '')}. "
+            f"It declares positive_label={frozen_benchmark.get('positiveLabel')!r} and "
+            f"positive_class={frozen_benchmark.get('positiveClass')!r}; copy both values "
+            "exactly into evaluation_records.json and make every probability mean that class. "
+            "Its feature_schema is "
+            f"{json.dumps(frozen_benchmark.get('featureSchema'), ensure_ascii=False)} and one exact "
+            "record shape example is "
+            f"{json.dumps(frozen_benchmark.get('sampleRecord'), ensure_ascii=False)}. "
+            "SOURCE-LEVEL RULE: do not include any fallback branch that creates or opens "
+            "data/frozen_benchmark.json in write/append mode, even if that branch seems "
+            "unreachable. If the file is missing, raise FileNotFoundError."
+            if frozen_benchmark
+            else "No inherited benchmark is present. Create the versioned benchmark once, then evaluate it."
+        ),
     )
+    if frozen_benchmark and existing_source:
+        prompt += (
+            "\nRevise the inherited executable source below instead of redesigning the experiment. "
+            "Preserve its frozen-record mapping, metric implementations, baseline definitions, and "
+            "working outputs. Make the smallest substantive method/calibration change needed by the "
+            "ReviewX objective, then return the complete revised source.\n\n"
+            "INHERITED SOURCE:\n" + existing_source
+        )
     last_issues: List[str] = []
-    for attempt in range(2):
+    max_attempts = 3 if frozen_benchmark else 2
+    for attempt in range(max_attempts):
         request = prompt
         if attempt and last_issues:
             request += "\nThe previous response was rejected for: " + "; ".join(last_issues)
@@ -592,10 +812,14 @@ def _step_synthesize_scientific_entrypoint(
             messages=[ChatMessage(role="user", content=request)],
             model=model,
             temperature=0.2,
-            max_tokens=4000,
+            max_tokens=7000,
         )
         content = _clean_generated_source(response.text)
-        last_issues = _scientific_entrypoint_issues(content)
+        last_issues = _scientific_entrypoint_issues(
+            content,
+            require_classification_records=require_classification_records,
+            frozen_benchmark=frozen_benchmark,
+        )
         if not last_issues:
             return content
     raise ValueError("Invalid scientific entrypoint: " + "; ".join(last_issues))

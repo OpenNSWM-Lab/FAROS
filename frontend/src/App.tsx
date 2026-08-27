@@ -16,6 +16,7 @@ const PapersList = lazy(() => import('@/pages/Papers/PapersList').then(m => ({ d
 const PaperEditor = lazy(() => import('@/pages/Papers/PaperEditor').then(m => ({ default: m.PaperEditor })))
 const PaperWritingWorkspace = lazy(() => import('@/pages/Papers/PaperWritingWorkspace').then(m => ({ default: m.PaperWritingWorkspace })))
 const ConsistencyChecker = lazy(() => import('@/pages/Review/ConsistencyChecker').then(m => ({ default: m.ConsistencyChecker })))
+const CompetitionEvidence = lazy(() => import('@/pages/Review/CompetitionEvidence').then(m => ({ default: m.CompetitionEvidence })))
 const ReviewerSimulator = lazy(() => import('@/pages/Review/ReviewerSimulator').then(m => ({ default: m.ReviewerSimulator })))
 const LLMProviders = lazy(() => import('@/pages/Settings/LLMProviders').then(m => ({ default: m.LLMProviders })))
 const Preferences = lazy(() => import('@/pages/Settings/Preferences').then(m => ({ default: m.Preferences })))
@@ -79,6 +80,7 @@ function App() {
               <Route path="/papers/legacy/:id" element={<PaperEditor />} />
 
               {/* Review */}
+              <Route path="/review/competition" element={<CompetitionEvidence />} />
               <Route path="/review/consistency" element={<ConsistencyChecker />} />
               <Route path="/review/simulator" element={<ReviewerSimulator />} />
 

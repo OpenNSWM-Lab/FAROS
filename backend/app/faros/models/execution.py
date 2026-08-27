@@ -89,6 +89,10 @@ class FarosRunRecord(BaseModel):
     status: str
     execution_mode: str = 'execute'
     created_at: str
+    parent_run_id: Optional[str] = None
+    research_series_id: Optional[str] = None
+    iteration_number: int = Field(default=1, ge=1)
+    iteration_feedback_id: Optional[str] = None
     started_at: Optional[str] = None
     ended_at: Optional[str] = None
     inputs: Dict[str, Any] = Field(default_factory=dict)

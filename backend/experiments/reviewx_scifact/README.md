@@ -24,6 +24,24 @@ Generated datasets and results stay under the ignored `backend/data/` tree. The 
 The checked-in [RESULTS.md](RESULTS.md) records aggregate results, ablations,
 uncertainty, and the FAROS integrity-audit outcome without redistributing raw data.
 
+## Two-round Qwen-guided loop
+
+The competition evidence runner keeps the official SciFact dev split hidden from
+Qwen until after a round-two plan is selected. It executes both rounds on one
+claim-grouped frozen feedback benchmark, audits method-specific decision
+thresholds, and then evaluates the selected revision once on the untouched dev
+split:
+
+```bash
+python -m experiments.reviewx_scifact.closed_loop \
+  --data-dir data/external/scifact \
+  --output-dir data/experiments/reviewx_scifact_closed_loop \
+  --model qwen3.7-plus-2026-05-26
+```
+
+All prompts, Qwen usage metadata, evidence bundles, per-record predictions, and
+the competition-oriented report remain under the ignored output directory.
+
 The source repository does not expose a standard SPDX license. FAROS therefore downloads SciFact from its official URL at runtime and does not redistribute it. Review the upstream terms before external redistribution.
 
 References:

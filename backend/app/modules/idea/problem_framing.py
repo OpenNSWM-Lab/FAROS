@@ -165,6 +165,7 @@ def frame_problem(
             model=model,
             temperature=0.3,
             max_tokens=1024,
+            structured_output=True,
         )
         parsed = _extract_json(resp.text)
         if not parsed:

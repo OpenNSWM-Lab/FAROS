@@ -6,7 +6,7 @@ from app.faros.models.capability import CapabilityResult
 from app.faros.models.execution import ExecutionContext
 from app.faros.models.profile import CapabilityBinding
 from app.faros.models.provider import ProviderResult, ProviderTask
-from app.modules.review.service import generate_review
+from app.modules.review.service import generate_reviewx
 from app.modules.review.storage import create_review, update_review
 
 
@@ -45,13 +45,16 @@ class ReviewerSimulationCapability(BaseCapability):
         record = create_review(
             {
                 "paperId": paper_id,
-                "reviewerProfile": inputs.get("reviewerProfile", "senior_reviewer"),
+                "reviewerProfile": "reviewx_evidence_auditor",
                 "providerName": provider_name,
                 "model": model,
+                "reviewKind": "reviewx",
+                "budgetMode": inputs.get("reviewBudgetMode", "balanced"),
+                "ablationMode": inputs.get("reviewAblationMode", "full"),
             }
         )
-        review = generate_review(record["id"])
-        return self._build_result(context, review, paper_id, f"Reviewer simulation completed for paper {paper_id}")
+        review = generate_reviewx(record["id"])
+        return self._build_result(context, review, paper_id, f"ReviewX completed for paper {paper_id}")
 
     def consume_provider_result(self, context: ExecutionContext, inputs: Dict[str, Any], provider_result: ProviderResult) -> CapabilityResult:
         paper_id = inputs.get("paperId")
@@ -76,6 +79,7 @@ class ReviewerSimulationCapability(BaseCapability):
 
     def _build_result(self, context: ExecutionContext, review: Dict[str, Any], paper_id: str, event_message: str) -> CapabilityResult:
         action_items = review.get("actionItems", [])
+        findings = review.get("findings", [])
         return CapabilityResult(
             status="completed" if review.get("status") == "completed" else review.get("status", "failed"),
             outputs={
@@ -84,6 +88,9 @@ class ReviewerSimulationCapability(BaseCapability):
                 "scoreSuggestion": review.get("scoreSuggestion"),
                 "actionItemCount": len(action_items),
                 "actionItems": action_items,
+                "reviewKind": review.get("reviewKind", "legacy"),
+                "findingCount": len(findings),
+                "findings": findings,
             },
             artifacts=[
                 ArtifactRecord(
@@ -91,7 +98,10 @@ class ReviewerSimulationCapability(BaseCapability):
                     type="review_report",
                     uri=f"review://{review['id']}",
                     producer=self.capability_id,
-                    summary=f"Review {review['id']} with {len(action_items)} action items",
+                    summary=(
+                        f"{review.get('reviewKind', 'Review')} {review['id']} with "
+                        f"{len(findings)} findings and {len(action_items)} action items"
+                    ),
                     metadata={"reviewId": review["id"], "paperId": paper_id},
                 )
             ],

@@ -152,7 +152,11 @@ class DeepReader:
         response = get_llm_task_scheduler().run(
             "deep_reader",
             lambda: client.chat(
-                messages, model=session.config.model, max_tokens=2000
+                messages,
+                model=session.config.model,
+                temperature=0.0,
+                max_tokens=2400,
+                structured_output=True,
             ),
         )
 
