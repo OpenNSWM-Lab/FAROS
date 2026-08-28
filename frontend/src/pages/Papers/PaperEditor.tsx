@@ -66,7 +66,11 @@ export function PaperEditor() {
       actions={
         <div className="flex items-center gap-2">
           <Badge variant="outline" className={paperDisplayStatusClass(paper)}>{paperDisplayStatusLabel(paper)}</Badge>
-          <Button variant="outline" size="sm" onClick={() => window.open('/demo/paper.pdf', '_blank')}>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => window.open(`/api/v1/papers/${encodeURIComponent(paper.id)}/pdf`, '_blank')}
+          >
             <FileText className="mr-2 h-4 w-4" />
             View PDF
           </Button>
