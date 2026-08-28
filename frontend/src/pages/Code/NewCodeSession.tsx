@@ -7,11 +7,12 @@ import { Code2, ArrowLeft, Play, Loader2 } from 'lucide-react'
 import { createSession, startSession } from '@/lib/api/code'
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || ''
+const DEFAULT_REPO_PATH = import.meta.env.VITE_DEFAULT_REPO_PATH || ''
 
 export function NewCodeSession() {
   const navigate = useNavigate()
   
-  const [repoPath, setRepoPath] = useState('/data/guiyao/Auto-LLM/AI-Researcher/backend')
+  const [repoPath, setRepoPath] = useState(DEFAULT_REPO_PATH)
   const [goal, setGoal] = useState('')
   const [maxCandidates, setMaxCandidates] = useState(3)
   const [constraints, setConstraints] = useState('')
