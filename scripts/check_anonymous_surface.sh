@@ -29,14 +29,19 @@ if [[ -n "${FAROS_ANON_EXTRA_PATTERN:-}" ]]; then
   PATTERNS+=("$FAROS_ANON_EXTRA_PATTERN")
 fi
 
-ARGS=(-n -i --glob '!**/*.map')
-for pattern in "${PATTERNS[@]}"; do
-  ARGS+=(-e "$pattern")
-done
-
 set +e
-MATCHES="$(rg "${ARGS[@]}" "${SEARCH_PATHS[@]}" 2>&1)"
-STATUS=$?
+if command -v rg >/dev/null 2>&1; then
+  ARGS=(-n -i --glob '!**/*.map')
+  for pattern in "${PATTERNS[@]}"; do
+    ARGS+=(-e "$pattern")
+  done
+  MATCHES="$(rg "${ARGS[@]}" "${SEARCH_PATHS[@]}" 2>&1)"
+  STATUS=$?
+else
+  COMBINED_PATTERN="$(IFS='|'; printf '%s' "${PATTERNS[*]}")"
+  MATCHES="$(grep -RInEI --exclude='*.map' -- "$COMBINED_PATTERN" "${SEARCH_PATHS[@]}" 2>&1)"
+  STATUS=$?
+fi
 set -e
 if [[ $STATUS -gt 1 ]]; then
   printf '%s\n' "$MATCHES" >&2
