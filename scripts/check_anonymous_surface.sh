@@ -7,6 +7,17 @@ if [[ -d "$ROOT_DIR/frontend/dist" ]]; then
   SEARCH_PATHS+=("$ROOT_DIR/frontend/dist")
 fi
 
+mapfile -t PUBLIC_DOCUMENTS < <(
+  find "$ROOT_DIR/frontend/public" -type f \
+    \( -iname '*.pdf' -o -iname '*.ppt' -o -iname '*.pptx' -o -iname '*.doc' -o -iname '*.docx' \) \
+    -print | sort
+)
+if [[ ${#PUBLIC_DOCUMENTS[@]} -gt 0 ]]; then
+  printf 'Anonymous surface check failed. Public office documents require explicit redaction review:\n' >&2
+  printf '  %s\n' "${PUBLIC_DOCUMENTS[@]}" >&2
+  exit 1
+fi
+
 PATTERNS=(
   '华中科技大学|网络空间安全学院'
   '(^|[^A-Za-z0-9_.-])/(home|Users|data)/[A-Za-z0-9._-]+|C:\\Users\\[A-Za-z0-9._-]+'
