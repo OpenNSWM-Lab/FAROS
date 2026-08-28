@@ -2,7 +2,11 @@ from app.modules.review.cem_guidance import annotate_risk_tree_with_mismatch
 from app.modules.review.cem_guidance import build_cem_budget_plan
 from app.modules.review.evidence_verifier import verify_claim_evidence
 from app.modules.review.mismatch_scorer import build_mismatch_report
-from app.modules.review.model_router import _build_severity_budget_plan, rank_findings_for_review
+from app.modules.review.model_router import (
+    _apply_additional_findings,
+    _build_severity_budget_plan,
+    rank_findings_for_review,
+)
 from app.modules.review.reviewx_models import (
     Claim,
     Evidence,
@@ -392,6 +396,128 @@ def test_review_finding_rank_falls_back_to_severity_and_confidence():
     ranked = rank_findings_for_review([minor, major], {})
 
     assert [finding.id for finding in ranked] == ["finding_major", "finding_minor"]
+
+
+def test_llm_specific_gap_merges_into_generic_finding_and_is_not_discarded():
+    claim = _claim()
+    generic = _finding(
+        severity="minor",
+        riskType="citation_uncertainty",
+        title="Performance claim needs human verification",
+        description="No imported FAROS artifact is available.",
+        confidence=0.42,
+        supportStatus="artifact_absent",
+    )
+
+    applications = _apply_additional_findings(
+        [generic],
+        [{
+            "claimId": claim.id,
+            "severity": "major",
+            "riskType": "unsupported_claim",
+            "supportStatus": "needs_human_verification",
+            "title": "Unverified first-of-its-kind claim",
+            "description": "The novelty claim needs a concrete comparison with prior work.",
+            "targetModule": "papers",
+            "suggestedFix": "Add a scoped literature comparison or weaken the novelty claim.",
+            "confidence": 0.86,
+        }],
+        [claim],
+        "qwen-test",
+        claim.paperId,
+    )
+
+    assert applications == [{
+        "claimId": claim.id,
+        "findingId": generic.id,
+        "outcome": "merged",
+    }]
+    assert generic.title == "Unverified first-of-its-kind claim"
+    assert generic.severity == "major"
+    assert generic.riskType == "unsupported_claim"
+    assert generic.confidence == 0.86
+    assert generic.reviewerDecision == "partially_valid"
+    assert generic.cemCalibration["llmMergedFinding"] is True
+    assert "Local evidence context" in generic.description
+
+
+def test_llm_merged_finding_uses_updated_risk_when_ranked():
+    generic = _finding(
+        id="finding_generic",
+        severity="major",
+        confidence=0.86,
+        cemCalibration={"llmMergedFinding": True, "llmFactor": 1.0},
+    )
+    unchanged = _finding(id="finding_unchanged", severity="minor", confidence=0.5)
+    trace = {
+        "budgetAllocations": [
+            {"findingId": generic.id, "priority": 0.31},
+            {"findingId": unchanged.id, "priority": 0.72},
+        ]
+    }
+
+    ranked = rank_findings_for_review([unchanged, generic], trace)
+
+    assert [finding.id for finding in ranked] == [generic.id, unchanged.id]
+
+
+def test_llm_specific_gap_does_not_overwrite_existing_specific_finding():
+    claim = _claim()
+    existing = _finding(
+        id="finding_contradiction",
+        severity="major",
+        riskType="contradiction",
+        supportStatus="contradicted",
+        title="Measured result contradicts the paper claim",
+    )
+
+    applications = _apply_additional_findings(
+        [existing],
+        [{
+            "claimId": claim.id,
+            "severity": "minor",
+            "riskType": "citation_uncertainty",
+            "supportStatus": "needs_human_verification",
+            "title": "Citation scope is unclear",
+            "description": "The citation does not establish the full scope of the claim.",
+            "targetModule": "papers",
+            "suggestedFix": "Narrow the claim or add a direct citation.",
+            "confidence": 0.72,
+        }],
+        [claim],
+        "qwen-test",
+        claim.paperId,
+    )
+
+    assert len(applications) == 1
+    assert applications[0]["outcome"] == "added"
+    assert applications[0]["findingId"] != existing.id
+    assert existing.title == "Measured result contradicts the paper claim"
+
+
+def test_llm_gap_cannot_claim_contradiction_without_direct_evidence():
+    claim = _claim()
+    findings = []
+
+    _apply_additional_findings(
+        findings,
+        [{
+            "claimId": claim.id,
+            "severity": "major",
+            "riskType": "citation_mismatch",
+            "supportStatus": "contradicted",
+            "title": "Citation may not support the claim",
+            "description": "The cited scope appears narrower than the claim.",
+            "confidence": 0.84,
+        }],
+        [claim],
+        "qwen-test",
+        claim.paperId,
+    )
+
+    assert findings[0].supportStatus == "needs_human_verification"
+    assert findings[0].reviewerDecision == "partially_valid"
+    assert findings[0].cemCalibration["llmDecision"] == "partially_valid"
 
 
 def test_citation_semantic_verifier_flags_off_topic_citation():

@@ -13,6 +13,7 @@ import json
 import asyncio
 import logging
 from datetime import datetime
+from pathlib import Path
 from typing import List, Optional
 from fastapi import APIRouter, HTTPException, status, BackgroundTasks, Depends
 from fastapi.responses import StreamingResponse, FileResponse
@@ -325,9 +326,8 @@ async def start_job(
             repo_path = project.repo_path
     
     if not repo_path:
-        # Try to get from goal (legacy sessions store repo path differently)
-        # For now, use a default test path
-        repo_path = "/data/guiyao/Auto-LLM/AI-Researcher/backend"
+        # Legacy jobs do not persist a repository path; use this FAROS backend.
+        repo_path = str(Path(__file__).resolve().parents[3])
     
     # Create workspace
     workspace_manager = get_workspace_manager()
