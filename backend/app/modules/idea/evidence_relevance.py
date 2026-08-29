@@ -18,20 +18,33 @@ class EvidenceTier(str, Enum):
 
 
 GENERIC_TERMS = frozenset({
+    "accuracy",
     "and",
     "analysis",
     "application",
     "approach",
+    "based",
+    "benchmark",
+    "benchmarks",
     "chamber",
     "dream",
     "evaluation",
+    "evaluations",
+    "evaluated",
+    "evaluating",
+    "expert",
+    "experts",
     "exploration",
     "framework",
     "for",
     "from",
     "generation",
     "method",
+    "metric",
+    "metrics",
     "model",
+    "models",
+    "novelty",
     "outcome",
     "outcomes",
     "potential",
@@ -40,14 +53,22 @@ GENERIC_TERMS = frozenset({
     "prediction",
     "red",
     "research",
+    "score",
+    "scores",
     "study",
     "system",
     "the",
     "using",
+    "validation",
     "with",
 })
 
 CONNECTOR_FACET_WEAK_TERMS = frozenset({"answering", "qa", "question"})
+
+LITERATURE_QUERY_TEMPLATE = (
+    "[specific method] for [specific task] in [research domain], "
+    "evaluated by [dataset or metric]"
+)
 
 
 @dataclass(frozen=True)
@@ -168,6 +189,128 @@ def build_topic_intent_profile(
         evaluation_anchors=_discriminative_tokens(evaluation_queries),
         generic_terms=tuple(sorted(GENERIC_TERMS)),
     )
+
+
+def diagnose_literature_failure(
+    *,
+    seed: str,
+    raw_result_count: int,
+    unique_result_count: int,
+    gate: Mapping[str, Any],
+    rejection_reason_counts: Mapping[str, Any],
+    seed_anchors: Sequence[str],
+    repair_queries: Sequence[str] = (),
+) -> dict[str, Any]:
+    """Turn retrieval telemetry into stable, user-actionable recovery data."""
+
+    requirements = gate.get("requirements")
+    if not isinstance(requirements, Mapping):
+        requirements = {}
+
+    def _count(value: Any, default: int = 0) -> int:
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            return default
+
+    min_papers = _count(requirements.get("minPaperCount"), 4)
+    min_aligned = _count(requirements.get("minAlignedPaperCount"), 3)
+    eligible_count = _count(gate.get("paperCount"))
+    aligned_count = _count(gate.get("alignedPaperCount"))
+    rejected_count = sum(_count(value) for value in rejection_reason_counts.values())
+    dominant_reason = ""
+    dominant_count = 0
+    for reason, value in rejection_reason_counts.items():
+        count = _count(value)
+        if count > dominant_count:
+            dominant_reason = str(reason)
+            dominant_count = count
+
+    role_coverage = gate.get("roleCoverage")
+    role_issues = []
+    if isinstance(role_coverage, Mapping):
+        raw_role_issues = role_coverage.get("issues")
+        if isinstance(raw_role_issues, Sequence) and not isinstance(raw_role_issues, (str, bytes)):
+            role_issues = [str(item) for item in raw_role_issues if str(item).strip()]
+
+    if raw_result_count <= 0:
+        code = "no_search_results"
+        recommended_action = "retry_search"
+        resume_recommended = True
+        action_codes = [
+            "use_english_academic_terms",
+            "wait_for_search_cooldown",
+            "resume_after_retry",
+        ]
+    elif eligible_count == 0 and dominant_reason == "generic_overlap_only":
+        code = "seed_too_broad"
+        recommended_action = "rewrite_seed"
+        resume_recommended = False
+        action_codes = [
+            "add_task_method_evaluation",
+            "use_multiple_discriminative_terms",
+            "create_new_session",
+        ]
+    elif eligible_count < min_papers:
+        code = "eligible_pool_too_small"
+        recommended_action = "rewrite_seed"
+        resume_recommended = False
+        action_codes = [
+            "broaden_niche_terms",
+            "keep_core_task_and_method",
+            "create_new_session",
+        ]
+    elif aligned_count < min_aligned:
+        code = "weak_topic_alignment"
+        recommended_action = "rewrite_seed"
+        resume_recommended = False
+        action_codes = [
+            "add_domain_and_task_anchors",
+            "name_method_or_evaluation_target",
+            "create_new_session",
+        ]
+    elif role_issues:
+        code = "missing_evidence_roles"
+        recommended_action = "rewrite_seed"
+        resume_recommended = False
+        action_codes = [
+            "cover_missing_evidence_roles",
+            "name_method_or_evaluation_target",
+            "create_new_session",
+        ]
+    else:
+        code = "evidence_quality_failed"
+        recommended_action = "inspect_and_rewrite"
+        resume_recommended = False
+        action_codes = [
+            "inspect_repair_queries",
+            "add_task_method_evaluation",
+            "create_new_session",
+        ]
+
+    return {
+        "code": code,
+        "seedQuery": seed,
+        "rawResultCount": _count(raw_result_count),
+        "uniqueResultCount": _count(unique_result_count),
+        "eligiblePaperCount": eligible_count,
+        "alignedPaperCount": aligned_count,
+        "rejectedPaperCount": rejected_count,
+        "dominantRejectionReason": dominant_reason or None,
+        "dominantRejectionCount": dominant_count,
+        "seedAnchors": list(dict.fromkeys(str(anchor) for anchor in seed_anchors if str(anchor).strip()))[:12],
+        "roleIssues": role_issues,
+        "requirements": {
+            "minPaperCount": min_papers,
+            "minAlignedPaperCount": min_aligned,
+            "minAlignmentScore": requirements.get("minAlignmentScore", 0.32),
+        },
+        "recommendedAction": recommended_action,
+        "resumeRecommended": resume_recommended,
+        "actionCodes": action_codes,
+        "queryTemplate": LITERATURE_QUERY_TEMPLATE,
+        "repairQueries": list(dict.fromkeys(str(query) for query in repair_queries if str(query).strip()))[:6],
+    }
 
 
 def _anchor_in_text(anchor: str, text: str) -> bool:

@@ -18,6 +18,8 @@ from datetime import datetime
 from typing import Optional, Dict, Any, List, Callable
 from pathlib import Path
 
+from app.core.user_context import sanitized_subprocess_env
+
 from .workspace import WorkspaceManager
 
 logger = logging.getLogger(__name__)
@@ -140,7 +142,7 @@ class JobRunner:
                 os.makedirs(cwd, exist_ok=True)
         
         # Setup environment
-        env = os.environ.copy()
+        env = sanitized_subprocess_env()
         if env_vars:
             env.update(env_vars)
         

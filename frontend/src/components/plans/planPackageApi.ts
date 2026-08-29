@@ -17,6 +17,7 @@ export interface PlanQualityGate {
   planSpecific: boolean
   agentApproved: boolean
   humanApproved: boolean
+  downstreamReady: boolean
   implementationReady: boolean
   overallScore: number
   reviewDecision: string

@@ -15,6 +15,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
+import { useReviewLocale } from '@/lib/reviewLocale'
 import {
   Code2, Loader2, CheckCircle2, XCircle, Clock, Play,
   FileText, FolderTree, Download,
@@ -99,6 +100,7 @@ interface TreeEntry {
 }
 
 export function CodeProjectWorkspace() {
+  const { text } = useReviewLocale()
   const [searchParams] = useSearchParams()
   const navigate = useNavigate()
   const location = useLocation()
@@ -362,27 +364,27 @@ export function CodeProjectWorkspace() {
   // Render Plan Context Panel
   const renderPlanContext = () => {
     if (loadingContext) {
-      return <div className="flex items-center gap-2 p-4"><Loader2 className="h-4 w-4 animate-spin" /> Loading plan context...</div>
+      return <div className="flex items-center gap-2 p-4"><Loader2 className="h-4 w-4 animate-spin" /> {text('正在加载计划...', 'Loading plan context...')}</div>
     }
     if (!planContext) {
       return (
         <div className="p-4 space-y-3">
           {loadingPackages ? (
             <div className="flex items-center gap-2 text-muted-foreground">
-              <Loader2 className="h-4 w-4 animate-spin" /> Loading available plans...
+              <Loader2 className="h-4 w-4 animate-spin" /> {text('正在加载可用计划...', 'Loading available plans...')}
             </div>
           ) : availablePackages.length === 0 ? (
             <div className="text-center text-muted-foreground py-4">
               <FileText className="h-8 w-8 mx-auto mb-2 opacity-50" />
-              <p className="text-sm">No PlanPackages available.</p>
-              <p className="text-xs mt-1">Generate a PlanPackage from the Pipeline page first.</p>
+              <p className="text-sm">{text('暂无可用的 PlanPackage。', 'No PlanPackages available.')}</p>
+              <p className="text-xs mt-1">{text('请先在科研流程中生成并批准一份计划。', 'Generate and approve a plan from the research pipeline first.')}</p>
               <Button variant="outline" size="sm" className="mt-3" onClick={() => navigate('/research/pipeline')}>
-                Go to Pipeline
+                {text('返回科研流程', 'Go to Pipeline')}
               </Button>
             </div>
           ) : (
             <>
-              <p className="text-sm font-medium text-slate-700 mb-2">Select a PlanPackage to generate code from:</p>
+              <p className="text-sm font-medium text-slate-700 mb-2">{text('选择一份 PlanPackage 生成实验代码：', 'Select a PlanPackage to generate code from:')}</p>
               <div className="space-y-2">
                 {availablePackages.map((pkg) => (
                   <button
@@ -404,7 +406,7 @@ export function CodeProjectWorkspace() {
                           {pkg.status}
                         </span>
                         <span className="text-[10px] text-muted-foreground">
-                          Score: {(pkg.overallScore * 100).toFixed(0)}
+                          {text('评分', 'Score')}: {(pkg.overallScore * 100).toFixed(0)}
                         </span>
                       </div>
                     </div>
@@ -459,11 +461,11 @@ export function CodeProjectWorkspace() {
         )}
         {!codeGenSession && (
           <div className="space-y-3 pt-2 border-t">
-            <p className="text-sm font-medium">Generation Config</p>
+            <p className="text-sm font-medium">{text('生成设置', 'Generation Config')}</p>
             <p className="text-xs text-muted-foreground">
               LLM：{settingsLlmLabel ?? '加载设置中…'}（与{' '}
               <button type="button" className="text-violet-600 underline" onClick={() => navigate('/settings/providers')}>
-                设置 → LLM 提供商
+                {text('设置 → LLM Provider', 'Settings → LLM Providers')}
               </button>
               {' '}一致）
             </p>
@@ -486,7 +488,7 @@ export function CodeProjectWorkspace() {
             </div>
             <Button onClick={startGeneration} disabled={isGenerating} className="w-full bg-violet-500 hover:bg-violet-600">
               {isGenerating ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Play className="h-4 w-4 mr-2" />}
-              Generate Project Code
+              {text('生成实验工程', 'Generate Project Code')}
             </Button>
           </div>
         )}
@@ -500,8 +502,8 @@ export function CodeProjectWorkspace() {
       return (
         <div className="p-4 text-center text-muted-foreground">
           <Wrench className="h-8 w-8 mx-auto mb-2 opacity-50" />
-          <p className="text-sm">No generation in progress.</p>
-          <p className="text-xs mt-1">Start a generation from the Plan Context tab.</p>
+          <p className="text-sm">{text('当前没有代码生成任务。', 'No generation in progress.')}</p>
+          <p className="text-xs mt-1">{text('请先在“计划上下文”中选择计划并启动生成。', 'Start a generation from the Plan Context tab.')}</p>
         </div>
       )
     }
@@ -534,7 +536,7 @@ export function CodeProjectWorkspace() {
           ))}
           {s.status === 'running' && (
             <div className="flex items-center gap-2 p-2 text-xs text-blue-600">
-              <Loader2 className="h-3 w-3 animate-spin" /> Agent is working...
+              <Loader2 className="h-3 w-3 animate-spin" /> {text('Agent 正在生成并验证工程...', 'Agent is generating and verifying the project...')}
             </div>
           )}
         </div>
@@ -632,9 +634,9 @@ export function CodeProjectWorkspace() {
   // Render past sessions list (when no linkId)
   const renderPastSessions = () => (
     <div className="space-y-3">
-      <h3 className="text-sm font-medium">Past Generation Sessions</h3>
+      <h3 className="text-sm font-medium">{text('历史生成任务', 'Past Generation Sessions')}</h3>
       {pastSessions.length === 0 ? (
-        <p className="text-sm text-muted-foreground">No sessions yet. Navigate from Plan page to start.</p>
+        <p className="text-sm text-muted-foreground">{text('暂无任务。请先从科研流程批准一份计划。', 'No sessions yet. Approve a plan from the research pipeline to start.')}</p>
       ) : (
         <div className="space-y-2">
           {pastSessions.map(s => (
@@ -664,8 +666,8 @@ export function CodeProjectWorkspace() {
 
   return (
     <AppPageLayout
-      title="Code Generation"
-      subtitle="Agent-driven project-level code generation from research plans"
+      title={text('Code 工程生成', 'Code Generation')}
+      subtitle={text('从已批准的研究计划生成、验证并导出实验工程', 'Generate, verify, and export experiment projects from approved research plans')}
       icon={Code2}
       iconColor="violet"
       accentColor="violet"
@@ -673,8 +675,8 @@ export function CodeProjectWorkspace() {
       {/* Unified Code sub-navigation — shared across all Code pages */}
       <div className="flex items-center gap-1 mb-4 border-b pb-2">
         {[
-          { label: 'Projects', href: '/code/projects', icon: FolderOpen },
-          { label: 'Workspace', href: '/code/workspace', icon: FlaskConical },
+          { label: text('项目', 'Projects'), href: '/code/projects', icon: FolderOpen },
+          { label: text('工作区', 'Workspace'), href: '/code/workspace', icon: FlaskConical },
           { label: 'Blueprint', href: '/code/blueprint', icon: GitBranch },
         ].map((tab) => (
           <Button
@@ -701,13 +703,13 @@ export function CodeProjectWorkspace() {
           className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'plan' ? 'border-teal-500 text-teal-700' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
           onClick={() => setActiveTab('plan')}
         >
-          <FileText className="h-4 w-4 inline mr-1" />Plan Context
+          <FileText className="h-4 w-4 inline mr-1" />{text('计划上下文', 'Plan Context')}
         </button>
         <button
           className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'generation' ? 'border-violet-500 text-violet-700' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
           onClick={() => setActiveTab('generation')}
         >
-          <Wrench className="h-4 w-4 inline mr-1" />Generation
+          <Wrench className="h-4 w-4 inline mr-1" />{text('生成过程', 'Generation')}
           {codeGenSession?.status === 'running' && <Loader2 className="h-3 w-3 inline ml-1 animate-spin" />}
         </button>
       </div>
@@ -723,7 +725,7 @@ export function CodeProjectWorkspace() {
                 <div className="bg-slate-50 px-3 py-2 border-b flex items-center gap-2">
                   <FileText className="h-4 w-4 text-violet-500" />
                   <span className="text-sm font-medium truncate">{selectedFile}</span>
-                  <Button variant="ghost" size="sm" className="ml-auto h-6 text-xs" onClick={() => { setSelectedFile(null); setFileContent(null) }}>Close</Button>
+                  <Button variant="ghost" size="sm" className="ml-auto h-6 text-xs" onClick={() => { setSelectedFile(null); setFileContent(null) }}>{text('关闭', 'Close')}</Button>
                 </div>
                 <pre className="p-4 text-xs font-mono overflow-auto max-h-[500px] bg-slate-900 text-slate-100">
                   {fileContent}
@@ -739,11 +741,11 @@ export function CodeProjectWorkspace() {
               <Card>
                 <CardContent className="py-8 text-center">
                   <Sparkles className="h-10 w-10 text-violet-400 mx-auto mb-3" />
-                  <h3 className="text-lg font-medium mb-1">Ready to Generate</h3>
+                  <h3 className="text-lg font-medium mb-1">{text('计划已就绪', 'Ready to Generate')}</h3>
                   <p className="text-sm text-muted-foreground mb-4">
-                    Plan loaded: <strong>{planContext.candidate?.title || 'Research Plan'}</strong>
+                    {text('已加载计划', 'Plan loaded')}: <strong>{planContext.candidate?.title || text('研究计划', 'Research Plan')}</strong>
                   </p>
-                  <p className="text-xs text-muted-foreground">Configure options and click "Generate Project Code" in the right panel →</p>
+                  <p className="text-xs text-muted-foreground">{text('确认右侧设置后，点击“生成实验工程”。', 'Confirm the options on the right, then click Generate Project Code.')}</p>
                 </CardContent>
               </Card>
             )}

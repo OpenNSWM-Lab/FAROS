@@ -15,9 +15,10 @@ import {
 } from 'lucide-react'
 
 import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
+import { Button, buttonVariants } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { API_BASE_URL } from '@/lib/api'
+import { useReviewLocale, type ReviewLocale } from '@/lib/reviewLocale'
 import type { QualityAssessment } from '@/lib/types/scientificResearch'
 
 interface RunArtifact {
@@ -204,87 +205,55 @@ interface ExperimentFeedbackHistory extends Omit<ExperimentFeedbackResponse, 'fe
   nextRunId?: string | null
 }
 
-interface SciFactCaseJob {
-  jobId: string
-  status: 'queued' | 'running' | 'completed' | 'failed'
-  createdAt: string
-  updatedAt: string
-  model: string
-  bootstrapSamples: number
-  reused: boolean
-  runId?: string
-  qualityGate?: string
-  summaryUrl?: string
-  reportUrl?: string
-  feedbackId?: string
-  error?: string
-}
-
-interface SciFactMetricSet {
-  'Precision': number
-  'Recall': number
-  'F1-Score': number
-  'Brier Score': number
-  'Expected Calibration Error (ECE)': number
-  'AUROC': number
-}
-
-interface SciFactCaseSummary {
-  runId: string
-  feedbackResults: { roundOne: SciFactMetricSet; roundTwo: SciFactMetricSet }
-  finalHoldout: { roundOne: SciFactMetricSet; roundTwo: SciFactMetricSet }
-  qwenTrace: { model: string; usage: { total_tokens: number } }
-  qualityGate: { status: string }
-  preregistration: { contentHash: string }
-  humanSignoff: { status: string }
-}
-
-interface ReliabilityMethodScore {
-  faultDetectionRate: number
-  normalFalseRejectRate: number
-  f1: number
-  issueLocalizationRate: number
-}
-
-interface ReliabilityBenchmarkSummary {
-  runId: string
-  qualityGate: string
-  datasets: string[]
-  totalCases: number
-  faultyCases: number
-  cleanCases: number
-  scores: Record<'qwen_only' | 'rules_only' | 'faros_full', ReliabilityMethodScore>
-  repairEvaluation: { attempted: number; passed: number; successRate: number }
-  qwenModel?: string
-  qwenUsage: { total_tokens?: number }
-  qwenMisses: Array<{ dataset: string; faultType: string; rationale: string }>
-  reportUrl: string
-}
-
 const requiredArtifacts = [
   { filename: 'research_dossier.json', label: 'Research dossier', required: true },
   { filename: 'execution_assessment.json', label: 'Execution assessment', required: false },
   { filename: 'experiment_evidence.json', label: 'Experiment evidence', required: true },
 ]
 
-const decisionLabel: Record<ExperimentFeedbackResponse['iterationDecision']['decision'], string> = {
-  accept_results: 'Accept results',
-  revise_plan: 'Revise plan',
-  rerun_experiment: 'Rerun experiment',
-  needs_human: 'Human decision',
+const artifactChineseLabels: Record<string, string> = {
+  'research_dossier.json': '研究档案',
+  'execution_assessment.json': '执行评估',
+  'experiment_evidence.json': '实验证据',
 }
 
-const signoffStageLabel: Record<HumanSignoffStage, string> = {
-  plan: 'Plan approval',
-  repair: 'Repair approval',
-  conclusion: 'Conclusion release',
+const decisionLabel: Record<ExperimentFeedbackResponse['iterationDecision']['decision'], Record<ReviewLocale, string>> = {
+  accept_results: { 'zh-CN': '接受结果', 'en-US': 'Accept results' },
+  revise_plan: { 'zh-CN': '修订计划', 'en-US': 'Revise plan' },
+  rerun_experiment: { 'zh-CN': '重跑实验', 'en-US': 'Rerun experiment' },
+  needs_human: { 'zh-CN': '需人工决策', 'en-US': 'Human decision' },
 }
 
-const signoffStatusLabel: Record<HumanSignoffStatus, string> = {
-  pending: 'Pending',
-  approved: 'Approved',
-  rejected: 'Rejected',
-  changes_requested: 'Changes requested',
+const signoffStageLabel: Record<HumanSignoffStage, Record<ReviewLocale, string>> = {
+  plan: { 'zh-CN': '方案签核', 'en-US': 'Plan approval' },
+  repair: { 'zh-CN': '修复签核', 'en-US': 'Repair approval' },
+  conclusion: { 'zh-CN': '结论发布', 'en-US': 'Conclusion release' },
+}
+
+const signoffStatusLabel: Record<HumanSignoffStatus, Record<ReviewLocale, string>> = {
+  pending: { 'zh-CN': '待签核', 'en-US': 'Pending' },
+  approved: { 'zh-CN': '已批准', 'en-US': 'Approved' },
+  rejected: { 'zh-CN': '已拒绝', 'en-US': 'Rejected' },
+  changes_requested: { 'zh-CN': '要求修改', 'en-US': 'Changes requested' },
+}
+
+const uiStatusLabels: Record<string, Record<ReviewLocale, string>> = {
+  queued: { 'zh-CN': '排队中', 'en-US': 'queued' },
+  running: { 'zh-CN': '运行中', 'en-US': 'running' },
+  completed: { 'zh-CN': '已完成', 'en-US': 'completed' },
+  failed: { 'zh-CN': '失败', 'en-US': 'failed' },
+  pass: { 'zh-CN': '通过', 'en-US': 'pass' },
+  passed: { 'zh-CN': '通过', 'en-US': 'passed' },
+  fail: { 'zh-CN': '不通过', 'en-US': 'fail' },
+  pending: { 'zh-CN': '待签核', 'en-US': 'pending' },
+  continue: { 'zh-CN': '继续', 'en-US': 'continue' },
+  blocked: { 'zh-CN': '已阻断', 'en-US': 'blocked' },
+  in_progress: { 'zh-CN': '处理中', 'en-US': 'in progress' },
+  resolved: { 'zh-CN': '已解决', 'en-US': 'resolved' },
+  verified: { 'zh-CN': '已验证', 'en-US': 'verified' },
+  rejected: { 'zh-CN': '已拒绝', 'en-US': 'rejected' },
+  changes_requested: { 'zh-CN': '要求修改', 'en-US': 'changes requested' },
+  waived: { 'zh-CN': '已豁免', 'en-US': 'waived' },
 }
 
 function formatError(detail: unknown) {
@@ -352,7 +321,11 @@ function restoreLoopControls(
   }
 }
 
-export function ExperimentFeedbackPanel() {
+export function ExperimentFeedbackPanel({ initialFeedbackId }: { initialFeedbackId?: string }) {
+  const { locale, text } = useReviewLocale()
+  const statusText = (status?: string) => status
+    ? uiStatusLabels[status]?.[locale] || status
+    : '--'
   const [runs, setRuns] = useState<CompletedRun[]>([])
   const [runsLoading, setRunsLoading] = useState(true)
   const [selectedRunId, setSelectedRunId] = useState('')
@@ -373,11 +346,6 @@ export function ExperimentFeedbackPanel() {
   const [loopPatience, setLoopPatience] = useState(3)
   const [loopProgress, setLoopProgress] = useState<ExperimentSeriesProgress | null>(null)
   const [metricGuardrails, setMetricGuardrails] = useState<MetricGuardrail[]>([])
-  const [scifactJob, setScifactJob] = useState<SciFactCaseJob | null>(null)
-  const [scifactSummary, setScifactSummary] = useState<SciFactCaseSummary | null>(null)
-  const [scifactLoading, setScifactLoading] = useState(false)
-  const [scifactError, setScifactError] = useState('')
-  const [reliabilitySummary, setReliabilitySummary] = useState<ReliabilityBenchmarkSummary | null>(null)
   const [selectedSignoffStage, setSelectedSignoffStage] = useState<HumanSignoffStage>('plan')
   const [reviewerRole, setReviewerRole] = useState('team_lead')
   const [reviewerId, setReviewerId] = useState('')
@@ -391,83 +359,6 @@ export function ExperimentFeedbackPanel() {
   const [conditionEvidenceId, setConditionEvidenceId] = useState('')
   const [conditionLoading, setConditionLoading] = useState(false)
   const [reviewAuthToken, setReviewAuthToken] = useState('')
-
-  const loadScifactSummary = useCallback(async (job: SciFactCaseJob) => {
-    if (!job.summaryUrl) return
-    const response = await fetch(`${API_BASE_URL}${job.summaryUrl}`)
-    if (!response.ok) throw new Error('SciFact summary is unavailable.')
-    setScifactSummary(await response.json())
-  }, [])
-
-  const loadScifactJob = useCallback(async (jobId?: string) => {
-    const suffix = jobId ? encodeURIComponent(jobId) : 'latest'
-    const response = await fetch(
-      `${API_BASE_URL}/api/v1/reviews/reviewx/competition/scifact/jobs/${suffix}`,
-    )
-    if (response.status === 404 && !jobId) return null
-    if (!response.ok) throw new Error('Failed to load the SciFact competition case.')
-    const job = await response.json() as SciFactCaseJob
-    setScifactJob(job)
-    if (job.status === 'completed') await loadScifactSummary(job)
-    return job
-  }, [loadScifactSummary])
-
-  const startScifactCase = async () => {
-    setScifactLoading(true)
-    setScifactError('')
-    try {
-      const response = await fetch(
-        `${API_BASE_URL}/api/v1/reviews/reviewx/competition/scifact/jobs`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ reuseLatest: true, bootstrapSamples: 2000 }),
-        },
-      )
-      if (!response.ok) throw new Error('Failed to start the SciFact competition case.')
-      const job = await response.json() as SciFactCaseJob
-      setScifactJob(job)
-      if (job.status === 'completed') await loadScifactSummary(job)
-    } catch (caseError) {
-      setScifactError(caseError instanceof Error ? caseError.message : 'SciFact case failed.')
-    } finally {
-      setScifactLoading(false)
-    }
-  }
-
-  const openScifactHumanReview = async () => {
-    if (!scifactJob?.feedbackId) return
-    setAuditing(true)
-    setError('')
-    try {
-      const response = await fetch(
-        `${API_BASE_URL}/api/v1/reviews/reviewx/experiment-feedback/${scifactJob.feedbackId}`,
-      )
-      const data = await response.json().catch(() => ({}))
-      if (!response.ok) throw new Error(formatError(data.detail))
-      const feedback = data as ExperimentFeedbackResponse
-      setResult(feedback)
-      const controls = restoreLoopControls({
-        metricSnapshot: feedback.metricSnapshot,
-        loopPolicy: feedback.loopPolicy,
-        loopProgress: feedback.loopProgress,
-      })
-      setPrimaryMetric(controls.primaryMetric)
-      setMetricDirection(controls.direction)
-      setMaxIterations(controls.maxIterations)
-      setLoopPatience(controls.patience)
-      setMetricGuardrails(controls.guardrails)
-      setLoopProgress(controls.progress)
-      setPlanRevised(false)
-      setNextRunId('')
-      setActionMessage('SciFact evidence loaded for human review.')
-      void loadHistory(feedback.runId, feedback.researchSeriesId)
-    } catch (reviewError) {
-      setError(reviewError instanceof Error ? reviewError.message : 'Failed to open SciFact human review.')
-    } finally {
-      setAuditing(false)
-    }
-  }
 
   const loadRuns = useCallback(async () => {
     setRunsLoading(true)
@@ -517,25 +408,7 @@ export function ExperimentFeedbackPanel() {
 
   useEffect(() => {
     void loadRuns()
-    void loadScifactJob().catch(() => undefined)
-    void fetch(`${API_BASE_URL}/api/v1/reviews/reviewx/competition/reliability/latest`)
-      .then(async (response) => {
-        if (!response.ok) return null
-        return response.json() as Promise<ReliabilityBenchmarkSummary>
-      })
-      .then((summary) => setReliabilitySummary(summary))
-      .catch(() => undefined)
-  }, [loadRuns, loadScifactJob])
-
-  useEffect(() => {
-    if (!scifactJob || !['queued', 'running'].includes(scifactJob.status)) return
-    const timer = window.setTimeout(() => {
-      void loadScifactJob(scifactJob.jobId).catch((caseError) => {
-        setScifactError(caseError instanceof Error ? caseError.message : 'SciFact case failed.')
-      })
-    }, 2000)
-    return () => window.clearTimeout(timer)
-  }, [scifactJob, loadScifactJob])
+  }, [loadRuns])
 
   const loadHistory = async (runId: string, researchSeriesId?: string) => {
     if (!runId) {
@@ -557,6 +430,52 @@ export function ExperimentFeedbackPanel() {
       setHistoryLoading(false)
     }
   }
+
+  useEffect(() => {
+    if (!initialFeedbackId) return
+    let cancelled = false
+    const loadRequestedFeedback = async () => {
+      setAuditing(true)
+      setError('')
+      try {
+        const response = await fetch(
+          `${API_BASE_URL}/api/v1/reviews/reviewx/experiment-feedback/${encodeURIComponent(initialFeedbackId)}`,
+        )
+        const data = await response.json().catch(() => ({}))
+        if (!response.ok) throw new Error(formatError(data.detail))
+        if (cancelled) return
+        const feedback = data as ExperimentFeedbackResponse
+        const controls = restoreLoopControls(feedback)
+        setResult(feedback)
+        setSelectedRunId(feedback.runId)
+        setPrimaryMetric(controls.primaryMetric)
+        setMetricDirection(controls.direction)
+        setMaxIterations(controls.maxIterations)
+        setLoopPatience(controls.patience)
+        setMetricGuardrails(controls.guardrails)
+        setLoopProgress(controls.progress)
+        setPlanRevised(false)
+        setNextRunId('')
+        setActionMessage(text('已打开指定证据记录，可直接进行人工签核。', 'Requested evidence record loaded for human signoff.'))
+        void loadHistory(feedback.runId, feedback.researchSeriesId)
+        window.setTimeout(() => {
+          document.getElementById('reviewx-human-oversight')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+        }, 80)
+      } catch (loadError) {
+        if (!cancelled) {
+          setError(loadError instanceof Error
+            ? loadError.message
+            : text('指定的审核记录加载失败。', 'Failed to load the requested review record.'))
+        }
+      } finally {
+        if (!cancelled) setAuditing(false)
+      }
+    }
+    void loadRequestedFeedback()
+    return () => {
+      cancelled = true
+    }
+  }, [initialFeedbackId, text])
 
   const selectedRun = useMemo(
     () => runs.find((run) => run.id === selectedRunId),
@@ -952,6 +871,7 @@ export function ExperimentFeedbackPanel() {
     && gate !== 'fail'
     && !result?.qualityAssessment.findings.some((finding) => finding.severity === 'blocker'),
   )
+  const signoffFormReady = Boolean(reviewerId.trim() && signoffRationale.trim())
 
   return (
     <Card className="mb-6 border-emerald-200 shadow-md">
@@ -962,159 +882,39 @@ export function ExperimentFeedbackPanel() {
               <FlaskConical className="h-5 w-5" />
             </div>
             <div>
-              <CardTitle className="text-lg">Experiment Feedback Gate</CardTitle>
-              <div className="mt-1 text-xs text-slate-600">Direction B · evidence-driven iteration</div>
+              <CardTitle className="text-lg">{text('实验反馈 Gate', 'Experiment Feedback Gate')}</CardTitle>
+              <div className="mt-1 text-xs text-slate-600">{text('方向 B · 证据驱动迭代', 'Direction B · evidence-driven iteration')}</div>
             </div>
           </div>
           {result && (
             <div className="flex items-center gap-2">
-              <Badge variant={gateTone}>Gate: {gate}</Badge>
-              <Badge variant="outline">{decisionLabel[result.iterationDecision.decision]}</Badge>
+              <Badge variant={gateTone}>Gate: {statusText(gate)}</Badge>
+              <Badge variant="outline">{decisionLabel[result.iterationDecision.decision][locale]}</Badge>
             </div>
           )}
         </div>
       </CardHeader>
       <CardContent className="pt-5">
-        <section className="mb-5 border-b border-slate-200 pb-5" aria-label="SciFact competition case">
-          <div className="flex flex-wrap items-center justify-between gap-3">
+        <section className="mb-5 flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 pb-5">
+          <div className="flex items-start gap-3">
+            <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-emerald-700" />
             <div>
-              <div className="flex items-center gap-2 text-sm font-semibold text-slate-900">
-                <FileCheck2 className="h-4 w-4 text-emerald-700" />
-                Official SciFact two-round case
+              <div className="text-sm font-semibold text-slate-900">
+                {text('比赛 benchmark 与复验证据', 'Competition benchmarks and replication evidence')}
               </div>
-              <div className="mt-1 text-xs text-slate-600">
-                Preregistered plan · frozen benchmark · ReviewX feedback · real Qwen planning · untouched dev holdout
-              </div>
-            </div>
-            <div className="flex items-center gap-2">
-              {scifactJob && <Badge variant={scifactJob.qualityGate === 'passed' ? 'secondary' : 'outline'}>{scifactJob.status}</Badge>}
-              <Button
-                variant="outline"
-                onClick={() => void startScifactCase()}
-                disabled={scifactLoading || scifactJob?.status === 'queued' || scifactJob?.status === 'running'}
-              >
-                {scifactLoading || scifactJob?.status === 'queued' || scifactJob?.status === 'running'
-                  ? <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  : <PlayCircle className="mr-2 h-4 w-4" />}
-                {scifactSummary ? 'Load verified case' : 'Run official case'}
-              </Button>
+              <p className="mt-1 text-xs leading-5 text-slate-600">
+                {text('集中在 Track 1B 展示；本页只处理所选 Run 的审核、反馈和人工签核。', 'Centralized in Track 1B. This page only audits the selected run and records feedback and human sign-off.')}
+              </p>
             </div>
           </div>
-          {scifactError && (
-            <div className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">{scifactError}</div>
-          )}
-          {scifactSummary && scifactJob && (
-            <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-              <div className="min-w-0 border-l-2 border-emerald-600 pl-3">
-                <div className="text-[11px] uppercase text-slate-500">Feedback F1</div>
-                <div className="mt-1 font-mono text-sm font-semibold text-slate-900">
-                  {scifactSummary.feedbackResults.roundOne['F1-Score'].toFixed(4)} → {scifactSummary.feedbackResults.roundTwo['F1-Score'].toFixed(4)}
-                </div>
-              </div>
-              <div className="min-w-0 border-l-2 border-amber-500 pl-3">
-                <div className="text-[11px] uppercase text-slate-500">Untouched dev F1</div>
-                <div className="mt-1 font-mono text-sm font-semibold text-slate-900">
-                  {scifactSummary.finalHoldout.roundOne['F1-Score'].toFixed(4)} → {scifactSummary.finalHoldout.roundTwo['F1-Score'].toFixed(4)}
-                </div>
-              </div>
-              <div className="min-w-0 border-l-2 border-slate-400 pl-3">
-                <div className="text-[11px] uppercase text-slate-500">Qwen evidence</div>
-                <div className="mt-1 truncate text-sm font-semibold text-slate-900">
-                  {scifactSummary.qwenTrace.usage.total_tokens} tokens
-                </div>
-              </div>
-              <div className="min-w-0 border-l-2 border-slate-400 pl-3">
-                <div className="text-[11px] uppercase text-slate-500">Evidence state</div>
-                <div className="mt-1 flex flex-wrap gap-2 text-sm font-semibold text-slate-900">
-                  <span>{scifactSummary.qualityGate.status}</span>
-                  <span className="font-normal text-slate-500">Human: {scifactSummary.humanSignoff.status}</span>
-                </div>
-              </div>
-              <div className="flex flex-wrap gap-3 text-xs sm:col-span-2 lg:col-span-4">
-                {scifactJob.reportUrl && (
-                  <a className="font-medium text-emerald-700 hover:underline" href={`${API_BASE_URL}${scifactJob.reportUrl}`} target="_blank" rel="noreferrer">
-                    Experiment report
-                  </a>
-                )}
-                {scifactJob.summaryUrl && (
-                  <a className="font-medium text-emerald-700 hover:underline" href={`${API_BASE_URL}${scifactJob.summaryUrl}`} target="_blank" rel="noreferrer">
-                    Evidence summary
-                  </a>
-                )}
-                {scifactJob.feedbackId && (
-                  <button
-                    type="button"
-                    className="font-medium text-emerald-700 hover:underline"
-                    onClick={() => void openScifactHumanReview()}
-                    disabled={auditing}
-                  >
-                    Open human review
-                  </button>
-                )}
-                <span className="truncate text-slate-500">Plan hash: {scifactSummary.preregistration.contentHash}</span>
-              </div>
-            </div>
-          )}
+          <Link
+            to="/review/competition"
+            className={`${buttonVariants({ variant: 'outline', size: 'sm' })} whitespace-nowrap`}
+          >
+            {text('查看 Track 1B 证据', 'Open Track 1B evidence')}
+            <ArrowRight className="ml-2 h-4 w-4" />
+          </Link>
         </section>
-        {reliabilitySummary && (
-          <section className="mb-5 border-b border-slate-200 pb-5" aria-label="Scientific reliability benchmark">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div>
-                <div className="flex items-center gap-2 text-sm font-semibold text-slate-900">
-                  <ShieldCheck className="h-4 w-4 text-emerald-700" />
-                  Scientific reliability benchmark
-                </div>
-                <div className="mt-1 text-xs text-slate-600">
-                  {reliabilitySummary.datasets.join(' · ')} · {reliabilitySummary.faultyCases} controlled faults · {reliabilitySummary.cleanCases} paired controls
-                </div>
-              </div>
-              <div className="flex items-center gap-2">
-                <Badge variant={reliabilitySummary.qualityGate === 'passed' ? 'secondary' : 'outline'}>
-                  Gate: {reliabilitySummary.qualityGate}
-                </Badge>
-                <a
-                  className="text-xs font-medium text-emerald-700 hover:underline"
-                  href={`${API_BASE_URL}${reliabilitySummary.reportUrl}`}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  Full report
-                </a>
-              </div>
-            </div>
-            <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-              {([
-                ['Qwen-only', reliabilitySummary.scores.qwen_only],
-                ['Structure rules', reliabilitySummary.scores.rules_only],
-                ['FAROS + ReviewX', reliabilitySummary.scores.faros_full],
-              ] as const).map(([label, score], index) => (
-                <div key={label} className={`min-w-0 border-l-2 pl-3 ${index === 2 ? 'border-emerald-600' : 'border-slate-400'}`}>
-                  <div className="text-[11px] uppercase text-slate-500">{label}</div>
-                  <div className="mt-1 font-mono text-lg font-semibold text-slate-900">
-                    {(score.faultDetectionRate * 100).toFixed(1)}%
-                  </div>
-                  <div className="text-[11px] text-slate-500">
-                    false reject {(score.normalFalseRejectRate * 100).toFixed(1)}%
-                  </div>
-                </div>
-              ))}
-              <div className="min-w-0 border-l-2 border-amber-500 pl-3">
-                <div className="text-[11px] uppercase text-slate-500">Repair replay</div>
-                <div className="mt-1 font-mono text-lg font-semibold text-slate-900">
-                  {reliabilitySummary.repairEvaluation.passed}/{reliabilitySummary.repairEvaluation.attempted}
-                </div>
-                <div className="text-[11px] text-slate-500">
-                  {reliabilitySummary.qwenUsage.total_tokens || 0} Qwen tokens
-                </div>
-              </div>
-            </div>
-            {reliabilitySummary.qwenMisses.length > 0 && (
-              <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-950">
-                Qwen-only missed {reliabilitySummary.qwenMisses.length} faults; FAROS rejected all through record recomputation, split isolation, and evidence hashing.
-              </div>
-            )}
-          </section>
-        )}
         <div className="grid gap-5 xl:grid-cols-[minmax(280px,0.9fr)_minmax(0,1.4fr)]">
           <div className="space-y-4">
             <div className="flex gap-2">
@@ -1126,14 +926,14 @@ export function ExperimentFeedbackPanel() {
                 className="min-w-0 flex-1 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
                 disabled={runsLoading}
               >
-                <option value="">Select completed run...</option>
+                <option value="">{text('选择已完成运行...', 'Select completed run...')}</option>
                 {runs.map((run) => (
                   <option key={run.id} value={run.id}>
-                    {run.config?.workplaceName || run.id} · {run.config?.model || 'unknown model'} · {run.runKind}
+                    {run.config?.workplaceName || run.id} · {run.config?.model || text('未知模型', 'unknown model')} · {run.runKind}
                   </option>
                 ))}
               </select>
-              <Button variant="outline" size="icon" onClick={() => void loadRuns()} disabled={runsLoading} title="Refresh runs">
+              <Button variant="outline" size="icon" onClick={() => void loadRuns()} disabled={runsLoading} title={text('刷新运行记录', 'Refresh runs')}>
                 <RefreshCw className={`h-4 w-4 ${runsLoading ? 'animate-spin' : ''}`} />
               </Button>
             </div>
@@ -1149,8 +949,8 @@ export function ExperimentFeedbackPanel() {
                       <AlertTriangle className={`h-4 w-4 shrink-0 ${artifact.required ? 'text-amber-600' : 'text-slate-400'}`} />
                     )}
                     <div className="min-w-0">
-                      <div className="truncate text-xs font-medium text-slate-800">{artifact.label}</div>
-                      <div className="text-[11px] text-slate-500">{present ? 'Ready' : artifact.required ? 'Required' : 'Optional'}</div>
+                      <div className="truncate text-xs font-medium text-slate-800">{text(artifactChineseLabels[artifact.filename] || artifact.label, artifact.label)}</div>
+                      <div className="text-[11px] text-slate-500">{present ? text('就绪', 'Ready') : artifact.required ? text('必需', 'Required') : text('可选', 'Optional')}</div>
                     </div>
                   </div>
                 )
@@ -1159,14 +959,14 @@ export function ExperimentFeedbackPanel() {
 
             {selectedRun?.runKind === 'faros' ? (
               <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-900">
-                ReviewX feedback will be carried into the next FAROS iteration automatically.
+                {text('ReviewX 反馈将自动带入下一轮 FAROS 迭代。', 'ReviewX feedback will be carried into the next FAROS iteration automatically.')}
               </div>
             ) : (
               <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] xl:grid-cols-1 2xl:grid-cols-[minmax(0,1fr)_auto]">
                 <input
                   value={planPackageId}
                   onChange={(event) => setPlanPackageId(event.target.value)}
-                  placeholder="PlanPackage ID (optional)"
+                  placeholder={text('PlanPackage ID（可选）', 'PlanPackage ID (optional)')}
                   className="min-w-0 rounded-md border border-slate-300 px-3 py-2 text-sm"
                 />
                 <label className="flex min-h-10 items-center gap-2 text-sm text-slate-700">
@@ -1176,17 +976,17 @@ export function ExperimentFeedbackPanel() {
                     onChange={(event) => setApplyToPlan(event.target.checked)}
                     className="h-4 w-4"
                   />
-                  Write correction
+                  {text('写入修正', 'Write correction')}
                 </label>
               </div>
             )}
             <Button className="w-full" onClick={() => void runAudit()} disabled={!selectedRunId || auditing}>
               {auditing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <FlaskConical className="mr-2 h-4 w-4" />}
-              Audit Experiment Iteration
+              {text('审计本轮实验', 'Audit Experiment Iteration')}
             </Button>
             {selectedRunId && !requiredReady && !error && (
               <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
-                Required contract artifacts are not registered for this run.
+                {text('此运行尚未注册必需的合同 artifact。', 'Required contract artifacts are not registered for this run.')}
               </div>
             )}
             {error && (
@@ -1197,16 +997,16 @@ export function ExperimentFeedbackPanel() {
                 <div className="mb-2 flex items-center justify-between">
                   <div className="flex items-center gap-2 text-xs font-semibold uppercase text-slate-600">
                     <History className="h-4 w-4" />
-                    Experiment history
+                    {text('实验历史', 'Experiment history')}
                   </div>
                   <Badge variant="outline">{history.length}</Badge>
                 </div>
                 {historyLoading ? (
                   <div className="flex items-center gap-2 py-3 text-xs text-slate-500">
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading history
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" /> {text('正在加载历史', 'Loading history')}
                   </div>
                 ) : history.length === 0 ? (
-                  <div className="py-2 text-xs text-slate-500">No experiment feedback yet.</div>
+                  <div className="py-2 text-xs text-slate-500">{text('暂无实验反馈。', 'No experiment feedback yet.')}</div>
                 ) : (
                   <div className="space-y-2">
                     {history.slice(0, 4).map((record) => (
@@ -1218,15 +1018,15 @@ export function ExperimentFeedbackPanel() {
                       >
                         <div className="min-w-0">
                           <div className="truncate text-xs font-medium text-slate-800">
-                            V{record.iterationNumber || 1} · {decisionLabel[record.iterationDecision.decision]}
+                            V{record.iterationNumber || 1} · {decisionLabel[record.iterationDecision.decision][locale]}
                           </div>
                           <div className="mt-0.5 text-[11px] text-slate-500">
-                            {new Date(record.createdAt).toLocaleString()}
+                            {new Date(record.createdAt).toLocaleString(locale)}
                           </div>
                         </div>
                         <div className="flex shrink-0 gap-1">
-                          {record.planRevision && <Badge variant="secondary">Revised</Badge>}
-                          {record.nextRunId && <Badge variant="outline">Next run</Badge>}
+                          {record.planRevision && <Badge variant="secondary">{text('已修订', 'Revised')}</Badge>}
+                          {record.nextRunId && <Badge variant="outline">{text('下一轮', 'Next run')}</Badge>}
                         </div>
                       </button>
                     ))}
@@ -1239,7 +1039,9 @@ export function ExperimentFeedbackPanel() {
           <div className="min-h-48 border-t border-slate-200 pt-4 xl:border-l xl:border-t-0 xl:pl-5 xl:pt-0">
             {!result ? (
               <div className="flex min-h-44 items-center justify-center text-sm text-slate-500">
-                {selectedRun ? 'Run the evidence gate to route the next iteration.' : 'Select a completed experiment run.'}
+                {selectedRun
+                  ? text('运行证据 Gate 以决定下一轮路由。', 'Run the evidence Gate to route the next iteration.')
+                  : text('请选择一个已完成的实验运行。', 'Select a completed experiment run.')}
               </div>
             ) : (
               <div className="space-y-4">
@@ -1259,7 +1061,7 @@ export function ExperimentFeedbackPanel() {
                     <ArrowRight className="mt-0.5 h-5 w-5 shrink-0 text-amber-700" />
                   )}
                   <div className="min-w-0">
-                    <div className="text-sm font-semibold text-slate-900">{decisionLabel[result.iterationDecision.decision]}</div>
+                    <div className="text-sm font-semibold text-slate-900">{decisionLabel[result.iterationDecision.decision][locale]}</div>
                     <div className="mt-1 text-sm leading-5 text-slate-600">{result.iterationDecision.rationale}</div>
                     {result.iterationDecision.targetSections.length > 0 && (
                       <div className="mt-2 flex flex-wrap gap-1">
@@ -1277,9 +1079,9 @@ export function ExperimentFeedbackPanel() {
                       <thead className="bg-slate-50 text-left text-xs text-slate-600">
                         <tr>
                           <th className="px-3 py-2">Metric</th>
-                          <th className="px-3 py-2 text-right">Previous</th>
-                          <th className="px-3 py-2 text-right">Current</th>
-                          <th className="px-3 py-2 text-right">Delta</th>
+                          <th className="px-3 py-2 text-right">{text('上一轮', 'Previous')}</th>
+                          <th className="px-3 py-2 text-right">{text('当前', 'Current')}</th>
+                          <th className="px-3 py-2 text-right">Δ</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -1326,12 +1128,12 @@ export function ExperimentFeedbackPanel() {
                               : 'text-slate-600 hover:text-slate-900'
                           }`}
                         >
-                          {direction === 'maximize' ? 'Maximize' : 'Minimize'}
+                          {direction === 'maximize' ? text('最大化', 'Maximize') : text('最小化', 'Minimize')}
                         </button>
                       ))}
                     </div>
                     <label className="min-w-0 text-[11px] font-medium uppercase text-slate-500">
-                      Max rounds
+                      {text('最大轮数', 'Max rounds')}
                       <input
                         type="number"
                         min={3}
@@ -1342,7 +1144,7 @@ export function ExperimentFeedbackPanel() {
                       />
                     </label>
                     <label className="min-w-0 text-[11px] font-medium uppercase text-slate-500">
-                      Patience
+                      {text('耐心轮数', 'Patience')}
                       <input
                         type="number"
                         min={1}
@@ -1393,15 +1195,15 @@ export function ExperimentFeedbackPanel() {
                 {loopProgress && (
                   <div className="grid gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-3 sm:grid-cols-5">
                     <div>
-                      <div className="text-[11px] uppercase text-slate-500">Series</div>
-                      <div className="mt-1 text-sm font-semibold text-slate-900">{loopProgress.status}</div>
+                      <div className="text-[11px] uppercase text-slate-500">{text('序列', 'Series')}</div>
+                      <div className="mt-1 text-sm font-semibold text-slate-900">{statusText(loopProgress.status)}</div>
                     </div>
                     <div>
-                      <div className="text-[11px] uppercase text-slate-500">Iteration</div>
+                      <div className="text-[11px] uppercase text-slate-500">{text('迭代', 'Iteration')}</div>
                       <div className="mt-1 text-sm font-semibold text-slate-900">V{loopProgress.currentIteration}</div>
                     </div>
                     <div>
-                      <div className="text-[11px] uppercase text-slate-500">Feasible best</div>
+                      <div className="text-[11px] uppercase text-slate-500">{text('最优可行值', 'Feasible best')}</div>
                       <div className="mt-1 text-sm font-semibold text-slate-900">
                         {loopProgress.bestFeasibleValue === undefined
                           ? 'N/A'
@@ -1409,7 +1211,7 @@ export function ExperimentFeedbackPanel() {
                       </div>
                     </div>
                     <div>
-                      <div className="text-[11px] uppercase text-slate-500">Stop condition</div>
+                      <div className="text-[11px] uppercase text-slate-500">{text('停止条件', 'Stop condition')}</div>
                       <div className="mt-1 break-words text-xs font-medium text-slate-700">
                         {loopProgress.stopReason.replace(/_/g, ' ')}
                       </div>
@@ -1418,7 +1220,7 @@ export function ExperimentFeedbackPanel() {
                       <div className="text-[11px] uppercase text-slate-500">Guardrails</div>
                       <div className={`mt-1 text-xs font-semibold ${loopProgress.guardrailsSatisfied ? 'text-emerald-700' : 'text-amber-700'}`}>
                         {loopProgress.guardrailsSatisfied
-                          ? 'All satisfied'
+                          ? text('全部满足', 'All satisfied')
                           : loopProgress.guardrailViolations.map((item) => item.metric.replace(/^method:/i, '')).join(', ')}
                       </div>
                     </div>
@@ -1427,7 +1229,7 @@ export function ExperimentFeedbackPanel() {
 
                 <div className="grid gap-4 md:grid-cols-2">
                   <div>
-                    <div className="mb-2 text-xs font-semibold uppercase text-slate-600">Next actions</div>
+                    <div className="mb-2 text-xs font-semibold uppercase text-slate-600">{text('下一步行动', 'Next actions')}</div>
                     <div className="space-y-2">
                       {result.iterationDecision.nextActions.slice(0, 4).map((action, index) => (
                         <div key={`${index}-${action}`} className="flex gap-2 text-sm text-slate-700">
@@ -1438,58 +1240,64 @@ export function ExperimentFeedbackPanel() {
                     </div>
                   </div>
                   <div>
-                    <div className="mb-2 text-xs font-semibold uppercase text-slate-600">Evidence & feedback</div>
+                    <div className="mb-2 text-xs font-semibold uppercase text-slate-600">{text('证据与反馈', 'Evidence & feedback')}</div>
                     <div className="space-y-2 text-sm text-slate-700">
-                      <div>{Object.keys(result.sourceArtifacts).length} contract artifacts verified</div>
-                      <div>{result.qualityAssessment.findings.length} quality findings</div>
+                      <div>{Object.keys(result.sourceArtifacts).length} {text('个合同 artifact 已验证', 'contract artifacts verified')}</div>
+                      <div>{result.qualityAssessment.findings.length} {text('个质量 finding', 'quality findings')}</div>
                       <div className={result.planFeedback.applied ? 'text-emerald-700' : 'text-slate-500'}>
-                        {result.planFeedback.applied ? 'PlanPackage correction attached' : result.planFeedback.reason || 'No PlanPackage write requested'}
+                        {result.planFeedback.applied
+                          ? text('PlanPackage 修正已附加', 'PlanPackage correction attached')
+                          : result.planFeedback.reason || text('未请求写入 PlanPackage', 'No PlanPackage write requested')}
                       </div>
                       {result.humanFeedback?.requiresApplication && (
                         <div className={result.humanFeedback.applied ? 'text-emerald-700' : 'font-medium text-amber-700'}>
-                          Human feedback {result.humanFeedback.applied ? 'applied' : 'awaiting application'}
+                          {text('人工反馈', 'Human feedback')} {result.humanFeedback.applied ? text('已应用', 'applied') : text('待应用', 'awaiting application')}
                         </div>
                       )}
                     </div>
                   </div>
                 </div>
 
-                <section className="border-t border-slate-200 pt-4" aria-label="Human oversight">
+                <section id="reviewx-human-oversight" className="scroll-mt-24 border-t border-slate-200 pt-4" aria-label={text('人工审核', 'Human oversight')}>
                   <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                     <div className="flex items-center gap-2 text-xs font-semibold uppercase text-slate-600">
                       <ShieldCheck className="h-4 w-4" />
-                      Human oversight
+                      {text('人工审核', 'Human oversight')}
                     </div>
                     <div className="flex flex-wrap gap-2">
-                      <Button asChild size="sm" variant="outline">
+                      <a
+                        href={`${API_BASE_URL}/api/v1/reviews/reviewx/experiment-feedback/${encodeURIComponent(result.feedbackId)}/evidence-bundle?release=draft`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className={buttonVariants({ variant: 'outline', size: 'sm' })}
+                      >
+                        <FileCheck2 className="mr-2 h-4 w-4" />
+                        {text('草稿证据包', 'Draft bundle')}
+                      </a>
+                      {publicationReady ? (
                         <a
-                          href={`${API_BASE_URL}/api/v1/reviews/reviewx/experiment-feedback/${encodeURIComponent(result.feedbackId)}/evidence-bundle?release=draft`}
+                          href={`${API_BASE_URL}/api/v1/reviews/reviewx/experiment-feedback/${encodeURIComponent(result.feedbackId)}/evidence-bundle?release=official`}
                           target="_blank"
                           rel="noreferrer"
+                          className={buttonVariants({ size: 'sm' })}
                         >
                           <FileCheck2 className="mr-2 h-4 w-4" />
-                          Draft bundle
+                          {text('正式证据包', 'Official bundle')}
                         </a>
-                      </Button>
-                      {publicationReady ? (
-                        <Button asChild size="sm">
-                          <a
-                            href={`${API_BASE_URL}/api/v1/reviews/reviewx/experiment-feedback/${encodeURIComponent(result.feedbackId)}/evidence-bundle?release=official`}
-                            target="_blank"
-                            rel="noreferrer"
-                          >
-                            <FileCheck2 className="mr-2 h-4 w-4" />
-                            Official bundle
-                          </a>
-                        </Button>
                       ) : (
-                        <Button size="sm" disabled>
+                        <Button size="sm" disabled title={text('需方案、必要修复和结论签核全部通过', 'Plan, required repair, and conclusion signoffs must all pass')}>
                           <FileCheck2 className="mr-2 h-4 w-4" />
-                          Official bundle
+                          {text('正式证据包', 'Official bundle')}
                         </Button>
                       )}
                     </div>
                   </div>
+
+                  {!publicationReady && (
+                    <div className="mb-3 text-xs text-amber-700">
+                      {text('正式证据包尚被阻断：需方案、必要修复和结论签核全部通过，且所有验收条件已解决。', 'Official bundle blocked: plan, required repair, and conclusion signoffs must pass, and all acceptance conditions must be resolved.')}
+                    </div>
+                  )}
 
                   <div className="grid gap-3">
                     <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
@@ -1508,7 +1316,7 @@ export function ExperimentFeedbackPanel() {
                             }`}
                           >
                             <div className="flex items-center justify-between gap-2">
-                              <span className="truncate text-xs font-semibold text-slate-900">{signoffStageLabel[stage]}</span>
+                              <span className="truncate text-xs font-semibold text-slate-900">{signoffStageLabel[stage][locale]}</span>
                               <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${
                                 signoff.status === 'approved'
                                   ? 'bg-emerald-600'
@@ -1519,10 +1327,10 @@ export function ExperimentFeedbackPanel() {
                             </div>
                             <div className="mt-2 flex flex-wrap items-center gap-1.5">
                               <Badge variant={signoff.status === 'approved' ? 'secondary' : 'outline'}>
-                                {signoffStatusLabel[signoff.status]}
+                                {signoffStatusLabel[signoff.status][locale]}
                               </Badge>
-                              <Badge variant="outline">{signoff.required ? 'Required' : 'Optional'}</Badge>
-                              {signoff.stale && <Badge variant="destructive">Stale</Badge>}
+                              <Badge variant="outline">{signoff.required ? text('必需', 'Required') : text('可选', 'Optional')}</Badge>
+                              {signoff.stale && <Badge variant="destructive">{text('已过期', 'Stale')}</Badge>}
                             </div>
                             <div className="mt-2 truncate font-mono text-[10px] text-slate-500" title={signoff.artifactHash}>
                               SHA-256 {signoff.artifactHash.slice(0, 12)}
@@ -1540,8 +1348,8 @@ export function ExperimentFeedbackPanel() {
                       }`}>
                         <div className="min-w-0">
                           <div className="text-sm font-semibold text-slate-900">
-                            {result.humanFeedback.requiredActions.length} human action{result.humanFeedback.requiredActions.length === 1 ? '' : 's'}
-                            {' · '}{result.humanFeedback.applied ? 'Applied' : 'Application required'}
+                            {result.humanFeedback.requiredActions.length} {text('项人工行动', `human action${result.humanFeedback.requiredActions.length === 1 ? '' : 's'}`)}
+                            {' · '}{result.humanFeedback.applied ? text('已应用', 'Applied') : text('需要应用', 'Application required')}
                           </div>
                           <div className="mt-1 truncate font-mono text-[10px] text-slate-600" title={result.humanFeedback.feedbackHash}>
                             SHA-256 {result.humanFeedback.feedbackHash.slice(0, 24)}
@@ -1558,7 +1366,7 @@ export function ExperimentFeedbackPanel() {
                             ) : (
                               <RotateCcw className="mr-2 h-4 w-4" />
                             )}
-                            Apply human feedback
+                            {text('应用人工反馈', 'Apply human feedback')}
                           </Button>
                         )}
                       </div>
@@ -1568,15 +1376,15 @@ export function ExperimentFeedbackPanel() {
                       <div className="grid gap-3 rounded-md border border-slate-200 bg-white p-3">
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <div>
-                            <div className="text-sm font-semibold text-slate-900">Inherited acceptance conditions</div>
+                            <div className="text-sm font-semibold text-slate-900">{text('继承的验收条件', 'Inherited acceptance conditions')}</div>
                             <div className="mt-1 text-xs text-slate-600">
-                              {result.humanConditionVerifications.passed} passed
-                              {' · '}{result.humanConditionVerifications.waived} waived
-                              {' · '}{result.humanConditionVerifications.unresolved} unresolved
+                              {result.humanConditionVerifications.passed} {text('已通过', 'passed')}
+                              {' · '}{result.humanConditionVerifications.waived} {text('已豁免', 'waived')}
+                              {' · '}{result.humanConditionVerifications.unresolved} {text('未解决', 'unresolved')}
                             </div>
                           </div>
                           <Badge variant={result.humanConditionVerifications.allResolved ? 'secondary' : 'outline'}>
-                            {result.humanConditionVerifications.allResolved ? 'Resolved' : 'Blocks conclusion'}
+                            {result.humanConditionVerifications.allResolved ? text('已解决', 'Resolved') : text('阻断结论', 'Blocks conclusion')}
                           </Badge>
                         </div>
 
@@ -1604,11 +1412,13 @@ export function ExperimentFeedbackPanel() {
                                       ? 'text-red-700'
                                       : 'text-amber-700'
                                 }`}>
-                                  {condition.stale ? `${condition.storedStatus} · stale` : condition.status}
+                                  {condition.stale
+                                    ? `${statusText(condition.storedStatus)} · ${text('已过期', 'stale')}`
+                                    : statusText(condition.status)}
                                 </span>
                               </div>
                               <div className="mt-1 truncate font-mono text-[10px] text-slate-500" title={condition.subjectHash}>
-                                Evidence state {condition.subjectHash.slice(0, 19)}
+                                {text('证据状态', 'Evidence state')} {condition.subjectHash.slice(0, 19)}
                               </div>
                             </button>
                           ))}
@@ -1620,9 +1430,9 @@ export function ExperimentFeedbackPanel() {
                               value={conditionEvidenceId}
                               onChange={(event) => setConditionEvidenceId(event.target.value)}
                               className="min-w-0 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
-                              aria-label="Condition evidence artifact"
+                              aria-label={text('验收条件的证据 artifact', 'Condition evidence artifact')}
                             >
-                              <option value="">Select current evidence artifact</option>
+                              <option value="">{text('选择当前证据 artifact', 'Select current evidence artifact')}</option>
                               {Object.entries(result.sourceArtifacts).map(([label, artifactId]) => (
                                 <option key={`${label}-${artifactId}`} value={artifactId}>{label}</option>
                               ))}
@@ -1630,7 +1440,7 @@ export function ExperimentFeedbackPanel() {
                             <textarea
                               value={conditionRationale}
                               onChange={(event) => setConditionRationale(event.target.value)}
-                              placeholder="Verification rationale"
+                              placeholder={text('验证理由', 'Verification rationale')}
                               rows={2}
                               className="min-w-0 resize-y rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
                             />
@@ -1641,7 +1451,7 @@ export function ExperimentFeedbackPanel() {
                                 disabled={conditionLoading || !reviewerId.trim() || !conditionRationale.trim() || !conditionEvidenceId}
                               >
                                 {conditionLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <CheckCircle2 className="mr-2 h-4 w-4" />}
-                                Pass with evidence
+                                {text('凭证据通过', 'Pass with evidence')}
                               </Button>
                               <Button
                                 size="sm"
@@ -1650,7 +1460,7 @@ export function ExperimentFeedbackPanel() {
                                 disabled={conditionLoading || !reviewerId.trim() || !conditionRationale.trim()}
                               >
                                 <AlertTriangle className="mr-2 h-4 w-4" />
-                                Fail
+                                {text('不通过', 'Fail')}
                               </Button>
                               <Button
                                 size="sm"
@@ -1658,7 +1468,7 @@ export function ExperimentFeedbackPanel() {
                                 onClick={() => void verifyHumanCondition('waived')}
                                 disabled={conditionLoading || !reviewerId.trim() || !conditionRationale.trim()}
                               >
-                                Waive
+                                {text('豁免', 'Waive')}
                               </Button>
                             </div>
                           </div>
@@ -1669,10 +1479,10 @@ export function ExperimentFeedbackPanel() {
                     <div className="grid gap-2 rounded-md border border-slate-200 bg-slate-50 p-3">
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <div className="text-sm font-semibold text-slate-900">
-                          {signoffStageLabel[selectedSignoffStage]}
+                          {signoffStageLabel[selectedSignoffStage][locale]}
                         </div>
                         {result.humanSignoffs[selectedSignoffStage].stale && (
-                          <span className="text-xs font-medium text-red-700">Evidence changed; review again</span>
+                          <span className="text-xs font-medium text-red-700">{text('证据已变化，请重新审核', 'Evidence changed; review again')}</span>
                         )}
                       </div>
                       <div className="grid gap-2 sm:grid-cols-2">
@@ -1680,23 +1490,23 @@ export function ExperimentFeedbackPanel() {
                           value={reviewerRole}
                           onChange={(event) => setReviewerRole(event.target.value)}
                           className="min-w-0 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
-                          aria-label="Reviewer role"
+                          aria-label={text('审核人角色', 'Reviewer role')}
                         >
-                          <option value="team_lead">Team lead</option>
-                          <option value="domain_expert">Domain expert</option>
-                          <option value="safety_reviewer">Safety reviewer</option>
+                          <option value="team_lead">{text('团队负责人', 'Team lead')}</option>
+                          <option value="domain_expert">{text('领域专家', 'Domain expert')}</option>
+                          <option value="safety_reviewer">{text('安全审核人', 'Safety reviewer')}</option>
                         </select>
                         <input
                           value={reviewerId}
                           onChange={(event) => setReviewerId(event.target.value)}
-                          placeholder="Reviewer identity"
+                          placeholder={text('审核人身份', 'Reviewer identity')}
                           className="min-w-0 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
                         />
                         <input
                           type="password"
                           value={reviewAuthToken}
                           onChange={(event) => setReviewAuthToken(event.target.value)}
-                          placeholder="Review bearer token"
+                          placeholder={text('Review bearer token（如服务端要求）', 'Review bearer token (if required)')}
                           autoComplete="off"
                           className="min-w-0 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm sm:col-span-2"
                         />
@@ -1704,20 +1514,20 @@ export function ExperimentFeedbackPanel() {
                       <textarea
                         value={signoffRationale}
                         onChange={(event) => setSignoffRationale(event.target.value)}
-                        placeholder="Decision rationale"
+                        placeholder={text('决策理由', 'Decision rationale')}
                         rows={2}
                         className="min-w-0 resize-y rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
                       />
                       <input
                         value={signoffTargetSections}
                         onChange={(event) => setSignoffTargetSections(event.target.value)}
-                        placeholder="Target sections, comma separated"
+                        placeholder={text('目标章节，用逗号分隔', 'Target sections, comma separated')}
                         className="min-w-0 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
                       />
                       <textarea
                         value={signoffConditions}
                         onChange={(event) => setSignoffConditions(event.target.value)}
-                        placeholder="Acceptance conditions, one per line"
+                        placeholder={text('验收条件，每行一条', 'Acceptance conditions, one per line')}
                         rows={2}
                         className="min-w-0 resize-y rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
                       />
@@ -1725,30 +1535,35 @@ export function ExperimentFeedbackPanel() {
                         <Button
                           size="sm"
                           onClick={() => void decideSignoff('approved')}
-                          disabled={signoffLoading || feedbackApplying || !reviewerId.trim() || !signoffRationale.trim()}
+                          disabled={signoffLoading || feedbackApplying || !signoffFormReady}
                         >
                           {signoffLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <CheckCircle2 className="mr-2 h-4 w-4" />}
-                          Approve
+                          {text('批准', 'Approve')}
                         </Button>
                         <Button
                           size="sm"
                           variant="outline"
                           onClick={() => void decideSignoff('changes_requested')}
-                          disabled={signoffLoading || feedbackApplying || !reviewerId.trim() || !signoffRationale.trim()}
+                          disabled={signoffLoading || feedbackApplying || !signoffFormReady}
                         >
                           <RotateCcw className="mr-2 h-4 w-4" />
-                          Request changes
+                          {text('要求修改', 'Request changes')}
                         </Button>
                         <Button
                           size="sm"
                           variant="destructive"
                           onClick={() => void decideSignoff('rejected')}
-                          disabled={signoffLoading || feedbackApplying || !reviewerId.trim() || !signoffRationale.trim()}
+                          disabled={signoffLoading || feedbackApplying || !signoffFormReady}
                         >
                           <AlertTriangle className="mr-2 h-4 w-4" />
-                          Reject
+                          {text('拒绝', 'Reject')}
                         </Button>
                       </div>
+                      {!signoffFormReady && (
+                        <div className="text-xs text-amber-700">
+                          {text('填写审核人身份和决策理由后方可提交。', 'Enter reviewer identity and decision rationale to enable signoff.')}
+                        </div>
+                      )}
                     </div>
                   </div>
                 </section>
@@ -1771,7 +1586,7 @@ export function ExperimentFeedbackPanel() {
                         ) : (
                           <RotateCcw className="mr-2 h-4 w-4" />
                         )}
-                        {planRevised ? 'Plan revised' : 'Revise Plan'}
+                        {planRevised ? text('计划已修订', 'Plan revised') : text('修订计划', 'Revise Plan')}
                       </Button>
                     )}
                     {result.runKind === 'faros' && nextRunId ? (
@@ -1781,7 +1596,7 @@ export function ExperimentFeedbackPanel() {
                         ) : (
                           <PlayCircle className="mr-2 h-4 w-4" />
                         )}
-                        Start Next Run
+                        {text('启动下一轮', 'Start Next Run')}
                       </Button>
                     ) : result.runKind === 'faros' ? (
                       <Button
@@ -1793,7 +1608,7 @@ export function ExperimentFeedbackPanel() {
                         ) : (
                           <RotateCcw className="mr-2 h-4 w-4" />
                         )}
-                        Advance Controlled Loop
+                        {text('推进受控闭环', 'Advance Controlled Loop')}
                       </Button>
                     ) : (
                       <Button
@@ -1813,35 +1628,36 @@ export function ExperimentFeedbackPanel() {
                         ) : (
                           <PlayCircle className="mr-2 h-4 w-4" />
                         )}
-                        {nextRunId ? 'Open Next Run' : 'Create Next Run'}
+                        {nextRunId ? text('打开下一轮', 'Open Next Run') : text('创建下一轮', 'Create Next Run')}
                       </Button>
                     )}
                     {nextRunId && (
                       result.runKind === 'faros' ? (
-                        <Button asChild variant="ghost">
-                          <a
-                            href={`${API_BASE_URL}/api/faros/runs/${encodeURIComponent(nextRunId)}/detail`}
-                            target="_blank"
-                            rel="noreferrer"
-                          >
-                            Inspect {nextRunId}
-                          </a>
-                        </Button>
+                        <a
+                          href={`${API_BASE_URL}/api/faros/runs/${encodeURIComponent(nextRunId)}/detail`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className={buttonVariants({ variant: 'ghost' })}
+                        >
+                          {text('检查', 'Inspect')} {nextRunId}
+                        </a>
                       ) : (
-                        <Button asChild variant="ghost">
-                          <Link to={`/runs/${nextRunId}`}>View {nextRunId}</Link>
-                        </Button>
+                        <Link to={`/runs/${nextRunId}`} className={buttonVariants({ variant: 'ghost' })}>
+                          {text('查看', 'View')} {nextRunId}
+                        </Link>
                       )
                     )}
                     {actionMessage && <div className="w-full text-xs text-slate-600">{actionMessage}</div>}
                     {!iterationHumanReady && (
                       <div className="w-full text-xs font-medium text-amber-700">
-                        Plan approval{repairSignoff?.required ? ' and repair approval are' : ' is'} required before the next iteration.
+                        {repairSignoff?.required
+                          ? text('下一轮前需完成方案和修复签核。', 'Plan and repair approval are required before the next iteration.')
+                          : text('下一轮前需完成方案签核。', 'Plan approval is required before the next iteration.')}
                       </div>
                     )}
                     {result.runKind === 'platform' && !result.planFeedback.applied && result.iterationDecision.decision !== 'accept_results' && (
                       <div className="w-full text-xs text-amber-700">
-                        Run the audit with Write correction enabled before revising the plan.
+                        {text('修订计划前，请启用“写入修正”后重新运行审计。', 'Run the audit with Write correction enabled before revising the plan.')}
                       </div>
                     )}
                   </div>

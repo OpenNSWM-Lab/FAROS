@@ -1174,6 +1174,8 @@ def test_scifact_competition_endpoint_queues_one_controlled_job(monkeypatch, tmp
     ))
 
     assert response.status == "queued"
+    assert response.stage == "queued"
+    assert response.progressPercent == 5
     assert response.bootstrapSamples == 500
     assert started["started"] is True
     assert started["daemon"] is True

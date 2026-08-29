@@ -28,6 +28,7 @@ from app.modules.platform.storage import (
 from app.services.code_project_service import create_project
 from app.db.engine import get_session_context
 from app.core.settings import get_settings
+from app.core.user_context import call_with_current_context
 
 logger = logging.getLogger(__name__)
 
@@ -245,7 +246,11 @@ async def start_codegen_session(session_id: str, background_tasks: BackgroundTas
         raise HTTPException(status_code=409, detail="Session already completed")
 
     # Run agent in background thread (not asyncio — the LLM calls are blocking)
-    thread = threading.Thread(target=_run_agent, args=(session_id,), daemon=True)
+    thread = threading.Thread(
+        target=call_with_current_context(_run_agent),
+        args=(session_id,),
+        daemon=True,
+    )
     thread.start()
 
     return {"sessionId": session_id, "status": "starting", "message": "Agent pipeline started"}

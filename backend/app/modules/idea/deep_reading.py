@@ -18,6 +18,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Any, Optional
 
+from app.core.user_context import call_with_current_context
 from app.models.idea import (
     IdeaSession,
     RawPaper,
@@ -57,9 +58,9 @@ class DeepReader:
     def _get_concurrency(self, paper_count: int) -> int:
         """Return bounded DeepReader concurrency for LLM I/O."""
         try:
-            configured = int(os.getenv("FAROS_DEEP_READER_CONCURRENCY", "2"))
+            configured = int(os.getenv("FAROS_DEEP_READER_CONCURRENCY", "3"))
         except ValueError:
-            configured = 2
+            configured = 3
         return max(1, min(8, configured, max(1, paper_count)))
 
     def _extract_with_fallback(
@@ -109,7 +110,13 @@ class DeepReader:
             indexed_results: Dict[int, StructuredPaper] = {}
             with ThreadPoolExecutor(max_workers=concurrency) as executor:
                 futures = {
-                    executor.submit(self._extract_with_fallback, session, paper): index
+                    executor.submit(
+                        call_with_current_context(
+                            self._extract_with_fallback,
+                            session,
+                            paper,
+                        )
+                    ): index
                     for index, paper in enumerate(selected_papers)
                 }
                 for future in as_completed(futures):

@@ -10,3 +10,4 @@ matplotlib
 fpdf
 httpx<0.28
 docker>=7.0.0
+cryptography>=43.0.0,<51

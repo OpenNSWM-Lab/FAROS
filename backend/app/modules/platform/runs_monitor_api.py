@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlmodel import Session
 
+from app.core.user_context import sanitized_subprocess_env
 from app.db import crud
 from app.db.engine import get_session
 from app.services.code_project_service import CODE_PROJECTS_DIR, get_vscode_link
@@ -89,6 +90,7 @@ def _scan_workspace(project_id: str, repo_dir: str) -> Dict[str, Any]:
                 capture_output=True,
                 text=True,
                 timeout=2,
+                env=sanitized_subprocess_env(),
             )
             lines = proc.stdout.strip().split("\n") if proc.stdout.strip() else []
             result["gitStatusSummary"] = f"{len(lines)} changed files" if lines else "clean"

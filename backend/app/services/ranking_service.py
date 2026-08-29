@@ -17,6 +17,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
 
+from app.core.user_context import call_with_current_context
 from app.models.idea import IdeaCandidate, DraftPlan, RiskItem, ExperimentSpec
 from app.llm.provider_client import get_provider_client, ChatMessage, ProviderError
 from app.storage.idea_storage import get_candidate_storage, generate_candidate_id
@@ -288,7 +289,9 @@ class RankingService:
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_idx: Dict[Any, int] = {}
             for i, candidate in enumerate(candidates):
-                future = executor.submit(_score_one, i, candidate)
+                future = executor.submit(
+                    call_with_current_context(_score_one, i, candidate)
+                )
                 future_to_idx[future] = i
 
             for future in as_completed(future_to_idx):

@@ -12,6 +12,7 @@ backend/tests/*
 !backend/tests/test_execution_assessment.py
 !backend/tests/test_experiment_evidence.py
 !backend/tests/test_provider_client_proxy.py
+!backend/tests/test_user_provider_settings.py
 !backend/tests/test_reviewx_cem.py
 !backend/tests/test_reviewx_claim_extractor.py
 !backend/tests/test_reviewx_experiment_feedback.py
@@ -27,6 +28,7 @@ backend/tests/*
 !backend/tests/test_idea_problem_framing.py
 !backend/tests/test_idea_evidence_gate_contract.py
 !backend/tests/test_idea_falsifiability.py
+!backend/tests/test_idea_seed_suggestion_jobs.py
 !backend/tests/test_idea_degraded_fixtures.py
 !backend/tests/fixtures/
 !backend/tests/fixtures/scientific_research/

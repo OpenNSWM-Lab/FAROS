@@ -18,13 +18,14 @@ import {
 } from 'lucide-react'
 import { BlueprintGraph } from '@/components/code/BlueprintGraph'
 import {
-  getProjectBlueprint, listProjectBlueprints,
-  getProject, listProjects,
+  getProjectBlueprint, getProject, listProjects,
   CodeProjectV2, BlueprintResponse,
 } from '@/lib/api/codeProjects'
+import { useReviewLocale } from '@/lib/reviewLocale'
 
 export function CodeBlueprint() {
   const navigate = useNavigate()
+  const { text } = useReviewLocale()
   const [searchParams, setSearchParams] = useSearchParams()
   const projectId = searchParams.get('projectId') || ''
 
@@ -37,9 +38,6 @@ export function CodeBlueprint() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  // Blueprint sessions
-  const [sessions, setSessions] = useState<{ id: string; title: string; source: string; nodeCount: number }[]>([])
-
   // Load project list
   useEffect(() => {
     listProjects({ limit: 100 }).then(resp => setProjects(resp.projects)).catch(() => {})
@@ -51,10 +49,7 @@ export function CodeBlueprint() {
     setLoading(true)
     setError(null)
     getProjectBlueprint(projectId)
-      .then(bp => {
-        setBlueprint(bp)
-        listProjectBlueprints(projectId).then(s => setSessions(s)).catch(() => {})
-      })
+      .then(bp => setBlueprint(bp))
       .catch(err => setError(err.message))
       .finally(() => setLoading(false))
   }, [projectId])
@@ -77,8 +72,8 @@ export function CodeBlueprint() {
 
   return (
     <AppPageLayout
-      title="Experiment Blueprint"
-      subtitle={selectedProject ? selectedProject.title : 'Select a project to view its experiment DAG'}
+      title={text('实验 Blueprint', 'Experiment Blueprint')}
+      subtitle={selectedProject ? selectedProject.title : text('选择项目以查看实验 DAG', 'Select a project to view its experiment DAG')}
       icon={GitBranch}
       iconColor="violet"
       accentColor="violet"
@@ -86,8 +81,8 @@ export function CodeBlueprint() {
       {/* Code sub-navigation */}
       <div className="flex items-center gap-1 mb-4 border-b pb-2">
         {[
-          { label: 'Projects', href: '/code/projects', icon: FolderOpen },
-          { label: 'Workspace', href: '/code/workspace', icon: FlaskConical },
+          { label: text('项目', 'Projects'), href: '/code/projects', icon: FolderOpen },
+          { label: text('生成工作区', 'Workspace'), href: '/code/workspace', icon: FlaskConical },
           { label: 'Blueprint', href: '/code/blueprint', icon: GitBranch },
         ].map((tab) => (
           <Button
@@ -111,7 +106,7 @@ export function CodeBlueprint() {
       {/* Project selector */}
       <div className="flex items-center gap-3 mb-4 flex-wrap">
         <div className="flex items-center gap-2">
-          <span className="text-sm text-muted-foreground">Project:</span>
+          <span className="text-sm text-muted-foreground">{text('项目', 'Project')}:</span>
           <select
             className="border rounded-lg px-3 py-1.5 text-sm min-w-[200px]"
             value={projectId}
@@ -124,41 +119,24 @@ export function CodeBlueprint() {
               }
             }}
           >
-            <option value="">-- Select a project --</option>
+            <option value="">-- {text('选择项目', 'Select a project')} --</option>
             {projects.map(p => (
               <option key={p.id} value={p.id}>{p.title}</option>
             ))}
           </select>
         </div>
 
-        {/* Blueprint sessions */}
-        {sessions.length > 0 && (
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-muted-foreground">Session:</span>
-            <select className="border rounded-lg px-3 py-1.5 text-sm" onChange={e => {
-              if (e.target.value !== 'current') {
-                // TODO: load specific session
-              }
-            }}>
-              <option value="current">Current</option>
-              {sessions.map(s => (
-                <option key={s.id} value={s.id}>{s.title} ({s.nodeCount} nodes)</option>
-              ))}
-            </select>
-          </div>
-        )}
-
         {/* Source badge */}
         {blueprint && (
           <Badge variant="outline" className="text-xs">
-            Source: {blueprint.source === 'plan_package' ? 'Idea Plan' : blueprint.source === 'project_structure' ? 'Project Structure' : blueprint.source}
+            {text('来源', 'Source')}: {blueprint.source === 'plan_package' ? 'PlanPackage' : blueprint.source === 'project_structure' ? text('项目结构', 'Project structure') : blueprint.source}
           </Badge>
         )}
 
         {/* Refresh */}
         <Button variant="ghost" size="sm" onClick={loadBlueprint} disabled={loading}>
           <RefreshCw className={`h-3.5 w-3.5 mr-1 ${loading ? 'animate-spin' : ''}`} />
-          Refresh
+          {text('刷新', 'Refresh')}
         </Button>
       </div>
 
@@ -186,9 +164,9 @@ export function CodeBlueprint() {
         <Card>
           <CardContent className="py-12 text-center">
             <GitBranch className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
-            <p className="text-muted-foreground mb-2">Select a project above to view its experiment blueprint</p>
+            <p className="text-muted-foreground mb-2">{text('选择项目以查看实验 Blueprint', 'Select a project to view its experiment blueprint')}</p>
             <p className="text-sm text-muted-foreground/60">
-              The blueprint shows the experiment design as a DAG — stages, steps, and their dependencies.
+              {text('Blueprint 以 DAG 展示阶段、步骤及其依赖关系。', 'The blueprint shows stages, steps, and dependencies as a DAG.')}
             </p>
           </CardContent>
         </Card>
@@ -201,7 +179,7 @@ export function CodeBlueprint() {
           <CardContent className="py-8 text-center">
             <AlertTriangle className="h-12 w-12 text-red-500 mx-auto mb-4" />
             <p className="text-muted-foreground mb-2">{error}</p>
-            <Button variant="outline" onClick={() => setSearchParams({ projectId })}>Retry</Button>
+            <Button variant="outline" onClick={() => setSearchParams({ projectId })}>{text('重试', 'Retry')}</Button>
           </CardContent>
         </Card>
       ) : blueprint && blueprint.nodes.length > 0 ? (
@@ -214,7 +192,6 @@ export function CodeBlueprint() {
             <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-full bg-blue-500 animate-pulse" /> Running</span>
             <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-full bg-red-500" /> Failed</span>
             <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-full bg-slate-300" /> Pending</span>
-            <span className="border-l pl-3 text-muted-foreground">Scroll zoom · Drag pan · Hover details · Click step</span>
           </div>
           <BlueprintGraph
             blueprint={{

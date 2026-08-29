@@ -40,7 +40,7 @@ function makePlanPackage() {
     schemaVersion: 'plan-package/v4',
     packageId: 'ppkg_001',
     createdAt: '2026-07-13T08:00:00.000Z',
-    status: 'approved',
+    status: 'needs_human_review',
     source: {
       ideaSessionId: 'idea_001',
       ideaCandidateId: 'cand_001',
@@ -566,6 +566,7 @@ async function waitForPanelLoaded() {
 describe('PlanGenerationPanel', () => {
   beforeEach(() => {
     vi.resetAllMocks()
+    window.localStorage.clear()
     mockNavigate.mockReset()
     vi.mocked(getPlanPackageByIdeaSession).mockResolvedValue(makePlanPackage() as never)
     vi.mocked(getPlanPackagePresentationByIdeaSession).mockResolvedValue(makePresentation() as never)
@@ -639,6 +640,38 @@ describe('PlanGenerationPanel', () => {
 
     expect(screen.getByLabelText('Generation')).toBeInTheDocument()
     expect(screen.getByPlaceholderText('Optional planning constraints for this package')).toBeInTheDocument()
+  })
+
+  it('recovers a generated plan after the long request loses its connection', async () => {
+    const user = userEvent.setup()
+    vi.mocked(getPlanPackageByIdeaSession)
+      .mockRejectedValueOnce(new Error('PlanPackage for idea session idea_001 not found'))
+      .mockResolvedValue(makePlanPackage() as never)
+    vi.mocked(getPlanPackagePresentationByIdeaSession)
+      .mockRejectedValueOnce(new Error('PlanPackage for idea session idea_001 not found'))
+      .mockResolvedValue(makePresentation() as never)
+    vi.mocked(createPlanPackageFromIdeaSession).mockRejectedValueOnce(new TypeError('Failed to fetch'))
+
+    render(
+      <MemoryRouter>
+        <PlanGenerationPanel
+          ideaSessionId="idea_001"
+          ideaCandidateId="cand_001"
+          ideaCandidateTitle="Evidence-aware citation faithfulness for RAG"
+          ideaSeedQuery="How can high-risk RAG systems improve citation faithfulness under weak evidence?"
+        />
+      </MemoryRouter>,
+    )
+
+    const generate = await screen.findByRole('button', { name: /generate planpackage/i })
+    await user.click(generate)
+
+    await waitFor(() => {
+      expect(createPlanPackageFromIdeaSession).toHaveBeenCalledTimes(1)
+      expect(getPlanPackageByIdeaSession).toHaveBeenCalledTimes(2)
+      expect(screen.getByText('Plan snapshot')).toBeInTheDocument()
+    })
+    expect(screen.queryByText('Failed to fetch')).not.toBeInTheDocument()
   })
 
   it('keeps implementation details collapsed until a stage and step are opened', async () => {

@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { AppPageLayout } from '@/components/layout/AppPageLayout'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -19,9 +19,11 @@ import {
   ArrowRight,
   Check,
   Loader2,
+  Database,
 } from 'lucide-react'
 import { usePapers, useReviewFindings, useRunConsistencyCheck } from '@/lib/hooks/useApi'
 import { API_BASE_URL } from '@/lib/api'
+import { useReviewLocale } from '@/lib/reviewLocale'
 import type { ReviewFinding } from '@/lib/types'
 import { ExperimentFeedbackPanel } from '@/components/review/ExperimentFeedbackPanel'
 
@@ -324,6 +326,9 @@ const findingHasLlmRefinement = (finding: ReviewFinding) =>
   finding.description.includes('LLM deep review')
 
 export function ConsistencyChecker() {
+  const { text } = useReviewLocale()
+  const [searchParams] = useSearchParams()
+  const requestedFeedbackId = searchParams.get('feedbackId') || undefined
   const { data: papers, isLoading: papersLoading } = usePapers()
   const [selectedPaperId, setSelectedPaperId] = useState<string>('')
   const [budgetMode, setBudgetMode] = useState<string>('balanced')
@@ -351,7 +356,11 @@ export function ConsistencyChecker() {
   const findings = selectedHistoryId ? historyFindings : latestResultsEnabled ? latestFindings : null
   const findingsLoading = selectedHistoryId ? historyFindingsLoading : latestResultsEnabled ? latestFindingsLoading : false
   const hasLlmCalls = (runDetail?.modelTrace?.llmCalls || []).length > 0
-  const runSourceLabel = selectedHistoryId ? 'Stored History' : latestResultsEnabled ? 'Stored Latest' : 'Not Loaded'
+  const runSourceLabel = selectedHistoryId
+    ? text('已保存历史', 'Stored History')
+    : latestResultsEnabled
+      ? text('已保存最新结果', 'Stored Latest')
+      : text('未加载', 'Not Loaded')
 
   const refreshHistory = async (paperId: string) => {
     if (!paperId) {
@@ -565,7 +574,7 @@ export function ConsistencyChecker() {
     }, {} as Record<string, number>)
   }, [findings])
 
-  const riskTreeNodes = runDetail?.riskTree || []
+  const riskTreeNodes = useMemo(() => runDetail?.riskTree || [], [runDetail?.riskTree])
   const riskNodeById = useMemo(() => {
     const map: Record<string, ReviewXRiskNode> = {}
     riskTreeNodes.forEach((node) => {
@@ -645,13 +654,13 @@ export function ConsistencyChecker() {
             {node.status && <Badge variant="outline">{node.status}</Badge>}
             {node.assignedModel && <Badge variant="outline">{node.assignedModel}</Badge>}
             {node.expansionPolicy && <Badge variant="secondary">{node.expansionPolicy}</Badge>}
-            {node.claimIds && node.claimIds.length > 0 && <Badge variant="secondary">{node.claimIds.length} claims</Badge>}
+            {node.claimIds && node.claimIds.length > 0 && <Badge variant="secondary">{node.claimIds.length} {text('主张', 'claims')}</Badge>}
             {node.findingIds && node.findingIds.length > 0 && <Badge variant="secondary">{node.findingIds.length} findings</Badge>}
           </div>
           {node.mismatchDrivers && node.mismatchDrivers.length > 0 && (
             <div className="mt-2 flex flex-wrap gap-1 text-xs">
               {node.mismatchDrivers.map((driver) => (
-                <Badge key={driver} variant="outline">Driver: {driver}</Badge>
+                <Badge key={driver} variant="outline">{text('驱动因素', 'Driver')}: {driver}</Badge>
               ))}
             </div>
           )}
@@ -672,23 +681,41 @@ export function ConsistencyChecker() {
 
   return (
     <AppPageLayout
-      title="ReviewX Evidence Auditor"
-      subtitle="Audit scientific claims and route experiment-driven research iterations"
+      title={text('ReviewX 证据审计', 'ReviewX Evidence Auditor')}
+      subtitle={text('审计科学主张，并将实验证据路由到下一轮科研迭代', 'Audit scientific claims and route experiment-driven research iterations')}
       icon={Shield}
       iconColor="orange"
       accentColor="orange"
     >
-      <ExperimentFeedbackPanel />
+      <div className="mb-5 flex flex-wrap items-start justify-between gap-3 border-l-4 border-amber-600 bg-amber-50 px-4 py-3 text-amber-950" role="note">
+        <div className="flex min-w-0 items-start gap-3">
+          <Database className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" />
+          <div>
+            <div className="text-sm font-semibold">{text('数据范围：共享科研工作区', 'Data scope: shared research workspace')}</div>
+            <p className="mt-0.5 text-xs leading-relaxed text-amber-900">
+              {text(
+                '论文、已完成运行和 ReviewX 历史当前由团队与评委账号共享，只有 API Key 按账号隔离。未点击“审计”或“运行”按钮不会创建新结果。',
+                'Papers, completed runs, and ReviewX history are shared by team and judge accounts; only API keys are isolated per account. No new result is created until an audit or run command is clicked.',
+              )}
+            </p>
+          </div>
+        </div>
+        <Badge variant="outline" className="shrink-0 border-amber-300 bg-white text-amber-900">
+          {text('共享数据', 'Shared data')}
+        </Badge>
+      </div>
+
+      <ExperimentFeedbackPanel initialFeedbackId={requestedFeedbackId} />
       <div className="grid grid-cols-1 xl:grid-cols-[420px_minmax(0,1fr)] gap-6 items-start">
         <div className="space-y-6">
           <Card className="shadow-md">
             <CardHeader className="bg-gradient-to-r from-slate-50 to-white border-b">
-              <CardTitle className="text-xl">Run ReviewX Audit</CardTitle>
-              <CardDescription>Audit claims against citations and generated artifacts</CardDescription>
+              <CardTitle className="text-xl">{text('运行 ReviewX 审计', 'Run ReviewX Audit')}</CardTitle>
+              <CardDescription>{text('对照引用和生成的 artifact 审计科学主张', 'Audit claims against citations and generated artifacts')}</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4 pt-6">
               <div className="space-y-2">
-                <label className="text-sm font-semibold text-slate-700">Select Paper</label>
+                <label className="text-sm font-semibold text-slate-700">{text('选择论文', 'Select Paper')}</label>
                 {papersLoading ? (
                   <Skeleton className="h-10 w-full" />
                 ) : (
@@ -697,7 +724,7 @@ export function ConsistencyChecker() {
                     value={selectedPaperId}
                     onChange={(e) => setSelectedPaperId(e.target.value)}
                   >
-                    <option value="">Select a paper...</option>
+                    <option value="">{text('选择一篇论文...', 'Select a paper...')}</option>
                     {papers?.map((paper) => (
                       <option key={paper.id} value={paper.id}>
                         {paper.title}
@@ -707,7 +734,7 @@ export function ConsistencyChecker() {
                 )}
               </div>
               <div className="space-y-2">
-                <label className="text-sm font-semibold text-slate-700">Review Mode</label>
+                <label className="text-sm font-semibold text-slate-700">{text('审计模式', 'Review Mode')}</label>
                 <select
                   className="w-full rounded-md border-2 border-slate-200 bg-white px-4 py-2.5 text-sm font-medium hover:border-teal-500 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 transition-colors"
                   value={budgetMode}
@@ -719,8 +746,8 @@ export function ConsistencyChecker() {
                 </select>
                 <div className="text-xs text-muted-foreground">
                   {budgetMode === 'local_only'
-                    ? 'Local Only uses saved artifacts and rule-based checks. No model API call is made.'
-                    : 'Balanced and Deep run local checks first, then may call the configured model for high-risk findings.'}
+                    ? text('Local Only 使用已保存的 artifact 和规则检查，不调用模型 API。', 'Local Only uses saved artifacts and rule-based checks. No model API call is made.')
+                    : text('Balanced 和 Deep 先执行本地检查，再可能为高风险 finding 调用已配置模型。', 'Balanced and Deep run local checks first, then may call the configured model for high-risk findings.')}
                 </div>
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
@@ -731,7 +758,7 @@ export function ConsistencyChecker() {
                   size="lg"
                 >
                   <History className="h-4 w-4 mr-2" />
-                  Load Latest
+                  {text('加载最新结果', 'Load Latest')}
                 </Button>
                 <Button
                   disabled={!selectedPaperId || runConsistencyCheck.isPending}
@@ -754,12 +781,12 @@ export function ConsistencyChecker() {
                   className="bg-teal-600 hover:bg-teal-700"
                   size="lg"
                 >
-                  {runConsistencyCheck.isPending ? 'Running ReviewX...' : 'Run New ReviewX'}
+                  {runConsistencyCheck.isPending ? text('ReviewX 正在运行...', 'Running ReviewX...') : text('运行新 ReviewX', 'Run New ReviewX')}
                 </Button>
               </div>
               {runConsistencyCheck.isError && (
                 <p className="text-sm text-destructive">
-                  ReviewX failed to run. Check backend logs for details.
+                  {text('ReviewX 运行失败，请检查后端日志。', 'ReviewX failed to run. Check backend logs for details.')}
                 </p>
               )}
             </CardContent>
@@ -772,12 +799,12 @@ export function ConsistencyChecker() {
                   <div>
                     <CardTitle className="text-xl flex items-center gap-2">
                       <History className="h-5 w-5 text-teal-600" />
-                      ReviewX History
+                      ReviewX {text('历史', 'History')}
                     </CardTitle>
-                    <CardDescription>Saved ReviewX runs for this paper</CardDescription>
+                    <CardDescription>{text('该论文已保存的 ReviewX 运行', 'Saved ReviewX runs for this paper')}</CardDescription>
                   </div>
                   <Button variant="outline" size="sm" onClick={() => void refreshHistory(selectedPaperId)}>
-                    Refresh
+                    {text('刷新', 'Refresh')}
                   </Button>
                 </div>
               </CardHeader>
@@ -793,7 +820,7 @@ export function ConsistencyChecker() {
                       void loadLatestReviewX(selectedPaperId)
                     }}
                   >
-                    Show Latest
+                    {text('显示最新结果', 'Show Latest')}
                   </Button>
                 )}
                 {historyLoading ? (
@@ -804,7 +831,7 @@ export function ConsistencyChecker() {
                   </div>
                 ) : history.length === 0 ? (
                   <div className="text-sm text-muted-foreground">
-                    No ReviewX history yet. Run a consistency check to create one.
+                    {text('暂无 ReviewX 历史，运行一次一致性检查后将在此生成。', 'No ReviewX history yet. Run a consistency check to create one.')}
                   </div>
                 ) : (
                   <div className="space-y-3 max-h-[720px] overflow-y-auto pr-1">
@@ -833,13 +860,13 @@ export function ConsistencyChecker() {
                         <div className="mt-3 flex flex-wrap gap-2 text-xs">
                           <Badge variant="outline">{item.findingCount || 0} findings</Badge>
                           <Badge variant="outline">{severityText(item.severityCounts)}</Badge>
-                          <Badge variant="outline">{item.claimCount || 0} claims</Badge>
-                          <Badge variant="outline">{item.evidenceCount || 0} evidence</Badge>
-                          <Badge variant="outline">{item.verificationCount || 0} checks</Badge>
-                          <Badge variant="outline">{item.riskQuestionCount || 0} questions</Badge>
+                          <Badge variant="outline">{item.claimCount || 0} {text('主张', 'claims')}</Badge>
+                          <Badge variant="outline">{item.evidenceCount || 0} {text('证据', 'evidence')}</Badge>
+                          <Badge variant="outline">{item.verificationCount || 0} {text('检查', 'checks')}</Badge>
+                          <Badge variant="outline">{item.riskQuestionCount || 0} {text('问题', 'questions')}</Badge>
                           <Badge variant="outline">{supportText(item.supportCounts)}</Badge>
                           {item.llmCallCount !== undefined && (
-                            <Badge variant="outline">LLM calls: {item.llmCallCount}</Badge>
+                            <Badge variant="outline">LLM {text('调用', 'calls')}: {item.llmCallCount}</Badge>
                           )}
                         </div>
                         {item.llmSkipped && item.llmSkipReason && (
@@ -861,9 +888,9 @@ export function ConsistencyChecker() {
                 <CardTitle className="text-xl flex items-center gap-2">
                   <GitBranch className="h-5 w-5 text-teal-600" />
                   Mismatch Graph
-                  <Badge variant="outline" className="ml-auto text-xs">Experiment Metrics</Badge>
+                  <Badge variant="outline" className="ml-auto text-xs">{text('实验 Metric', 'Experiment Metrics')}</Badge>
                 </CardTitle>
-                <CardDescription>Claim-evidence mismatch scores and graph links for ReviewX evaluation</CardDescription>
+                <CardDescription>{text('用于 ReviewX 评估的主张-证据 mismatch 分数与图连接', 'Claim-evidence mismatch scores and graph links for ReviewX evaluation')}</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4 pt-6">
                 {runDetailLoading ? (
@@ -873,11 +900,11 @@ export function ConsistencyChecker() {
                   </div>
                 ) : !runDetail ? (
                   <div className="text-sm text-muted-foreground">
-                    Load a ReviewX run to inspect mismatch scores and claim-evidence links.
+                    {text('加载 ReviewX 运行以检查 mismatch 分数和主张-证据连接。', 'Load a ReviewX run to inspect mismatch scores and claim-evidence links.')}
                   </div>
                 ) : !mismatchAggregate ? (
                   <div className="text-sm text-muted-foreground">
-                    This run was created before mismatch scoring was enabled. Run ReviewX again to generate graph metrics.
+                    {text('此运行早于 mismatch 评分功能，请重新运行 ReviewX 以生成图 metric。', 'This run was created before mismatch scoring was enabled. Run ReviewX again to generate graph metrics.')}
                   </div>
                 ) : (
                   <>
@@ -886,19 +913,19 @@ export function ConsistencyChecker() {
                         <div className="text-lg font-bold text-slate-900">
                           {formatMetricValue(mismatchAggregate.meanMismatch)}
                         </div>
-                        <div className="text-xs text-muted-foreground">Mean mismatch</div>
+                        <div className="text-xs text-muted-foreground">{text('平均 mismatch', 'Mean mismatch')}</div>
                       </div>
                       <div className="rounded-md border border-slate-200 bg-white p-3">
                         <div className="text-lg font-bold text-slate-900">
                           {formatMetricValue(mismatchAggregate.maxMismatch)}
                         </div>
-                        <div className="text-xs text-muted-foreground">Max mismatch</div>
+                        <div className="text-xs text-muted-foreground">{text('最大 mismatch', 'Max mismatch')}</div>
                       </div>
                       <div className="rounded-md border border-slate-200 bg-white p-3">
                         <div className="text-lg font-bold text-slate-900">
                           {mismatchAggregate.highMismatchClaimCount || 0}
                         </div>
-                        <div className="text-xs text-muted-foreground">High-risk claims</div>
+                        <div className="text-xs text-muted-foreground">{text('高风险主张', 'High-risk claims')}</div>
                       </div>
                     </div>
 
@@ -906,8 +933,8 @@ export function ConsistencyChecker() {
                       {runDetail.mismatchReport?.method?.name && (
                         <Badge variant="secondary">{runDetail.mismatchReport.method.name}</Badge>
                       )}
-                      <Badge variant="outline">{runDetail.evidenceGraph?.nodeCount || 0} graph nodes</Badge>
-                      <Badge variant="outline">{runDetail.evidenceGraph?.edgeCount || 0} graph edges</Badge>
+                      <Badge variant="outline">{runDetail.evidenceGraph?.nodeCount || 0} {text('图节点', 'graph nodes')}</Badge>
+                      <Badge variant="outline">{runDetail.evidenceGraph?.edgeCount || 0} {text('图边', 'graph edges')}</Badge>
                       {Object.entries(mismatchAggregate.dimensionMax || {}).map(([name, value]) => (
                         <Badge key={name} variant="outline">{name}: {formatMetricValue(value)}</Badge>
                       ))}
@@ -921,7 +948,7 @@ export function ConsistencyChecker() {
 
                     {topMismatchClaims.length > 0 && (
                       <div className="rounded-md border border-slate-200 bg-white p-3">
-                        <div className="text-xs font-semibold uppercase text-slate-600">Top Mismatch Claims</div>
+                        <div className="text-xs font-semibold uppercase text-slate-600">Top Mismatch {text('主张', 'Claims')}</div>
                         <div className="mt-2 space-y-2">
                           {topMismatchClaims.map((claim) => (
                             <div key={claim.claimId} className="rounded border border-slate-100 bg-slate-50 p-2">
@@ -953,7 +980,7 @@ export function ConsistencyChecker() {
 
                     {graphPreviewEdges.length > 0 && (
                       <div className="rounded-md border border-slate-200 bg-white p-3">
-                        <div className="text-xs font-semibold uppercase text-slate-600">Claim-Evidence Links</div>
+                        <div className="text-xs font-semibold uppercase text-slate-600">{text('主张-证据连接', 'Claim-Evidence Links')}</div>
                         <div className="mt-2 space-y-2 max-h-[320px] overflow-y-auto pr-1">
                           {graphPreviewEdges.map((edge) => (
                             <div key={edge.id} className="text-xs text-slate-700">
@@ -979,9 +1006,9 @@ export function ConsistencyChecker() {
               <CardHeader className="bg-gradient-to-r from-slate-50 to-white border-b">
                 <CardTitle className="text-xl flex items-center gap-2">
                   <CheckCircle className="h-5 w-5 text-teal-600" />
-                  Before / After
+                  {text('修订前 / 修订后', 'Before / After')}
                 </CardTitle>
-                <CardDescription>Stored comparison of this ReviewX run with the previous completed run</CardDescription>
+                <CardDescription>{text('当前 ReviewX 运行与上一次完成运行的存档对照', 'Stored comparison of this ReviewX run with the previous completed run')}</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4 pt-6">
                 {comparisonLoading ? (
@@ -991,16 +1018,16 @@ export function ConsistencyChecker() {
                   </div>
                 ) : !comparison ? (
                   <div className="text-sm text-muted-foreground">
-                    Run ReviewX at least twice for this paper to compare revision progress.
+                    {text('该论文至少运行两次 ReviewX 才能对比修订进度。', 'Run ReviewX at least twice for this paper to compare revision progress.')}
                   </div>
                 ) : (
                   <>
                     <div className="rounded-md border border-slate-200 bg-white p-3">
                       <div className="grid grid-cols-[1fr_64px_64px_64px] gap-2 text-xs font-semibold text-slate-600">
                         <span>Metric</span>
-                        <span className="text-right">Before</span>
-                        <span className="text-right">After</span>
-                        <span className="text-right">Delta</span>
+                        <span className="text-right">{text('修订前', 'Before')}</span>
+                        <span className="text-right">{text('修订后', 'After')}</span>
+                        <span className="text-right">Δ</span>
                       </div>
                       <div className="mt-2 space-y-2">
                         {comparisonRows.map((row) => (
@@ -1025,21 +1052,21 @@ export function ConsistencyChecker() {
                     <div className="grid grid-cols-3 gap-2">
                       <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3">
                         <div className="text-lg font-bold text-emerald-700">{comparison.resolvedFindings.length}</div>
-                        <div className="text-xs text-emerald-900">Resolved</div>
+                        <div className="text-xs text-emerald-900">{text('已解决', 'Resolved')}</div>
                       </div>
                       <div className="rounded-md border border-amber-200 bg-amber-50 p-3">
                         <div className="text-lg font-bold text-amber-700">{comparison.persistentFindings.length}</div>
-                        <div className="text-xs text-amber-900">Persistent</div>
+                        <div className="text-xs text-amber-900">{text('持续存在', 'Persistent')}</div>
                       </div>
                       <div className="rounded-md border border-red-200 bg-red-50 p-3">
                         <div className="text-lg font-bold text-red-700">{comparison.newFindings.length}</div>
-                        <div className="text-xs text-red-900">New</div>
+                        <div className="text-xs text-red-900">{text('新增', 'New')}</div>
                       </div>
                     </div>
 
                     {comparison.resolvedFindings.length > 0 && (
                       <div className="rounded-md border border-slate-200 bg-white p-3">
-                        <div className="text-xs font-semibold uppercase text-slate-600">Recently Resolved</div>
+                        <div className="text-xs font-semibold uppercase text-slate-600">{text('最近解决', 'Recently Resolved')}</div>
                         <div className="mt-2 space-y-2">
                           {comparison.resolvedFindings.slice(0, 3).map((finding) => (
                             <div key={`${finding.claimId || finding.id}-${finding.title}`} className="text-xs text-slate-700">
@@ -1060,10 +1087,10 @@ export function ConsistencyChecker() {
               <CardHeader className="bg-gradient-to-r from-slate-50 to-white border-b">
                 <CardTitle className="text-xl flex items-center gap-2">
                   <GitBranch className="h-5 w-5 text-teal-600" />
-                  Risk Question Tree
-                  <Badge variant="outline" className="ml-auto text-xs">Local Rules</Badge>
+                  {text('风险问题树', 'Risk Question Tree')}
+                  <Badge variant="outline" className="ml-auto text-xs">{text('本地规则', 'Local Rules')}</Badge>
                 </CardTitle>
-                <CardDescription>Hierarchical ReviewX audit questions and routing decisions</CardDescription>
+                <CardDescription>{text('分层 ReviewX 审计问题与路由决策', 'Hierarchical ReviewX audit questions and routing decisions')}</CardDescription>
               </CardHeader>
               <CardContent className="space-y-3 pt-6">
                 {runDetailLoading ? (
@@ -1073,7 +1100,7 @@ export function ConsistencyChecker() {
                   </div>
                 ) : rootRiskNodes.length === 0 ? (
                   <div className="text-sm text-muted-foreground">
-                    No risk question tree yet. Run ReviewX to create one.
+                    {text('暂无风险问题树，运行 ReviewX 后将在此生成。', 'No risk question tree yet. Run ReviewX to create one.')}
                   </div>
                 ) : (
                   <div className="max-h-[720px] overflow-y-auto pr-1">
@@ -1091,13 +1118,13 @@ export function ConsistencyChecker() {
                   <div>
                     <CardTitle className="text-xl flex items-center gap-2">
                       <Target className="h-5 w-5 text-teal-600" />
-                      Revision Plan
-                      <Badge variant="outline" className="text-xs">Local Rules</Badge>
+                      {text('修订计划', 'Revision Plan')}
+                      <Badge variant="outline" className="text-xs">{text('本地规则', 'Local Rules')}</Badge>
                     </CardTitle>
-                    <CardDescription>Apply ReviewX action items into FAROS improvement requests</CardDescription>
+                    <CardDescription>{text('将 ReviewX 行动项转化为 FAROS 改进请求', 'Apply ReviewX action items into FAROS improvement requests')}</CardDescription>
                   </div>
                   {actionItems.length > 0 && (
-                    <Badge variant="outline">{actionItems.length} actions</Badge>
+                    <Badge variant="outline">{actionItems.length} {text('项行动', 'actions')}</Badge>
                   )}
                 </div>
               </CardHeader>
@@ -1109,18 +1136,18 @@ export function ConsistencyChecker() {
                   </div>
                 ) : !runDetail ? (
                   <div className="text-sm text-muted-foreground">
-                    No ReviewX run selected.
+                    {text('尚未选择 ReviewX 运行。', 'No ReviewX run selected.')}
                   </div>
                 ) : actionItems.length === 0 ? (
                   <div className="text-sm text-muted-foreground">
-                    No revision actions were generated for this run.
+                    {text('此运行未生成修订行动。', 'No revision actions were generated for this run.')}
                   </div>
                 ) : (
                   <>
                     <div className="flex items-center justify-between gap-3">
                       <Button variant="outline" size="sm" onClick={toggleAllActions}>
                         <Check className="h-3 w-3 mr-2" />
-                        {selectedActionIndexes.size === actionItems.length ? 'Deselect All' : 'Select All'}
+                        {selectedActionIndexes.size === actionItems.length ? text('全部取消', 'Deselect All') : text('全选', 'Select All')}
                       </Button>
                       <Button
                         size="sm"
@@ -1133,7 +1160,7 @@ export function ConsistencyChecker() {
                         ) : (
                           <ArrowRight className="h-3 w-3 mr-2" />
                         )}
-                        Apply {selectedActionIndexes.size || ''}
+                        {text('应用', 'Apply')} {selectedActionIndexes.size || ''}
                       </Button>
                     </div>
 
@@ -1201,14 +1228,14 @@ export function ConsistencyChecker() {
 
                 <div className="border-t pt-4">
                   <div className="mb-2 flex items-center justify-between">
-                    <div className="text-sm font-semibold text-slate-900">Improvement Requests</div>
+                    <div className="text-sm font-semibold text-slate-900">{text('改进请求', 'Improvement Requests')}</div>
                     <Button
                       variant="outline"
                       size="sm"
                       onClick={() => runDetail && void loadRevisionRequests(runDetail.id)}
                       disabled={!runDetail || revisionRequestsLoading}
                     >
-                      Refresh
+                      {text('刷新', 'Refresh')}
                     </Button>
                   </div>
                   {revisionRequestsLoading ? (
@@ -1218,7 +1245,7 @@ export function ConsistencyChecker() {
                     </div>
                   ) : revisionRequests.length === 0 ? (
                     <div className="text-xs text-muted-foreground">
-                      No improvement requests created from this ReviewX run yet.
+                      {text('此 ReviewX 运行尚未创建改进请求。', 'No improvement requests created from this ReviewX run yet.')}
                     </div>
                   ) : (
                     <div className="space-y-2 max-h-[320px] overflow-y-auto pr-1">
@@ -1249,7 +1276,7 @@ export function ConsistencyChecker() {
                                 className="h-7 text-xs"
                                 onClick={() => void updateRevisionRequestStatus(request.id, 'in_progress')}
                               >
-                                Start
+                                {text('开始', 'Start')}
                               </Button>
                             )}
                             {request.status !== 'resolved' && (
@@ -1259,7 +1286,7 @@ export function ConsistencyChecker() {
                                 className="h-7 text-xs"
                                 onClick={() => void updateRevisionRequestStatus(request.id, 'resolved')}
                               >
-                                Resolve
+                                {text('解决', 'Resolve')}
                               </Button>
                             )}
                             {request.status !== 'verified' && (
@@ -1269,7 +1296,7 @@ export function ConsistencyChecker() {
                                 className="h-7 text-xs"
                                 onClick={() => void updateRevisionRequestStatus(request.id, 'verified')}
                               >
-                                Verify
+                                {text('验证', 'Verify')}
                               </Button>
                             )}
                           </div>
@@ -1287,12 +1314,12 @@ export function ConsistencyChecker() {
               <CardHeader className="bg-gradient-to-r from-slate-50 to-white border-b">
                 <CardTitle className="text-xl flex items-center gap-2">
                   <Route className="h-5 w-5 text-teal-600" />
-                  Model Trace
+                  {text('模型轨迹', 'Model Trace')}
                   <Badge variant={hasLlmCalls ? 'secondary' : 'outline'} className="ml-auto text-xs">
-                    {hasLlmCalls ? 'LLM Refined' : 'No LLM Call'}
+                    {hasLlmCalls ? text('LLM 增强', 'LLM Refined') : text('未调用 LLM', 'No LLM Call')}
                   </Badge>
                 </CardTitle>
-                <CardDescription>Budget routing and Qwen/provider escalation trace</CardDescription>
+                <CardDescription>{text('预算路由与 Qwen/provider 升级轨迹', 'Budget routing and Qwen/provider escalation trace')}</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4 pt-6">
                 {runDetailLoading ? (
@@ -1302,7 +1329,7 @@ export function ConsistencyChecker() {
                   </div>
                 ) : !runDetail?.modelTrace ? (
                   <div className="text-sm text-muted-foreground">
-                    No model trace yet. Run ReviewX to create one.
+                    {text('暂无模型轨迹，运行 ReviewX 后将在此生成。', 'No model trace yet. Run ReviewX to create one.')}
                   </div>
                 ) : (
                   <>
@@ -1406,7 +1433,7 @@ export function ConsistencyChecker() {
                 <CardContent className="pt-6">
                   <div className="flex items-center justify-between">
                     <div>
-                      <p className="text-sm font-medium text-slate-600">Blockers</p>
+                      <p className="text-sm font-medium text-slate-600">{text('阻断项 (Blocker)', 'Blockers')}</p>
                       <p className="text-3xl font-bold text-red-600">{severityCounts.blocker || 0}</p>
                     </div>
                     <AlertCircle className="h-8 w-8 text-red-500" />
@@ -1417,7 +1444,7 @@ export function ConsistencyChecker() {
                 <CardContent className="pt-6">
                   <div className="flex items-center justify-between">
                     <div>
-                      <p className="text-sm font-medium text-slate-600">Major Issues</p>
+                      <p className="text-sm font-medium text-slate-600">{text('主要问题', 'Major Issues')}</p>
                       <p className="text-3xl font-bold text-orange-600">{severityCounts.major || 0}</p>
                     </div>
                     <AlertTriangle className="h-8 w-8 text-orange-500" />
@@ -1428,7 +1455,7 @@ export function ConsistencyChecker() {
                 <CardContent className="pt-6">
                   <div className="flex items-center justify-between">
                     <div>
-                      <p className="text-sm font-medium text-slate-600">Minor Issues</p>
+                      <p className="text-sm font-medium text-slate-600">{text('次要问题', 'Minor Issues')}</p>
                       <p className="text-3xl font-bold text-blue-600">{severityCounts.minor || 0}</p>
                     </div>
                     <Info className="h-8 w-8 text-blue-500" />
@@ -1439,7 +1466,7 @@ export function ConsistencyChecker() {
                 <CardContent className="pt-6">
                   <div className="flex items-center justify-between">
                     <div>
-                      <p className="text-sm font-medium text-slate-600">Info</p>
+                      <p className="text-sm font-medium text-slate-600">{text('提示', 'Info')}</p>
                       <p className="text-3xl font-bold text-teal-600">{severityCounts.info || 0}</p>
                     </div>
                     <CheckCircle className="h-8 w-8 text-teal-500" />
@@ -1454,16 +1481,18 @@ export function ConsistencyChecker() {
           <CardHeader className="bg-gradient-to-r from-slate-50 to-white border-b">
             <div className="flex items-center justify-between">
               <div>
-                <CardTitle className="text-xl">Audit Results ({findings ? filteredFindings.length : 0})</CardTitle>
+                <CardTitle className="text-xl">{text('审计结果', 'Audit Results')} ({findings ? filteredFindings.length : 0})</CardTitle>
                 <CardDescription>
-                  {findings ? 'ReviewX findings grouped by severity' : 'No ReviewX run is loaded yet'}
+                  {findings
+                    ? text('ReviewX finding 按严重程度分组', 'ReviewX findings grouped by severity')
+                    : text('尚未加载 ReviewX 运行', 'No ReviewX run is loaded yet')}
                 </CardDescription>
               </div>
               <div className="flex flex-wrap justify-end gap-2">
                 <Badge variant="outline" className="text-sm px-3 py-1">{runSourceLabel}</Badge>
                 {runDetail && (
                   <Badge variant={hasLlmCalls ? 'secondary' : 'outline'} className="text-sm px-3 py-1">
-                    {hasLlmCalls ? 'LLM Refined' : 'Local Rules'}
+                    {hasLlmCalls ? text('LLM 增强', 'LLM Refined') : text('本地规则', 'Local Rules')}
                   </Badge>
                 )}
                 <Badge variant="outline" className="text-sm px-3 py-1">
@@ -1475,7 +1504,7 @@ export function ConsistencyChecker() {
           <CardContent className="space-y-4 pt-6">
             {!findings && !findingsLoading ? (
               <div className="rounded-md border border-slate-200 bg-slate-50 p-6 text-center text-sm text-muted-foreground">
-                Select a paper, then click Load Latest to inspect saved results or Run New ReviewX to create a new audit.
+                {text('选择论文后，点击“加载最新结果”查看存档，或运行新 ReviewX 审计。', 'Select a paper, then click Load Latest to inspect saved results or Run New ReviewX to create a new audit.')}
               </div>
             ) : (
               <>
@@ -1485,15 +1514,15 @@ export function ConsistencyChecker() {
                 value={severityFilter}
                 onChange={(e) => setSeverityFilter(e.target.value)}
               >
-                <option value="all">All Severities</option>
-                <option value="blocker">🔴 Blocker</option>
-                <option value="major">🟠 Major</option>
-                <option value="minor">🔵 Minor</option>
-                <option value="info">✓ Info</option>
+                <option value="all">{text('全部级别', 'All Severities')}</option>
+                <option value="blocker">Blocker</option>
+                <option value="major">Major</option>
+                <option value="minor">Minor</option>
+                <option value="info">Info</option>
               </select>
               <input
                 type="search"
-                placeholder="Search findings..."
+                placeholder={text('搜索 finding...', 'Search findings...')}
                 className="flex-1 rounded-md border-2 border-slate-200 bg-white px-4 py-2 text-sm hover:border-teal-500 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 transition-colors"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
@@ -1508,7 +1537,7 @@ export function ConsistencyChecker() {
               </div>
             ) : filteredFindings.length === 0 ? (
               <div className="text-center py-8 text-sm text-muted-foreground">
-                No findings. Paper looks good!
+                {text('未发现 finding。', 'No findings. Paper looks good.')}
               </div>
             ) : (
               <div className="space-y-8">
@@ -1522,7 +1551,7 @@ export function ConsistencyChecker() {
                       }}>
                         {severityIcons[severity as keyof typeof severityIcons]}
                         <h3 className="text-lg font-bold capitalize text-slate-900">{severity}</h3>
-                        <Badge variant="outline" className="ml-auto">{items.length} issues</Badge>
+                        <Badge variant="outline" className="ml-auto">{items.length} {text('个问题', 'issues')}</Badge>
                       </div>
                       <div className="space-y-3">
                         {items.map((finding) => (
@@ -1548,7 +1577,7 @@ export function ConsistencyChecker() {
                                       variant={findingHasLlmRefinement(finding) ? 'secondary' : 'outline'}
                                       className="text-xs"
                                     >
-                                    {findingHasLlmRefinement(finding) ? 'LLM Refined' : 'Local Rule'}
+                                    {findingHasLlmRefinement(finding) ? text('LLM 增强', 'LLM Refined') : text('本地规则', 'Local Rule')}
                                   </Badge>
                                   {finding.reviewerDecision && (
                                     <Badge variant="outline" className="text-xs">
@@ -1598,7 +1627,7 @@ export function ConsistencyChecker() {
                               {finding.evidence && (
                                 <div className="bg-slate-50 border-l-2 border-slate-300 rounded-r-md">
                                   <div className="px-4 py-2 bg-slate-100 border-b border-slate-200">
-                                    <span className="text-xs font-semibold text-slate-700 uppercase tracking-wide">Evidence</span>
+                                    <span className="text-xs font-semibold text-slate-700 uppercase tracking-wide">{text('证据', 'Evidence')}</span>
                                   </div>
                                   <div className="p-4">
                                     <pre className="text-xs font-mono text-slate-700 whitespace-pre-wrap leading-relaxed">
@@ -1611,7 +1640,7 @@ export function ConsistencyChecker() {
                               {finding.suggestedFix && (
                                 <div className="bg-teal-50 border-l-2 border-teal-400 rounded-r-md">
                                   <div className="px-4 py-2 bg-teal-100 border-b border-teal-200">
-                                    <span className="text-xs font-semibold text-teal-800 uppercase tracking-wide">Suggested Fix</span>
+                                    <span className="text-xs font-semibold text-teal-800 uppercase tracking-wide">{text('建议修复', 'Suggested Fix')}</span>
                                   </div>
                                   <div className="p-4">
                                     <p className="text-sm text-teal-900 leading-relaxed">{finding.suggestedFix}</p>
@@ -1624,15 +1653,7 @@ export function ConsistencyChecker() {
                                   <Link to={`/runs/${finding.relatedRunId}`}>
                                     <Button variant="outline" size="sm" className="hover:bg-teal-50 hover:border-teal-500">
                                       <ExternalLink className="h-3 w-3 mr-2" />
-                                      View Run
-                                    </Button>
-                                  </Link>
-                                )}
-                                {finding.relatedArtifactId && (
-                                  <Link to="/artifacts">
-                                    <Button variant="outline" size="sm" className="hover:bg-teal-50 hover:border-teal-500">
-                                      <ExternalLink className="h-3 w-3 mr-2" />
-                                      View Artifact
+                                      {text('查看运行', 'View Run')}
                                     </Button>
                                   </Link>
                                 )}
@@ -1653,7 +1674,7 @@ export function ConsistencyChecker() {
           ) : (
             <Card className="shadow-md">
               <CardContent className="py-16 text-center text-sm text-muted-foreground">
-                Select a paper to view ReviewX results and history.
+                {text('选择一篇论文以查看 ReviewX 结果和历史。', 'Select a paper to view ReviewX results and history.')}
               </CardContent>
             </Card>
           )}

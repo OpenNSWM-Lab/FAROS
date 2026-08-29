@@ -20,7 +20,11 @@ from app.models.plan_package import (
     PlanStage,
     PlanStep,
 )
-from app.services.plan_package_service import PlanPackageService, _plan_llm_timeout_seconds
+from app.services.plan_package_service import (
+    PlanPackageService,
+    _plan_llm_timeout_seconds,
+    _plan_reviewer_concurrency,
+)
 
 
 def test_plan_llm_timeout_seconds_is_bounded(monkeypatch):
@@ -32,6 +36,17 @@ def test_plan_llm_timeout_seconds_is_bounded(monkeypatch):
 
     monkeypatch.setenv("FAROS_PLAN_PACKAGE_LLM_TIMEOUT_SECONDS", "45")
     assert _plan_llm_timeout_seconds() == 45.0
+
+
+def test_plan_reviewer_concurrency_is_bounded(monkeypatch):
+    monkeypatch.setenv("FAROS_PLAN_PACKAGE_REVIEWER_CONCURRENCY", "0")
+    assert _plan_reviewer_concurrency() == 1
+
+    monkeypatch.setenv("FAROS_PLAN_PACKAGE_REVIEWER_CONCURRENCY", "999")
+    assert _plan_reviewer_concurrency() == 5
+
+    monkeypatch.setenv("FAROS_PLAN_PACKAGE_REVIEWER_CONCURRENCY", "3")
+    assert _plan_reviewer_concurrency() == 3
 
 
 def _large_plan_package() -> PlanPackage:

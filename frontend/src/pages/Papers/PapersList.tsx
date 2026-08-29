@@ -7,6 +7,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { BookOpen, Plus, Download, Code2, Loader2, RefreshCw, Save, Eye, Copy, CheckCircle, ImagePlus, FileText, ListTree, Trash2, Wand2 } from 'lucide-react'
 import { LLM_PROVIDERS, getModelsByProvider } from '@/lib/models/providers'
 import { getPaperDisplayStatus, paperDisplayStatusClass, paperDisplayStatusLabel } from './paperStatus'
+import { useReviewLocale } from '@/lib/reviewLocale'
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || ''
 
@@ -245,6 +246,7 @@ const normalizeOutline = (outline: PaperOutline | null | undefined, fallbackTitl
 
 export function PapersList() {
   const navigate = useNavigate()
+  const { text } = useReviewLocale()
   const [papers, setPapers] = useState<PaperRecord[]>([])
   const [loading, setLoading] = useState(true)
   const [selectedPaper, setSelectedPaper] = useState<PaperRecord | null>(null)
@@ -1002,15 +1004,15 @@ export function PapersList() {
 
   return (
     <AppPageLayout
-      title="Papers"
-      subtitle="Generate research-grade papers with PDF preview and LaTeX download"
+      title={text('论文', 'Papers')}
+      subtitle={text('基于计划、代码和实验结果撰写论文，并预览 PDF 或导出 LaTeX', 'Write from plans, code, and experiment results, then preview PDF or export LaTeX')}
       icon={BookOpen}
       iconColor="indigo"
       accentColor="indigo"
       actions={
         <div className="flex gap-2">
           <Button variant="outline" size="sm" onClick={() => setShowCreate(current => !current)} disabled={creating}>
-            <Plus className="h-4 w-4 mr-1" /> New
+            <Plus className="h-4 w-4 mr-1" /> {text('新建', 'New')}
           </Button>
           <Button variant="outline" size="sm" onClick={fetchPapers} disabled={loading}>
             <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
@@ -1024,11 +1026,11 @@ export function PapersList() {
           {showCreate && (
             <Card className="border-indigo-200">
                 <CardContent className="pt-3 space-y-2">
-                  <input className="w-full border rounded px-2 py-1.5 text-sm" placeholder="Title" value={newTitle} onChange={e => setNewTitle(e.target.value)} />
+                  <input className="w-full border rounded px-2 py-1.5 text-sm" placeholder={text('论文标题', 'Paper title')} value={newTitle} onChange={e => setNewTitle(e.target.value)} />
                   <textarea
                     className="w-full border rounded px-2 py-1.5 text-xs resize-none"
                     rows={2}
-                    placeholder="Authors, one per line"
+                    placeholder={text('作者，每行一位', 'Authors, one per line')}
                     value={newAuthors}
                     onChange={e => setNewAuthors(e.target.value)}
                   />
@@ -1039,12 +1041,12 @@ export function PapersList() {
                   {VENUES.map(v => <option key={v} value={v}>{formatVenue(v)}</option>)}
                 </select>
                 <select className="w-full border rounded px-2 py-1.5 text-sm" value={newTemplate} onChange={e => setNewTemplate(e.target.value)}>
-                  <option value="">No template</option>
+                  <option value="">{text('不使用模板', 'No template')}</option>
                   {templates.map(t => <option key={t.id} value={t.id}>{t.name} — {t.description}</option>)}
                 </select>
                 <div className="grid grid-cols-2 gap-1">
                   <select className="border rounded px-2 py-1 text-xs" value={newProvider} onChange={e => { const provider = e.target.value; setNewProvider(provider); setNewModel(getModelsByProvider(provider)[0]?.id || "") }}>
-                    <option value="">Select provider</option>
+                    <option value="">{text('选择 Provider', 'Select provider')}</option>
                     {LLM_PROVIDERS.map(provider => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
                   </select>
                   <select className="border rounded px-2 py-1 text-xs" value={newModel} onChange={e => setNewModel(e.target.value)}>
@@ -1052,20 +1054,20 @@ export function PapersList() {
                   </select>
                 </div>
                 <select className="w-full border rounded px-2 py-1.5 text-sm" value={newProjectId} onChange={e => setNewProjectId(e.target.value)}>
-                  <option value="">No linked project</option>
+                  <option value="">{text('不关联项目', 'No linked project')}</option>
                   {projects.map(project => <option key={project.id} value={project.id}>{project.title} ({project.id})</option>)}
                 </select>
                 <textarea
                   className="w-full border rounded px-2 py-1.5 text-xs resize-none"
                   rows={3}
-                  placeholder="Writing intent / notes"
+                  placeholder={text('写作目标或补充说明', 'Writing intent / notes')}
                   value={newNotes}
                   onChange={e => setNewNotes(e.target.value)}
                 />
                 <div className="space-y-1">
-                  <div className="text-[11px] font-medium text-muted-foreground">Link runs</div>
+                  <div className="text-[11px] font-medium text-muted-foreground">{text('关联运行记录', 'Link runs')}</div>
                   <div className="max-h-24 overflow-y-auto border rounded p-1 space-y-1">
-                    {runs.length === 0 ? <div className="text-[11px] text-muted-foreground">No runs available</div> : runs.map(run => (
+                    {runs.length === 0 ? <div className="text-[11px] text-muted-foreground">{text('暂无可用运行记录', 'No runs available')}</div> : runs.map(run => (
                       <label key={run.id} className="flex items-start gap-2 text-[11px] cursor-pointer">
                         <input type="checkbox" checked={newRunIds.includes(run.id)} onChange={() => setNewRunIds(current => toggleSelection(current, run.id))} />
                         <span className="truncate">{run.id} [{run.status}] {run.config?.model || run.type}</span>
@@ -1074,9 +1076,9 @@ export function PapersList() {
                   </div>
                 </div>
                 <div className="space-y-1">
-                  <div className="text-[11px] font-medium text-muted-foreground">Link experiments</div>
+                  <div className="text-[11px] font-medium text-muted-foreground">{text('关联实验', 'Link experiments')}</div>
                   <div className="max-h-24 overflow-y-auto border rounded p-1 space-y-1">
-                    {experiments.length === 0 ? <div className="text-[11px] text-muted-foreground">No experiments available</div> : experiments.map(exp => (
+                    {experiments.length === 0 ? <div className="text-[11px] text-muted-foreground">{text('暂无可用实验', 'No experiments available')}</div> : experiments.map(exp => (
                       <label key={exp.id} className="flex items-start gap-2 text-[11px] cursor-pointer">
                         <input type="checkbox" checked={newExperimentIds.includes(exp.id)} onChange={() => setNewExperimentIds(current => toggleSelection(current, exp.id))} />
                         <span className="truncate">{exp.name} ({exp.id})</span>
@@ -1085,13 +1087,13 @@ export function PapersList() {
                   </div>
                 </div>
                 <Button size="sm" className="w-full" onClick={createPaper} disabled={creating}>
-                  {creating ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <Plus className="h-3 w-3 mr-1" />} Create
+                  {creating ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <Plus className="h-3 w-3 mr-1" />} {text('创建论文', 'Create Paper')}
                 </Button>
               </CardContent>
             </Card>
           )}
 
-          <div className="text-xs font-medium text-muted-foreground">{papers.length} papers</div>
+          <div className="text-xs font-medium text-muted-foreground">{text(`${papers.length} 篇论文`, `${papers.length} papers`)}</div>
           {loading ? (
             <div className="flex justify-center py-8"><Loader2 className="h-5 w-5 animate-spin text-indigo-500" /></div>
           ) : (
@@ -1136,7 +1138,7 @@ export function PapersList() {
           <div className="lg:col-span-3 flex items-center justify-center">
             <div className="text-center text-muted-foreground">
               <BookOpen className="h-12 w-12 mx-auto mb-3 opacity-30" />
-              <p className="text-sm">Select a paper to view</p>
+              <p className="text-sm">{text('选择一篇论文查看，或点击“新建”开始写作', 'Select a paper to view, or click New to begin')}</p>
             </div>
           </div>
         ) : (

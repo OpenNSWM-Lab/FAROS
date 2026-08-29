@@ -514,10 +514,19 @@ def test_literature_search_pauses_weak_pool_before_deep_read(monkeypatch, tmp_pa
         service._step_literature_search(session)
 
     assert exc_info.value.resume_from == "literatureSearch"
+    diagnosis = exc_info.value.step_outputs["failureDiagnosis"]
+    assert diagnosis["code"] == "seed_too_broad"
+    assert diagnosis["rawResultCount"] > 0
+    assert diagnosis["eligiblePaperCount"] == 0
+    assert diagnosis["resumeRecommended"] is False
+    assert "start a new session" in str(exc_info.value)
     assert service.raw_paper_storage.list_by_session(session.id) == []
 
 
 def test_deep_read_limit_is_bounded(monkeypatch):
+    monkeypatch.delenv("FAROS_IDEA_DEEP_READ_MAX_PAPERS", raising=False)
+    assert idea_service_module._deep_read_max_papers() == 12
+
     monkeypatch.setenv("FAROS_IDEA_DEEP_READ_MAX_PAPERS", "6")
     assert idea_service_module._deep_read_max_papers() == 6
 
@@ -528,7 +537,7 @@ def test_deep_read_limit_is_bounded(monkeypatch):
     assert idea_service_module._deep_read_max_papers() == 40
 
     monkeypatch.setenv("FAROS_IDEA_DEEP_READ_MAX_PAPERS", "invalid")
-    assert idea_service_module._deep_read_max_papers() == 24
+    assert idea_service_module._deep_read_max_papers() == 12
 
 
 def test_deep_read_selection_limits_transferable_quota_and_keeps_must_cite():

@@ -25,6 +25,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from app.core.settings import get_settings
+from app.core.user_context import call_with_current_context
 from app.modules.paper.storage import (
     create_paper, get_paper as _get_paper, list_papers as _list_papers,
     update_paper as _update_paper, list_paper_files as _list_paper_files,
@@ -467,7 +468,11 @@ async def generate_paper_endpoint(paper_id: str):
         except Exception as e:
             logger.error(f"Paper generation background task failed: {e}", exc_info=True)
 
-    thread = threading.Thread(target=_run, daemon=True)
+    thread = threading.Thread(
+        target=call_with_current_context(_run),
+        args=(),
+        daemon=True,
+    )
     try:
         thread.start()
     except Exception as exc:
@@ -770,6 +775,10 @@ async def render_paper_pdf_endpoint(paper_id: str):
             )
             logger.error(f"PDF re-render failed for {paper_id}: {e}", exc_info=True)
     
-    thread = threading.Thread(target=_run, daemon=True)
+    thread = threading.Thread(
+        target=call_with_current_context(_run),
+        args=(),
+        daemon=True,
+    )
     thread.start()
     return {"message": "PDF rendering started", "paperId": paper_id}

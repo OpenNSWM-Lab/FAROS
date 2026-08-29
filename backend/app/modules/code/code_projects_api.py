@@ -14,6 +14,7 @@ from fastapi import APIRouter, HTTPException, status, Depends, Query, Background
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from app.core.settings import get_settings
+from app.core.user_context import call_with_current_context
 from app.modules.code.projects import code_project_service as cps, generate_project_from_plan, get_generation_status
 from app.modules.code.storage import Session, crud, get_session, get_session_context
 from app.db.models import JobStatus, CodeJobCreate
@@ -1104,6 +1105,7 @@ async def _execute_pipeline_step(step: PipelineStep, repo_dir: str, python_exe: 
     """Execute a single pipeline step using subprocess in a thread pool (avoids Windows asyncio issues)."""
     import time as _time
     import subprocess as _subprocess
+    from app.core.user_context import sanitized_subprocess_env
     start = _time.time()
 
     result = PipelineStepResult(name=step.name, purpose=step.purpose, status="running")
@@ -1135,13 +1137,14 @@ async def _execute_pipeline_step(step: PipelineStep, repo_dir: str, python_exe: 
             text=True,
             timeout=step.timeoutSec,
             cwd=repo_dir,
+            env=sanitized_subprocess_env({"PYTHONUNBUFFERED": "1"}),
             encoding="utf-8",
             errors="replace",
         )
 
     try:
         loop = asyncio.get_event_loop()
-        proc = await loop.run_in_executor(None, _run)
+        proc = await loop.run_in_executor(None, call_with_current_context(_run))
 
         result.exitCode = proc.returncode
         result.stdout = (proc.stdout[:8000] if proc.stdout else "")

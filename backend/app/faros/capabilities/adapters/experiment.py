@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from app.contracts import ExecutionStatus
+from app.core.user_context import call_with_current_context, sanitized_subprocess_env
 from app.faros.capabilities.base import BaseCapability
 from app.faros.models.artifact import ArtifactRecord
 from app.faros.models.capability import CapabilityResult
@@ -48,7 +49,9 @@ def _run_async_from_sync(factory):
         return asyncio.run(factory())
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        return executor.submit(lambda: asyncio.run(factory())).result()
+        return executor.submit(
+            call_with_current_context(lambda: asyncio.run(factory()))
+        ).result()
 
 
 def _benchmark_generation_context(
@@ -279,7 +282,7 @@ class ExperimentCapability(BaseCapability):
                 text=True,
                 timeout=600,
                 cwd=repo_dir,
-                env={**os.environ, "PYTHONUNBUFFERED": "1"},
+                env=sanitized_subprocess_env({"PYTHONUNBUFFERED": "1"}),
             )
             result["exit_code"] = proc.returncode
             result["stdout"] = proc.stdout[-5000:] if len(proc.stdout) > 5000 else proc.stdout

@@ -7,8 +7,10 @@ import logging
 import os
 import re
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
 
+from app.core.user_context import call_with_current_context
 from app.llm.provider_client import ChatMessage, get_provider_client
 from app.llm.task_scheduler import get_llm_task_scheduler
 from app.models.idea import IdeaCandidate, IdeaSession
@@ -77,6 +79,14 @@ def _plan_llm_timeout_seconds() -> float:
     except ValueError:
         configured = 120.0
     return max(5.0, min(600.0, configured))
+
+
+def _plan_reviewer_concurrency() -> int:
+    try:
+        configured = int(os.getenv("FAROS_PLAN_PACKAGE_REVIEWER_CONCURRENCY", "4"))
+    except ValueError:
+        configured = 4
+    return max(1, min(len(LLM_REVIEWER_FOCUS), configured))
 
 
 class PlanPackageNotFoundError(ValueError):
@@ -830,9 +840,9 @@ class PlanPackageService:
                 )
                 for report in rule_reports
             ]
-        llm_reports: List[PlanReviewerReport] = []
         scheduler = get_llm_task_scheduler()
-        for rule_report in rule_reports:
+
+        def _review_one(rule_report: PlanReviewerReport) -> PlanReviewerReport:
             try:
                 response = scheduler.run(
                     "plan_package_reviewer",
@@ -860,31 +870,50 @@ class PlanPackageService:
                 )
                 parsed = _extract_json(response.text or "")
                 if not parsed:
-                    llm_reports.append(
-                        self._llm_unavailable_report(
-                            rule_report.reviewer,
-                            "LLM returned non-JSON output",
-                            base_score=rule_report.score,
-                        )
+                    return self._llm_unavailable_report(
+                        rule_report.reviewer,
+                        "LLM returned non-JSON output",
+                        base_score=rule_report.score,
                     )
-                    continue
-                llm_reports.append(
-                    self._parse_llm_review_report(
-                        parsed,
-                        reviewer=rule_report.reviewer,
-                        default_score=rule_report.score,
-                    )
+                return self._parse_llm_review_report(
+                    parsed,
+                    reviewer=rule_report.reviewer,
+                    default_score=rule_report.score,
                 )
             except Exception as exc:
                 logger.warning("%s LLM reviewer failed: %s", rule_report.reviewer, exc, exc_info=True)
-                llm_reports.append(
-                    self._llm_unavailable_report(
+                return self._llm_unavailable_report(
+                    rule_report.reviewer,
+                    str(exc),
+                    base_score=rule_report.score,
+                )
+
+        concurrency = min(_plan_reviewer_concurrency(), len(rule_reports))
+        if concurrency <= 1:
+            return [_review_one(report) for report in rule_reports]
+
+        reports_by_reviewer: Dict[str, PlanReviewerReport] = {}
+        with ThreadPoolExecutor(
+            max_workers=concurrency,
+            thread_name_prefix="plan-reviewer",
+        ) as executor:
+            future_to_report = {
+                executor.submit(call_with_current_context(_review_one, report)): report
+                for report in rule_reports
+            }
+            for future in as_completed(future_to_report):
+                rule_report = future_to_report[future]
+                try:
+                    reports_by_reviewer[rule_report.reviewer] = future.result()
+                except Exception as exc:
+                    logger.warning("%s LLM reviewer crashed: %s", rule_report.reviewer, exc, exc_info=True)
+                    reports_by_reviewer[rule_report.reviewer] = self._llm_unavailable_report(
                         rule_report.reviewer,
                         str(exc),
                         base_score=rule_report.score,
                     )
-                )
-        return llm_reports
+
+        return [reports_by_reviewer[report.reviewer] for report in rule_reports]
 
     def _llm_unavailable_report(self, reviewer: str, message: str, *, base_score: float = 0.5) -> PlanReviewerReport:
         return PlanReviewerReport(

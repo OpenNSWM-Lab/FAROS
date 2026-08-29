@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from app.faros.errors import FarosBlockedError, FarosError, FarosNotFoundError
+from app.core.user_context import call_with_current_context
 from app.faros.registry.agent_registry import get_agent_registry
 from app.faros.registry.artifact_registry import get_artifact_registry
 from app.faros.registry.blueprint_registry import get_blueprint_registry
@@ -461,7 +462,11 @@ async def create_run(req: CreateFarosRunRequest) -> Dict[str, Any]:
         return run
 
     if req.asyncExecution:
-        thread = threading.Thread(target=orchestrator.execute_run, args=(run['id'],), daemon=True)
+        thread = threading.Thread(
+            target=call_with_current_context(orchestrator.execute_run),
+            args=(run['id'],),
+            daemon=True,
+        )
         thread.start()
         return run
 
@@ -488,7 +493,11 @@ async def execute_pending_run(run_id: str, req: ExecuteFarosRunRequest) -> Dict[
         raise _http_error_from_exception(FarosBlockedError(f"FAROS run '{run_id}' is already running"))
 
     if req.asyncExecution:
-        thread = threading.Thread(target=orchestrator.resume_run, args=(run_id,), daemon=True)
+        thread = threading.Thread(
+            target=call_with_current_context(orchestrator.resume_run),
+            args=(run_id,),
+            daemon=True,
+        )
         thread.start()
         return {**run, 'executionScheduled': True}
     try:

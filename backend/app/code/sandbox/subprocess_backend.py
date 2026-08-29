@@ -20,6 +20,8 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from app.core.user_context import sanitized_subprocess_env
+
 from .base import SandboxBackend
 from .models import SandboxResult, ResourceUsage
 
@@ -128,8 +130,7 @@ class SubprocessSandbox(SandboxBackend):
         execution_command = self._resolve_python_command(command)
 
         # Build environment
-        proc_env = os.environ.copy()
-        proc_env["PYTHONUNBUFFERED"] = "1"
+        proc_env = sanitized_subprocess_env({"PYTHONUNBUFFERED": "1"})
         if env:
             proc_env.update(env)
 
