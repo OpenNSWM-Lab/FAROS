@@ -15,7 +15,6 @@ export const queryKeys = {
   papers: ['papers'] as const,
   paper: (id: string) => ['papers', id] as const,
   reviewFindings: (paperId: string) => ['review', 'findings', paperId] as const,
-  reviewerSimulations: (paperId: string) => ['review', 'simulations', paperId] as const,
   systemHealth: ['system', 'health'] as const,
   systemLogs: (filters?: { level?: string; limit?: number }) => ['system', 'logs', filters] as const,
   systemMetrics: (timeRange?: string) => ['system', 'metrics', timeRange] as const,
@@ -164,14 +163,6 @@ export function useReviewFindings(paperId: string) {
   })
 }
 
-export function useReviewerSimulations(paperId: string) {
-  return useQuery({
-    queryKey: queryKeys.reviewerSimulations(paperId),
-    queryFn: () => api.getReviewerSimulations(paperId),
-    enabled: !!paperId,
-  })
-}
-
 export function useRunConsistencyCheck() {
   const queryClient = useQueryClient()
 
@@ -180,18 +171,6 @@ export function useRunConsistencyCheck() {
     onSuccess: (_data, input) => {
       const paperId = typeof input === 'string' ? input : input.paperId
       queryClient.invalidateQueries({ queryKey: queryKeys.reviewFindings(paperId) })
-    },
-  })
-}
-
-export function useRunReviewerSimulation() {
-  const queryClient = useQueryClient()
-
-  return useMutation({
-    mutationFn: ({ paperId, profile }: { paperId: string; profile: string }) =>
-      api.runReviewerSimulation(paperId, profile),
-    onSuccess: (_data, { paperId }) => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.reviewerSimulations(paperId) })
     },
   })
 }

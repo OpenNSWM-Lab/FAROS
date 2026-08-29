@@ -99,7 +99,13 @@ def refine_findings_with_budget(
         _apply_assessments(findings, assessments, response.model)
         additional_findings = _extract_additional_findings(response.text)
         trace["llmAdditionalFindings"] = additional_findings
-        _apply_additional_findings(findings, additional_findings, claims, response.model, paper.get("id", ""))
+        trace["llmAdditionalFindingApplications"] = _apply_additional_findings(
+            findings,
+            additional_findings,
+            claims,
+            response.model,
+            paper.get("id", ""),
+        )
     except ProviderError as exc:
         logger.warning("ReviewX LLM escalation skipped after provider error: %s", exc)
         trace["skipped"] = True
@@ -110,6 +116,42 @@ def refine_findings_with_budget(
         trace["skipReason"] = f"LLM escalation failed: {str(exc)[:240]}"
 
     return findings, trace
+
+
+def rank_findings_for_review(
+    findings: List[Finding], routing_trace: Dict[str, Any] | None,
+) -> List[Finding]:
+    """Put the most consequential CEM-routed findings first for UI and evaluation."""
+    allocations = {
+        str(item.get("findingId") or ""): item
+        for item in (routing_trace or {}).get("budgetAllocations", [])
+        if isinstance(item, dict)
+    }
+    severity_bonus = {"blocker": 0.35, "major": 0.22, "minor": 0.08, "info": 0.0}
+    severity_rank = {"blocker": 0, "major": 1, "minor": 2, "info": 3}
+
+    def key(finding: Finding) -> tuple[float, int, float, str]:
+        allocation = allocations.get(finding.id, {})
+        fallback = min(
+            1.0,
+            float(finding.confidence or 0) + severity_bonus.get(finding.severity, 0.0),
+        )
+        priority = float(allocation.get("priority", fallback) or 0)
+        calibration = finding.cemCalibration or {}
+        if calibration.get("llmAddedFinding") or calibration.get("llmMergedFinding"):
+            priority = max(priority, fallback)
+        try:
+            priority *= float(calibration.get("llmFactor", 1.0) or 1.0)
+        except (TypeError, ValueError):
+            pass
+        return (
+            -priority,
+            severity_rank.get(finding.severity, 9),
+            -float(finding.confidence or 0),
+            finding.id,
+        )
+
+    return sorted(findings, key=key)
 
 
 def _select_findings(findings: List[Finding], budget_plan: Dict[str, Any]) -> List[Finding]:
@@ -385,23 +427,37 @@ def _apply_additional_findings(
     claims: List[Claim],
     model: str,
     paper_id: str,
-) -> None:
+) -> List[Dict[str, Any]]:
     claims_by_id = {claim.id: claim for claim in claims}
-    existing_claim_ids = {finding.claimId for finding in findings if finding.claimId}
+    findings_by_claim: Dict[str, List[Finding]] = {}
+    for finding in findings:
+        if finding.claimId:
+            findings_by_claim.setdefault(finding.claimId, []).append(finding)
+    applications: List[Dict[str, Any]] = []
     for item in additional_findings[:2]:
         claim_id = str(item.get("claimId") or "")
         claim = claims_by_id.get(claim_id)
-        if not claim or claim_id in existing_claim_ids:
+        if not claim:
+            continue
+        existing = _merge_candidate(findings_by_claim.get(claim_id, []))
+        if existing:
+            _merge_additional_finding(existing, item, claim, model)
+            applications.append({
+                "claimId": claim_id,
+                "findingId": existing.id,
+                "outcome": "merged",
+            })
             continue
         severity = _normalize_severity(item.get("severity"))
         risk_type = _normalize_risk_type(item.get("riskType"))
-        support_status = _normalize_support_status(item.get("supportStatus"))
+        support_status = _conservative_llm_support_status(item.get("supportStatus"), [])
+        reviewer_decision = _llm_finding_decision(support_status)
         try:
             confidence = float(item.get("confidence", 0.72))
         except (TypeError, ValueError):
             confidence = 0.72
         finding = Finding(
-            id=f"finding_{len(findings) + 1:03d}",
+            id=_next_finding_id(findings),
             paperId=paper_id,
             claimId=claim_id,
             severity=severity,
@@ -416,11 +472,11 @@ def _apply_additional_findings(
             suggestedFix=str(item.get("suggestedFix") or "Add direct supporting evidence or weaken the claim.")[:500],
             confidence=round(max(0.0, min(1.0, confidence)), 2),
             supportStatus=support_status,
-            reviewerDecision="valid",
+            reviewerDecision=reviewer_decision,
             reviewerAssessment=str(item.get("description") or "").strip() or None,
             reviewerModel=model,
             cemCalibration={
-                "llmDecision": "valid",
+                "llmDecision": reviewer_decision,
                 "llmModel": model,
                 "llmFactor": 1.0,
                 "llmAddedFinding": True,
@@ -431,7 +487,115 @@ def _apply_additional_findings(
             },
         )
         findings.append(finding)
-        existing_claim_ids.add(claim_id)
+        findings_by_claim.setdefault(claim_id, []).append(finding)
+        applications.append({
+            "claimId": claim_id,
+            "findingId": finding.id,
+            "outcome": "added",
+        })
+    return applications
+
+
+def _next_finding_id(findings: List[Finding]) -> str:
+    existing_ids = {finding.id for finding in findings}
+    index = len(findings) + 1
+    while f"finding_{index:03d}" in existing_ids:
+        index += 1
+    return f"finding_{index:03d}"
+
+
+def _merge_candidate(findings: List[Finding]) -> Finding | None:
+    if not findings:
+        return None
+    generic_statuses = {"artifact_absent", "needs_human_verification", "weakly_supported"}
+    generic_risks = {"artifact_gap", "traceability_gap", "citation_uncertainty"}
+    generic_findings = [
+        finding for finding in findings
+        if finding.supportStatus in generic_statuses
+        or (finding.supportStatus is None and finding.riskType in generic_risks)
+    ]
+    if not generic_findings:
+        return None
+    return min(
+        generic_findings,
+        key=lambda finding: (
+            0 if finding.supportStatus in generic_statuses else 1,
+            0 if finding.riskType in generic_risks else 1,
+            float(finding.confidence or 0),
+            finding.id,
+        ),
+    )
+
+
+def _merge_additional_finding(
+    finding: Finding,
+    item: Dict[str, Any],
+    claim: Claim,
+    model: str,
+) -> None:
+    original_risk_type = finding.riskType
+    original_severity = finding.severity
+    original_support_status = finding.supportStatus
+    original_description = finding.description
+    severity = _normalize_severity(item.get("severity"))
+    risk_type = _normalize_risk_type(item.get("riskType"))
+    support_status = _conservative_llm_support_status(
+        item.get("supportStatus"),
+        finding.evidenceIds,
+    )
+    reviewer_decision = _llm_finding_decision(support_status)
+    description = str(item.get("description") or "").strip()
+    title = str(item.get("title") or "").strip()
+    suggested_fix = str(item.get("suggestedFix") or "").strip()
+    try:
+        confidence = float(item.get("confidence", finding.confidence))
+    except (TypeError, ValueError):
+        confidence = float(finding.confidence or 0)
+    severity_rank = {"blocker": 0, "major": 1, "minor": 2, "info": 3}
+
+    if severity_rank.get(severity, 9) < severity_rank.get(finding.severity, 9):
+        finding.severity = severity
+    finding.riskType = risk_type
+    finding.supportStatus = support_status
+    if title:
+        finding.title = title[:160]
+    if description:
+        local_context = _clip(original_description, 420)
+        finding.description = (
+            f"{claim.text}\n\n"
+            f"LLM gap scan ({model}): {description}"
+            + (f"\n\nLocal evidence context: {local_context}" if local_context else "")
+        )
+    if suggested_fix:
+        finding.suggestedFix = suggested_fix[:500]
+    finding.targetModule = _normalize_target_module(item.get("targetModule"))
+    finding.confidence = round(max(float(finding.confidence or 0), min(1.0, confidence)), 2)
+    finding.reviewerDecision = reviewer_decision
+    finding.reviewerAssessment = description or finding.reviewerAssessment
+    finding.reviewerModel = model
+    finding.cemCalibration = {
+        **finding.cemCalibration,
+        "llmDecision": reviewer_decision,
+        "llmModel": model,
+        "llmFactor": 1.0,
+        "llmMergedFinding": True,
+        "preMergeRiskType": original_risk_type,
+        "preMergeSeverity": original_severity,
+        "preMergeSupportStatus": original_support_status,
+    }
+
+
+def _conservative_llm_support_status(value: Any, evidence_ids: List[str]) -> str:
+    status = _normalize_support_status(value)
+    if status == "contradicted" and not evidence_ids:
+        return "needs_human_verification"
+    return status
+
+
+def _llm_finding_decision(support_status: str) -> str:
+    if support_status in {"artifact_absent", "needs_human_verification", "weakly_supported"}:
+        return "partially_valid"
+    return "valid"
 
 
 def _normalize_decision(value: Any) -> str:

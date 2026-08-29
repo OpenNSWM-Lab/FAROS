@@ -1,10 +1,10 @@
 /**
  * Code Projects List Page
  * 
- * Lists all code projects with search, create, and generate sample buttons.
+ * Lists generated or imported code projects.
  */
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { AppPageLayout } from '@/components/layout/AppPageLayout'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -14,12 +14,13 @@ import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
 import {
   Code2, Search, FolderOpen, Loader2,
-  AlertTriangle, FileCode, Clock, Sparkles, FlaskConical, GitBranch, Trash2
+  AlertTriangle, FileCode, Clock, FlaskConical, GitBranch, Trash2, ArchiveRestore
 } from 'lucide-react'
 import {
-  listProjects, generateSampleProject, deleteProject,
+  listProjects, deleteProject, uploadFinishedBundle,
   CodeProjectV2,
 } from '@/lib/api/codeProjects'
+import { useReviewLocale } from '@/lib/reviewLocale'
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
@@ -39,11 +40,13 @@ function formatDate(iso: string): string {
 export function CodeProjects() {
   const navigate = useNavigate()
   const location = useLocation()
+  const { text } = useReviewLocale()
   const [projects, setProjects] = useState<CodeProjectV2[]>([])
   const [search, setSearch] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [generating, setGenerating] = useState(false)
+  const [importing, setImporting] = useState(false)
+  const bundleInputRef = useRef<HTMLInputElement>(null)
 
   const loadProjects = async (searchTerm?: string) => {
     try {
@@ -52,7 +55,7 @@ export function CodeProjects() {
       const resp = await listProjects({ search: searchTerm || undefined })
       setProjects(resp.projects)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load projects')
+      setError(err instanceof Error ? err.message : text('项目加载失败', 'Failed to load projects'))
     } finally {
       setLoading(false)
     }
@@ -66,38 +69,43 @@ export function CodeProjects() {
     if (e.key === 'Enter') handleSearch()
   }
 
-  const handleGenerateSample = async () => {
+  const handleImportBundle = async (file: File) => {
     try {
-      setGenerating(true)
+      setImporting(true)
       setError(null)
-      const project = await generateSampleProject(
-        'Sample FastAPI Project',
-        'python',
-        'A sample project demonstrating multi-file code generation'
-      )
-      navigate(`/code/projects/${project.id}`)
+      const imported = await uploadFinishedBundle(file)
+      navigate(`/code/projects/${imported.projectId}`)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to generate sample')
+      setError(err instanceof Error ? err.message : text('导入交付包失败', 'Failed to import bundle'))
     } finally {
-      setGenerating(false)
+      setImporting(false)
     }
+  }
+
+  const handleBundleSelected = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (file) void handleImportBundle(file)
   }
 
   const handleDeleteProject = async (e: React.MouseEvent, projectId: string, title: string) => {
     e.stopPropagation()  // prevent card click
-    if (!confirm(`Delete project "${title}"?\nThis will remove all files and pipeline history.`)) return
+    if (!confirm(text(
+      `删除项目“${title}”？这会删除项目文件与流程历史。`,
+      `Delete project "${title}"? This removes project files and pipeline history.`,
+    ))) return
     try {
       await deleteProject(projectId)
       setProjects(prev => prev.filter(p => p.id !== projectId))
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Delete failed')
+      setError(err instanceof Error ? err.message : text('删除失败', 'Delete failed'))
     }
   }
 
   return (
     <AppPageLayout
-      title="Code Projects"
-      subtitle="GitHub-like browsing for generated code"
+      title={text('Code 项目', 'Code Projects')}
+      subtitle={text('管理从科研计划生成或导入的实验工程', 'Manage experiment projects generated from plans or imported bundles')}
       icon={Code2}
       iconColor="violet"
       accentColor="violet"
@@ -105,8 +113,8 @@ export function CodeProjects() {
       {/* Code sub-navigation tabs */}
       <div className="flex items-center gap-1 mb-6 border-b pb-2">
         {[
-          { label: 'Projects', href: '/code/projects', icon: FolderOpen },
-          { label: 'Workspace', href: '/code/workspace', icon: FlaskConical },
+          { label: text('项目', 'Projects'), href: '/code/projects', icon: FolderOpen },
+          { label: text('生成工作区', 'Workspace'), href: '/code/workspace', icon: FlaskConical },
           { label: 'Blueprint', href: '/code/blueprint', icon: GitBranch },
         ].map((tab) => (
           <Button
@@ -128,33 +136,36 @@ export function CodeProjects() {
       </div>
 
       {/* Top bar: search + actions */}
-      <div className="flex items-center gap-3 mb-6">
-        <div className="flex-1 flex gap-2">
+      <div className="mb-6 flex flex-col gap-3 lg:flex-row lg:items-center">
+        <div className="flex min-w-0 flex-1 gap-2">
           <Input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Search projects by title..."
+            placeholder={text('按标题搜索项目...', 'Search projects by title...')}
             className="max-w-md"
           />
           <Button variant="outline" onClick={handleSearch}>
-            <Search className="h-4 w-4 mr-1" /> Search
+            <Search className="h-4 w-4 mr-1" /> {text('搜索', 'Search')}
           </Button>
         </div>
         <Button
           onClick={() => navigate('/code/workspace')}
           variant="outline"
-          title="Generate code from a research plan"
+          title={text('从科研计划生成代码', 'Generate code from a research plan')}
         >
-          <FlaskConical className="h-4 w-4 mr-1" /> Generate from Plan
+          <FlaskConical className="h-4 w-4 mr-1" /> {text('从计划生成', 'Generate from Plan')}
         </Button>
-        <Button
-          onClick={handleGenerateSample}
-          disabled={generating}
-          variant="outline"
-        >
-          {generating ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Sparkles className="h-4 w-4 mr-1" />}
-          Generate Sample
+        <input
+          ref={bundleInputRef}
+          type="file"
+          accept=".zip,application/zip"
+          className="hidden"
+          onChange={handleBundleSelected}
+        />
+        <Button onClick={() => bundleInputRef.current?.click()} disabled={importing} variant="outline">
+          {importing ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <ArchiveRestore className="h-4 w-4 mr-1" />}
+          {text('导入交付包', 'Import Bundle')}
         </Button>
       </div>
 
@@ -164,7 +175,7 @@ export function CodeProjects() {
           <AlertTriangle className="h-4 w-4 text-red-600" />
           <span className="text-sm text-red-900">{error}</span>
           <Button variant="ghost" size="sm" onClick={() => setError(null)} className="ml-auto">
-            Dismiss
+            {text('关闭', 'Dismiss')}
           </Button>
         </div>
       )}
@@ -178,16 +189,16 @@ export function CodeProjects() {
         <Card>
           <CardContent className="py-12 text-center">
             <FolderOpen className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
-            <p className="text-lg font-medium mb-2">No projects yet</p>
+            <p className="text-lg font-medium mb-2">{text('暂无 Code 项目', 'No code projects yet')}</p>
             <p className="text-sm text-muted-foreground mb-4">
-              Create a sample project to explore, or generate code from a research plan.
+              {text('批准 PlanPackage 后生成实验工程，或导入已有交付包。', 'Generate an experiment project from an approved PlanPackage, or import an existing bundle.')}
             </p>
             <div className="flex gap-3 justify-center">
-              <Button onClick={handleGenerateSample} disabled={generating}>
-                <Sparkles className="h-4 w-4 mr-2" /> Sample Project
+              <Button onClick={() => navigate('/code/workspace')}>
+                <FlaskConical className="h-4 w-4 mr-2" /> {text('从计划生成', 'Generate from Plan')}
               </Button>
-              <Button variant="outline" onClick={() => navigate('/code/workspace')}>
-                <FlaskConical className="h-4 w-4 mr-2" /> Generate from Plan
+              <Button variant="outline" onClick={() => bundleInputRef.current?.click()} disabled={importing}>
+                <ArchiveRestore className="h-4 w-4 mr-2" /> {text('导入交付包', 'Import Bundle')}
               </Button>
             </div>
           </CardContent>
@@ -240,7 +251,7 @@ export function CodeProjects() {
                     </Badge>
                   )}
                   <span className="text-xs text-muted-foreground">
-                    {project.fileCount} files
+                    {project.fileCount} {text('个文件', 'files')}
                   </span>
                   <span className="text-xs text-muted-foreground">
                     {formatBytes(project.totalSizeBytes)}
@@ -252,7 +263,7 @@ export function CodeProjects() {
                 </div>
                 {project.sourceIdeaSessionId && (
                   <Badge variant="outline" className="mt-2 text-xs">
-                    From Idea Session
+                    {text('来自创意会话', 'From Idea Session')}
                   </Badge>
                 )}
               </CardContent>

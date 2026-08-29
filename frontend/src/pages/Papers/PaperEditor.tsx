@@ -10,6 +10,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { ArrowLeft, Download, FileCheck, ChevronRight, FileText, Copy, CheckCircle2 } from 'lucide-react'
 import { usePaper } from '@/lib/hooks/useApi'
 import type { PaperSection } from '@/lib/types'
+import { paperDisplayStatusClass, paperDisplayStatusLabel } from './paperStatus'
 
 export function PaperEditor() {
   const { id } = useParams()
@@ -64,8 +65,12 @@ export function PaperEditor() {
       }
       actions={
         <div className="flex items-center gap-2">
-          <Badge variant="outline" className="capitalize">{paper.status}</Badge>
-          <Button variant="outline" size="sm" onClick={() => window.open('/demo/paper.pdf', '_blank')}>
+          <Badge variant="outline" className={paperDisplayStatusClass(paper)}>{paperDisplayStatusLabel(paper)}</Badge>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => window.open(`/api/v1/papers/${encodeURIComponent(paper.id)}/pdf`, '_blank')}
+          >
             <FileText className="mr-2 h-4 w-4" />
             View PDF
           </Button>

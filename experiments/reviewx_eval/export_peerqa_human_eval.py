@@ -56,10 +56,14 @@ def candidate_score(reference: dict[str, Any], finding: dict[str, Any], claim: d
 def best_candidate(
     reference: dict[str, Any],
     record: dict[str, Any],
+    max_findings: int = 0,
 ) -> tuple[float, dict[str, Any], dict[str, Any]]:
     claims = {str(row.get("claimId")): row for row in record.get("claimScores", [])}
     candidates = []
-    for finding in record.get("findings", []):
+    findings = list(record.get("findings", []))
+    if max_findings > 0:
+        findings = findings[:max_findings]
+    for finding in findings:
         claim = claims.get(str(finding.get("claimId") or ""), {})
         candidates.append((candidate_score(reference, finding, claim), finding, claim))
     if candidates:
@@ -85,6 +89,7 @@ def build_rows(
     records: list[dict[str, Any]],
     references: list[dict[str, Any]],
     threshold: float,
+    max_findings: int = 0,
 ) -> list[dict[str, Any]]:
     records_by_sample = {str(row.get("sampleId")): row for row in records}
     rows = []
@@ -92,7 +97,7 @@ def build_rows(
         record = records_by_sample.get(str(reference.get("sampleId")))
         if not record:
             continue
-        score, finding, claim = best_candidate(reference, record)
+        score, finding, claim = best_candidate(reference, record, max_findings=max_findings)
         covered = bool(finding) and score >= threshold
         row = {
             "annotationId": "peerqa_ann_" + hashlib.sha1(
@@ -172,6 +177,12 @@ def main() -> int:
     parser.add_argument("--references", required=True)
     parser.add_argument("--output-prefix", required=True)
     parser.add_argument("--threshold", type=float, default=0.12)
+    parser.add_argument(
+        "--max-findings",
+        type=int,
+        default=0,
+        help="Use only the first N ranked findings per method; 0 keeps all findings.",
+    )
     parser.add_argument("--shuffle-seed", type=int, default=20260711)
     args = parser.parse_args()
 
@@ -179,6 +190,7 @@ def main() -> int:
         read_jsonl(Path(args.predictions)),
         read_jsonl(Path(args.references)),
         args.threshold,
+        max_findings=args.max_findings,
     )
     prefix = Path(args.output_prefix)
     write_csv(prefix.with_name(prefix.name + "_answer_key.csv"), rows)

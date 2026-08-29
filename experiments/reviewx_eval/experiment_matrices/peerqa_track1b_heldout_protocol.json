@@ -1,0 +1,64 @@
+{
+  "schemaVersion": "peerqa_track1b_heldout_protocol_v1",
+  "dataset": "PeerQA held-out pilot",
+  "developmentPaperCount": 8,
+  "sourceHeldOutPaperCount": 12,
+  "preflightExcludedPaperCount": 1,
+  "finalTestPaperCount": 11,
+  "finalTestQuestionCount": 43,
+  "heldOutLockedDuringMethodDevelopment": true,
+  "providerName": "qwen",
+  "model": "qwen3.7-plus-2026-05-26",
+  "temperature": 0.2,
+  "repetitions": 3,
+  "selectionSeed": 20260711,
+  "shuffleSeed": 20260827,
+  "automaticAlignmentThreshold": 0.12,
+  "fairComparisonMaxFindingsPerMethod": 5,
+  "budget": {
+    "maxTotalTokensPerPaper": 4000,
+    "singlePrompt": {
+      "maxInputCharacters": 6800,
+      "maxOutputTokens": 1600,
+      "maxFindings": 5
+    },
+    "structuredRubric": {
+      "maxInputCharacters": 6800,
+      "maxOutputTokens": 1600,
+      "maxFindings": 5
+    }
+  },
+  "methods": [
+    {
+      "id": "qwen_single_prompt_qwen37_matched_budget",
+      "runner": "experiments/reviewx_eval/baselines/single_prompt_qwen.py",
+      "contextStrategy": "section_stratified_v1"
+    },
+    {
+      "id": "qwen_structured_rubric_qwen37_matched_budget",
+      "runner": "experiments/reviewx_eval/baselines/structured_rubric_qwen.py",
+      "reviewStrategy": "six_dimension_rubric_v1",
+      "contextStrategy": "section_stratified_v1"
+    },
+    {
+      "id": "reviewx_balanced_qwen37_matched_budget",
+      "runner": "experiments/reviewx_eval/run_eval.py",
+      "budgetMode": "balanced",
+      "ablationMode": "full"
+    }
+  ],
+  "primaryMetric": "human expert-question coverage after blind annotation",
+  "secondaryProxyMetrics": [
+    "lexical evidence-alignment candidate rate",
+    "best-match score",
+    "exact-quote grounding rate",
+    "latency",
+    "total tokens"
+  ],
+  "developmentDiagnostics": {
+    "qwenMaxLegacyOutputLimit": 1800,
+    "qwen37ObservedBudgetOverrun": true,
+    "resolution": "Use 6800 input characters, 1600 output tokens, and at most five ranked findings for both one-shot baselines. This prevents length-truncated JSON and defines a readable Top-5 comparison under the same 4000 total-token cap."
+  },
+  "reportingBoundary": "Automatic alignment is an objective retrieval proxy for candidate generation, not expert recall or review correctness."
+}

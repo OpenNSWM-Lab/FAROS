@@ -1,4 +1,10 @@
-from app.models.idea import Claim, ExperimentSpec, IdeaCandidate
+from app.models.idea import (
+    Claim,
+    ExperimentSpec,
+    IdeaCandidate,
+    RawPaper,
+    StructuredPaper,
+)
 from app.models.plan_package import (
     PlanBackground,
     PlanContributionStatement,
@@ -19,10 +25,16 @@ from app.models.plan_package import (
     PlanStep,
 )
 from app.services.plan_package_builder import (
+    _deterministic_plan_core,
     build_contribution_statements,
     build_default_stages,
+    build_literature_survey,
 )
 from app.services.plan_package_validator import validate_plan_package
+from app.services.plan_package_specificity import (
+    hypothesis_is_falsifiable,
+    metric_target_is_concrete,
+)
 
 
 def _candidate(**overrides):
@@ -129,6 +141,115 @@ def test_default_stages_filter_unrelated_claim_metrics():
     assert "refusal accuracy" in metrics
     assert "Vendi Score" not in metrics
     assert not any("attention projection" in metric for metric in metrics)
+
+
+def test_default_validation_metrics_never_use_generic_targets():
+    stages = build_default_stages(
+        candidate=_candidate(),
+        literature_survey=_survey_with_claim_metrics(),
+        gap=_gap(),
+        principle=PlanPrinciple(summary="Verifier", mechanism="Verify cited spans."),
+        paper_type="algorithm",
+        max_stages=3,
+        max_steps_per_stage=3,
+    )
+    targets = [
+        expected.target
+        for stage in stages
+        for step in stage.steps
+        for expected in step.expected
+    ]
+
+    assert "specified before implementation" not in targets
+    assert all(metric_target_is_concrete(target) for target in targets)
+
+
+def test_default_stages_name_literature_baseline_when_available():
+    survey = _survey_with_claim_metrics()
+    survey.papers[0].methods = [
+        {
+            "name": "vanilla RAG",
+            "role": "baseline",
+            "description": "retrieval followed by generation without claim verification",
+        }
+    ]
+
+    stages = build_default_stages(
+        candidate=_candidate(),
+        literature_survey=survey,
+        gap=_gap(),
+        principle=PlanPrinciple(summary="Verifier", mechanism="Verify cited spans."),
+        paper_type="algorithm",
+        max_stages=3,
+        max_steps_per_stage=3,
+    )
+    baseline_text = " ".join(
+        text
+        for stage in stages
+        for text in [
+            stage.title,
+            stage.goal,
+            stage.method,
+            *[
+                f"{step.title} {step.desc} {step.method}"
+                for step in stage.steps
+            ],
+        ]
+    ).lower()
+
+    assert "vanilla rag" in baseline_text
+
+
+def test_literature_adapter_preserves_deep_reader_baselines_and_metrics():
+    raw = RawPaper(
+        id="raw_deep",
+        sessionId="idea_test",
+        title="Citation-aware RAG evaluation",
+        abstract="Studies citation faithfulness and retrieval baselines.",
+    )
+    structured = StructuredPaper(
+        id="raw_deep",
+        sessionId="idea_test",
+        rawPaperId="raw_deep",
+        title=raw.title,
+        summary=raw.abstract,
+        baselineMethods=["BM25 RAG"],
+        recommendedMetrics=["citation faithfulness"],
+    )
+
+    survey = build_literature_survey(
+        candidate=_candidate(),
+        raw_papers=[raw],
+        structured_papers=[structured],
+        literature_map=None,
+        probe_results=[],
+    )
+
+    paper = survey.papers[0]
+    assert any(
+        method.get("name") == "BM25 RAG" and method.get("role") == "baseline"
+        for method in paper.methods
+    )
+    assert any(
+        claim.get("text") == "citation faithfulness"
+        and claim.get("claimType") == "metric"
+        for claim in paper.claims
+    )
+
+
+def test_deterministic_plan_core_is_comparative_and_falsifiable():
+    survey = _survey_with_claim_metrics()
+    survey.papers[0].methods = [{"name": "vanilla RAG", "role": "baseline"}]
+
+    question, hypothesis = _deterministic_plan_core(
+        candidate=_candidate(),
+        literature_survey=survey,
+        paper_type="algorithm",
+    )
+
+    assert "vanilla RAG" in question
+    assert "citation faithfulness" in question
+    assert hypothesis_is_falsifiable(hypothesis)
 
 
 def test_default_stages_prefer_candidate_experiment_metrics_over_claim_text():

@@ -11,7 +11,27 @@
 \usepackage{amssymb}
 \usepackage{booktabs}
 \usepackage{hyperref}
-\usepackage[ruled,vlined]{algorithm2e}
+\IfFileExists{algorithm2e.sty}{%
+  \usepackage[ruled,vlined]{algorithm2e}
+}{%
+  % Minimal algorithm2e-compatible fallback for constrained TeX installations.
+  \newenvironment{algorithm}[1][]{\begin{figure}[htbp]\begin{minipage}{\linewidth}\hrule\medskip}{\medskip\hrule\end{minipage}\end{figure}}
+  \providecommand{\SetKw}[2]{\expandafter\providecommand\csname ##1\endcsname{\textbf{##2}}}
+  \providecommand{\SetAlgoLined}{}
+  \providecommand{\DontPrintSemicolon}{}
+  \providecommand{\KwIn}[1]{\textbf{Input:} ##1\par}
+  \providecommand{\KwOut}[1]{\textbf{Output:} ##1\par}
+  \providecommand{\KwData}[1]{\textbf{Data:} ##1\par}
+  \providecommand{\KwResult}[1]{\textbf{Result:} ##1\par}
+  \providecommand{\For}[2]{\textbf{for} ##1 \textbf{do}\par ##2}
+  \providecommand{\ForEach}[2]{\textbf{for each} ##1 \textbf{do}\par ##2}
+  \providecommand{\While}[2]{\textbf{while} ##1 \textbf{do}\par ##2}
+  \providecommand{\If}[2]{\textbf{if} ##1 \textbf{then}\par ##2}
+  \providecommand{\Else}[1]{\textbf{else}\par ##1}
+  \providecommand{\eIf}[3]{\textbf{if} ##1 \textbf{then}\par ##2\par\textbf{else}\par ##3}
+  \providecommand{\tcp}[1]{\textit{// ##1}}
+  \providecommand{\tcc}[1]{\textit{/* ##1 */}}
+}
 \providecommand{\cmark}{\ensuremath{\checkmark}}
 \providecommand{\xmark}{\ensuremath{\times}}
 \SetKw{KwAnd}{and}

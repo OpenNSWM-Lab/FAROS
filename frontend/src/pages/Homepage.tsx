@@ -1,794 +1,393 @@
 import { useNavigate } from 'react-router-dom'
-import { useRuns } from '@/lib/hooks/useApi'
-import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
 import {
-  Beaker,
-  PlayCircle,
-  FlaskConical,
-  FolderOpen,
-  FileText,
-  ClipboardCheck,
-  Settings,
   Activity,
   ArrowRight,
-  Sparkles
+  CheckCircle2,
+  ClipboardCheck,
+  Code2,
+  FileText,
+  FlaskConical,
+  Lightbulb,
+  ListChecks,
+  PlayCircle,
+  Radio,
+  Settings,
+  ShieldCheck,
+  Workflow,
 } from 'lucide-react'
-import { formatRelativeTime } from '@/lib/utils'
-import { getRunCategoryInfo } from '@/lib/taxonomy/categories'
+
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { useRuns } from '@/lib/hooks/useApi'
+import { useReviewLocale } from '@/lib/reviewLocale'
+import { cn, formatRelativeTime } from '@/lib/utils'
+
+type FlowStep = {
+  id: string
+  number: string
+  title: string
+  detail: string
+  path: string
+  icon: typeof Lightbulb
+  edgeClass: string
+  iconClass: string
+  hoverClass: string
+}
 
 export function Homepage() {
   const navigate = useNavigate()
-  const { data: runs } = useRuns()
-
+  const { data: runs, isLoading: runsLoading, isError: runsError } = useRuns()
+  const { text } = useReviewLocale()
   const recentRuns = runs?.slice(0, 5) || []
+  const activeRunCount = runs?.filter((run) => run.status === 'pending' || run.status === 'running').length || 0
+  const completedRunCount = runs?.filter((run) => run.status === 'completed').length || 0
+  const latestRun = recentRuns[0]
 
-  const modules = [
+  const flowSteps: FlowStep[] = [
     {
-      id: 'research',
-      title: 'Research Planning',
-      description: 'Design experiments with AI-guided workflows',
-      icon: Beaker,
-      path: '/research/planning',
-      accent: 'teal',
+      id: 'idea',
+      number: '01',
+      title: text('研究选题', 'Research idea'),
+      detail: text('检索证据并收敛候选方向', 'Retrieve evidence and refine candidates'),
+      path: '/research/pipeline',
+      icon: Lightbulb,
+      edgeClass: 'border-t-teal-500',
+      iconClass: 'bg-teal-50 text-teal-700 dark:bg-teal-950 dark:text-teal-300',
+      hoverClass: 'hover:bg-teal-50/70 dark:hover:bg-teal-950/30',
     },
     {
-      id: 'workflows',
-      title: 'Workflow Templates',
-      description: 'Browse pre-built research templates',
-      icon: FlaskConical,
-      path: '/research/workflows',
-      accent: 'teal',
+      id: 'plan',
+      number: '02',
+      title: 'PlanPackage',
+      detail: text('冻结假设、变量与验收条件', 'Freeze hypotheses, variables, and gates'),
+      path: '/research/pipeline',
+      icon: ListChecks,
+      edgeClass: 'border-t-amber-400',
+      iconClass: 'bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-300',
+      hoverClass: 'hover:bg-amber-50/70 dark:hover:bg-amber-950/30',
     },
     {
-      id: 'runs',
-      title: 'Execution Runs',
-      description: 'Monitor and track research executions',
-      icon: PlayCircle,
-      path: '/runs',
-      accent: 'cyan',
+      id: 'code',
+      number: '03',
+      title: 'Code',
+      detail: text('从已批准计划生成实验工程', 'Generate an experiment project from an approved plan'),
+      path: '/code/workspace',
+      icon: Code2,
+      edgeClass: 'border-t-sky-500',
+      iconClass: 'bg-sky-50 text-sky-700 dark:bg-sky-950 dark:text-sky-300',
+      hoverClass: 'hover:bg-sky-50/70 dark:hover:bg-sky-950/30',
     },
     {
-      id: 'experiments',
-      title: 'Experiments',
-      description: 'Compare results and analyze metrics',
-      icon: Activity,
+      id: 'experiment',
+      number: '04',
+      title: text('实验', 'Experiment'),
+      detail: text('执行、记录并对比实验指标', 'Run, record, and compare experiment metrics'),
       path: '/experiments',
-      accent: 'cyan',
+      icon: FlaskConical,
+      edgeClass: 'border-t-emerald-500',
+      iconClass: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300',
+      hoverClass: 'hover:bg-emerald-50/70 dark:hover:bg-emerald-950/30',
     },
     {
-      id: 'artifacts',
-      title: 'Artifacts',
-      description: 'Browse generated code, papers, and logs',
-      icon: FolderOpen,
-      path: '/artifacts',
-      accent: 'indigo',
-    },
-    {
-      id: 'papers',
-      title: 'Papers',
-      description: 'Draft and edit research publications',
-      icon: FileText,
+      id: 'paper',
+      number: '05',
+      title: text('论文', 'Paper'),
+      detail: text('基于证据包组织论文内容', 'Compose from the research evidence package'),
       path: '/papers',
-      accent: 'indigo',
+      icon: FileText,
+      edgeClass: 'border-t-indigo-500',
+      iconClass: 'bg-indigo-50 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300',
+      hoverClass: 'hover:bg-indigo-50/70 dark:hover:bg-indigo-950/30',
     },
     {
       id: 'review',
-      title: 'Review Tools',
-      description: 'Quality assurance and consistency checks',
-      icon: ClipboardCheck,
+      number: '06',
+      title: 'ReviewX',
+      detail: text('核验主张、证据与实验一致性', 'Verify claims, evidence, and experiment consistency'),
       path: '/review/consistency',
-      accent: 'slate',
-    },
-    {
-      id: 'system',
-      title: 'System Monitor',
-      description: 'Platform health and diagnostics',
-      icon: Settings,
-      path: '/system/health',
-      accent: 'slate',
+      icon: ClipboardCheck,
+      edgeClass: 'border-t-rose-500',
+      iconClass: 'bg-rose-50 text-rose-700 dark:bg-rose-950 dark:text-rose-300',
+      hoverClass: 'hover:bg-rose-50/70 dark:hover:bg-rose-950/30',
     },
   ]
 
-  const accentColors = {
-    teal: 'from-teal-500/20 to-cyan-500/20',
-    cyan: 'from-cyan-500/20 to-teal-500/20',
-    indigo: 'from-indigo-500/20 to-purple-500/20',
-    slate: 'from-slate-500/20 to-gray-500/20',
-  }
+  const supportingViews = [
+    {
+      title: 'Runs',
+      detail: text('查看真实执行记录', 'Inspect recorded executions'),
+      path: '/runs',
+      icon: PlayCircle,
+    },
+    {
+      title: 'Track 1B',
+      detail: text('查看比赛实验与证据', 'Inspect competition experiments and evidence'),
+      path: '/review/competition',
+      icon: ShieldCheck,
+    },
+    {
+      title: text('模型设置', 'Model settings'),
+      detail: text('配置当前账号的 Provider 与 API Key', 'Configure this account\'s provider and API key'),
+      path: '/settings/providers',
+      icon: Settings,
+    },
+    {
+      title: text('系统状态', 'System health'),
+      detail: text('检查后端服务状态', 'Check backend service status'),
+      path: '/system/health',
+      icon: Activity,
+    },
+  ]
 
-  const accentBorders = {
-    teal: 'border-l-teal-500',
-    cyan: 'border-l-cyan-500',
-    indigo: 'border-l-indigo-500',
-    slate: 'border-l-slate-500',
-  }
+  const workspaceState = runsLoading
+    ? text('同步中', 'Syncing')
+    : runsError
+      ? text('暂不可用', 'Unavailable')
+      : text('已连接', 'Connected')
 
   return (
-    <div className="min-h-screen bg-[#F6F7F9]">
-      {/* Hero Section */}
-      <section
-        className="relative overflow-hidden"
-        style={{
-          backgroundImage: 'url(/hero/hero-bg.svg)',
-          backgroundSize: 'cover',
-          backgroundPosition: 'center',
-          backgroundRepeat: 'no-repeat',
-        }}
-      >
-        {/* Overlay for text readability */}
-        <div className="absolute inset-0 bg-gradient-to-b from-white/40 via-white/60 to-white/80" />
-
-        <div className="relative max-w-6xl mx-auto px-6 py-24 md:py-32 text-center">
-          {/* Animated content */}
-          <div className="space-y-8 animate-fade-in">
-            <h1
-              className="font-bold text-slate-900"
-              style={{
-                fontFamily: '"DM Serif Display", "Playfair Display", ui-serif, Georgia, serif',
-                fontSize: 'clamp(44px, 6vw, 72px)',
-                lineHeight: '1.05',
-                letterSpacing: '-0.02em',
-                animation: 'fadeInUp 0.8s ease-out',
-              }}
-            >
-              <span className="bg-gradient-to-r from-teal-600 to-cyan-500 bg-clip-text text-transparent">FAROS</span>
-            </h1>
-
-            <p
-              className="text-xl md:text-2xl text-slate-500 mx-auto font-light"
-              style={{
-                maxWidth: '60ch',
-                animation: 'fadeInUp 0.8s ease-out 0.2s backwards'
-              }}
-            >
-              A foundation AutoResearch runtime for blueprint-driven LLM research workflows, experiments, papers, and reviews
+    <div className="min-h-screen bg-background">
+      <section className="relative overflow-hidden border-b border-border bg-card">
+        <div className="absolute right-0 top-0 h-1 w-1/3 bg-amber-400" aria-hidden="true" />
+        <div className="mx-auto grid max-w-7xl gap-10 px-6 py-12 lg:grid-cols-[minmax(0,1.08fr)_minmax(380px,0.92fr)] lg:items-center lg:py-16">
+          <div className="max-w-3xl">
+            <div className="mb-5 flex items-center gap-3 text-sm font-semibold text-teal-700 dark:text-teal-300">
+              <span className="h-px w-8 bg-teal-500" aria-hidden="true" />
+              {text('协同式 AI Scientist 科研系统', 'Collaborative AI Scientist research system')}
+            </div>
+            <h1 className="font-display text-5xl font-semibold text-foreground sm:text-6xl">FAROS</h1>
+            <p className="mt-5 max-w-2xl text-base leading-7 text-muted-foreground sm:text-lg">
+              {text(
+                '把研究问题、证据、计划、代码、实验、论文与审核连接成一条可追踪的科研链路。',
+                'Connect questions, evidence, plans, code, experiments, papers, and review in one traceable research chain.',
+              )}
             </p>
-
-            <div
-              className="flex flex-col sm:flex-row items-center justify-center gap-4 pt-4"
-              style={{ animation: 'fadeInUp 0.8s ease-out 0.4s backwards' }}
-            >
+            <div className="mt-8 flex flex-wrap gap-3">
               <Button
                 size="lg"
-                className="text-lg px-8 py-6 bg-teal-600 hover:bg-teal-700 shadow-lg hover:shadow-xl transition-all hover:-translate-y-0.5"
-                onClick={() => navigate('/research/planning')}
-                aria-label="Start Research - Navigate to research planning"
+                onClick={() => navigate('/research/pipeline')}
+                className="bg-teal-600 text-white hover:bg-teal-700 dark:bg-teal-500 dark:text-neutral-950 dark:hover:bg-teal-400"
               >
-                <Sparkles className="mr-2 h-5 w-5" />
-                Start Research
+                <Lightbulb className="mr-2 h-5 w-5" />
+                {text('开始科研流程', 'Start research pipeline')}
               </Button>
-
-              <Button
-                size="lg"
-                variant="outline"
-                className="text-lg px-8 py-6 border-2 border-slate-300 hover:border-teal-500 hover:bg-teal-50 shadow-md hover:shadow-lg transition-all hover:-translate-y-0.5"
-                onClick={() => navigate('/runs')}
-                aria-label="Explore Runs - Navigate to runs list"
-              >
-                <PlayCircle className="mr-2 h-5 w-5" />
-                Explore Runs
-              </Button>
-
-              <Button
-                size="lg"
-                variant="ghost"
-                className="text-lg px-6 py-6 text-slate-600 hover:text-teal-600 hover:bg-teal-50 transition-all"
-                onClick={() => navigate('/artifacts')}
-                aria-label="Browse Artifacts - Navigate to artifacts browser"
-              >
-                Browse Artifacts
-                <ArrowRight className="ml-2 h-5 w-5" />
+              <Button size="lg" variant="outline" onClick={() => navigate('/review/consistency')}>
+                <ClipboardCheck className="mr-2 h-5 w-5" />
+                {text('进入 ReviewX', 'Open ReviewX')}
               </Button>
             </div>
 
-            {/* Trust Row */}
-            <div
-              className="flex flex-wrap items-center justify-center gap-4 pt-4"
-              style={{ animation: 'fadeInUp 0.8s ease-out 0.6s backwards' }}
-            >
-              <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/60 border border-slate-200 text-sm text-slate-700">
-                <div className="h-2 w-2 rounded-full bg-teal-500" />
-                FAROS-LLM
+            <div className="mt-8 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-muted-foreground">
+              <span className="flex items-center gap-2">
+                <span className={cn(
+                  'h-2 w-2 rounded-full',
+                  runsError ? 'bg-red-500' : runsLoading ? 'bg-amber-400' : 'bg-emerald-500',
+                )} />
+                {text('共享工作区', 'Shared workspace')} · {workspaceState}
+              </span>
+              <span>{text('仅展示后端保存的真实记录', 'Only backend-saved records are shown')}</span>
+            </div>
+          </div>
+
+          <div className="overflow-hidden rounded-md border border-neutral-800 bg-neutral-950 text-neutral-100 shadow-2xl shadow-neutral-950/10">
+            <div className="flex items-center justify-between border-b border-neutral-800 px-5 py-3">
+              <div className="flex items-center gap-2 text-xs font-medium text-neutral-300">
+                <Radio className="h-4 w-4 text-teal-400" />
+                {text('科研运行概览', 'Research run overview')}
               </div>
-              <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/60 border border-slate-200 text-sm text-slate-700">
-                <div className="h-2 w-2 rounded-full bg-cyan-500" />
-                Blueprint-driven
+              <span className="font-mono text-xs text-neutral-500">workspace/live</span>
+            </div>
+
+            <div className="p-5 sm:p-6">
+              <div className="grid grid-cols-3 divide-x divide-neutral-800 border-y border-neutral-800">
+                <div className="py-4 pr-4">
+                  <div className="text-xs text-neutral-500">{text('全部运行', 'All runs')}</div>
+                  <div className="mt-2 font-mono text-2xl font-semibold text-white">
+                    {runsLoading ? '...' : runsError ? '!' : runs?.length || 0}
+                  </div>
+                </div>
+                <div className="px-4 py-4">
+                  <div className="text-xs text-neutral-500">{text('进行中', 'Active')}</div>
+                  <div className="mt-2 font-mono text-2xl font-semibold text-amber-300">
+                    {runsLoading ? '...' : runsError ? '!' : activeRunCount}
+                  </div>
+                </div>
+                <div className="py-4 pl-4">
+                  <div className="text-xs text-neutral-500">{text('已完成', 'Completed')}</div>
+                  <div className="mt-2 font-mono text-2xl font-semibold text-teal-300">
+                    {runsLoading ? '...' : runsError ? '!' : completedRunCount}
+                  </div>
+                </div>
               </div>
-              <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/60 border border-slate-200 text-sm text-slate-700">
-                <div className="h-2 w-2 rounded-full bg-indigo-500" />
-                Artifact-native
+
+              <div className="flex items-start gap-3 border-b border-neutral-800 py-5">
+                <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-emerald-400" />
+                <div className="min-w-0">
+                  <div className="text-xs text-neutral-500">{text('最近活动', 'Latest activity')}</div>
+                  {runsLoading ? (
+                    <div className="mt-1 text-sm text-neutral-300">{text('正在同步记录...', 'Syncing records...')}</div>
+                  ) : runsError ? (
+                    <div className="mt-1 text-sm text-red-300">{text('后端记录暂不可用', 'Backend records are unavailable')}</div>
+                  ) : latestRun ? (
+                    <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-neutral-200">
+                      <span className="max-w-full truncate font-mono">{latestRun.id}</span>
+                      <span className="text-neutral-500">·</span>
+                      <span className="text-neutral-400">{formatRelativeTime(latestRun.startedAt)}</span>
+                    </div>
+                  ) : (
+                    <div className="mt-1 text-sm text-neutral-300">{text('等待首个研究任务', 'Waiting for the first research task')}</div>
+                  )}
+                </div>
               </div>
-              <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/60 border border-slate-200 text-sm text-slate-700">
-                <div className="h-2 w-2 rounded-full bg-teal-600" />
-                Provider-pluggable
+
+              <div className="pt-5">
+                <div className="flex items-center gap-2 text-xs font-medium text-neutral-400">
+                  <Workflow className="h-4 w-4 text-sky-400" />
+                  {text('统一证据链', 'Unified evidence chain')}
+                </div>
+                <div className="mt-4 grid grid-cols-6 gap-2" aria-hidden="true">
+                  <span className="h-1 bg-teal-400" />
+                  <span className="h-1 bg-amber-400" />
+                  <span className="h-1 bg-sky-400" />
+                  <span className="h-1 bg-emerald-400" />
+                  <span className="h-1 bg-indigo-400" />
+                  <span className="h-1 bg-rose-400" />
+                </div>
+                <div className="mt-2 flex justify-between font-mono text-[10px] text-neutral-600">
+                  <span>IDEA</span>
+                  <span>REVIEWX</span>
+                </div>
               </div>
             </div>
           </div>
         </div>
       </section>
 
-      {/* Built for AutoResearch Section */}
-      <section className="max-w-7xl mx-auto px-6 py-20">
-        <div className="text-center mb-16">
-          <h2 className="text-4xl md:text-5xl font-bold text-slate-900 mb-4">
-            Built for AutoResearch
-          </h2>
-          <p className="text-lg text-slate-600 max-w-2xl mx-auto">
-            From idea refinement to experiment execution, paper drafting, and review simulation in one extensible runtime
-          </p>
-        </div>
-
-        {/* Horizontal Scrolling Container */}
-        <div className="relative">
-          <div className="overflow-x-auto pb-4 scrollbar-thin scrollbar-thumb-slate-300 scrollbar-track-slate-100">
-            <div className="flex gap-6 min-w-max px-2">
-              {/* Example Card A: Paper Draft */}
-              <div className="bg-white rounded-xl border-l-4 border-l-teal-500 border border-slate-200 shadow-sm p-6 space-y-4 w-[380px] flex-shrink-0">
-                <div className="flex items-center gap-3 mb-4">
-                  <div className="h-10 w-10 rounded-lg bg-teal-50 flex items-center justify-center">
-                    <FileText className="h-5 w-5 text-teal-600" />
-                  </div>
-                  <h3 className="text-lg font-semibold text-slate-900">Paper Draft</h3>
-                </div>
-
-                <div className="space-y-3">
-                  <p className="text-sm text-slate-700 leading-relaxed">
-                    <strong>Abstract:</strong> We present a novel approach to post-training optimization
-                    that reduces inference latency by 40% while maintaining 98% accuracy on standard benchmarks.
-                  </p>
-
-                  <div className="space-y-2">
-                    <p className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Key Contributions:</p>
-                    <ul className="text-sm text-slate-700 space-y-1.5">
-                      <li className="flex items-start gap-2">
-                        <span className="text-teal-600 mt-1">•</span>
-                        <span>Adaptive quantization strategy for transformer models</span>
-                      </li>
-                      <li className="flex items-start gap-2">
-                        <span className="text-teal-600 mt-1">•</span>
-                        <span>Layer-wise pruning with minimal accuracy degradation</span>
-                      </li>
-                      <li className="flex items-start gap-2">
-                        <span className="text-teal-600 mt-1">•</span>
-                        <span>Comprehensive evaluation on 5 downstream tasks</span>
-                      </li>
-                    </ul>
-                  </div>
-
-                  <div className="bg-slate-50 rounded-lg p-3 border border-slate-200">
-                    <p className="text-xs font-semibold text-slate-600 mb-2 font-mono">LaTeX Snippet:</p>
-                    <pre className="text-xs font-mono text-slate-700 leading-relaxed overflow-x-auto">
-                      {`\\begin{equation}
-  \\mathcal{L}_{total} = \\mathcal{L}_{task} + 
-    \\lambda \\mathcal{L}_{distill}
-\\end{equation}
-
-where $\\lambda$ controls the trade-off
-between task performance and model
-compression. We set $\\lambda=0.1$
-for all experiments.`}
-                    </pre>
-                  </div>
-                </div>
-              </div>
-
-              {/* Example Card B: Experiment Results */}
-              <div className="bg-white rounded-xl border-l-4 border-l-cyan-500 border border-slate-200 shadow-sm p-6 space-y-4 w-[380px] flex-shrink-0">
-                <div className="flex items-center gap-3 mb-4">
-                  <div className="h-10 w-10 rounded-lg bg-cyan-50 flex items-center justify-center">
-                    <Activity className="h-5 w-5 text-cyan-600" />
-                  </div>
-                  <h3 className="text-lg font-semibold text-slate-900">Experiment Results</h3>
-                </div>
-
-                <div className="space-y-4">
-                  <p className="text-sm text-slate-700">
-                    Comparison of post-training methods on MMLU benchmark
-                  </p>
-
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-sm">
-                      <thead>
-                        <tr className="border-b border-slate-200">
-                          <th className="text-left py-2 px-3 font-semibold text-slate-700">Model</th>
-                          <th className="text-right py-2 px-3 font-semibold text-slate-700">Acc (%)</th>
-                          <th className="text-right py-2 px-3 font-semibold text-slate-700">Cost</th>
-                        </tr>
-                      </thead>
-                      <tbody className="text-slate-600">
-                        <tr className="border-b border-slate-100">
-                          <td className="py-2 px-3 font-mono text-xs">baseline</td>
-                          <td className="text-right py-2 px-3">72.4</td>
-                          <td className="text-right py-2 px-3 font-mono text-xs">$1.00</td>
-                        </tr>
-                        <tr className="border-b border-slate-100">
-                          <td className="py-2 px-3 font-mono text-xs">quantized</td>
-                          <td className="text-right py-2 px-3">71.8</td>
-                          <td className="text-right py-2 px-3 font-mono text-xs">$0.45</td>
-                        </tr>
-                        <tr className="border-b border-slate-100">
-                          <td className="py-2 px-3 font-mono text-xs">pruned</td>
-                          <td className="text-right py-2 px-3">70.2</td>
-                          <td className="text-right py-2 px-3 font-mono text-xs">$0.38</td>
-                        </tr>
-                        <tr className="bg-teal-50/50">
-                          <td className="py-2 px-3 font-mono text-xs font-semibold text-teal-900">ours</td>
-                          <td className="text-right py-2 px-3 font-semibold text-teal-900">71.9</td>
-                          <td className="text-right py-2 px-3 font-mono text-xs font-semibold text-teal-900">$0.42</td>
-                        </tr>
-                      </tbody>
-                    </table>
-                  </div>
-
-                  {/* Enhanced accuracy trend chart */}
-                  <div className="space-y-2">
-                    <p className="text-xs font-semibold text-slate-600">Accuracy Trend Across Runs</p>
-                    <svg width="100%" height="80" viewBox="0 0 280 80" className="overflow-visible">
-                      <defs>
-                        <linearGradient id="sparkGradient" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="0%" stopColor="#0EA5A4" stopOpacity="0.3" />
-                          <stop offset="100%" stopColor="#0EA5A4" stopOpacity="0.05" />
-                        </linearGradient>
-                      </defs>
-
-                      {/* Grid lines */}
-                      <line x1="30" y1="15" x2="260" y2="15" stroke="#e2e8f0" strokeWidth="1" strokeDasharray="2,2" />
-                      <line x1="30" y1="35" x2="260" y2="35" stroke="#e2e8f0" strokeWidth="1" strokeDasharray="2,2" />
-                      <line x1="30" y1="55" x2="260" y2="55" stroke="#e2e8f0" strokeWidth="1" strokeDasharray="2,2" />
-
-                      {/* Axes */}
-                      <line x1="30" y1="10" x2="30" y2="60" stroke="#94a3b8" strokeWidth="1.5" />
-                      <line x1="30" y1="60" x2="260" y2="60" stroke="#94a3b8" strokeWidth="1.5" />
-
-                      {/* Y-axis labels */}
-                      <text x="22" y="15" fontSize="8" fill="#64748b" textAnchor="end">72%</text>
-                      <text x="22" y="35" fontSize="8" fill="#64748b" textAnchor="end">71%</text>
-                      <text x="22" y="55" fontSize="8" fill="#64748b" textAnchor="end">70%</text>
-
-                      {/* X-axis labels */}
-                      <text x="70" y="72" fontSize="8" fill="#64748b" textAnchor="middle">Run 1</text>
-                      <text x="120" y="72" fontSize="8" fill="#64748b" textAnchor="middle">Run 2</text>
-                      <text x="170" y="72" fontSize="8" fill="#64748b" textAnchor="middle">Run 3</text>
-                      <text x="220" y="72" fontSize="8" fill="#64748b" textAnchor="middle">Run 4</text>
-
-                      {/* Baseline (dashed) */}
-                      <path
-                        d="M 70,40 L 120,42 L 170,41 L 220,43"
-                        fill="none"
-                        stroke="#94a3b8"
-                        strokeWidth="1.5"
-                        strokeDasharray="4,3"
-                      />
-
-                      {/* Our method (solid) */}
-                      <path
-                        d="M 70,38 L 120,35 L 170,37 L 220,34"
-                        fill="none"
-                        stroke="#0EA5A4"
-                        strokeWidth="2"
-                      />
-                      <path
-                        d="M 70,38 L 120,35 L 170,37 L 220,34 L 220,60 L 70,60 Z"
-                        fill="url(#sparkGradient)"
-                      />
-
-                      {/* Data points */}
-                      {[70, 120, 170, 220].map((x, i) => (
-                        <circle
-                          key={i}
-                          cx={x}
-                          cy={[38, 35, 37, 34][i]}
-                          r="3"
-                          fill="#0EA5A4"
-                          stroke="white"
-                          strokeWidth="1.5"
-                        />
-                      ))}
-                    </svg>
-
-                    {/* Legend */}
-                    <div className="flex items-center gap-4 text-xs pt-1">
-                      <div className="flex items-center gap-1.5">
-                        <div className="h-0.5 w-4 bg-teal-500" />
-                        <span className="text-slate-600">Ours</span>
-                      </div>
-                      <div className="flex items-center gap-1.5">
-                        <div className="h-0.5 w-4 bg-slate-400" style={{ borderTop: '1.5px dashed #94a3b8' }} />
-                        <span className="text-slate-600">Baseline</span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* Example Card C: Figure Preview */}
-              <div className="bg-white rounded-xl border-l-4 border-l-indigo-500 border border-slate-200 shadow-sm p-6 space-y-4 w-[380px] flex-shrink-0">
-                <div className="flex items-center gap-3 mb-4">
-                  <div className="h-10 w-10 rounded-lg bg-indigo-50 flex items-center justify-center">
-                    <Beaker className="h-5 w-5 text-indigo-600" />
-                  </div>
-                  <h3 className="text-lg font-semibold text-slate-900">Figure Preview</h3>
-                </div>
-
-                <div className="space-y-3">
-                  <p className="text-sm text-slate-700">
-                    Performance vs. Efficiency Trade-off
-                  </p>
-
-                  {/* Enhanced scatter plot with clear comparison */}
-                  <div className="bg-slate-50 rounded-lg p-4 border border-slate-200">
-                    <svg width="100%" height="200" viewBox="0 0 280 200" className="overflow-visible">
-                      {/* Axes */}
-                      <line x1="40" y1="20" x2="40" y2="160" stroke="#64748b" strokeWidth="2" />
-                      <line x1="40" y1="160" x2="260" y2="160" stroke="#64748b" strokeWidth="2" />
-
-                      {/* Axis labels */}
-                      <text x="150" y="190" textAnchor="middle" fontSize="11" fontWeight="500" fill="#475569">
-                        Inference Cost (relative)
-                      </text>
-                      <text x="12" y="95" textAnchor="middle" fontSize="11" fontWeight="500" fill="#475569" transform="rotate(-90 12 95)">
-                        Accuracy (%)
-                      </text>
-
-                      {/* Grid lines */}
-                      <line x1="40" y1="120" x2="260" y2="120" stroke="#e2e8f0" strokeWidth="1" strokeDasharray="3,3" />
-                      <line x1="40" y1="80" x2="260" y2="80" stroke="#e2e8f0" strokeWidth="1" strokeDasharray="3,3" />
-                      <line x1="40" y1="40" x2="260" y2="40" stroke="#e2e8f0" strokeWidth="1" strokeDasharray="3,3" />
-                      <line x1="100" y1="20" x2="100" y2="160" stroke="#e2e8f0" strokeWidth="1" strokeDasharray="3,3" />
-                      <line x1="160" y1="20" x2="160" y2="160" stroke="#e2e8f0" strokeWidth="1" strokeDasharray="3,3" />
-                      <line x1="220" y1="20" x2="220" y2="160" stroke="#e2e8f0" strokeWidth="1" strokeDasharray="3,3" />
-
-                      {/* Tick marks and labels */}
-                      <text x="100" y="175" fontSize="9" fill="#64748b" textAnchor="middle">0.5×</text>
-                      <text x="160" y="175" fontSize="9" fill="#64748b" textAnchor="middle">1.0×</text>
-                      <text x="220" y="175" fontSize="9" fill="#64748b" textAnchor="middle">1.5×</text>
-                      <text x="32" y="43" fontSize="9" fill="#64748b" textAnchor="end">72</text>
-                      <text x="32" y="83" fontSize="9" fill="#64748b" textAnchor="end">71</text>
-                      <text x="32" y="123" fontSize="9" fill="#64748b" textAnchor="end">70</text>
-
-                      {/* Baseline points (gray) */}
-                      <circle cx="210" cy="50" r="5" fill="#cbd5e1" stroke="#94a3b8" strokeWidth="1.5" />
-                      <circle cx="170" cy="70" r="5" fill="#cbd5e1" stroke="#94a3b8" strokeWidth="1.5" />
-                      <circle cx="130" cy="95" r="5" fill="#cbd5e1" stroke="#94a3b8" strokeWidth="1.5" />
-
-                      {/* Our method (teal, larger, highlighted) */}
-                      <circle cx="110" cy="65" r="7" fill="#0EA5A4" stroke="#0d9488" strokeWidth="2" />
-                      <circle cx="110" cy="65" r="12" fill="none" stroke="#0EA5A4" strokeWidth="1" opacity="0.3" />
-
-                      {/* Labels */}
-                      <text x="215" y="48" fontSize="9" fill="#64748b">baseline</text>
-                      <text x="175" y="68" fontSize="9" fill="#64748b">quantized</text>
-                      <text x="135" y="93" fontSize="9" fill="#64748b">pruned</text>
-                      <text x="115" y="60" fontSize="10" fontWeight="600" fill="#0d9488">ours</text>
-
-                      {/* Pareto frontier annotation */}
-                      <path
-                        d="M 110,65 Q 120,60 130,95 Q 150,80 170,70 Q 190,55 210,50"
-                        fill="none"
-                        stroke="#0EA5A4"
-                        strokeWidth="1.5"
-                        strokeDasharray="4,2"
-                        opacity="0.5"
-                      />
-
-                      {/* Better region indicator */}
-                      <text x="70" y="35" fontSize="8" fill="#0d9488" fontWeight="600">← Better</text>
-                    </svg>
-                  </div>
-
-                  {/* Enhanced legend */}
-                  <div className="flex items-center gap-4 text-xs pt-2">
-                    <div className="flex items-center gap-2">
-                      <div className="h-3 w-3 rounded-full bg-teal-600 ring-2 ring-teal-600 ring-opacity-30" />
-                      <span className="text-slate-700 font-medium">Our Method</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <div className="h-3 w-3 rounded-full bg-slate-300 ring-2 ring-slate-400" />
-                      <span className="text-slate-600">Baselines</span>
-                    </div>
-                    <div className="flex items-center gap-2 ml-auto">
-                      <div className="h-0.5 w-4 bg-teal-500" style={{ borderTop: '1.5px dashed #0EA5A4' }} />
-                      <span className="text-slate-600 text-xs">Pareto Frontier</span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* Example Card D: Run Trace */}
-              <div className="bg-white rounded-xl border-l-4 border-l-orange-500 border border-slate-200 shadow-sm p-6 space-y-4 w-[380px] flex-shrink-0">
-                <div className="flex items-center gap-3 mb-4">
-                  <div className="h-10 w-10 rounded-lg bg-orange-50 flex items-center justify-center">
-                    <Activity className="h-5 w-5 text-orange-600" />
-                  </div>
-                  <h3 className="text-lg font-semibold text-slate-900">Run Trace</h3>
-                </div>
-                <div className="space-y-3">
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between p-2 bg-green-50 rounded border-l-2 border-l-green-500">
-                      <span className="text-sm font-medium text-slate-700">Step 1: Data Loading</span>
-                      <span className="text-xs text-green-700 font-semibold">✓ 2.3s</span>
-                    </div>
-                    <div className="flex items-center justify-between p-2 bg-green-50 rounded border-l-2 border-l-green-500">
-                      <span className="text-sm font-medium text-slate-700">Step 2: Model Init</span>
-                      <span className="text-xs text-green-700 font-semibold">✓ 5.1s</span>
-                    </div>
-                    <div className="flex items-center justify-between p-2 bg-blue-50 rounded border-l-2 border-l-blue-500">
-                      <span className="text-sm font-medium text-slate-700">Step 3: Training</span>
-                      <span className="text-xs text-blue-700 font-semibold">⟳ 45.2s</span>
-                    </div>
-                    <div className="flex items-center justify-between p-2 bg-slate-100 rounded border-l-2 border-l-slate-300">
-                      <span className="text-sm font-medium text-slate-500">Step 4: Evaluation</span>
-                      <span className="text-xs text-slate-500">pending</span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* Example Card E: Code Snippet */}
-              <div className="bg-white rounded-xl border-l-4 border-l-purple-500 border border-slate-200 shadow-sm p-6 space-y-4 w-[380px] flex-shrink-0">
-                <div className="flex items-center gap-3 mb-4">
-                  <div className="h-10 w-10 rounded-lg bg-purple-50 flex items-center justify-center">
-                    <FileText className="h-5 w-5 text-purple-600" />
-                  </div>
-                  <h3 className="text-lg font-semibold text-slate-900">Generated Code</h3>
-                </div>
-                <div className="space-y-3">
-                  <p className="text-sm text-slate-700">Optimized inference pipeline</p>
-                  <div className="bg-slate-900 rounded-lg p-4 overflow-x-auto">
-                    <pre className="text-xs font-mono text-green-400">
-                      {`def optimize_model(model, config):
-    # Apply quantization
-    quantized = quantize_weights(
-        model, bits=config.bits
-    )
-    
-    # Layer fusion
-    fused = fuse_layers(quantized)
-    
-    return fused`}
-                    </pre>
-                  </div>
-                </div>
-              </div>
-
-              {/* Example Card F: Review Finding */}
-              <div className="bg-white rounded-xl border-l-4 border-l-red-500 border border-slate-200 shadow-sm p-6 space-y-4 w-[380px] flex-shrink-0">
-                <div className="flex items-center gap-3 mb-4">
-                  <div className="h-10 w-10 rounded-lg bg-red-50 flex items-center justify-center">
-                    <Activity className="h-5 w-5 text-red-600" />
-                  </div>
-                  <h3 className="text-lg font-semibold text-slate-900">Consistency Check</h3>
-                </div>
-                <div className="space-y-3">
-                  <div className="p-3 bg-red-50 border border-red-200 rounded-lg">
-                    <div className="flex items-start gap-2">
-                      <span className="text-red-600 font-bold">⚠</span>
-                      <div>
-                        <p className="text-sm font-semibold text-red-900">Citation Mismatch</p>
-                        <p className="text-xs text-red-700 mt-1">Reference [12] cited but not in bibliography</p>
-                      </div>
-                    </div>
-                  </div>
-                  <div className="p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
-                    <div className="flex items-start gap-2">
-                      <span className="text-yellow-600 font-bold">!</span>
-                      <div>
-                        <p className="text-sm font-semibold text-yellow-900">Table Reference</p>
-                        <p className="text-xs text-yellow-700 mt-1">Table 3 mentioned but not present</p>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* Example Card G: Artifact Preview */}
-              <div className="bg-white rounded-xl border-l-4 border-l-teal-500 border border-slate-200 shadow-sm p-6 space-y-4 w-[380px] flex-shrink-0">
-                <div className="flex items-center gap-3 mb-4">
-                  <div className="h-10 w-10 rounded-lg bg-teal-50 flex items-center justify-center">
-                    <FileText className="h-5 w-5 text-teal-600" />
-                  </div>
-                  <h3 className="text-lg font-semibold text-slate-900">Artifacts</h3>
-                </div>
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between p-2 border rounded hover:bg-slate-50">
-                    <span className="text-sm font-mono text-slate-700">model_v1.pt</span>
-                    <span className="text-xs text-slate-500">245 MB</span>
-                  </div>
-                  <div className="flex items-center justify-between p-2 border rounded hover:bg-slate-50">
-                    <span className="text-sm font-mono text-slate-700">results.json</span>
-                    <span className="text-xs text-slate-500">12 KB</span>
-                  </div>
-                  <div className="flex items-center justify-between p-2 border rounded hover:bg-slate-50">
-                    <span className="text-sm font-mono text-slate-700">training.log</span>
-                    <span className="text-xs text-slate-500">3.2 MB</span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Example Card H: Metrics Dashboard */}
-              <div className="bg-white rounded-xl border-l-4 border-l-cyan-500 border border-slate-200 shadow-sm p-6 space-y-4 w-[380px] flex-shrink-0">
-                <div className="flex items-center gap-3 mb-4">
-                  <div className="h-10 w-10 rounded-lg bg-cyan-50 flex items-center justify-center">
-                    <Activity className="h-5 w-5 text-cyan-600" />
-                  </div>
-                  <h3 className="text-lg font-semibold text-slate-900">Live Metrics</h3>
-                </div>
-                <div className="space-y-3">
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="p-3 bg-slate-50 rounded-lg border">
-                      <p className="text-xs text-slate-600 mb-1">Accuracy</p>
-                      <p className="text-2xl font-bold text-teal-600">94.2%</p>
-                    </div>
-                    <div className="p-3 bg-slate-50 rounded-lg border">
-                      <p className="text-xs text-slate-600 mb-1">Loss</p>
-                      <p className="text-2xl font-bold text-slate-900">0.142</p>
-                    </div>
-                    <div className="p-3 bg-slate-50 rounded-lg border">
-                      <p className="text-xs text-slate-600 mb-1">Latency</p>
-                      <p className="text-2xl font-bold text-cyan-600">23ms</p>
-                    </div>
-                    <div className="p-3 bg-slate-50 rounded-lg border">
-                      <p className="text-xs text-slate-600 mb-1">Cost</p>
-                      <p className="text-2xl font-bold text-indigo-600">$0.42</p>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
+      <section className="mx-auto max-w-7xl px-6 py-12 lg:py-14">
+        <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <h2 className="text-2xl font-semibold text-foreground">{text('科研主流程', 'Research workflow')}</h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              {text('六个阶段，共用同一份研究上下文与证据记录', 'Six stages sharing one research context and evidence record')}
+            </p>
           </div>
-
-          {/* Scroll hint */}
-          <div className="text-center mt-6">
-            <p className="text-sm text-slate-500">← Scroll to explore more examples →</p>
-          </div>
-        </div>
-      </section>
-
-      {/* Module Entry Grid */}
-      <section className="max-w-7xl mx-auto px-6 py-16">
-        <div className="text-center mb-12">
-          <h2 className="text-3xl md:text-4xl font-bold text-slate-900 mb-3">
-            Foundation AutoResearch Runtime
-          </h2>
-          <p className="text-lg text-slate-600">
-            Composable surfaces for blueprint execution, artifacts, and research memory
-          </p>
+          <Button variant="ghost" onClick={() => navigate('/research/pipeline')}>
+            {text('打开当前流程', 'Open current workflow')}
+            <ArrowRight className="ml-2 h-4 w-4" />
+          </Button>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-          {modules.map((module, index) => {
-            const Icon = module.icon
+        <div className="grid gap-px overflow-hidden rounded-md border border-border bg-border sm:grid-cols-2 xl:grid-cols-6">
+          {flowSteps.map((step) => {
+            const Icon = step.icon
             return (
-              <div
-                key={module.id}
-                className={`
-                  group relative bg-white rounded-lg border-l-4 ${accentBorders[module.accent as keyof typeof accentBorders]}
-                  border border-slate-200 shadow-sm hover:shadow-lg
-                  transition-all duration-300 hover:-translate-y-1 cursor-pointer
-                  overflow-hidden
-                `}
-                onClick={() => navigate(module.path)}
-                style={{ animation: `fadeInUp 0.5s ease-out ${0.1 * index}s backwards` }}
+              <button
+                key={step.id}
+                type="button"
+                onClick={() => navigate(step.path)}
+                className={cn(
+                  'group min-h-48 border-t-2 bg-card p-5 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
+                  step.edgeClass,
+                  step.hoverClass,
+                )}
               >
-                {/* Accent gradient overlay */}
-                <div className={`absolute inset-0 bg-gradient-to-br ${accentColors[module.accent as keyof typeof accentColors]} opacity-0 group-hover:opacity-100 transition-opacity duration-300`} />
-
-                <div className="relative p-6 space-y-3">
-                  <div className="flex items-start justify-between">
-                    <div className="p-3 rounded-lg bg-slate-50 group-hover:bg-white transition-colors">
-                      <Icon className="h-6 w-6 text-slate-700 group-hover:text-teal-600 transition-colors" />
-                    </div>
-                    <ArrowRight className="h-5 w-5 text-slate-400 opacity-0 group-hover:opacity-100 transition-opacity" />
-                  </div>
-
-                  <div>
-                    <h3 className="font-semibold text-slate-900 mb-1">
-                      {module.title}
-                    </h3>
-                    <p className="text-sm text-slate-600 leading-relaxed">
-                      {module.description}
-                    </p>
-                  </div>
+                <div className="flex items-center justify-between">
+                  <span className="font-mono text-xs font-semibold text-muted-foreground">{step.number}</span>
+                  <span className={cn('flex h-9 w-9 items-center justify-center rounded-md', step.iconClass)}>
+                    <Icon className="h-5 w-5" />
+                  </span>
                 </div>
-              </div>
+                <h3 className="mt-7 text-base font-semibold text-foreground">{step.title}</h3>
+                <p className="mt-2 text-sm leading-5 text-muted-foreground">{step.detail}</p>
+                <ArrowRight className="mt-4 h-4 w-4 text-muted-foreground transition-transform group-hover:translate-x-1 group-hover:text-foreground" />
+              </button>
             )
           })}
         </div>
       </section>
 
-
-      {/* Recent Activity */}
-      <section className="max-w-7xl mx-auto px-6 py-16 pb-24">
-        <div className="flex items-center justify-between mb-8">
+      <section className="border-y border-border bg-muted/40">
+        <div className="mx-auto grid max-w-7xl gap-10 px-6 py-12 lg:grid-cols-[minmax(0,1.35fr)_minmax(300px,0.65fr)]">
           <div>
-            <h2 className="text-3xl font-bold text-slate-900 mb-2">
-              Recent Activity
-            </h2>
-            <p className="text-slate-600">
-              Latest research runs and their status
-            </p>
-          </div>
-          <Button
-            variant="outline"
-            onClick={() => navigate('/runs')}
-            className="hover:border-teal-500 hover:text-teal-600"
-          >
-            View All Runs
-            <ArrowRight className="ml-2 h-4 w-4" />
-          </Button>
-        </div>
+            <div className="mb-5 flex items-center justify-between gap-3">
+              <div>
+                <h2 className="text-xl font-semibold text-foreground">{text('最近运行', 'Recent runs')}</h2>
+                <p className="mt-1 text-sm text-muted-foreground">{text('共享工作区中的后端记录', 'Backend records in the shared workspace')}</p>
+              </div>
+              <Button variant="outline" size="sm" onClick={() => navigate('/runs')}>
+                {text('全部 Runs', 'All runs')}
+              </Button>
+            </div>
 
-        {recentRuns.length > 0 ? (
-          <div className="space-y-3">
-            {recentRuns.map((run) => {
-              const categoryInfo = getRunCategoryInfo(run)
-              return (
-                <div
-                  key={run.id}
-                  className="group bg-white rounded-lg border-l-4 border-l-teal-500 border border-slate-200 p-5 hover:shadow-md transition-all cursor-pointer hover:-translate-y-0.5"
-                  onClick={() => navigate(`/runs/${run.id}`)}
-                >
-                  <div className="flex items-center justify-between">
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-3 mb-2">
-                        <span className="font-mono text-sm font-medium text-slate-900">
-                          {run.id}
-                        </span>
-                        <Badge
-                          variant={run.status === 'completed' ? 'default' : run.status === 'running' ? 'secondary' : 'outline'}
-                          className="capitalize"
-                        >
-                          {run.status}
-                        </Badge>
-                        <Badge variant="outline" className="text-xs">
-                          {categoryInfo.label}
-                        </Badge>
+            {runsLoading ? (
+              <div className="flex min-h-40 items-center justify-center rounded-md border border-border bg-card text-sm text-muted-foreground">
+                {text('正在读取运行记录...', 'Loading run records...')}
+              </div>
+            ) : runsError ? (
+              <div className="min-h-40 rounded-md border-l-4 border-destructive bg-destructive/10 px-5 py-6 text-sm text-destructive">
+                {text('运行记录暂时不可用，请检查系统状态。', 'Run records are unavailable. Check system health.')}
+              </div>
+            ) : recentRuns.length > 0 ? (
+              <div className="divide-y divide-border overflow-hidden rounded-md border border-border">
+                {recentRuns.map((run) => (
+                  <button
+                    key={run.id}
+                    type="button"
+                    onClick={() => navigate(`/runs/${run.id}`)}
+                    className="flex w-full items-center gap-4 bg-card px-4 py-3 text-left hover:bg-accent"
+                  >
+                    <PlayCircle className="h-5 w-5 shrink-0 text-teal-600 dark:text-teal-400" />
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate font-mono text-sm font-medium text-foreground">{run.id}</div>
+                      <div className="mt-1 text-xs text-muted-foreground">
+                        {run.type} · {formatRelativeTime(run.startedAt)}
                       </div>
-                      <p className="text-sm text-slate-600">
-                        {run.type} • Started {formatRelativeTime(run.startedAt)}
-                      </p>
                     </div>
-                    <ArrowRight className="h-5 w-5 text-slate-400 group-hover:text-teal-600 transition-colors flex-shrink-0" />
-                  </div>
-                </div>
-              )
-            })}
+                    <Badge variant={run.status === 'completed' ? 'default' : 'outline'}>{run.status}</Badge>
+                    <ArrowRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <div className="flex min-h-40 flex-col items-center justify-center rounded-md border border-border bg-card px-6 text-center">
+                <p className="text-sm text-muted-foreground">{text('暂无运行记录。', 'No run records yet.')}</p>
+                <Button
+                  className="mt-4 bg-teal-600 text-white hover:bg-teal-700 dark:bg-teal-500 dark:text-neutral-950 dark:hover:bg-teal-400"
+                  size="sm"
+                  onClick={() => navigate('/research/pipeline')}
+                >
+                  {text('创建研究任务', 'Create research task')}
+                </Button>
+              </div>
+            )}
           </div>
-        ) : (
-          <div className="bg-white rounded-lg border border-slate-200 p-12 text-center">
-            <PlayCircle className="h-12 w-12 text-slate-300 mx-auto mb-4" />
-            <p className="text-slate-600 mb-4">
-              No runs yet. Start your first research workflow to see activity here.
-            </p>
-            <Button onClick={() => navigate('/research/planning')}>
-              Create First Run
-            </Button>
-          </div>
-        )}
-      </section>
 
-      {/* Inline animations */}
-      <style>{`
-        @keyframes fadeInUp {
-          from {
-            opacity: 0;
-            transform: translateY(20px);
-          }
-          to {
-            opacity: 1;
-            transform: translateY(0);
-          }
-        }
-        
-        @media (prefers-reduced-motion: reduce) {
-          * {
-            animation-duration: 0.01ms !important;
-            animation-iteration-count: 1 !important;
-            transition-duration: 0.01ms !important;
-          }
-        }
-      `}</style>
+          <div className="lg:border-l lg:border-border lg:pl-10">
+            <h2 className="text-xl font-semibold text-foreground">{text('辅助入口', 'Supporting views')}</h2>
+            <p className="mt-1 text-sm text-muted-foreground">{text('复核、配置与诊断', 'Evidence, configuration, and diagnostics')}</p>
+            <div className="mt-5 divide-y divide-border overflow-hidden rounded-md border border-border">
+              {supportingViews.map((view) => {
+                const Icon = view.icon
+                return (
+                  <button
+                    key={view.path}
+                    type="button"
+                    onClick={() => navigate(view.path)}
+                    className="flex w-full items-center gap-3 bg-card px-4 py-4 text-left hover:bg-accent"
+                  >
+                    <Icon className="h-5 w-5 shrink-0 text-muted-foreground" />
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm font-semibold text-foreground">{view.title}</div>
+                      <div className="mt-0.5 text-xs leading-5 text-muted-foreground">{view.detail}</div>
+                    </div>
+                    <ArrowRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        </div>
+      </section>
     </div>
   )
 }

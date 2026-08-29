@@ -15,6 +15,8 @@ import tempfile
 from typing import Optional, List, Tuple
 from pathlib import Path
 
+from app.core.user_context import sanitized_subprocess_env
+
 logger = logging.getLogger(__name__)
 
 # Base directory for workspaces
@@ -140,6 +142,7 @@ class WorkspaceManager:
                 capture_output=True,
                 text=True,
                 timeout=30,
+                env=sanitized_subprocess_env(),
             )
             
             if result.returncode == 0:
@@ -152,6 +155,7 @@ class WorkspaceManager:
                     capture_output=True,
                     text=True,
                     timeout=30,
+                    env=sanitized_subprocess_env(),
                 )
                 return False, f"Patch failed:\n{result.stderr}\nDry run output:\n{dry_run.stdout}"
                 

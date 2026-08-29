@@ -4,6 +4,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict
 
+from app.core.user_context import sanitized_subprocess_env
 from app.faros.errors import (
     FarosConfigurationError,
     FarosProviderError,
@@ -203,6 +204,7 @@ def maybe_invoke_external_backend(task: ProviderTask) -> ProviderResult | None:
             timeout=timeout,
             cwd=cwd,
             check=False,
+            env=sanitized_subprocess_env(),
         )
         if proc.returncode != 0:
             return ProviderResult(

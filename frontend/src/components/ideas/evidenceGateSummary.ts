@@ -4,6 +4,7 @@ export interface TraceStepLike {
   name: string
   status: string
   error?: string
+  inputs?: Record<string, unknown>
   outputs?: Record<string, unknown>
 }
 

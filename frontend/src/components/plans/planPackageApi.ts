@@ -17,6 +17,7 @@ export interface PlanQualityGate {
   planSpecific: boolean
   agentApproved: boolean
   humanApproved: boolean
+  downstreamReady: boolean
   implementationReady: boolean
   overallScore: number
   reviewDecision: string
@@ -320,6 +321,8 @@ export interface PlanReadableStep {
   method: string
   outputs: Array<Record<string, string>>
   expected: Array<Record<string, string>>
+  inputFrom?: string[]
+  evidenceRefs?: PlanEvidenceRef[]
 }
 
 export interface PlanReadableStage {

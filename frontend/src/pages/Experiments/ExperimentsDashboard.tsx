@@ -10,7 +10,7 @@
  * - Figure preview + download
  */
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { AppPageLayout } from '@/components/layout/AppPageLayout'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -21,6 +21,7 @@ import {
   TrendingUp, Image, Download, Sparkles, AlertTriangle, Code2,
 } from 'lucide-react'
 import { LLM_PROVIDERS, getModelsByProvider } from '@/lib/models/providers'
+import { useReviewLocale } from '@/lib/reviewLocale'
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || ''
 
@@ -157,6 +158,7 @@ function checkFigureTypeCompatibility(
 }
 
 export function ExperimentsDashboard() {
+  const { text } = useReviewLocale()
   const [experiments, setExperiments] = useState<Experiment[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -200,7 +202,7 @@ export function ExperimentsDashboard() {
   const [figCodeMap, setFigCodeMap] = useState<Record<string, string>>({})
   const [figShowCode, setFigShowCode] = useState<Record<string, boolean>>({})
 
-  const loadExperiments = async () => {
+  const loadExperiments = useCallback(async () => {
     setLoading(true)
     try {
       const resp = await fetch(`${API_BASE}/api/v1/experiments`)
@@ -209,12 +211,12 @@ export function ExperimentsDashboard() {
         setExperiments(data.experiments || [])
       }
     } catch (e) {
-      setError('Failed to load experiments')
+      setError(text('实验列表加载失败，请检查网络后重试。', 'Failed to load experiments. Check the network and retry.'))
     }
     setLoading(false)
-  }
+  }, [text])
 
-  useEffect(() => { loadExperiments() }, [])
+  useEffect(() => { void loadExperiments() }, [loadExperiments])
   useEffect(() => {
     let cancelled = false
     ;(async () => {
@@ -410,14 +412,14 @@ export function ExperimentsDashboard() {
 
   return (
     <AppPageLayout
-      title="Experiments"
-      subtitle="Project-level experiment dashboard with metrics and figure generation"
+      title={text('实验', 'Experiments')}
+      subtitle={text('记录实验指标、上传数据并生成论文级图表', 'Record metrics, upload datasets, and generate paper-ready figures')}
       icon={BarChart3}
       iconColor="indigo"
       accentColor="indigo"
       actions={
         <Button onClick={() => setShowCreate(!showCreate)} className="bg-indigo-500 hover:bg-indigo-600">
-          <Plus className="h-4 w-4 mr-2" /> New Experiment
+          <Plus className="h-4 w-4 mr-2" /> {text('新建实验', 'New Experiment')}
         </Button>
       }
     >
@@ -433,14 +435,14 @@ export function ExperimentsDashboard() {
           {showCreate && (
             <Card className="border-indigo-200">
               <CardContent className="pt-4 space-y-3">
-                <Input placeholder="Experiment name" value={newName} onChange={e => setNewName(e.target.value)} />
-                <Input placeholder="Project ID (optional)" value={newProjectId} onChange={e => setNewProjectId(e.target.value)} />
-                <Input placeholder="Description (optional)" value={newDescription} onChange={e => setNewDescription(e.target.value)} />
+                <Input placeholder={text('实验名称', 'Experiment name')} value={newName} onChange={e => setNewName(e.target.value)} />
+                <Input placeholder={text('关联 Project ID（可选）', 'Project ID (optional)')} value={newProjectId} onChange={e => setNewProjectId(e.target.value)} />
+                <Input placeholder={text('实验说明（可选）', 'Description (optional)')} value={newDescription} onChange={e => setNewDescription(e.target.value)} />
                 <div className="flex gap-2">
                   <Button size="sm" onClick={createExperiment} disabled={creating || !newName.trim()} className="bg-indigo-500 hover:bg-indigo-600">
-                    {creating ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <Plus className="h-4 w-4 mr-1" />} Create
+                    {creating ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <Plus className="h-4 w-4 mr-1" />} {text('创建', 'Create')}
                   </Button>
-                  <Button size="sm" variant="ghost" onClick={() => setShowCreate(false)}>Cancel</Button>
+                  <Button size="sm" variant="ghost" onClick={() => setShowCreate(false)}>{text('取消', 'Cancel')}</Button>
                 </div>
               </CardContent>
             </Card>
@@ -448,14 +450,14 @@ export function ExperimentsDashboard() {
 
           {/* List */}
           <div className="flex items-center justify-between">
-            <h3 className="text-sm font-medium text-muted-foreground">{experiments.length} experiments</h3>
+            <h3 className="text-sm font-medium text-muted-foreground">{text(`${experiments.length} 个实验`, `${experiments.length} experiments`)}</h3>
             <Button variant="ghost" size="sm" onClick={loadExperiments}><RefreshCw className="h-3 w-3" /></Button>
           </div>
 
           {loading ? (
             <div className="flex items-center justify-center py-8"><Loader2 className="h-6 w-6 animate-spin text-indigo-500" /></div>
           ) : experiments.length === 0 ? (
-            <Card><CardContent className="py-8 text-center text-sm text-muted-foreground">No experiments yet. Create one to get started.</CardContent></Card>
+            <Card><CardContent className="py-8 text-center text-sm text-muted-foreground">{text('暂无实验。新建实验后可记录指标和生成图表。', 'No experiments yet. Create one to record metrics and generate figures.')}</CardContent></Card>
           ) : (
             <div className="space-y-2 max-h-[600px] overflow-y-auto">
               {experiments.map(exp => (
@@ -483,7 +485,7 @@ export function ExperimentsDashboard() {
         {/* CENTER + RIGHT: Experiment Detail */}
         <div className="lg:col-span-2 space-y-4">
           {!selectedExp ? (
-            <Card><CardContent className="py-12 text-center"><BarChart3 className="h-10 w-10 mx-auto mb-3 text-muted-foreground opacity-50" /><p className="text-sm text-muted-foreground">Select an experiment to view details</p></CardContent></Card>
+            <Card><CardContent className="py-12 text-center"><BarChart3 className="h-10 w-10 mx-auto mb-3 text-muted-foreground opacity-50" /><p className="text-sm text-muted-foreground">{text('选择一个实验查看指标、数据集和图表', 'Select an experiment to view metrics, datasets, and figures')}</p></CardContent></Card>
           ) : (
             <>
               {/* Header */}
@@ -510,7 +512,7 @@ export function ExperimentsDashboard() {
                 <CardHeader className="pb-2">
                   <CardTitle className="text-base flex items-center gap-2">
                     <TrendingUp className="h-4 w-4 text-indigo-500" />
-                    Metrics ({metrics.length})
+                    {text('指标', 'Metrics')} ({metrics.length})
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-4">
@@ -553,7 +555,7 @@ export function ExperimentsDashboard() {
                 <CardHeader className="pb-2">
                   <CardTitle className="text-base flex items-center gap-2">
                     <BarChart3 className="h-4 w-4 text-indigo-500" />
-                    Datasets ({datasets.length})
+                    {text('数据集', 'Datasets')} ({datasets.length})
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-3">
@@ -596,13 +598,13 @@ export function ExperimentsDashboard() {
                 <CardHeader className="pb-2">
                   <CardTitle className="text-base flex items-center gap-2">
                     <Image className="h-4 w-4 text-indigo-500" />
-                    Figures ({figures.length})
+                    {text('图表', 'Figures')} ({figures.length})
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-4">
                   {/* Generate button */}
                   <div className="p-3 rounded bg-gradient-to-r from-indigo-50 to-purple-50 border space-y-3">
-                    <p className="text-sm font-medium">Generate Paper-Ready Figure</p>
+                    <p className="text-sm font-medium">{text('生成论文级图表', 'Generate Paper-Ready Figure')}</p>
                     <div className="grid grid-cols-2 gap-2">
                       <div>
                         <label className="text-xs font-medium">Provider</label>
@@ -668,9 +670,9 @@ export function ExperimentsDashboard() {
                     </div>
                     <Button onClick={generateFigure} disabled={generatingFig || (metrics.length === 0 && !figDatasetId)} className="bg-indigo-500 hover:bg-indigo-600">
                       {generatingFig ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Sparkles className="h-4 w-4 mr-2" />}
-                      Generate Paper-Ready Figure
+                      {text('生成论文级图表', 'Generate Paper-Ready Figure')}
                     </Button>
-                    {metrics.length === 0 && !figDatasetId && <p className="text-xs text-amber-600">Add metrics or upload a dataset first.</p>}
+                    {metrics.length === 0 && !figDatasetId && <p className="text-xs text-amber-600">{text('请先添加指标或上传数据集。', 'Add metrics or upload a dataset first.')}</p>}
                     {figError && <p className="text-xs text-red-600"><AlertTriangle className="h-3 w-3 inline mr-1" />{figError}</p>}
                   </div>
 
@@ -678,7 +680,7 @@ export function ExperimentsDashboard() {
                   {loadingFigures ? (
                     <div className="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="h-3 w-3 animate-spin" /> Loading figures...</div>
                   ) : figures.length === 0 ? (
-                    <p className="text-xs text-muted-foreground text-center py-4">No figures yet. Generate one from metrics above.</p>
+                    <p className="text-xs text-muted-foreground text-center py-4">{text('暂无图表，可基于上方指标生成。', 'No figures yet. Generate one from the metrics above.')}</p>
                   ) : (
                     <div className="space-y-4">
                       {figures.map(fig => (

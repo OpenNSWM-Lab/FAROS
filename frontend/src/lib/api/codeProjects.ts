@@ -93,6 +93,17 @@ export interface CreateProjectRequest {
   files?: Array<{ path: string; content: string }>;
 }
 
+export interface ImportBundleResponse {
+  projectId: string;
+  packageId: string;
+  cartId: string;
+  fileCount: number;
+  totalSizeBytes: number;
+  projectUrl: string;
+  blueprintUrl: string;
+  warnings: string[];
+}
+
 // Helper
 
 async function fetchJSON<T>(url: string, options?: RequestInit): Promise<T> {
@@ -177,6 +188,23 @@ export async function generateSampleProject(title: string, language: string = 'p
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ title, language, description }),
+  });
+}
+
+export async function importFinishedBundle(bundlePath: string, title?: string): Promise<ImportBundleResponse> {
+  return fetchJSON(`${API_BASE}/api/v1/code/research/imports`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ bundlePath, title }),
+  });
+}
+
+export async function uploadFinishedBundle(file: File): Promise<ImportBundleResponse> {
+  const formData = new FormData();
+  formData.append('file', file, file.name);
+  return fetchJSON(`${API_BASE}/api/v1/code/research/imports/upload`, {
+    method: 'POST',
+    body: formData,
   });
 }
 

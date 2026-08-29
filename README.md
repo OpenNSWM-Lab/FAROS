@@ -1,438 +1,397 @@
 <p align="center">
-  <h1 align="center">FAROS</h1>
-  <p align="center"><b>Foundation AutoResearch Operating System</b></p>
-  <p align="center"><i>Blueprint-driven AutoResearch runtime for the LLM domain today, extensible research workflows tomorrow.</i></p>
+  <img src="./FAROS.png" alt="FAROS - Foundation AutoResearch Operating System" width="100%" />
+</p>
+
+<h1 align="center">智塔 · FAROS</h1>
+
+<p align="center">
+  <strong>Foundation AutoResearch Operating System</strong><br />
+  <sub>从研究问题到可审计科研证据的协同式 AI Scientist 系统</sub><br />
+  <sub>A collaborative AI Scientist system from research questions to auditable evidence</sub>
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Runtime-FAROS--LLM-0f766e?style=for-the-badge" alt="FAROS-LLM">
-  <img src="https://img.shields.io/badge/Phase-1.1.0--rc1-7c3aed?style=for-the-badge" alt="1.1.0-rc1">
-  <img src="https://img.shields.io/badge/Python-3.11%2B-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.11+">
-  <img src="https://img.shields.io/badge/Node.js-18%2B-339933?style=for-the-badge&logo=node.js&logoColor=white" alt="Node 18+">
-  <img src="https://img.shields.io/badge/Tests-backend%20smoke-16a34a?style=for-the-badge&logo=pytest&logoColor=white" alt="Backend smoke tests">
-  <img src="https://img.shields.io/badge/Domain-LLM%20Research-d97706?style=for-the-badge" alt="LLM Research">
+  <a href="https://github.com/OpenNSWM-Lab/FAROS/stargazers"><img src="https://img.shields.io/github/stars/OpenNSWM-Lab/FAROS?style=for-the-badge&color=FFB300&label=Stars" alt="GitHub Stars" /></a>
+  <img src="https://img.shields.io/badge/Release-1.1.0--rc1-0891B2?style=for-the-badge" alt="Release 1.1.0-rc1" />
+  <img src="https://img.shields.io/badge/Backend_Tests-608_passed-16A34A?style=for-the-badge" alt="608 backend tests passed" />
+  <img src="https://img.shields.io/badge/Frontend_Tests-30_passed-2563EB?style=for-the-badge" alt="30 frontend tests passed" />
+  <img src="https://img.shields.io/badge/Qwen-Ready-FFB300?style=for-the-badge" alt="Qwen Ready" />
 </p>
 
 <p align="center">
-  <a href="#-release-scope">Release Scope</a> ·
-  <a href="#-why-faros">Why FAROS</a> ·
-  <a href="#-current-workflow">Workflow</a> ·
-  <a href="#-architecture">Architecture</a> ·
-  <a href="#-quick-start">Quick Start</a> ·
-  <a href="#-deployment">Deployment</a> ·
-  <a href="#-faros-api">API</a> ·
-  <a href="#-important-todo">TODO</a>
+  <a href="#中文">中文</a> &nbsp;|&nbsp;
+  <a href="#english">English</a> &nbsp;|&nbsp;
+  <a href="#快速开始">快速开始</a> &nbsp;|&nbsp;
+  <a href="#quick-start">Quick Start</a>
 </p>
-
-<p align="center">
-  <img src="./FAROS.png" alt="FAROS architecture overview" width="88%">
-</p>
-
----
 
 > [!IMPORTANT]
-> FAROS is not a single hardcoded AI scientist agent. It is a research workflow runtime built around **Blueprints**, **Capabilities**, **Profiles**, and **Providers**.
+> FAROS 不是把若干大模型调用简单串联起来。系统以文献证据为起点，以 `PlanPackage` 为跨模块契约，并通过 ReviewX、真实实验结果和人工审核形成可追踪、可修订的科研闭环。
 >
-> This release ships the first runnable baseline: **FAROS-LLM**.
-
-## ✨ Tagline
+> FAROS is not a loose chain of LLM calls. It starts from literature evidence, uses `PlanPackage` as the cross-module contract, and closes the loop through ReviewX, real experiment results, and human review.
 
 <p align="center">
-  <b><i>Define a research workflow. Bind a profile. Run an AutoResearch system.</i></b>
-</p>
-
-<p align="center">
-  <code>idea -> experiment -> paper -> review</code>
+  <img src="./assets/readme/research-pipeline.png" alt="FAROS research pipeline with Qwen topic coaching" width="92%" />
+  <br />
+  <sub>真实界面：千问将模糊研究兴趣改写为包含任务、方法和评估指标的可执行选题</sub>
 </p>
 
 ---
 
-## 📦 Release Scope
+# 中文
 
-This repository is the current release candidate for the **LLM-domain FAROS baseline**.
-It is already a runnable AutoResearch runtime, but it is not yet the final cross-domain platform vision.
+## 项目简介
+
+FAROS 是一个面向真实科研过程的多智能体协同系统。它覆盖研究选题、文献检索、研究计划、代码生成、实验记录、论文写作和同行评审，并为每个阶段保留来源、决策、产物和人工反馈。
+
+系统当前首先服务于 LLM 与 AI Scientist 研究，但底层运行时采用 `Blueprint + Capability + Profile + Provider` 设计，可以继续扩展到新的科研流程和工具生态。
+
+### FAROS 解决什么问题
+
+| 常见问题 | FAROS 的处理方式 |
+| --- | --- |
+| 初次使用者不会写科研检索式 | 千问把自然语言兴趣补全为明确的任务、方法、数据集和评估指标 |
+| 大模型容易生成缺少依据的研究创意 | 文献检索、语义对齐、深读和证据门控先于创意生成 |
+| 模块之间只传递一段自然语言 | `PlanPackage` 固化假设、变量、步骤、验收条件和证据引用 |
+| 代码和论文与真实实验脱节 | 项目、运行、实验、图表、论文和 ReviewX 共享可追踪标识 |
+| 自动评审给出很多意见但无法执行 | ReviewX 将问题定位到主张、证据或实验，并生成可修订的下一步动作 |
+| 全自动流程难以建立信任 | 在计划批准、实验解释和最终审核等关键节点保留人工决策 |
+
+## 科研闭环
+
+```mermaid
+flowchart LR
+    A[研究兴趣] --> B[Idea<br/>检索与选题]
+    B --> C[PlanPackage<br/>计划与质量门]
+    C --> D[Code<br/>实验工程]
+    D --> E[Experiment<br/>运行与指标]
+    E --> F[Paper<br/>论文与图表]
+    F --> G[ReviewX<br/>主张-证据-实验核验]
+    G --> H{人工审核}
+    H -->|通过| I[可交付成果]
+    H -->|修订| B
+```
+
+| 阶段 | 核心能力 | 主要产物 |
+| --- | --- | --- |
+| Idea | 千问选题教练、文献检索、语义过滤、深读、创新性与可行性审查 | 证据支持的候选研究创意 |
+| PlanPackage | 假设细化、实验变量、阶段拆解、多审稿人检查、人工批准 | 可执行且可验证的研究计划 |
+| Code | 代码检索、工程生成、沙箱执行、静态与动态评估、自动修复 | 可运行的实验项目与执行记录 |
+| Experiment | 指标采集、数据集上传、结果比较、论文级图表 | 结构化实验数据和可复用图表 |
+| Paper | Brief、Outline、分节写作、引用管理、LaTeX/PDF 生成 | 与计划和实验关联的论文工程 |
+| ReviewX | 主张抽取、证据对齐、一致性检查、可靠性评估、人工反馈闭环 | 可审计审阅报告和修订建议 |
+
+## 核心特色
 
 <table>
 <tr>
 <td width="50%" valign="top">
 
-### Included
+### 证据优先，而非文本优先
 
-- FAROS runtime under `backend/app/faros`
-- Blueprint loading and profile loading
-- Capability and provider registries
-- File-backed run, event, artifact, and memory persistence
-- First blueprint: `ml_paper`
-- First profile: `faros_llm`
-- Complete LLM workflow: `idea -> experiment -> paper -> review`
-- Existing module-native APIs for `idea`, `code`, `paper`, `review`, `platform`
-- Venue-aware LaTeX paper generation
+创意生成前先执行文献质量门。系统区分“搜索到了论文”和“论文真正支持当前研究问题”，避免用数量掩盖语义不相关。
 
 </td>
 <td width="50%" valign="top">
 
-### Not Yet Included
+### PlanPackage 跨模块契约
 
-- full DAG scheduling and parallel orchestration
-- generalized non-LLM provider ecosystem
-- full experiment execution and evaluation loop
-- FAROS frontend console
-- DB-backed FAROS runtime metadata
-- mature cross-domain blueprint library
+研究假设、关键步骤、预期指标和证据引用以结构化对象交接。下游 Code 不需要猜测上游意图，ReviewX 也能追溯每项结论。
+
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+
+### ReviewX 闭环评审
+
+ReviewX 不只预测一个分数，而是检查论文主张、引用证据和实验测量是否一致，并让真实实验结果改变下一轮研究计划。
+
+</td>
+<td width="50%" valign="top">
+
+### 人机协同治理
+
+大模型负责检索、生成、审查和修订建议；人类负责关键批准、纠错与最终签署。所有反馈均进入版本化记录，而不是停留在聊天窗口。
+
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+
+### 可恢复的长任务
+
+选题推荐和计划生成采用后台任务与短轮询。浏览器断线或刷新后可以找回结果，避免重复提交、重复调用模型和数据丢失。
+
+</td>
+<td width="50%" valign="top">
+
+### 面向真实部署
+
+系统提供中英双语、明暗主题、响应式界面、用户级 Provider 配置和加密 API Key 存储，适合团队与评审账号隔离使用。
 
 </td>
 </tr>
 </table>
 
----
-
-## 🤔 Why FAROS
-
-Most "AI scientist" systems are built as one fixed application with one workflow and one set of assumptions.
-FAROS takes a different approach: treat research automation as a **runtime problem**, not a single-agent prompt stack.
-
-<table>
-<tr><th width="24%">Layer</th><th>Responsibility</th></tr>
-<tr><td><b>Blueprint</b></td><td>Defines the workflow graph, constraints, output contract, and validation requirements.</td></tr>
-<tr><td><b>Capability</b></td><td>Implements one executable research step such as idea refinement, experiment provisioning, paper drafting, or reviewer simulation.</td></tr>
-<tr><td><b>Profile</b></td><td>Binds a blueprint to a concrete execution strategy.</td></tr>
-<tr><td><b>Provider</b></td><td>Supplies the actual engine behind a capability, such as LLM, tool, API, or human review.</td></tr>
-</table>
-
-> [!NOTE]
-> In FAROS, LLM is only one provider class. This release ships `FAROS-LLM`, but the runtime is being shaped so future domains can plug in other providers without rewriting the core orchestration layer.
-
----
-
-## 🚀 What Makes This Release Different
-
-<table>
-<tr><th width="24%">Principle</th><th>How This Release Applies It</th></tr>
-<tr><td><b>Keep What Works</b></td><td>The current `idea`, `code`, `paper`, `review`, and `platform` modules are reused through FAROS capability adapters instead of being replaced by a second parallel application.</td></tr>
-<tr><td><b>Add a Runtime Boundary</b></td><td>New orchestration logic lives under `backend/app/faros`, giving memory, verification, profiles, and providers a stable place to evolve.</td></tr>
-<tr><td><b>Finish One Domain First</b></td><td>The first complete chain is the LLM research domain. Cross-domain abstraction comes after the first workflow is coherent and runnable.</td></tr>
-</table>
-
----
-
-## 🔄 Current Workflow
-
-The first FAROS blueprint is `ml_paper`.
-
-<table>
-<tr><th width="18%">Stage</th><th width="22%">Capability</th><th>Output</th></tr>
-<tr><td>1</td><td><code>idea_refinement</code></td><td>Idea session, ranked candidates, selected candidate</td></tr>
-<tr><td>2</td><td><code>experiment</code></td><td>Code project scaffold and experiment record for the LLM domain</td></tr>
-<tr><td>3</td><td><code>paper_drafting</code></td><td>Venue-aware LaTeX project, PDF, and paper artifacts</td></tr>
-<tr><td>4</td><td><code>reviewer_simulation</code></td><td>Structured review plus actionable follow-up items</td></tr>
-</table>
-
-### Current Artifact Surface
-
-<table>
-<tr><th width="22%">Artifact Type</th><th>Description</th></tr>
-<tr><td><code>idea_session</code></td><td>Idea generation session with ranked candidate outputs</td></tr>
-<tr><td><code>code_project</code></td><td>Provisioned research code workspace for the experiment stage</td></tr>
-<tr><td><code>experiment_record</code></td><td>Experiment metadata record for the LLM workflow</td></tr>
-<tr><td><code>latex_project</code></td><td>Paper source bundle with venue-aware LaTeX assets</td></tr>
-<tr><td><code>paper_pdf</code></td><td>Compiled paper PDF or fallback rendered PDF</td></tr>
-<tr><td><code>review_report</code></td><td>Structured review with action items</td></tr>
-</table>
-
----
-
-## 🏗️ Architecture
-
-```text
-backend/app/
-  faros/
-    api/
-    blueprints/
-    capabilities/
-    loaders/
-    memory/
-    models/
-    profiles/
-    providers/
-    registry/
-    runtime/
-    verification/
-  modules/
-    idea/
-    code/
-    paper/
-    review/
-    platform/
-```
-
-### Runtime Layers
-
-<table>
-<tr><th width="24%">Area</th><th>Role</th></tr>
-<tr><td><b>FAROS Runtime</b></td><td>Blueprint loading, capability registry, profile binding, orchestrated execution, event logging, artifact persistence, research memory, and baseline verification</td></tr>
-<tr><td><b>Domain Modules</b></td><td>Reusable implementation surfaces for `idea`, `code`, `paper`, `review`, and `platform`</td></tr>
-</table>
-
-### Execution Model
+## 系统架构
 
 ```mermaid
-flowchart LR
-    B[Blueprint] --> O[Orchestrator]
-    P[Profile] --> O
-    R[Provider Registry] --> O
-    C[Capability Registry] --> O
-    O --> I[idea_refinement]
-    I --> E[experiment]
-    E --> W[paper_drafting]
-    W --> V[reviewer_simulation]
-    O --> M[Research Memory]
-    O --> A[Artifacts]
-    O --> Q[Verification]
+flowchart TB
+    UI[React / TypeScript 前端]
+    API[FastAPI 模块 API]
+    RT[FAROS Runtime]
+    BP[Blueprints]
+    CP[Capabilities]
+    PF[Profiles]
+    PR[Providers / Qwen]
+    MEM[Research Memory]
+    ART[Artifacts & Audit Trail]
+
+    UI --> API
+    API --> RT
+    BP --> RT
+    CP --> RT
+    PF --> RT
+    PR --> RT
+    RT --> MEM
+    RT --> ART
+    RT --> API
 ```
-
----
-
-## 🗂️ Repository Layout
 
 ```text
 FAROS/
-  backend/
-    app/
-      faros/
-      modules/
-      llm/
-      db/
-      storage/
-    templates/latex/
-    tests/
-  frontend/
-    src/
-  docs/
-    DEVELOPER_GUIDE.md
-    FAROS_TODO.md
+├── backend/
+│   ├── app/faros/                 # Blueprint 驱动的运行时与能力注册
+│   ├── app/modules/idea/          # 文献证据与研究创意
+│   ├── app/modules/code/          # 代码项目与生成流程
+│   ├── app/modules/paper/         # 论文工程与 PDF 生成
+│   ├── app/modules/review/        # ReviewX 审阅与反馈闭环
+│   ├── app/modules/platform/      # PlanPackage、实验、运行与 Provider
+│   ├── experiments/               # 可复现实验入口
+│   └── tests/                     # 后端回归测试
+├── frontend/src/                  # React 科研工作台
+├── experiments/reviewx_eval/      # ReviewX 基准、消融与人工评估工具
+└── docs/                          # 架构、模块交接和开发文档
 ```
 
----
+## 快速开始
 
-## ⚙️ Runtime Requirements
+### 环境要求
 
-- Python `3.11+` or `3.12`
+- Python `3.11+`
 - Node.js `18+`
-- `latexmk` and `pdflatex` for venue-style PDF compilation
-- a configured LLM provider for real execution
+- 可选：Docker，用于更强的代码执行隔离
+- 可选：`latexmk` 与 `pdflatex`，用于原生 LaTeX 编译
+- 至少一个兼容的 LLM Provider；推荐使用千问
 
-> [!TIP]
-> The development environment used during this release cycle has been the conda environment `aist`.
-
----
-
-## 🚀 Quick Start
-
-### Backend
+### 1. 启动后端
 
 ```bash
-cd backend
+git clone https://github.com/OpenNSWM-Lab/FAROS.git
+cd FAROS/backend
+
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
+
 uvicorn app.main:app --host 127.0.0.1 --port 8005 --reload
 ```
 
-### Frontend
+### 2. 启动前端
 
 ```bash
-cd frontend
+cd FAROS/frontend
 npm install
-npm run dev
+VITE_API_BASE_URL=http://127.0.0.1:8005 npm run dev
 ```
 
-## 🚢 Deployment
+打开 `http://127.0.0.1:5176`。API 文档位于 `http://127.0.0.1:8005/api/docs`。
 
-The current RC is intended for a simple internal deployment shape:
+### 3. 配置千问
 
-- one backend API process
-- one frontend process or static build
-- one writable data directory
-- one configured LLM provider for real LLM-backed execution
-
-The most important runtime knobs are:
-
-- backend:
-  - `API_HOST`
-  - `API_PORT`
-  - `DATA_DIR`
-  - `ACTIVE_PROVIDER_NAME`
-- frontend:
-  - `FRONTEND_HOST`
-  - `FRONTEND_PORT`
-  - `VITE_API_BASE_URL`
-  - `VITE_USE_MOCK`
-
-Important:
-
-- the frontend helper script uses `FRONTEND_PORT`, not the CLI `--port` flag, as the effective dev-server port
-- the default frontend backend target is `http://127.0.0.1:8005`
-- real LLM execution is only ready when `/api/system/version` reports `llm.configured=true`
-
-See [docs/DEVELOPER_GUIDE.md](docs/DEVELOPER_GUIDE.md) for developer setup notes and [docs/FAROS_TODO.md](docs/FAROS_TODO.md) for the current roadmap.
-
-### Useful Endpoints
-
-<table>
-<tr><th width="34%">Endpoint</th><th>Purpose</th></tr>
-<tr><td><code>GET /api/system/health</code></td><td>Basic backend health</td></tr>
-<tr><td><code>GET /api/system/version</code></td><td>Release metadata</td></tr>
-<tr><td><code>GET /api/docs</code></td><td>OpenAPI docs</td></tr>
-<tr><td><code>GET /api/faros/health</code></td><td>FAROS runtime health</td></tr>
-<tr><td><code>GET /api/faros/blueprints</code></td><td>Available FAROS blueprints</td></tr>
-<tr><td><code>GET /api/faros/profiles</code></td><td>Available FAROS profiles</td></tr>
-</table>
-
-If needed, set `VITE_API_BASE_URL` for the frontend.
-
----
-
-## 🔐 Provider Configuration
-
-The backend supports multiple providers, including `minimax` and `novita`.
-
-Configuration is loaded from:
-1. environment variables defined in `backend/app/core/settings.py`
-2. runtime settings persisted to `backend/data/provider_config.json`
-
-Do not commit real API keys.
-
----
-
-## 🔌 FAROS API
-
-<table>
-<tr><th width="38%">Endpoint</th><th>Purpose</th></tr>
-<tr><td><code>GET /api/faros/health</code></td><td>Runtime health and asset counts</td></tr>
-<tr><td><code>GET /api/faros/blueprints</code></td><td>List available blueprints</td></tr>
-<tr><td><code>GET /api/faros/profiles</code></td><td>List available profiles</td></tr>
-<tr><td><code>GET /api/faros/capabilities</code></td><td>List registered capabilities and providers</td></tr>
-<tr><td><code>GET /api/faros/runs</code></td><td>List FAROS runs</td></tr>
-<tr><td><code>POST /api/faros/runs</code></td><td>Create a FAROS run</td></tr>
-<tr><td><code>GET /api/faros/runs/{run_id}</code></td><td>Inspect one FAROS run</td></tr>
-<tr><td><code>GET /api/faros/runs/{run_id}/events</code></td><td>Inspect run events</td></tr>
-<tr><td><code>GET /api/faros/runs/{run_id}/artifacts</code></td><td>Inspect run artifacts</td></tr>
-</table>
-
-### Example: Plan-Only Run
+推荐在界面的“设置 / LLM Provider”中为当前账号配置 API Key。也可以在启动后端前设置环境变量：
 
 ```bash
-curl -X POST http://127.0.0.1:8005/api/faros/runs   -H 'Content-Type: application/json'   -d '{
-    "blueprintId": "ml_paper",
-    "profileId": "faros_llm",
-    "executionMode": "plan",
-    "inputs": {
-      "seedQuery": "Improve CPU efficiency in LLM workflows",
-      "paperType": "system",
-      "targetVenue": "generic"
-    }
-  }'
+export ACTIVE_PROVIDER_NAME=qwen
+export QWEN_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+export QWEN_API_KEY=your_api_key
 ```
 
----
+> [!CAUTION]
+> 不要将真实 API Key 提交到 Git。生产部署应设置 `FAROS_CREDENTIAL_KEY`，并由可信反向代理注入 `X-Faros-User`；运行时 Provider 配置按用户隔离并加密保存。
 
-## 📝 Paper Generation
-
-Paper generation in this release uses real venue-aware LaTeX template assets.
-
-<table>
-<tr><th width="22%">Template</th><th>Description</th></tr>
-<tr><td><code>icml</code></td><td>ICML-style LaTeX template path</td></tr>
-<tr><td><code>neurips</code></td><td>NeurIPS-style LaTeX template path</td></tr>
-<tr><td><code>iclr</code></td><td>ICLR-style LaTeX template path</td></tr>
-<tr><td><code>acl</code></td><td>ACL-style LaTeX template path</td></tr>
-<tr><td><code>generic</code></td><td>Fallback generic template</td></tr>
-</table>
-
-Compilation prefers `latexmk`.
-If LaTeX compilation fails, the backend falls back to simplified PDF rendering so the workflow still yields a previewable artifact.
-
----
-
-## ✅ Verification
-
-### Release Checks
+## 验证
 
 ```bash
-bash scripts/check_release.sh
+cd backend
+./.venv/bin/pytest -q
+
+cd ../frontend
+npm run test -- --run
+npm run build
 ```
+
+当前验证基线：
+
+- 后端：`608 passed`
+- 前端：`30 passed`
+- TypeScript 生产构建：通过
+- 真实千问选题推荐与主要页面流程：通过
+
+## 文档与实验
+
+- [项目文档总览](docs/FAROS_docs_overview_zh.md)
+- [开发者指南](docs/DEVELOPER_GUIDE.md)
+- [Idea 到 Plan 下游交接指南](docs/idea-plan-downstream-handoff-guide.md)
+- [论文技能流水线参考](docs/paper_skill_pipeline_reference_zh.md)
+- [ReviewX 实验框架](experiments/reviewx_eval/README.md)
+- [SciFact 闭环实验](backend/experiments/reviewx_scifact/README.md)
+
+## 当前边界
+
+FAROS 当前是面向竞赛验证与科研原型的 release candidate，而不是无需监督即可替代研究者的生产系统。跨学科实验执行、更多领域 Blueprint、大规模并行调度和更广泛的人类评估仍在持续建设。涉及重要科研结论时，应保留人工复核并检查原始证据。
+
+---
+
+# English
+
+## Overview
+
+FAROS is a multi-agent system built around the real scientific workflow. It connects research ideation, literature retrieval, planning, code generation, experiment tracking, paper writing, and peer review while preserving provenance, decisions, artifacts, and human feedback at every stage.
+
+The current release focuses on LLM and AI Scientist research. Its runtime follows a `Blueprint + Capability + Profile + Provider` design so that new workflows, tools, and scientific domains can be added without rebuilding the orchestration core.
+
+### Problems FAROS addresses
+
+| Common problem | FAROS approach |
+| --- | --- |
+| New users do not know how to formulate a research query | Qwen turns a rough interest into a task, method, dataset, and measurable evaluation target |
+| LLM-generated ideas are weakly grounded | Retrieval, semantic alignment, deep reading, and evidence gates run before ideation |
+| Modules exchange unstructured prose | `PlanPackage` freezes hypotheses, variables, steps, acceptance criteria, and evidence references |
+| Code and papers drift away from real results | Projects, runs, experiments, figures, papers, and reviews share traceable identifiers |
+| Automated reviews are verbose but not actionable | ReviewX locates issues at the claim, evidence, or measurement level and emits revision actions |
+| Fully autonomous execution is hard to trust | Human decisions remain at plan approval, result interpretation, and final sign-off gates |
+
+## Research Loop
+
+```text
+Research interest
+  -> evidence-grounded Idea
+  -> validated PlanPackage
+  -> executable Code
+  -> measured Experiment
+  -> traceable Paper
+  -> ReviewX consistency audit
+  -> human approval or evidence-driven revision
+```
+
+| Stage | Main capabilities | Output |
+| --- | --- | --- |
+| Idea | Qwen topic coaching, retrieval, semantic filtering, deep reading, novelty and feasibility review | Evidence-supported research candidates |
+| PlanPackage | Hypothesis refinement, variables, staged execution, reviewer committee, human approval | Executable and testable research plan |
+| Code | Code retrieval, project generation, sandbox execution, static/dynamic evaluation, repair | Runnable experiment project and execution trace |
+| Experiment | Metric ingestion, dataset upload, result comparison, publication figures | Structured results and reusable figures |
+| Paper | Brief, outline, section drafting, citations, LaTeX/PDF generation | Paper project linked to plans and experiments |
+| ReviewX | Claim extraction, evidence alignment, consistency and reliability checks, human feedback | Auditable review report and revision plan |
+
+## Design Highlights
+
+- **Evidence before generation:** retrieved papers must pass semantic and quality gates before they can support an idea.
+- **A typed handoff contract:** `PlanPackage` carries the scientific intent and acceptance criteria across modules.
+- **Review as a closed loop:** ReviewX checks claim-evidence-measurement consistency and feeds real findings back into planning.
+- **Human-governed automation:** LLM agents propose and revise; people approve, correct, and sign off at consequential gates.
+- **Recoverable long-running work:** background jobs and polling survive browser disconnects without duplicate model calls.
+- **Deployment-aware isolation:** bilingual UI, light/dark themes, responsive layouts, user-scoped providers, and encrypted API keys.
+
+## Quick Start
+
+### Requirements
+
+- Python `3.11+`
+- Node.js `18+`
+- Optional: Docker for stronger execution isolation
+- Optional: `latexmk` and `pdflatex` for native LaTeX compilation
+- At least one compatible LLM provider; Qwen is recommended
+
+### 1. Backend
 
 ```bash
-bash backend/scripts/check_backend_release.sh
+git clone https://github.com/OpenNSWM-Lab/FAROS.git
+cd FAROS/backend
+
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+uvicorn app.main:app --host 127.0.0.1 --port 8005 --reload
 ```
+
+### 2. Frontend
 
 ```bash
-bash frontend/scripts/check_frontend_release.sh
+cd FAROS/frontend
+npm install
+VITE_API_BASE_URL=http://127.0.0.1:8005 npm run dev
 ```
 
-### Current Validation State
+Open `http://127.0.0.1:5176`. OpenAPI documentation is available at `http://127.0.0.1:8005/api/docs`.
 
-- `backend/tests`: backend smoke and ranking checks
-- FAROS runtime routes mounted
-- plan-mode FAROS run creation verified
-- LLM-domain FAROS workflow skeleton wired through `idea -> experiment -> paper -> review`
+### 3. Qwen
 
----
+The recommended path is to configure the API key for the current account in **Settings / LLM Providers**. Environment variables are also supported:
 
-## 🧱 Stable Surface In This Release
+```bash
+export ACTIVE_PROVIDER_NAME=qwen
+export QWEN_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+export QWEN_API_KEY=your_api_key
+```
 
-These parts should be treated as the release baseline:
+> [!CAUTION]
+> Never commit a real API key. Production deployments should set `FAROS_CREDENTIAL_KEY` and let a trusted reverse proxy provide `X-Faros-User`. Runtime provider credentials are encrypted and isolated per user.
 
-<table>
-<tr><th width="30%">Area</th><th>Stability Statement</th></tr>
-<tr><td><code>backend/app/faros/*</code></td><td>Primary runtime surface for future FAROS work</td></tr>
-<tr><td>Blueprint/Profile loading</td><td>Stable release baseline</td></tr>
-<tr><td>FAROS metadata API</td><td>Stable release baseline</td></tr>
-<tr><td>Plan-mode FAROS run creation</td><td>Stable release baseline</td></tr>
-<tr><td>Provider settings path</td><td>Stable release baseline</td></tr>
-<tr><td>Paper generation path</td><td>Stable release baseline</td></tr>
-<tr><td>Review generation path</td><td>Stable release baseline</td></tr>
-</table>
+## Verification
 
----
+```bash
+cd backend
+./.venv/bin/pytest -q
 
-## 📌 Important TODO
+cd ../frontend
+npm run test -- --run
+npm run build
+```
 
-The most important next steps after this release are:
-- replace the current `experiment` scaffold with true code synthesis and execution for the LLM domain
-- connect experiment outputs to metrics ingestion, figure generation, and run tracking
-- replace linear graph execution with a real DAG runtime
-- add stronger verification beyond required-key checks
-- add a dedicated FAROS frontend console
-- add provider inheritance policies instead of hardcoded profile defaults
+Validated baseline:
 
-See [docs/FAROS_TODO.md](docs/FAROS_TODO.md) for the detailed backlog.
+- Backend: `608 passed`
+- Frontend: `30 passed`
+- TypeScript production build: passed
+- Live Qwen topic coaching and primary UI workflow: passed
 
----
+## Documentation and Experiments
 
-## 🛠️ Development Notes
+- [Documentation overview](docs/FAROS_docs_overview_zh.md)
+- [Developer guide](docs/DEVELOPER_GUIDE.md)
+- [Idea-to-Plan handoff guide](docs/idea-plan-downstream-handoff-guide.md)
+- [Paper skill pipeline reference](docs/paper_skill_pipeline_reference_zh.md)
+- [ReviewX evaluation framework](experiments/reviewx_eval/README.md)
+- [SciFact closed-loop experiment](backend/experiments/reviewx_scifact/README.md)
 
-Use [docs/DEVELOPER_GUIDE.md](docs/DEVELOPER_GUIDE.md) for module ownership, extension boundaries, and development conventions.
+## Scope and Limitations
 
-Current working rule:
-- extend FAROS under `backend/app/faros`
-- keep domain-specific logic inside `backend/app/modules/*`
-- avoid adding new business logic to legacy compatibility paths unless required for release stability
+FAROS is currently a release candidate for competition validation and research prototyping, not an unsupervised replacement for researchers. Cross-domain experiment execution, additional domain blueprints, large-scale parallel scheduling, and broader human evaluation remain active work. Important scientific claims should always be checked against their original evidence.
 
 ---
 
-## 📍 Project Status
-
-This repository is the first FAROS release candidate.
-It is already usable as a runtime baseline for LLM-domain AutoResearch workflows, but it is still the beginning of the platform transition rather than the end state.
-
-
-
-# GitHub Stars
-
-<h2 align="center">⭐ GitHub Stars</h2>
+## Star History
 
 <p align="center">
-  <img 
-    src="https://img.shields.io/github/stars/OpenNSWM-Lab/FAROS?style=for-the-badge"
-    alt="GitHub Stars"
-  />
+  <a href="https://star-history.com/#OpenNSWM-Lab/FAROS&Date">
+    <img src="https://api.star-history.com/svg?repos=OpenNSWM-Lab/FAROS&type=Date" alt="FAROS star history" width="90%" />
+  </a>
+</p>
+
+<p align="center">
+  <strong>Make every scientific claim traceable, testable, and revisable.</strong><br />
+  <sub>让每个科研主张都可追踪、可检验、可修订。</sub>
 </p>

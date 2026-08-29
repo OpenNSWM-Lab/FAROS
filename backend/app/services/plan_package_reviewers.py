@@ -16,6 +16,11 @@ from app.models.plan_package import (
     PlanReviewerReport,
 )
 from app.services.plan_package_plan_quality import missing_plan_roles
+from app.services.plan_package_review_loop import route_review_issue
+from app.services.plan_package_specificity import (
+    metric_target_is_concrete,
+    plan_specificity_issues,
+)
 
 
 def _issue(
@@ -314,7 +319,12 @@ def feasibility_reviewer(package: PlanPackage) -> PlanReviewerReport:
         blocking.append(_issue("No implementation stages are defined.", section_path="stages", severity="blocking"))
         return _make_report("FeasibilityReviewer", 0.0, blocking, warnings, suggestions)
 
-    generic_tokens = {"readiness", "primary_metric", "specified before implementation", "default plan step"}
+    generic_tokens = {
+        "readiness",
+        "primary_metric",
+        "specified before implementation",
+        "default plan step",
+    }
     total_steps = 0
     detailed_steps = 0
     artifact_steps = 0
@@ -329,11 +339,25 @@ def feasibility_reviewer(package: PlanPackage) -> PlanReviewerReport:
                 detailed_steps += 1
             if step.outputs:
                 artifact_steps += 1
-            if step.expected and not all(
-                expected.metric.lower() in generic_tokens or expected.target.lower() in generic_tokens
+            if step.expected and all(
+                expected.metric.strip().lower() not in generic_tokens
+                and metric_target_is_concrete(expected.target)
                 for expected in step.expected
             ):
                 metric_steps += 1
+
+    feasibility_specificity = [
+        issue
+        for issue in plan_specificity_issues(package)
+        if issue.sectionPath == "hypothesis"
+        or issue.sectionPath.endswith(".outputs")
+        or issue.sectionPath.endswith(".expected")
+    ]
+    blocking.extend(feasibility_specificity)
+    if feasibility_specificity:
+        suggestions.append(
+            "Repair the hypothesis and plan steps with falsifiable outcomes, artifacts, and evaluation criteria."
+        )
 
     if total_steps and detailed_steps / total_steps < 0.67:
         blocking.append(_issue(
@@ -383,21 +407,25 @@ def metric_reviewer(package: PlanPackage) -> PlanReviewerReport:
         blocking.append(_issue("No expected metrics are defined.", section_path="stages[].steps[].expected", severity="blocking"))
         return _make_report("MetricReviewer", 0.0, blocking, warnings, suggestions)
 
-    generic = {"readiness", "primary_metric", "specified before implementation", "planned_metric"}
-    def is_concrete_target(target: str) -> bool:
-        normalized = target.strip().lower()
-        if normalized in generic:
-            return False
-        if re.search(r"(>=|<=|>|<|=|±|\d)", normalized):
-            return True
-        return len(normalized) >= 6
+    generic = {"readiness", "primary_metric", "planned_metric"}
 
     concrete = [
         item
         for item in expected_items
         if item.metric.strip().lower() not in generic
-        and is_concrete_target(item.target)
+        and metric_target_is_concrete(item.target)
     ]
+    metric_specificity = [
+        issue
+        for issue in plan_specificity_issues(package)
+        if ".expected[" in issue.sectionPath
+        and issue.sectionPath.endswith((".metric", ".target"))
+    ]
+    blocking.extend(metric_specificity)
+    if metric_specificity:
+        suggestions.append(
+            "Replace generic metric names and targets with numeric, baseline-relative, or statistical criteria."
+        )
     topic_terms = _topic_terms(package)
     metric_hits = _hit_count(
         " ".join(f"{item.metric} {item.target} {item.desc}" for item in expected_items),
@@ -581,10 +609,12 @@ def apply_review_to_quality_gate(
     review_error_messages = [
         f"{issue.sectionPath}: {issue.message}" if issue.sectionPath else issue.message
         for issue in meta.blockingIssues
+        if route_review_issue(issue) != "diagnostic_only"
     ]
     review_warning_messages = [
         f"{issue.sectionPath}: {issue.message}" if issue.sectionPath else issue.message
         for issue in meta.warnings
+        if route_review_issue(issue) != "diagnostic_only"
     ]
     existing_errors = set(gate.errors)
     existing_warnings = set(gate.warnings)

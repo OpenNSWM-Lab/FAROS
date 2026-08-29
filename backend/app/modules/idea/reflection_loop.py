@@ -38,7 +38,9 @@ The IDEA JSON must include:
 - "approach": High-level methodology (string)
 - "expectedOutcomes": List of expected outcomes (list of strings)
 - "requiredExperiments": List of experiment objects, each with:
-    "name", "description", "metrics" (list), "datasets" (list)
+    "name", "description", "metrics" (list), "datasets" (list),
+    "stopConditions" (list of explicit completion or abort criteria)
+- "baselines": List of named control conditions or prior methods (list of strings)
 - "risks": List of risk objects, each with:
     "risk" (string), "mitigation" (string)
 """
@@ -161,7 +163,50 @@ def _parse_action(text: str) -> Tuple[Optional[str], Optional[Any]]:
         except (json.JSONDecodeError, AttributeError):
             pass
 
+    # Strict JSON providers sometimes follow the requested payload schema but
+    # omit the textual action envelope. Infer only the two unambiguous shapes.
+    cleaned = str(text or "").strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", cleaned, flags=re.IGNORECASE)
+    try:
+        data = json.loads(cleaned)
+    except (json.JSONDecodeError, TypeError):
+        data = None
+    if isinstance(data, dict):
+        if isinstance(data.get("query"), str) and data["query"].strip():
+            return "SearchLiterature", data
+        if isinstance(data.get("idea"), dict) or isinstance(data.get("IDEA"), dict):
+            return "FinalizeIdea", data
+        if data.get("title"):
+            return "FinalizeIdea", {"idea": data}
+
     return None, None
+
+
+def _parse_finalize_arguments(text: str) -> Optional[Dict[str, Any]]:
+    """Accept strict-JSON final ideas when a provider omits the action wrapper."""
+
+    cleaned = str(text or "").strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", cleaned, flags=re.IGNORECASE)
+    candidates = [cleaned]
+    json_match = re.search(r'\{[\s\S]*"(?:idea|title)"[\s\S]*\}', cleaned)
+    if json_match and json_match.group() != cleaned:
+        candidates.append(json_match.group())
+    for candidate in candidates:
+        try:
+            data = json.loads(candidate)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        if isinstance(data.get("idea"), dict):
+            return data
+        if isinstance(data.get("IDEA"), dict):
+            return data
+        if data.get("title"):
+            return {"idea": data}
+    return None
 
 
 def _execute_search(query: str, limit: int = 5) -> str:
@@ -230,9 +275,11 @@ def _execute_finalize(
         "hypothesis", idea_data.get("problem", node.hypothesis or "")
     )
     node.abstract = idea_data.get("abstract", node.abstract or "")
+    node.approach = idea_data.get("approach", node.approach or "")
     node.experiments = idea_data.get(
         "requiredExperiments", idea_data.get("experiments", node.experiments)
     )
+    node.baselines = idea_data.get("baselines", node.baselines)
     node.risks = idea_data.get(
         "risks", idea_data.get("riskFactors", node.risks)
     )
@@ -329,6 +376,7 @@ class ReflectionLoop:
                     messages=messages,
                     model=self.model,
                     max_tokens=2000,
+                    structured_output=True,
                 )
                 response_text = response.text
             except ProviderError as e:
@@ -343,18 +391,13 @@ class ReflectionLoop:
             action_name, arguments = _parse_action(response_text)
 
             if action_name is None:
+                arguments = _parse_finalize_arguments(response_text)
+                if arguments:
+                    node = _execute_finalize(arguments, node, node.sessionId)
+                    return node
                 logger.warning(
                     f"Round {round_num}: could not parse ACTION from response: {response_text[:200]}"
                 )
-                # Try to extract idea JSON as fallback
-                try:
-                    json_match = re.search(r'\{[\s\S]*"title"[\s\S]*\}', response_text)
-                    if json_match:
-                        arguments = json.loads(json_match.group())
-                        node = _execute_finalize({"idea": arguments}, node, node.sessionId)
-                        return node
-                except Exception:
-                    pass
                 # If still no action, continue to next round
                 continue
 

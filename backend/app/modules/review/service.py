@@ -19,7 +19,7 @@ from app.modules.review.cem_guidance import annotate_risk_tree_with_mismatch
 from app.modules.review.claim_extractor import extract_claims
 from app.modules.review.evidence_graph import build_evidence, link_claims_to_evidence
 from app.modules.review.evidence_verifier import verify_claim_evidence
-from app.modules.review.model_router import refine_findings_with_budget
+from app.modules.review.model_router import rank_findings_for_review, refine_findings_with_budget
 from app.modules.review.mismatch_scorer import build_mismatch_report
 from app.modules.review.risk_analyzer import analyze_reviewx_risks
 from app.modules.review.revision_planner import findings_to_action_items
@@ -283,6 +283,7 @@ def generate_reviewx(review_id: str) -> Dict[str, Any]:
             mismatch_report=preliminary_mismatch,
             routing_strategy="severity" if "no_mismatch_routing" in ablations else "cem",
         )
+        findings = rank_findings_for_review(findings, routing_trace)
         if "no_llm_calibration" in ablations:
             for finding in findings:
                 finding.reviewerDecision = None

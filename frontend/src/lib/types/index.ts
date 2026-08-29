@@ -190,18 +190,6 @@ export interface ReviewFinding {
   };
 }
 
-export interface ReviewerSimulation {
-  id: string;
-  paperId: string;
-  reviewerProfile: 'expert' | 'generalist' | 'critical' | 'supportive';
-  strengths: string[];
-  weaknesses: string[];
-  questions: string[];
-  recommendation: 'accept' | 'minor_revision' | 'major_revision' | 'reject';
-  confidence: number; // 1-5
-  createdAt: string;
-}
-
 // ============================================================================
 // Settings Models
 // ============================================================================
@@ -292,3 +280,5 @@ export interface SystemMetrics {
   };
   timestamp: string;
 }
+
+export * from './scientificResearch';

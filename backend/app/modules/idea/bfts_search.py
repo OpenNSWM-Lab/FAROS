@@ -14,6 +14,7 @@ Reference: AI-Scientist-v2 ai_scientist/treesearch/bfts_utils.py
 import heapq
 import logging
 import re
+import math
 from collections import defaultdict
 from typing import List, Optional, Set, Tuple, Dict, Any
 from datetime import UTC, datetime
@@ -52,6 +53,61 @@ DEFAULT_WEIGHTS = {
     "evidenceSupport": 0.10,
     "graphGrounding": 0.10,
 }
+
+# --- P0: Semantic token-overlap helpers (replaces keyword heuristics) ---
+
+_STOPWORDS: Set[str] = {
+    "the", "a", "an", "and", "or", "of", "in", "to", "for", "with",
+    "on", "at", "by", "from", "that", "this", "it", "is", "are", "be",
+    "we", "our", "can", "has", "have", "not", "but", "as", "its",
+    "using", "based", "approach", "method", "model", "proposed",
+    "novel", "new", "improve", "via", "towards", "beyond",
+}
+
+def _token_ngrams(text: str, n: int = 2) -> Set[str]:
+    """Extract overlapping n-gram token sets from text for semantic comparison."""
+    tokens = re.findall(r"[a-zA-Z][a-zA-Z0-9]{2,}|[\u4e00-\u9fff]+", text.lower())
+    tokens = [t for t in tokens if t not in _STOPWORDS]
+    if not tokens:
+        return set()
+    ngrams: Set[str] = set()
+    for i in range(len(tokens) - n + 1):
+        ngrams.add(" ".join(tokens[i:i + n]))
+    # Also include unigrams for fallback coverage
+    if n == 2:
+        ngrams.update(tokens)
+    return ngrams
+
+
+def _semantic_overlap(text_a: str, text_b: str) -> float:
+    """Compute semantic overlap score (0-1) using 2-gram token Jaccard.
+
+    This is a fast, deterministic proxy for semantic similarity that works
+    across languages (CJK + English) and requires no embedding model.
+
+    Returns a float in [0, 1].
+    """
+    if not text_a or not text_b:
+        return 0.0
+    ng_a = _token_ngrams(text_a)
+    ng_b = _token_ngrams(text_b)
+    if not ng_a or not ng_b:
+        return 0.0
+    intersection = len(ng_a & ng_b)
+    union = len(ng_a | ng_b)
+    return intersection / union if union > 0 else 0.0
+
+
+def _normalized_hypothesis(node: Any) -> str:
+    """Extract a normalized text representation of the idea for scoring."""
+    parts = []
+    if node.title:
+        parts.append(node.title)
+    if node.hypothesis:
+        parts.append(node.hypothesis)
+    if node.abstract:
+        parts.append(node.abstract[:300])
+    return " ".join(parts)
 
 
 def _build_literature_context(structured_papers: List[StructuredPaper], limit: int = 8) -> str:
@@ -117,7 +173,10 @@ def _path_seed_to_idea_node(
             ChatMessage(role="system", content=BFTS_SEED_SYSTEM),
             ChatMessage(role="user", content=user_prompt),
         ]
-        response = client.chat(messages=messages, model=model, max_tokens=1500)
+        response = client.chat(
+            messages=messages, model=model, max_tokens=1500,
+            structured_output=True,
+        )
 
         # Parse the idea JSON from response
         import json, re
@@ -145,7 +204,9 @@ def _path_seed_to_idea_node(
             title=idea_data.get("title", f"Idea from {seed.templateType}"),
             hypothesis=idea_data.get("hypothesis", idea_data.get("problem", "")),
             abstract=idea_data.get("abstract", ""),
+            approach=idea_data.get("approach", ""),
             experiments=idea_data.get("requiredExperiments", idea_data.get("experiments", [])),
+            baselines=idea_data.get("baselines", []),
             risks=idea_data.get("risks", []),
         )
         return node
@@ -234,7 +295,7 @@ def _nodes_to_candidates(
             evidenceSummary=graph_evidence.evidenceSummary,
         )
 
-        proposed_method = (node.abstract or "").strip()
+        proposed_method = (node.approach or node.abstract or "").strip()
         experiment_summaries = []
         for experiment in node.experiments or []:
             if isinstance(experiment, dict):
@@ -295,6 +356,7 @@ def _nodes_to_candidates(
                     description=e.get("description", "") if isinstance(e, dict) else "",
                     metrics=e.get("metrics", []) if isinstance(e, dict) else [],
                     datasets=e.get("datasets", []) if isinstance(e, dict) else [],
+                    stopConditions=e.get("stopConditions", []) if isinstance(e, dict) else [],
                 )
                 for e in (node.experiments or [])
             ],
@@ -304,10 +366,12 @@ def _nodes_to_candidates(
                     description=e.get("description", "") if isinstance(e, dict) else "",
                     metrics=e.get("metrics", []) if isinstance(e, dict) else [],
                     datasets=e.get("datasets", []) if isinstance(e, dict) else [],
+                    stopConditions=e.get("stopConditions", []) if isinstance(e, dict) else [],
                 )
                 for e in (node.experiments or [])
             ],
             expectedMetrics=[],
+            baselines=node.baselines,
             draftPlan=DraftPlan(
                 researchQuestion=node.hypothesis or "",
                 hypothesis=node.hypothesis or "",
@@ -466,6 +530,13 @@ class BFTSSearchTree:
 
                 child = self._expand_node(parent, max_reflection)
                 if child:
+                    # P0: dedup pruning — skip near-duplicate ideas
+                    if self._is_duplicate(child):
+                        child.status = "pruned"
+                        self.nodes.append(child)  # keep for tracking
+                        parent.isExpanded = True
+                        continue
+
                     self._add_child(parent, child)
                     expansion_count += 1
 
@@ -533,7 +604,9 @@ class BFTSSearchTree:
                 title=result_node.title,
                 hypothesis=result_node.hypothesis,
                 abstract=result_node.abstract,
+                approach=result_node.approach,
                 experiments=result_node.experiments,
+                baselines=result_node.baselines,
                 risks=result_node.risks,
                 noveltyScore=result_node.noveltyScore,
                 feasibilityScore=result_node.feasibilityScore,
@@ -559,6 +632,31 @@ class BFTSSearchTree:
         heapq.heappush(
             self._beam, (-child.combinedScore, child.nodeId, child.depth)
         )
+
+    def _is_duplicate(self, new_node: IdeaNode) -> bool:
+        """P0: Check if new_node is a near-duplicate of any existing node.
+
+        Uses n-gram Jaccard similarity on title+hypothesis. Skips the node
+        if similarity exceeds pruneDuplicateThreshold (default 0.82).
+        """
+        threshold = getattr(self.config, 'pruneDuplicateThreshold', 0.82) or 0.82
+        new_text = _normalized_hypothesis(new_node)
+        if not new_text:
+            return False
+
+        existing_nodes = [n for n in self.nodes if n.nodeId != new_node.nodeId]
+        for existing in existing_nodes:
+            existing_text = _normalized_hypothesis(existing)
+            if not existing_text:
+                continue
+            sim = _semantic_overlap(new_text, existing_text)
+            if sim > threshold:
+                logger.info(
+                    f"BFTS: pruning duplicate node (sim={sim:.3f} > "
+                    f"threshold={threshold}): '{new_node.title[:50] if new_node.title else '?'}...'"
+                )
+                return True
+        return False
 
     def _probe_topic_terms(self, node: IdeaNode) -> List[str]:
         """Extract topic-bearing terms for targeted literature probes."""
@@ -884,38 +982,69 @@ class BFTSSearchTree:
         ) * 10.0  # Scale back to 0-10
 
     def _estimate_novelty(self, node: IdeaNode, prior: float) -> float:
-        """Estimate novelty: heuristic based on hypothesis text."""
-        import re
-        # Check for novel-sounding keywords
-        novel_kw = ["novel", "new", "unexplored", "first", "towards", "beyond"]
-        hyp = (node.hypothesis or "").lower()
-        title = (node.title or "").lower()
-        kw_score = sum(1 for kw in novel_kw if kw in hyp or kw in title)
-        text_score = min(1.0, kw_score / 3.0)
-        return min(10.0, max(0.0, (prior + text_score) * 5.0))
+        """Estimate novelty: semantic overlap with seed_query (lower overlap = more novel).
+
+        P0 improvement: replaces keyword matching ("novel", "new", ...) with
+        n-gram semantic overlap against the seed. Lower overlap means the idea
+        spans vocabulary not already in the query — a proxy for genuine novelty.
+        """
+        seed_text = self.seed_query or ""
+        idea_text = _normalized_hypothesis(node)
+        overlap = _semantic_overlap(seed_text, idea_text)
+
+        # Score inversion: high overlap → low novelty, low overlap → high novelty
+        # Map [0, 1] overlap → [2, 10] novelty (anchored at 6 for moderate overlap ~0.4)
+        novelty_from_overlap = max(2.0, min(10.0, 10.0 - overlap * 8.0))
+
+        # Blend with path-seed prior (30% prior, 70% overlap-based)
+        return 0.3 * (prior * 10.0) + 0.7 * novelty_from_overlap
 
     def _estimate_feasibility(self, node: IdeaNode, prior: float) -> float:
-        """Estimate feasibility: based on experiment count and concreteness."""
+        """Estimate feasibility: experiment concreteness + literature grounding.
+
+        P0 improvement: adds literature probe evidence (actual paper support)
+        alongside experiment count.
+        """
         exp_count = len(node.experiments or [])
-        has_concrete_experiments = exp_count >= 1
         score = prior * 10.0
-        if has_concrete_experiments:
-            score += min(2.0, exp_count * 0.5)
+        if exp_count >= 2:
+            score += 2.5
+        elif exp_count >= 1:
+            score += 1.5
+        # Bonus for literature-probe backing (evidence from actual papers)
+        if node.literatureProbeIds:
+            score += min(1.5, len(node.literatureProbeIds) * 0.3)
         return min(10.0, max(0.0, score))
 
     def _estimate_impact(self, node: IdeaNode) -> float:
-        """Estimate impact: based on hypothesis ambition."""
-        hyp = (node.hypothesis or "").lower()
-        impact_kw = ["improving", "outperforms", "state-of-the-art", "SOTA", "significant"]
-        kw_score = sum(1 for kw in impact_kw if kw in hyp)
-        return min(10.0, 5.0 + kw_score * 1.5)
+        """Estimate impact: hypothesis specificity and reference depth.
+
+        P0 improvement: replaces keyword matching ("improving", "SOTA", ...)
+        with a composite of semantic clarity and citation anchoring.
+        """
+        hyp = (node.hypothesis or "")
+        hyp_len = len(hyp.split())
+        # Longer, more detailed hypotheses tend to be more impactful
+        length_score = min(1.0, hyp_len / 60.0) * 3.0
+        # References indicate domain grounding
+        ref_count = len(node.references or []) if hasattr(node, 'references') else 0
+        ref_score = min(2.0, ref_count * 0.4)
+        # Base
+        return min(10.0, 5.0 + length_score + ref_score)
 
     def _estimate_specificity(self, node: IdeaNode) -> float:
-        """Estimate specificity: 0-1, based on title concreteness."""
+        """Estimate specificity: concept density in title and hypothesis.
+
+        P0 improvement: replaces capital-letter heuristic with n-gram
+        concept density — counts unique semantic tokens normalized by length.
+        """
         title = node.title or ""
-        # Count specific nouns / named entities (heuristic)
-        words = re.findall(r'\b[A-Z][a-z]{2,}\b', title)
-        return min(1.0, len(words) / 5.0)
+        hyp = node.hypothesis or ""
+        combined = f"{title} {hyp}"
+        tokens = re.findall(r"[a-zA-Z][a-zA-Z0-9]{2,}|[\u4e00-\u9fff]+", combined.lower())
+        unique_meaningful = {t for t in tokens if t not in _STOPWORDS}
+        density = len(unique_meaningful) / max(1, len(tokens)) if tokens else 0
+        return min(1.0, density * 1.5)
 
     def _estimate_evidence_support(self, node: IdeaNode) -> float:
         """Estimate evidence support from path seed prior plus reflection/probe evidence."""

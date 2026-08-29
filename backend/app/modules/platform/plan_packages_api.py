@@ -5,7 +5,9 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
+from app.core.user_context import call_with_current_context
 from app.models.plan_package import PlanPackage, PlanPackageHandoff, PlanPackagePresentation, PlanQualityGate
 from app.services.plan_package_service import (
     PlanPackageConflictError,
@@ -86,15 +88,18 @@ async def create_plan_package_from_idea_session(
 ) -> CreatePlanPackageResponse:
     service = get_plan_package_service()
     try:
-        package = service.create_from_idea_session(
-            idea_session_id,
-            candidate_id=request.candidateId,
-            max_stages=request.maxStages,
-            max_steps_per_stage=request.maxStepsPerStage,
-            user_notes=request.userNotes,
-            generation_mode=request.generationMode,
-            reviewer_mode=request.reviewerMode,
-            max_repair_rounds=request.maxRepairRounds,
+        package = await run_in_threadpool(
+            call_with_current_context(
+                service.create_from_idea_session,
+                idea_session_id,
+                candidate_id=request.candidateId,
+                max_stages=request.maxStages,
+                max_steps_per_stage=request.maxStepsPerStage,
+                user_notes=request.userNotes,
+                generation_mode=request.generationMode,
+                reviewer_mode=request.reviewerMode,
+                max_repair_rounds=request.maxRepairRounds,
+            )
         )
         return CreatePlanPackageResponse(
             packageId=package.packageId,
@@ -229,7 +234,9 @@ async def get_plan_package_presentation_by_idea_session(idea_session_id: str) ->
 async def validate_plan_package(package_id: str) -> ValidatePlanPackageResponse:
     service = get_plan_package_service()
     try:
-        package = service.validate(package_id)
+        package = await run_in_threadpool(
+            call_with_current_context(service.validate, package_id)
+        )
         return ValidatePlanPackageResponse(
             packageId=package.packageId,
             qualityGate=package.qualityGate,
@@ -278,7 +285,13 @@ async def review_plan_package(
     service = get_plan_package_service()
     try:
         reviewer_mode = request.reviewerMode if request else "hybrid"
-        return service.run_review(package_id, reviewer_mode=reviewer_mode)
+        return await run_in_threadpool(
+            call_with_current_context(
+                service.run_review,
+                package_id,
+                reviewer_mode=reviewer_mode,
+            )
+        )
     except PlanPackageNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
 
@@ -294,14 +307,17 @@ async def revise_plan_package(
 ) -> PlanPackage:
     service = get_plan_package_service()
     try:
-        return service.revise(
-            package_id,
-            generation_mode=request.generationMode,
-            max_stages=request.maxStages,
-            max_steps_per_stage=request.maxStepsPerStage,
-            max_repair_rounds=request.maxRepairRounds,
-            target_sections=request.targetSections,
-            reviewer_mode=request.reviewerMode,
+        return await run_in_threadpool(
+            call_with_current_context(
+                service.revise,
+                package_id,
+                generation_mode=request.generationMode,
+                max_stages=request.maxStages,
+                max_steps_per_stage=request.maxStepsPerStage,
+                max_repair_rounds=request.maxRepairRounds,
+                target_sections=request.targetSections,
+                reviewer_mode=request.reviewerMode,
+            )
         )
     except PlanPackageNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
@@ -325,7 +341,13 @@ async def approve_plan_package(
 ) -> PlanPackage:
     service = get_plan_package_service()
     try:
-        return service.approve(package_id, reviewer_mode=request.reviewerMode if request else None)
+        return await run_in_threadpool(
+            call_with_current_context(
+                service.approve,
+                package_id,
+                reviewer_mode=request.reviewerMode if request else None,
+            )
+        )
     except PlanPackageNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
     except PlanPackageConflictError as exc:

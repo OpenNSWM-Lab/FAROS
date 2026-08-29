@@ -20,6 +20,8 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from app.core.user_context import sanitized_subprocess_env
+
 from .base import SandboxBackend
 from .models import SandboxResult, ResourceUsage
 
@@ -58,6 +60,7 @@ class SubprocessSandbox(SandboxBackend):
         self._max_timeout = max_timeout
         self._log_output_limit = log_output_limit
         self._workspaces: dict[str, str] = {}  # sandbox_id -> workspace_path
+        self._source_workspaces: dict[str, str] = {}
 
     # ---- SandboxBackend interface ----
 
@@ -91,6 +94,7 @@ class SubprocessSandbox(SandboxBackend):
             sandbox_dir = workspace_path
 
         self._workspaces[sandbox_id] = sandbox_dir
+        self._source_workspaces[sandbox_id] = workspace_path
         logger.info("SubprocessSandbox created: %s -> %s", sandbox_id, sandbox_dir)
         return sandbox_id
 
@@ -126,8 +130,7 @@ class SubprocessSandbox(SandboxBackend):
         execution_command = self._resolve_python_command(command)
 
         # Build environment
-        proc_env = os.environ.copy()
-        proc_env["PYTHONUNBUFFERED"] = "1"
+        proc_env = sanitized_subprocess_env({"PYTHONUNBUFFERED": "1"})
         if env:
             proc_env.update(env)
 
@@ -165,6 +168,7 @@ class SubprocessSandbox(SandboxBackend):
 
             stdout = self._safe_decode(stdout_bytes)
             stderr = self._safe_decode(stderr_bytes)
+            self._sync_artifacts_back(sandbox_id)
 
             return SandboxResult(
                 exit_code=proc.returncode or 0,
@@ -217,6 +221,7 @@ class SubprocessSandbox(SandboxBackend):
 
     async def teardown(self, sandbox_id: str) -> None:
         workspace = self._workspaces.pop(sandbox_id, None)
+        self._source_workspaces.pop(sandbox_id, None)
         if workspace and workspace.endswith(sandbox_id):
             try:
                 shutil.rmtree(workspace, ignore_errors=True)
@@ -287,6 +292,38 @@ class SubprocessSandbox(SandboxBackend):
                 # Skip symlinks, sockets, etc.
             except (OSError, shutil.Error) as exc:
                 logger.debug("Skipped %s: %s", src_path, exc)
+
+    def _sync_artifacts_back(self, sandbox_id: str) -> None:
+        """Copy declared experiment outputs from the temporary workspace."""
+
+        workspace = self._workspaces.get(sandbox_id)
+        source = self._source_workspaces.get(sandbox_id)
+        if not workspace or not source or os.path.abspath(workspace) == os.path.abspath(source):
+            return
+
+        allowed_files = {
+            "metrics.json",
+            "results.json",
+            "evaluation_records.json",
+            "experiment_report.md",
+        }
+        allowed_dirs = {"artifacts", "figures", "outputs", "results", "logs"}
+        for name in allowed_files:
+            src = Path(workspace) / name
+            if src.is_file():
+                dst = Path(source) / name
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
+        for relative_name in ("data/frozen_benchmark.json",):
+            src = Path(workspace) / relative_name
+            if src.is_file():
+                dst = Path(source) / relative_name
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
+        for name in allowed_dirs:
+            src = Path(workspace) / name
+            if src.is_dir():
+                shutil.copytree(src, Path(source) / name, dirs_exist_ok=True)
 
     @staticmethod
     def _safe_decode(data: bytes) -> str:

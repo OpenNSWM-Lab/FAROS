@@ -1,0 +1,76 @@
+{
+  "schemaVersion": "peerqa_track1b_fresh_validation_protocol_v1",
+  "dataset": "PeerQA fresh external validation",
+  "lockedAt": "2026-08-28T00:32:11+08:00",
+  "paperCount": 20,
+  "reviewerQuestionCount": 43,
+  "sourceCount": 7,
+  "selection": {
+    "maxPapersPerSource": 4,
+    "excludedPreviouslyUsedPaperCount": 20,
+    "developmentPapersInThisSplit": 0,
+    "selectionRule": "Rank answerable PeerQA papers, cap each source group, and exclude every paper in the original FAROS pilot before inspecting predictions."
+  },
+  "lockedFiles": {
+    "samples": {
+      "path": "experiments/reviewx_eval/external_data/peerqa/faros_fresh_validation/held_out_samples.jsonl",
+      "sha256": "acf9e245c3d47a6d1ad1ca98b36efa420c54cc06609a952bb79bcf29a56b1a26"
+    },
+    "references": {
+      "path": "experiments/reviewx_eval/external_data/peerqa/faros_fresh_validation/held_out_references.jsonl",
+      "sha256": "27a7c95a89b42a4b000397220a7ed76039d5a5bb87e669b7269bca455e4937bc"
+    },
+    "excludedPilotSamples": {
+      "path": "experiments/reviewx_eval/external_data/peerqa/faros_pilot/samples.jsonl",
+      "sha256": "19c95fa8393e47b5990ab4d28bb096386b0175d2ca0f1c992938369120cd922a"
+    }
+  },
+  "providerName": "qwen",
+  "model": "qwen3.7-plus-2026-05-26",
+  "temperature": 0.2,
+  "repetitions": 3,
+  "selectionSeed": 20260711,
+  "shuffleSeed": 20260828,
+  "automaticAlignmentThreshold": 0.12,
+  "fairComparisonMaxFindingsPerMethod": 5,
+  "maxTotalTokensPerPaper": 4000,
+  "baselineBudget": {
+    "maxInputCharacters": 6800,
+    "maxOutputTokens": 1600
+  },
+  "methods": [
+    "qwen_single_prompt_matched_budget",
+    "qwen_structured_rubric_matched_budget",
+    "reviewx_balanced_qwen37_matched_budget"
+  ],
+  "protocolAmendments": [
+    {
+      "at": "2026-08-28T00:43:00+08:00",
+      "type": "clerical_method_id_correction",
+      "reason": "Before opening validation scores, replace two descriptive baseline names with the immutable method IDs emitted by their runners. No prompt, model, sample, threshold, repetition, budget, or analysis setting changed."
+    },
+    {
+      "at": "2026-08-28T00:49:00+08:00",
+      "type": "pre_score_secondary_analysis_declaration",
+      "reason": "Before opening validation scores, declare an unequal-output full-audit analysis as an operational upper bound. The frozen Top-5 analysis remains the only fair method comparison."
+    }
+  ],
+  "primaryMetric": "expert-question coverage after blind human annotation",
+  "secondaryProxyMetrics": [
+    "lexical evidence-alignment candidate rate",
+    "best-match score",
+    "latency",
+    "total tokens",
+    "run failure rate"
+  ],
+  "secondaryOperationalAnalysis": {
+    "name": "ReviewX full-audit coverage upper bound",
+    "reviewxFindingLimit": null,
+    "baselineFindingLimit": 5,
+    "fairMethodComparison": false,
+    "allowedUse": "Characterize the high-recall audit workflow and the cost of presenting the complete local finding set.",
+    "prohibitedUse": "Do not use this unequal-output analysis to claim method superiority."
+  },
+  "analysisRule": "Do not tune prompts, thresholds, ranking, or budgets after opening predictions from this split. Report all failures and confidence intervals.",
+  "reportingBoundary": "Automatic alignment is a retrieval-oriented proxy for candidate generation, not expert recall or review correctness."
+}

@@ -4,11 +4,17 @@ Idea Generation API Endpoints
 Provides endpoints for managing idea generation sessions.
 """
 
-from typing import Optional, List
+import json
+import logging
+import threading
+import uuid
+from typing import Any, Dict, Optional, List
 from datetime import datetime
 from fastapi import APIRouter, HTTPException, status, BackgroundTasks, Query
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
+from app.core.user_context import call_with_current_context, get_current_user_id
 from app.modules.idea.contracts import (
     IdeaSession,
     IdeaSessionStatus,
@@ -34,7 +40,7 @@ from app.modules.idea.storage import (
     get_probe_literature_storage,
 )
 from app.core.settings import get_settings
-import logging
+from app.modules.idea.seed_coach import build_seed_coach_prompt, parse_seed_suggestions
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +62,7 @@ class CreateSessionRequest(BaseModel):
     constraints: Optional[List[str]] = None
     mustCiteList: Optional[List[str]] = None
     searchBudget: Optional[int] = Field(default=None, ge=10, le=500)
-    maxReviewIterations: int = Field(default=2, ge=1, le=5)
+    maxReviewIterations: int = Field(default=3, ge=1, le=5)
 
 
 class SessionResponse(BaseModel):
@@ -475,6 +481,28 @@ async def start_session(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e)
+        )
+
+
+@router.post(
+    "/sessions/{session_id}/resume",
+    response_model=SessionResponse,
+    summary="Resume Idea Session",
+    description="Resume a session waiting for evidence or approved ideas.",
+)
+async def resume_session(
+    session_id: str,
+    background_tasks: BackgroundTasks,
+) -> SessionResponse:
+    service = get_idea_service()
+    try:
+        session = service.resume_session(session_id)
+        background_tasks.add_task(service.run_pipeline, session_id)
+        return _session_to_response(session)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
         )
 
 
@@ -1096,4 +1124,585 @@ async def select_candidate(
         ok=True,
         candidateId=request.candidateId,
         selectedCandidateId=request.candidateId,
+    )
+
+
+# =============================================================================
+# Seed Query Pre-Check Endpoint
+# =============================================================================
+
+
+class SeedCheckRequest(BaseModel):
+    """Request to pre-check a seed query before running the full pipeline."""
+    seedQuery: str = Field(..., min_length=3)
+    paperType: str = Field(default="algorithm")
+
+
+class SeedCheckResponse(BaseModel):
+    """Response for seed query pre-check."""
+    paperCount: int
+    isSufficient: bool
+    threshold: int
+    rawPaperCount: int = 0
+    alignedPaperCount: int = 0
+    topicTerms: List[str] = []
+    generalizedQuery: Optional[str] = None
+    suggestedQuery: Optional[str] = None
+    suggestedQueries: List[dict] = []
+    suggestionProvider: Optional[str] = None
+    suggestionModel: Optional[str] = None
+    diagnosisCode: Optional[str] = None
+    suggestion: Optional[str] = None
+    topPaperTitles: List[str] = []
+
+
+class SeedSuggestionRequest(BaseModel):
+    """Ask Qwen to turn a rough interest into search-ready research seeds."""
+
+    userIdea: str = Field(default="", max_length=1000)
+    paperType: str = Field(default="algorithm")
+    count: int = Field(default=3, ge=2, le=4)
+    diagnosisCode: Optional[str] = None
+
+
+class SeedSuggestionItem(BaseModel):
+    titleZh: str
+    titleEn: str
+    query: str
+    rationaleZh: str = ""
+    rationaleEn: str = ""
+
+
+class SeedSuggestionResponse(BaseModel):
+    providerName: str
+    model: str
+    suggestions: List[SeedSuggestionItem]
+
+
+class SeedSuggestionJobResponse(BaseModel):
+    jobId: str
+    status: str
+    result: Optional[SeedSuggestionResponse] = None
+    error: Optional[str] = None
+
+
+_seed_suggestion_jobs: Dict[str, Dict[str, Any]] = {}
+_seed_suggestion_jobs_lock = threading.Lock()
+
+
+def _request_qwen_seed_suggestions(
+    *,
+    user_idea: str,
+    paper_type: str,
+    count: int = 3,
+    diagnosis_code: Optional[str] = None,
+) -> SeedSuggestionResponse:
+    """Call the current user's Qwen account and validate its topic suggestions."""
+
+    from app.llm.provider_client import ChatMessage, ProviderError, get_provider_client
+
+    settings = get_settings()
+    provider_name = "qwen"
+    if not settings.get_api_key(provider_name):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Qwen API key is not configured for this account. Open Settings > LLM Providers and configure Qwen first.",
+        )
+
+    model_name = settings.get_active_model(provider_name)
+    prompt = build_seed_coach_prompt(
+        user_idea=user_idea,
+        paper_type=paper_type,
+        count=count,
+        diagnosis=diagnosis_code,
+    )
+    client = get_provider_client(provider_name)
+    response = None
+    suggestions: List[dict] = []
+    for attempt in range(2):
+        attempt_prompt = prompt
+        if attempt:
+            attempt_prompt += (
+                "\nYour previous response failed automatic validation because fewer than two queries "
+                "had 10+ English words and explicit evaluation criteria. Rewrite all suggestions, "
+                "follow the schema exactly, and include the literal phrase 'evaluated by' in every query.\n"
+                f"Previous response:\n{response.text[:2500] if response else ''}"
+            )
+        try:
+            response = client.chat(
+                [ChatMessage(role="user", content=attempt_prompt)],
+                model=model_name,
+                temperature=0.55 if attempt else 0.65,
+                max_tokens=1400,
+                structured_output=True,
+            )
+        except ProviderError as exc:
+            logger.warning("Qwen seed coach request failed: %s", exc)
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Qwen could not generate topic suggestions. Check the Qwen key/model in Settings and try again.",
+            ) from exc
+
+        suggestions = parse_seed_suggestions(response.text, limit=count)
+        if len(suggestions) >= 2:
+            break
+        logger.warning(
+            "Qwen seed coach validation failed on attempt %s: %s",
+            attempt + 1,
+            response.text[:500],
+        )
+
+    if len(suggestions) < 2 or response is None:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Qwen returned an invalid topic format. Please try again.",
+        )
+    return SeedSuggestionResponse(
+        providerName=provider_name,
+        model=response.model or model_name,
+        suggestions=[SeedSuggestionItem(**item) for item in suggestions],
+    )
+
+
+@router.post(
+    "/seed-suggestions",
+    response_model=SeedSuggestionResponse,
+    summary="Generate Research Topic Suggestions with Qwen",
+)
+async def seed_suggestions(request: SeedSuggestionRequest) -> SeedSuggestionResponse:
+    """Return two to four novice-friendly, search-ready research topics."""
+
+    return await run_in_threadpool(
+        call_with_current_context(
+            _request_qwen_seed_suggestions,
+            user_idea=request.userIdea.strip(),
+            paper_type=request.paperType,
+            count=request.count,
+            diagnosis_code=request.diagnosisCode,
+        )
+    )
+
+
+def _run_seed_suggestion_job(job_id: str, request: SeedSuggestionRequest) -> None:
+    with _seed_suggestion_jobs_lock:
+        job = _seed_suggestion_jobs.get(job_id)
+        if not job:
+            return
+        job["status"] = "running"
+
+    try:
+        result = _request_qwen_seed_suggestions(
+            user_idea=request.userIdea.strip(),
+            paper_type=request.paperType,
+            count=request.count,
+            diagnosis_code=request.diagnosisCode,
+        )
+    except HTTPException as exc:
+        error = str(exc.detail)
+        with _seed_suggestion_jobs_lock:
+            job = _seed_suggestion_jobs.get(job_id)
+            if job:
+                job.update(status="failed", error=error)
+        return
+    except Exception as exc:
+        logger.warning("Qwen seed suggestion job failed: %s", exc, exc_info=True)
+        with _seed_suggestion_jobs_lock:
+            job = _seed_suggestion_jobs.get(job_id)
+            if job:
+                job.update(status="failed", error="Qwen topic recommendation failed. Check the model settings and retry.")
+        return
+
+    with _seed_suggestion_jobs_lock:
+        job = _seed_suggestion_jobs.get(job_id)
+        if job:
+            job.update(status="completed", result=result, error=None)
+
+
+@router.post(
+    "/seed-suggestion-jobs",
+    response_model=SeedSuggestionJobResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Start a Qwen Research Topic Suggestion Job",
+)
+async def create_seed_suggestion_job(request: SeedSuggestionRequest) -> SeedSuggestionJobResponse:
+    """Start topic coaching without holding a fragile public HTTP connection open."""
+
+    job_id = f"seedjob_{uuid.uuid4().hex[:12]}"
+    with _seed_suggestion_jobs_lock:
+        if len(_seed_suggestion_jobs) >= 100:
+            completed_ids = [
+                existing_id
+                for existing_id, job in _seed_suggestion_jobs.items()
+                if job.get("status") in {"completed", "failed"}
+            ]
+            for existing_id in completed_ids[:50]:
+                _seed_suggestion_jobs.pop(existing_id, None)
+        _seed_suggestion_jobs[job_id] = {
+            "ownerId": get_current_user_id(),
+            "status": "pending",
+            "result": None,
+            "error": None,
+        }
+
+    worker = threading.Thread(
+        target=call_with_current_context(_run_seed_suggestion_job, job_id, request),
+        daemon=True,
+        name=f"seed-coach-{job_id[-6:]}",
+    )
+    worker.start()
+    return SeedSuggestionJobResponse(jobId=job_id, status="pending")
+
+
+@router.get(
+    "/seed-suggestion-jobs/{job_id}",
+    response_model=SeedSuggestionJobResponse,
+    summary="Get a Qwen Research Topic Suggestion Job",
+)
+async def get_seed_suggestion_job(job_id: str) -> SeedSuggestionJobResponse:
+    with _seed_suggestion_jobs_lock:
+        job = _seed_suggestion_jobs.get(job_id)
+        if not job or job.get("ownerId") != get_current_user_id():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Topic suggestion job not found")
+        return SeedSuggestionJobResponse(
+            jobId=job_id,
+            status=str(job.get("status") or "pending"),
+            result=job.get("result"),
+            error=job.get("error"),
+        )
+
+
+@router.post(
+    "/seed-check",
+    response_model=SeedCheckResponse,
+    summary="Pre-check Seed Query",
+    description=(
+        "Quickly search for papers matching the seed query and assess whether "
+        "enough literature exists. If not, generate a generalized query suggestion."
+    ),
+)
+async def seed_check(request: SeedCheckRequest) -> SeedCheckResponse:
+    """Pre-check a seed query before committing to a full pipeline run."""
+    from collections import Counter
+
+    from app.services.search_service import get_search_service
+    from app.modules.idea.evidence_relevance import (
+        EvidenceTier,
+        assess_search_result,
+        build_topic_intent_profile,
+        diagnose_literature_failure,
+    )
+    from app.modules.idea.service import _evaluate_paper_quality_gate, _topic_terms_from_seed
+
+    threshold = int(__import__("os").getenv("FAROS_PAPER_GATE_MIN_PAPERS", "4"))
+    seed = request.seedQuery.strip()
+    if len(seed) < 3:
+        return SeedCheckResponse(
+            paperCount=0,
+            isSufficient=False,
+            threshold=threshold,
+        )
+
+    # 1. Quick search across all sources
+    search_service = get_search_service()
+    try:
+        results = await run_in_threadpool(
+            call_with_current_context(search_service.search, seed, limit=10)
+        )
+    except Exception as exc:
+        logger.warning("seed-check search failed: %s", exc)
+        results = []
+
+    raw_paper_count = len(results)
+    topic_terms = _topic_terms_from_seed(seed)
+    role_queries = {
+        "domain": [seed],
+        "task": [seed],
+        "method": [f"{seed} methods techniques algorithms"],
+        "evaluation": [f"{seed} evaluation benchmark metrics limitations"],
+    }
+    profile = build_topic_intent_profile(
+        seed=seed,
+        domain="",
+        role_queries=role_queries,
+    )
+    eligible_results = []
+    rejected_results = []
+    for result in results:
+        assessment = assess_search_result(result, profile)
+        result.evidence_tier = assessment.tier.value
+        result.decisive_anchors = list(assessment.decisive_anchors)
+        result.relevance_components = dict(assessment.score_components)
+        result.rejection_reason = assessment.rejection_reason
+        result.relevance_score = assessment.score
+        if assessment.tier is EvidenceTier.REJECTED:
+            rejected_results.append(result)
+        else:
+            eligible_results.append(result)
+
+    quality_gate = _evaluate_paper_quality_gate(
+        seed=seed,
+        domain="",
+        papers=eligible_results,
+        stage="seedCheck",
+        extra_terms=[seed],
+        paper_type=request.paperType,
+    )
+    paper_count = int(quality_gate.get("paperCount", len(eligible_results)) or 0)
+    aligned_paper_count = int(quality_gate.get("alignedPaperCount", 0) or 0)
+    top_titles = [getattr(result, "title", "") for result in eligible_results[:5]]
+
+    if quality_gate.get("passed", False):
+        return SeedCheckResponse(
+            paperCount=paper_count,
+            isSufficient=True,
+            threshold=threshold,
+            rawPaperCount=raw_paper_count,
+            alignedPaperCount=aligned_paper_count,
+            topicTerms=topic_terms[:12],
+            topPaperTitles=top_titles,
+        )
+
+    rejection_reason_counts = Counter(
+        result.rejection_reason for result in rejected_results
+    )
+    diagnosis = diagnose_literature_failure(
+        seed=seed,
+        raw_result_count=raw_paper_count,
+        unique_result_count=raw_paper_count,
+        gate=quality_gate,
+        rejection_reason_counts=rejection_reason_counts,
+        seed_anchors=profile.seed_anchors,
+    )
+    diagnosis_code = str(diagnosis.get("code", "evidence_quality_failed"))
+
+    # Qwen coaching runs through the short-polling job endpoint so a slow model
+    # response cannot hold this pre-check request open.
+    suggested_queries: List[dict] = []
+    suggestion_provider = None
+    suggestion_model = None
+    generalized_query = None
+    suggestion = (
+        f"The search returned {raw_paper_count} raw papers, but only {paper_count} passed relevance filtering. "
+        "Qwen topic coaching has been started separately; choose one of its search-ready alternatives."
+    )
+
+    return SeedCheckResponse(
+        paperCount=paper_count,
+        isSufficient=False,
+        threshold=threshold,
+        rawPaperCount=raw_paper_count,
+        alignedPaperCount=aligned_paper_count,
+        topicTerms=topic_terms[:12],
+        generalizedQuery=generalized_query,
+        suggestedQuery=generalized_query,
+        suggestedQueries=suggested_queries,
+        suggestionProvider=suggestion_provider,
+        suggestionModel=suggestion_model,
+        diagnosisCode=diagnosis_code,
+        suggestion=suggestion,
+        topPaperTitles=top_titles,
+    )
+
+
+# =============================================================================
+# Research Dossier Endpoints (Public Contract)
+# =============================================================================
+
+class BuildDossierRequest(BaseModel):
+    """Request to build a ResearchDossier from an existing session."""
+    sessionId: str = Field(..., description="Idea session ID")
+    runId: Optional[str] = Field(default=None, description="Override run ID")
+    mode: str = Field(default="deep", description="coverage or deep")
+    questionId: Optional[str] = Field(default=None)
+    questionText: Optional[str] = Field(default=None)
+    domainHint: Optional[str] = None
+
+
+class BuildDossierResponse(BaseModel):
+    """Response containing the built ResearchDossier."""
+    dossier: Dict[str, Any]
+    degradationState: Optional[Dict[str, Any]] = None
+
+
+@router.post(
+    "/dossier",
+    response_model=BuildDossierResponse,
+    summary="Build a ResearchDossier from a completed session",
+)
+def build_dossier(request: BuildDossierRequest):
+    """Build a contract-compliant ResearchDossier from an idea session."""
+    from app.contracts import RunMode, ScientificQuestion
+    from app.modules.idea.research_dossier import build_research_dossier
+    from app.modules.idea.budget_modes import BudgetConfig, detect_degradation
+
+    service = get_idea_service()
+    session = service.session_storage.get(request.sessionId)
+    if not session:
+        raise HTTPException(status_code=404, detail=f"Session {request.sessionId} not found")
+
+    candidates = service.get_candidates(request.sessionId)
+    literature = service.get_literature(request.sessionId)
+
+    if not candidates:
+        raise HTTPException(status_code=400, detail="Session has no candidates")
+
+    mode = RunMode.DEEP if request.mode == "deep" else RunMode.COVERAGE
+    budget = BudgetConfig.from_mode(mode)
+
+    # Build question
+    question = None
+    if request.questionText:
+        question = ScientificQuestion(
+            id=request.questionId or f"question_{request.sessionId}",
+            text=request.questionText,
+            domainHint=request.domainHint,
+        )
+
+    # Detect degradation
+    degradation = detect_degradation(
+        api_available=True,
+        search_result_count=len(literature),
+        min_evidence_threshold=3,
+    )
+
+    dossier = build_research_dossier(
+        session=session,
+        candidates=candidates,
+        literature=literature,
+        question=question,
+        run_id=request.runId,
+        mode=mode,
+    )
+
+    return BuildDossierResponse(
+        dossier=dossier.model_dump(mode="json"),
+        degradationState=degradation.to_dict() if degradation.is_degraded else None,
+    )
+
+
+class DiffDossiersRequest(BaseModel):
+    """Request to diff two dossier versions."""
+    v1: Dict[str, Any] = Field(..., description="First dossier version (JSON)")
+    v2: Dict[str, Any] = Field(..., description="Second dossier version (JSON)")
+
+
+@router.post(
+    "/dossier/diff",
+    summary="Compute v1/v2 diff between two dossier versions",
+)
+def diff_dossiers(request: DiffDossiersRequest):
+    """Compute a structured diff between two ResearchDossier versions."""
+    from app.contracts import ResearchDossier
+    from app.modules.idea.research_dossier import diff_dossiers as _diff
+
+    try:
+        v1 = ResearchDossier.model_validate(request.v1)
+        v2 = ResearchDossier.model_validate(request.v2)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Invalid dossier: {e}")
+
+    return _diff(v1, v2)
+
+
+# ---------------------------------------------------------------------------
+# Child Run: accept Review finding, create v2 session from parent
+# ---------------------------------------------------------------------------
+
+class CreateChildRunRequest(BaseModel):
+    """Request to create a child run from a parent session and review findings."""
+    parentSessionId: str = Field(..., description="Parent idea session ID")
+    findings: List[Dict[str, Any]] = Field(..., description="Review findings (list of finding dicts with at least 'description' field)")
+    mode: Optional[str] = Field(default=None, description="Override mode: 'deep' or 'coverage'. Defaults to parent's mode.")
+
+
+class CreateChildRunResponse(BaseModel):
+    """Response containing the child run and new session info."""
+    childRunId: str
+    parentRunId: str
+    newSessionId: str
+    findingsCount: int
+    status: str
+
+
+@router.post(
+    "/dossier/child-run",
+    summary="Create a child run from a parent session and review findings",
+)
+def create_child_run(request: CreateChildRunRequest):
+    """
+    Accept Review findings and create a child ScientificQuestionRun.
+
+    This implements P0 task #8: "Accept Review finding, create child run."
+    The child run inherits the parent's question and mode, with parentRunId
+    set to the parent's run ID. A new idea session is created so the pipeline
+    can be re-run with the review feedback incorporated.
+    """
+    from app.contracts import RunMode, RunStatus, ScientificQuestion, ScientificQuestionRun
+    from app.modules.idea.research_dossier import create_child_run as _create_child_run
+
+    service = get_idea_service()
+
+    # 1. Get parent session
+    parent_session = service.session_storage.get(request.parentSessionId)
+    if not parent_session:
+        raise HTTPException(status_code=404, detail=f"Parent session {request.parentSessionId} not found")
+
+    # 2. Build parent ScientificQuestionRun
+    parent_mode = RunMode.DEEP
+    if request.mode:
+        parent_mode = RunMode.DEEP if request.mode == "deep" else RunMode.COVERAGE
+    elif hasattr(parent_session.config, 'mode') and parent_session.config.mode:
+        parent_mode = RunMode.DEEP if parent_session.config.mode == "deep" else RunMode.COVERAGE
+
+    seed_query = (parent_session.config.seedQuery if hasattr(parent_session, 'config') and hasattr(parent_session.config, 'seedQuery')
+                  else getattr(parent_session, 'seedQuery', getattr(parent_session, 'seed', '')))
+
+    parent_question = ScientificQuestion(
+        id=f"q_{request.parentSessionId}",
+        text=seed_query,
+        domainHint=getattr(parent_session.config, 'domain', None),
+    )
+
+    parent_run = ScientificQuestionRun(
+        runId=f"run_{request.parentSessionId}",
+        question=parent_question,
+        mode=parent_mode,
+        status=RunStatus.COMPLETED,
+        providerName=getattr(parent_session.config, 'providerName', None),
+        model=getattr(parent_session.config, 'model', None),
+    )
+
+    # 3. Create child run
+    child_run = _create_child_run(parent_run=parent_run, findings=request.findings)
+
+    # 4. Create new idea session from parent config
+    new_config = IdeaSessionConfig(
+        providerName=parent_session.config.providerName,
+        model=parent_session.config.model,
+        seedQuery=seed_query,
+        paperType=getattr(parent_session.config, 'paperType', 'full'),
+        maxCandidates=getattr(parent_session.config, 'maxCandidates', 10),
+        maxPapers=getattr(parent_session.config, 'maxPapers', 50),
+        domain=getattr(parent_session.config, 'domain', None),
+        constraints=getattr(parent_session.config, 'constraints', None),
+        mustCiteList=getattr(parent_session.config, 'mustCiteList', []),
+        searchBudget=getattr(parent_session.config, 'searchBudget', 30),
+        maxReviewIterations=getattr(parent_session.config, 'maxReviewIterations', 2),
+    )
+
+    new_session = service.create_session(new_config)
+
+    # 5. Store review findings in session qualityLoopSummary for the pipeline to use
+    new_session.qualityLoopSummary['parentSessionId'] = request.parentSessionId
+    new_session.qualityLoopSummary['parentRunId'] = parent_run.runId
+    new_session.qualityLoopSummary['childRunId'] = child_run.runId
+    new_session.qualityLoopSummary['reviewFindings'] = request.findings
+    service.session_storage.update(new_session)
+
+    return CreateChildRunResponse(
+        childRunId=child_run.runId,
+        parentRunId=parent_run.runId,
+        newSessionId=new_session.id,
+        findingsCount=len(request.findings),
+        status="created",
     )

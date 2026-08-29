@@ -14,6 +14,7 @@ from fastapi import APIRouter, HTTPException, status, Depends, Query, Background
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from app.core.settings import get_settings
+from app.core.user_context import call_with_current_context
 from app.modules.code.projects import code_project_service as cps, generate_project_from_plan, get_generation_status
 from app.modules.code.storage import Session, crud, get_session, get_session_context
 from app.db.models import JobStatus, CodeJobCreate
@@ -583,6 +584,8 @@ class ExperimentDataResponse(BaseModel):
     metrics: List[dict] = Field(default_factory=list)
     figures: List[dict] = Field(default_factory=list)
     analysis: Optional[dict] = None
+    executionAssessment: Optional[dict] = None
+    experimentEvidence: Optional[dict] = None
     reportMd: Optional[str] = Field(None, description="Full MD report content")
     reportMdPath: Optional[str] = Field(None, description="Relative path to generated report")
 
@@ -747,6 +750,28 @@ async def get_experiment_data(
         except (_json.JSONDecodeError, TypeError):
             pass
 
+    execution_assessment = None
+    experiment_evidence = None
+    execution_record = None
+    for filename, target in [
+        ("artifacts/evidence/execution_assessment.json", "assessment"),
+        ("artifacts/evidence/experiment_evidence.json", "evidence"),
+        ("artifacts/evidence/run_manifest.json", "execution"),
+    ]:
+        raw = cps.read_file_content(projectId, filename)
+        if not raw:
+            continue
+        try:
+            parsed = _json.loads(raw)
+        except (_json.JSONDecodeError, TypeError):
+            continue
+        if target == "assessment":
+            execution_assessment = parsed
+        elif target == "evidence":
+            experiment_evidence = parsed
+        else:
+            execution_record = parsed
+
     # Build the report MD
     from app.schemas.experiment_data import (
         CodePrinciple,
@@ -787,8 +812,11 @@ async def get_experiment_data(
         experimentId=experimentId,
         codePrinciples=code_principles,
         experimentDesign=experiment_design,
+        execution=execution_record,
         metrics=metrics,
         figures=figures,
+        executionAssessment=execution_assessment,
+        experimentEvidence=experiment_evidence,
         reportMd=report_md,
         reportMdPath=f"data/code_projects/{projectId}/experiment_report.md"
         if includeMd else None,
@@ -1077,6 +1105,7 @@ async def _execute_pipeline_step(step: PipelineStep, repo_dir: str, python_exe: 
     """Execute a single pipeline step using subprocess in a thread pool (avoids Windows asyncio issues)."""
     import time as _time
     import subprocess as _subprocess
+    from app.core.user_context import sanitized_subprocess_env
     start = _time.time()
 
     result = PipelineStepResult(name=step.name, purpose=step.purpose, status="running")
@@ -1108,13 +1137,14 @@ async def _execute_pipeline_step(step: PipelineStep, repo_dir: str, python_exe: 
             text=True,
             timeout=step.timeoutSec,
             cwd=repo_dir,
+            env=sanitized_subprocess_env({"PYTHONUNBUFFERED": "1"}),
             encoding="utf-8",
             errors="replace",
         )
 
     try:
         loop = asyncio.get_event_loop()
-        proc = await loop.run_in_executor(None, _run)
+        proc = await loop.run_in_executor(None, call_with_current_context(_run))
 
         result.exitCode = proc.returncode
         result.stdout = (proc.stdout[:8000] if proc.stdout else "")

@@ -36,7 +36,13 @@ class OutputSchemaVerifier(BaseVerifier):
 
     def verify(self, capability_id: str, result: CapabilityResult, **context: Any) -> VerificationResult:
         required = list(context.get('required_outputs', []) or [])
-        missing = [key for key in required if key not in result.outputs]
+        missing = [
+            key
+            for key in required
+            if key not in result.outputs
+            or result.outputs[key] is None
+            or (isinstance(result.outputs[key], (str, list, tuple, dict, set)) and not result.outputs[key])
+        ]
         if missing:
             return VerificationResult(
                 rule_id=f'{capability_id}:outputs',
@@ -202,7 +208,7 @@ class VerifierDispatcher:
         disabled_verifier_ids: list[str] | None = None,
     ) -> list[str]:
         disabled = set(disabled_verifier_ids or [])
-        if verifier_ids is None and pack_ids is None:
+        if not verifier_ids and not pack_ids:
             ordered = self.registry.default_pack()
         else:
             ordered = self.registry.expand(verifier_ids=verifier_ids or [], pack_ids=pack_ids or [])

@@ -7,12 +7,51 @@ backend/tests/*
 !backend/tests/test_faros_smoke.py
 !backend/tests/test_paper_latex_safety.py
 !backend/tests/test_paper_prompt_formatting.py
+!backend/tests/test_paper_pr42_regressions.py
 !backend/tests/test_release_smoke.py
+!backend/tests/test_execution_assessment.py
+!backend/tests/test_experiment_evidence.py
+!backend/tests/test_provider_client_proxy.py
+!backend/tests/test_user_provider_settings.py
+!backend/tests/test_reviewx_cem.py
+!backend/tests/test_reviewx_claim_extractor.py
+!backend/tests/test_reviewx_experiment_feedback.py
+!backend/tests/test_reviewx_scifact_experiment.py
+!backend/tests/test_reviewx_scifact_closed_loop.py
+!backend/tests/test_reviewx_multidomain.py
+!backend/tests/test_reviewx_reliability.py
+!backend/tests/test_reviewx_human_signoff.py
+!backend/tests/test_reviewx_plan_delta.py
+!backend/tests/test_reviewx_competition_evidence.py
+!backend/tests/test_scientific_research_contracts.py
+!backend/tests/test_research_dossier_schema.py
+!backend/tests/test_idea_problem_framing.py
+!backend/tests/test_idea_evidence_gate_contract.py
+!backend/tests/test_idea_falsifiability.py
+!backend/tests/test_idea_seed_suggestion_jobs.py
+!backend/tests/test_idea_degraded_fixtures.py
+!backend/tests/fixtures/
+!backend/tests/fixtures/scientific_research/
+!backend/tests/fixtures/scientific_research/*.json
+!backend/tests/fixtures/scientific_research/README.md
 
 # Temp docs, backups, work logs
 docs/
+.worktrees/
 *.bak
 stop_dev.sh
+
+# Local diagnostic and temporary scripts (not part of codebase)
+/test_*.py
+/check_*.py
+/compare_*.py
+/generate_*.py
+/diagnosis_*.md
+/test_report_*.md
+/backend/test_*.py
+/backend/diagnose_*.py
+/backend/verify_*.py
+/backend/verification_*.md
 
 # Python
 __pycache__/
@@ -31,6 +70,9 @@ downloads/
 eggs/
 .eggs/
 lib/
+!frontend/src/lib/
+!frontend/src/lib/types/
+!frontend/src/lib/types/scientificResearch.ts
 lib64/
 parts/
 sdist/
@@ -57,6 +99,7 @@ ipython_config.py
 /.dev/
 backend/.venv/
 backend/data/**/__pycache__/
+/backend/app/data/code_projects/
 
 # LaTeX build artifacts (paper generation)
 *.aux
@@ -78,6 +121,7 @@ latexmkrc
 
 # Node / frontend
 node_modules/
+/frontend/node_modules
 /.pnp
 .pnp.js
 dist/
