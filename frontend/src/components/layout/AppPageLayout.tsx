@@ -30,7 +30,7 @@ export function AppPageLayout({
   children
 }: AppPageLayoutProps) {
   return (
-    <div className="min-h-screen bg-[#F6F7F9]">
+    <div className="min-h-screen bg-background text-foreground">
       <div className="mx-auto w-full max-w-[1680px] px-4 sm:px-6 lg:px-10 2xl:max-w-[1840px] py-8" data-testid="page-container">
         <PageHeader
           title={title}

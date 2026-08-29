@@ -51,8 +51,7 @@ class LLMProvider(BaseProvider):
         active = settings.get_active_provider()
         configured = []
         for provider_id in provider_ids:
-            cfg = settings.get_provider_config(provider_id)
-            if settings.get_runtime_api_key(provider_id) or cfg.get_api_key():
+            if settings.get_api_key(provider_id):
                 configured.append(provider_id)
         status = 'healthy' if active in provider_ids else 'degraded'
         return ProviderHealth(

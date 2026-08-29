@@ -6,11 +6,15 @@ Provides endpoints for managing idea generation sessions.
 
 import json
 import logging
+import threading
+import uuid
 from typing import Any, Dict, Optional, List
 from datetime import datetime
 from fastapi import APIRouter, HTTPException, status, BackgroundTasks, Query
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
+from app.core.user_context import call_with_current_context, get_current_user_id
 from app.modules.idea.contracts import (
     IdeaSession,
     IdeaSessionStatus,
@@ -36,7 +40,7 @@ from app.modules.idea.storage import (
     get_probe_literature_storage,
 )
 from app.core.settings import get_settings
-import logging
+from app.modules.idea.seed_coach import build_seed_coach_prompt, parse_seed_suggestions
 
 logger = logging.getLogger(__name__)
 
@@ -1131,6 +1135,7 @@ async def select_candidate(
 class SeedCheckRequest(BaseModel):
     """Request to pre-check a seed query before running the full pipeline."""
     seedQuery: str = Field(..., min_length=3)
+    paperType: str = Field(default="algorithm")
 
 
 class SeedCheckResponse(BaseModel):
@@ -1138,10 +1143,232 @@ class SeedCheckResponse(BaseModel):
     paperCount: int
     isSufficient: bool
     threshold: int
+    rawPaperCount: int = 0
+    alignedPaperCount: int = 0
     topicTerms: List[str] = []
     generalizedQuery: Optional[str] = None
+    suggestedQuery: Optional[str] = None
+    suggestedQueries: List[dict] = []
+    suggestionProvider: Optional[str] = None
+    suggestionModel: Optional[str] = None
+    diagnosisCode: Optional[str] = None
     suggestion: Optional[str] = None
     topPaperTitles: List[str] = []
+
+
+class SeedSuggestionRequest(BaseModel):
+    """Ask Qwen to turn a rough interest into search-ready research seeds."""
+
+    userIdea: str = Field(default="", max_length=1000)
+    paperType: str = Field(default="algorithm")
+    count: int = Field(default=3, ge=2, le=4)
+    diagnosisCode: Optional[str] = None
+
+
+class SeedSuggestionItem(BaseModel):
+    titleZh: str
+    titleEn: str
+    query: str
+    rationaleZh: str = ""
+    rationaleEn: str = ""
+
+
+class SeedSuggestionResponse(BaseModel):
+    providerName: str
+    model: str
+    suggestions: List[SeedSuggestionItem]
+
+
+class SeedSuggestionJobResponse(BaseModel):
+    jobId: str
+    status: str
+    result: Optional[SeedSuggestionResponse] = None
+    error: Optional[str] = None
+
+
+_seed_suggestion_jobs: Dict[str, Dict[str, Any]] = {}
+_seed_suggestion_jobs_lock = threading.Lock()
+
+
+def _request_qwen_seed_suggestions(
+    *,
+    user_idea: str,
+    paper_type: str,
+    count: int = 3,
+    diagnosis_code: Optional[str] = None,
+) -> SeedSuggestionResponse:
+    """Call the current user's Qwen account and validate its topic suggestions."""
+
+    from app.llm.provider_client import ChatMessage, ProviderError, get_provider_client
+
+    settings = get_settings()
+    provider_name = "qwen"
+    if not settings.get_api_key(provider_name):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Qwen API key is not configured for this account. Open Settings > LLM Providers and configure Qwen first.",
+        )
+
+    model_name = settings.get_active_model(provider_name)
+    prompt = build_seed_coach_prompt(
+        user_idea=user_idea,
+        paper_type=paper_type,
+        count=count,
+        diagnosis=diagnosis_code,
+    )
+    client = get_provider_client(provider_name)
+    response = None
+    suggestions: List[dict] = []
+    for attempt in range(2):
+        attempt_prompt = prompt
+        if attempt:
+            attempt_prompt += (
+                "\nYour previous response failed automatic validation because fewer than two queries "
+                "had 10+ English words and explicit evaluation criteria. Rewrite all suggestions, "
+                "follow the schema exactly, and include the literal phrase 'evaluated by' in every query.\n"
+                f"Previous response:\n{response.text[:2500] if response else ''}"
+            )
+        try:
+            response = client.chat(
+                [ChatMessage(role="user", content=attempt_prompt)],
+                model=model_name,
+                temperature=0.55 if attempt else 0.65,
+                max_tokens=1400,
+                structured_output=True,
+            )
+        except ProviderError as exc:
+            logger.warning("Qwen seed coach request failed: %s", exc)
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Qwen could not generate topic suggestions. Check the Qwen key/model in Settings and try again.",
+            ) from exc
+
+        suggestions = parse_seed_suggestions(response.text, limit=count)
+        if len(suggestions) >= 2:
+            break
+        logger.warning(
+            "Qwen seed coach validation failed on attempt %s: %s",
+            attempt + 1,
+            response.text[:500],
+        )
+
+    if len(suggestions) < 2 or response is None:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Qwen returned an invalid topic format. Please try again.",
+        )
+    return SeedSuggestionResponse(
+        providerName=provider_name,
+        model=response.model or model_name,
+        suggestions=[SeedSuggestionItem(**item) for item in suggestions],
+    )
+
+
+@router.post(
+    "/seed-suggestions",
+    response_model=SeedSuggestionResponse,
+    summary="Generate Research Topic Suggestions with Qwen",
+)
+async def seed_suggestions(request: SeedSuggestionRequest) -> SeedSuggestionResponse:
+    """Return two to four novice-friendly, search-ready research topics."""
+
+    return await run_in_threadpool(
+        call_with_current_context(
+            _request_qwen_seed_suggestions,
+            user_idea=request.userIdea.strip(),
+            paper_type=request.paperType,
+            count=request.count,
+            diagnosis_code=request.diagnosisCode,
+        )
+    )
+
+
+def _run_seed_suggestion_job(job_id: str, request: SeedSuggestionRequest) -> None:
+    with _seed_suggestion_jobs_lock:
+        job = _seed_suggestion_jobs.get(job_id)
+        if not job:
+            return
+        job["status"] = "running"
+
+    try:
+        result = _request_qwen_seed_suggestions(
+            user_idea=request.userIdea.strip(),
+            paper_type=request.paperType,
+            count=request.count,
+            diagnosis_code=request.diagnosisCode,
+        )
+    except HTTPException as exc:
+        error = str(exc.detail)
+        with _seed_suggestion_jobs_lock:
+            job = _seed_suggestion_jobs.get(job_id)
+            if job:
+                job.update(status="failed", error=error)
+        return
+    except Exception as exc:
+        logger.warning("Qwen seed suggestion job failed: %s", exc, exc_info=True)
+        with _seed_suggestion_jobs_lock:
+            job = _seed_suggestion_jobs.get(job_id)
+            if job:
+                job.update(status="failed", error="Qwen topic recommendation failed. Check the model settings and retry.")
+        return
+
+    with _seed_suggestion_jobs_lock:
+        job = _seed_suggestion_jobs.get(job_id)
+        if job:
+            job.update(status="completed", result=result, error=None)
+
+
+@router.post(
+    "/seed-suggestion-jobs",
+    response_model=SeedSuggestionJobResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Start a Qwen Research Topic Suggestion Job",
+)
+async def create_seed_suggestion_job(request: SeedSuggestionRequest) -> SeedSuggestionJobResponse:
+    """Start topic coaching without holding a fragile public HTTP connection open."""
+
+    job_id = f"seedjob_{uuid.uuid4().hex[:12]}"
+    with _seed_suggestion_jobs_lock:
+        if len(_seed_suggestion_jobs) >= 100:
+            completed_ids = [
+                existing_id
+                for existing_id, job in _seed_suggestion_jobs.items()
+                if job.get("status") in {"completed", "failed"}
+            ]
+            for existing_id in completed_ids[:50]:
+                _seed_suggestion_jobs.pop(existing_id, None)
+        _seed_suggestion_jobs[job_id] = {
+            "ownerId": get_current_user_id(),
+            "status": "pending",
+            "result": None,
+            "error": None,
+        }
+
+    worker = threading.Thread(
+        target=call_with_current_context(_run_seed_suggestion_job, job_id, request),
+        daemon=True,
+        name=f"seed-coach-{job_id[-6:]}",
+    )
+    worker.start()
+    return SeedSuggestionJobResponse(jobId=job_id, status="pending")
+
+
+@router.get(
+    "/seed-suggestion-jobs/{job_id}",
+    response_model=SeedSuggestionJobResponse,
+    summary="Get a Qwen Research Topic Suggestion Job",
+)
+async def get_seed_suggestion_job(job_id: str) -> SeedSuggestionJobResponse:
+    with _seed_suggestion_jobs_lock:
+        job = _seed_suggestion_jobs.get(job_id)
+        if not job or job.get("ownerId") != get_current_user_id():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Topic suggestion job not found")
+        return SeedSuggestionJobResponse(
+            jobId=job_id,
+            status=str(job.get("status") or "pending"),
+            result=job.get("result"),
+            error=job.get("error"),
+        )
 
 
 @router.post(
@@ -1155,10 +1382,16 @@ class SeedCheckResponse(BaseModel):
 )
 async def seed_check(request: SeedCheckRequest) -> SeedCheckResponse:
     """Pre-check a seed query before committing to a full pipeline run."""
+    from collections import Counter
+
     from app.services.search_service import get_search_service
-    from app.llm.provider_client import get_provider_client, ChatMessage
-    from app.core.settings import get_settings
-    from app.modules.idea.service import _topic_terms_from_seed
+    from app.modules.idea.evidence_relevance import (
+        EvidenceTier,
+        assess_search_result,
+        build_topic_intent_profile,
+        diagnose_literature_failure,
+    )
+    from app.modules.idea.service import _evaluate_paper_quality_gate, _topic_terms_from_seed
 
     threshold = int(__import__("os").getenv("FAROS_PAPER_GATE_MIN_PAPERS", "4"))
     seed = request.seedQuery.strip()
@@ -1172,80 +1405,100 @@ async def seed_check(request: SeedCheckRequest) -> SeedCheckResponse:
     # 1. Quick search across all sources
     search_service = get_search_service()
     try:
-        results = search_service.search(seed, limit=10)
+        results = await run_in_threadpool(
+            call_with_current_context(search_service.search, seed, limit=10)
+        )
     except Exception as exc:
         logger.warning("seed-check search failed: %s", exc)
         results = []
 
-    paper_count = len(results)
+    raw_paper_count = len(results)
     topic_terms = _topic_terms_from_seed(seed)
-    top_titles = [getattr(r, "title", "") for r in results[:5]]
+    role_queries = {
+        "domain": [seed],
+        "task": [seed],
+        "method": [f"{seed} methods techniques algorithms"],
+        "evaluation": [f"{seed} evaluation benchmark metrics limitations"],
+    }
+    profile = build_topic_intent_profile(
+        seed=seed,
+        domain="",
+        role_queries=role_queries,
+    )
+    eligible_results = []
+    rejected_results = []
+    for result in results:
+        assessment = assess_search_result(result, profile)
+        result.evidence_tier = assessment.tier.value
+        result.decisive_anchors = list(assessment.decisive_anchors)
+        result.relevance_components = dict(assessment.score_components)
+        result.rejection_reason = assessment.rejection_reason
+        result.relevance_score = assessment.score
+        if assessment.tier is EvidenceTier.REJECTED:
+            rejected_results.append(result)
+        else:
+            eligible_results.append(result)
 
-    if paper_count >= threshold:
+    quality_gate = _evaluate_paper_quality_gate(
+        seed=seed,
+        domain="",
+        papers=eligible_results,
+        stage="seedCheck",
+        extra_terms=[seed],
+        paper_type=request.paperType,
+    )
+    paper_count = int(quality_gate.get("paperCount", len(eligible_results)) or 0)
+    aligned_paper_count = int(quality_gate.get("alignedPaperCount", 0) or 0)
+    top_titles = [getattr(result, "title", "") for result in eligible_results[:5]]
+
+    if quality_gate.get("passed", False):
         return SeedCheckResponse(
             paperCount=paper_count,
             isSufficient=True,
             threshold=threshold,
+            rawPaperCount=raw_paper_count,
+            alignedPaperCount=aligned_paper_count,
             topicTerms=topic_terms[:12],
             topPaperTitles=top_titles,
         )
 
-    # 2. Not enough papers — ask LLM to generalize the seed
-    settings = get_settings()
-    provider_name = settings.get_active_provider()
-    model_name = settings.get_active_model(provider_name)
-
-    generalize_prompt = (
-        "You are a research advisor helping a user refine their search query.\n"
-        "The user's query returned too few academic papers. "
-        "Generalize it into a broader but still relevant research topic.\n\n"
-        "Rules:\n"
-        "1. Keep the core research intent.\n"
-        "2. Replace niche tool names with their broader research area.\n"
-        "3. Replace specific numeric parameters with the general research question.\n"
-        "4. Output ONLY a single-line generalized query, nothing else.\n\n"
-        f"Original query: {seed}\n"
-        f"Papers found: {paper_count}\n"
-        f"Topic terms extracted: {topic_terms[:8]}\n\n"
-        "Generalized query:"
+    rejection_reason_counts = Counter(
+        result.rejection_reason for result in rejected_results
     )
+    diagnosis = diagnose_literature_failure(
+        seed=seed,
+        raw_result_count=raw_paper_count,
+        unique_result_count=raw_paper_count,
+        gate=quality_gate,
+        rejection_reason_counts=rejection_reason_counts,
+        seed_anchors=profile.seed_anchors,
+    )
+    diagnosis_code = str(diagnosis.get("code", "evidence_quality_failed"))
 
+    # Qwen coaching runs through the short-polling job endpoint so a slow model
+    # response cannot hold this pre-check request open.
+    suggested_queries: List[dict] = []
+    suggestion_provider = None
+    suggestion_model = None
     generalized_query = None
-    suggestion = None
-    try:
-        client = get_provider_client(provider_name)
-        response = client.chat(
-            [ChatMessage(role="user", content=generalize_prompt)],
-            model=model_name,
-            temperature=0.3,
-            max_tokens=120,
-        )
-        generalized_query = (response.text or "").strip().split("\n")[0].strip()
-        if generalized_query.startswith('"') and generalized_query.endswith('"'):
-            generalized_query = generalized_query[1:-1]
-        # Validate: don't return if it's too similar or empty
-        if not generalized_query or generalized_query.lower() == seed.lower():
-            generalized_query = None
-    except Exception as exc:
-        logger.warning("seed-check LLM generalization failed: %s", exc)
-
-    if generalized_query:
-        suggestion = (
-            f"Only {paper_count} papers found for this topic. "
-            f"Consider using the generalized query: \"{generalized_query}\""
-        )
-    else:
-        suggestion = (
-            f"Only {paper_count} papers found. "
-            "Try broadening your topic or using more general research terms."
-        )
+    suggestion = (
+        f"The search returned {raw_paper_count} raw papers, but only {paper_count} passed relevance filtering. "
+        "Qwen topic coaching has been started separately; choose one of its search-ready alternatives."
+    )
 
     return SeedCheckResponse(
         paperCount=paper_count,
         isSufficient=False,
         threshold=threshold,
+        rawPaperCount=raw_paper_count,
+        alignedPaperCount=aligned_paper_count,
         topicTerms=topic_terms[:12],
         generalizedQuery=generalized_query,
+        suggestedQuery=generalized_query,
+        suggestedQueries=suggested_queries,
+        suggestionProvider=suggestion_provider,
+        suggestionModel=suggestion_model,
+        diagnosisCode=diagnosis_code,
         suggestion=suggestion,
         topPaperTitles=top_titles,
     )

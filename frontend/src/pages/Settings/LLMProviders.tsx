@@ -5,11 +5,13 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import {
   CheckCircle2, XCircle, Eye, EyeOff, Zap, Loader2,
-  Globe, Brain, Sparkles, Bot, Cloud, Cpu, Shield, Server,
+  Globe, Brain, Sparkles, Bot, Cloud, Cpu, Shield, Server, Trash2, UserRound,
 } from 'lucide-react'
 import { LLM_PROVIDERS, getModelsByProvider } from '@/lib/models/providers'
+import { useReviewLocale } from '@/lib/reviewLocale'
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || ''
+const LEGACY_PROVIDER_ALIASES = new Set(['kimi', 'claude', 'bigmodel'])
 
 /* ── Provider icon map ── */
 const PROVIDER_ICONS: Record<string, typeof Brain> = {
@@ -48,10 +50,14 @@ interface TestResult {
 type TestState = 'idle' | 'testing' | 'success' | 'error'
 
 export function LLMProviders() {
+  const { text } = useReviewLocale()
+
   // Global state
   const [activeProvider, setActiveProvider] = useState('')
   const [activeModel, setActiveModel] = useState('')
   const [backendProviders, setBackendProviders] = useState<ProviderStatus[]>([])
+  const [currentUser, setCurrentUser] = useState('local')
+  const [currentRole, setCurrentRole] = useState('user')
   const [loading, setLoading] = useState(true)
 
   // Per-provider local state
@@ -78,6 +84,8 @@ export function LLMProviders() {
       const data = await r.json()
       setActiveProvider(data.activeProvider || 'bigmodel')
       setBackendProviders(data.providers || [])
+      setCurrentUser(data.userId || 'local')
+      setCurrentRole(data.role || 'user')
       // Set active model from backend
       const activeProv = (data.providers || []).find(
         (p: ProviderStatus) => p.providerName === data.activeProvider
@@ -171,16 +179,49 @@ export function LLMProviders() {
     }
   }, [loadProviders])
 
+  const handleRemoveKey = useCallback(async (provName: string) => {
+    const confirmed = window.confirm(
+      text(
+        `确认删除账号 ${currentUser} 的 ${provName} API Key？`,
+        `Remove the ${provName} API key for account ${currentUser}?`,
+      ),
+    )
+    if (!confirmed) return
+
+    setSaving(s => ({ ...s, [provName]: true }))
+    try {
+      const r = await fetch(`${API_BASE}/api/v1/providers/${provName}/key`, {
+        method: 'DELETE',
+      })
+      const data = await r.json()
+      if (!r.ok || !data.ok) {
+        showToast('error', data?.detail || data?.message || text('删除失败', 'Failed to remove key'))
+        return
+      }
+      showToast('success', text(`已删除 ${provName} Key`, `${provName} key removed`))
+      await loadProviders()
+    } catch {
+      showToast('error', text('删除 Key 时网络错误', 'Network error removing key'))
+    } finally {
+      setSaving(s => ({ ...s, [provName]: false }))
+    }
+  }, [currentUser, loadProviders, text])
+
   // Provider list from frontend registry (LLM_PROVIDERS) merged with backend status
-  const providerCards = LLM_PROVIDERS.filter(p =>
-    backendProviders.some(bp => bp.providerName === p.id) || ['bigmodel'].includes(p.id)
-  ).map(fp => {
+  const providerCards = LLM_PROVIDERS.filter((provider) => {
+    const backend = backendProviders.find(item => item.providerName === provider.id)
+    if (!backend) return false
+    return !LEGACY_PROVIDER_ALIASES.has(provider.id)
+      || provider.id === activeProvider
+      || backend.apiKeySet
+  }).map(fp => {
     const bp = backendProviders.find(b => b.providerName === fp.id)
     return { ...fp, backend: bp }
   })
 
   // Also add any backend-only providers not in LLM_PROVIDERS
   backendProviders.forEach(bp => {
+    if (LEGACY_PROVIDER_ALIASES.has(bp.providerName) && bp.providerName !== activeProvider && !bp.apiKeySet) return
     if (!providerCards.find(pc => pc.id === bp.providerName)) {
       providerCards.push({
         id: bp.providerName,
@@ -190,6 +231,24 @@ export function LLMProviders() {
       })
     }
   })
+  providerCards.sort((left, right) => {
+    const activeOrder = Number(right.id === activeProvider) - Number(left.id === activeProvider)
+    if (activeOrder !== 0) return activeOrder
+    return Number(Boolean(right.backend?.apiKeySet)) - Number(Boolean(left.backend?.apiKeySet))
+  })
+
+  const registeredActiveModels = getModelsByProvider(activeProvider)
+  const activeModelOptions = activeModel && !registeredActiveModels.some(model => model.id === activeModel)
+    ? [
+        {
+          id: activeModel,
+          name: `${activeModel} (custom)`,
+          provider: activeProvider,
+          contextWindow: 0,
+        },
+        ...registeredActiveModels,
+      ]
+    : registeredActiveModels
 
   if (loading) {
     return (
@@ -214,10 +273,24 @@ export function LLMProviders() {
 
         {/* Header */}
         <div>
-          <h1 className="text-3xl font-bold font-display">LLM Providers</h1>
+          <h1 className="text-3xl font-bold font-display">{text('LLM Provider 设置', 'LLM Providers')}</h1>
           <p className="text-muted-foreground mt-1">
-            Configure API keys, select models, and test connections. One provider = one card.
+            {text(
+              '配置 API Key、选择模型并测试连接。常见模型与 API 名称保留英文。',
+              'Configure API keys, select models, and test connections.',
+            )}
           </p>
+          <div className="mt-3 flex items-center gap-2 border-l-2 border-primary pl-3 text-sm">
+            <UserRound className="h-4 w-4 text-primary" />
+            <span className="font-medium">{currentUser}</span>
+            <Badge variant="outline" className="text-xs">{currentRole}</Badge>
+            <span className="text-muted-foreground">
+              {text(
+                '此页保存的模型设置和 API Key 仅属于当前账号。',
+                'Provider settings and API keys on this page belong only to this account.',
+              )}
+            </span>
+          </div>
         </div>
 
         {/* ── Global Active Provider Selector ── */}
@@ -225,9 +298,9 @@ export function LLMProviders() {
           <CardHeader className="pb-3">
             <CardTitle className="flex items-center gap-2">
               <Zap className="h-5 w-5 text-primary" />
-              Active Provider &amp; Model
+              {text('当前 Provider 与模型', 'Active Provider & Model')}
             </CardTitle>
-            <CardDescription>Used by all agents for LLM calls</CardDescription>
+            <CardDescription>{text('当前账号的所有 Agent 调用均使用此配置', 'Used by all agents for this account')}</CardDescription>
           </CardHeader>
           <CardContent>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -255,7 +328,7 @@ export function LLMProviders() {
                   value={activeModel}
                   onChange={e => handleSetActive(activeProvider, e.target.value)}
                 >
-                  {getModelsByProvider(activeProvider).map(m => (
+                  {activeModelOptions.map(m => (
                     <option key={m.id} value={m.id}>{m.name}</option>
                   ))}
                 </select>
@@ -291,8 +364,8 @@ export function LLMProviders() {
                       {prov.name}
                     </CardTitle>
                     <div className="flex items-center gap-2">
-                      {isActive && <Badge variant="default" className="text-xs">Active</Badge>}
-                      {bp?.apiKeySet && <Badge variant="outline" className="text-xs text-green-600 border-green-300">Key Set</Badge>}
+                      {isActive && <Badge variant="default" className="text-xs">{text('当前使用', 'Active')}</Badge>}
+                      {bp?.apiKeySet && <Badge variant="outline" className="text-xs text-green-600 border-green-300">{text('Key 已配置', 'Key Set')}</Badge>}
                     </div>
                   </div>
                   {bp?.apiKeyMasked && (
@@ -307,7 +380,8 @@ export function LLMProviders() {
                       <div className="relative flex-1">
                         <input
                           type={showKeys[prov.id] ? 'text' : 'password'}
-                          placeholder={bp?.apiKeySet ? 'Enter new key to replace' : 'Enter API key'}
+                          autoComplete="off"
+                          placeholder={bp?.apiKeySet ? text('输入新 Key 以替换', 'Enter new key to replace') : text('输入 API Key', 'Enter API key')}
                           value={keyInputs[prov.id] || ''}
                           onChange={e => setKeyInputs(s => ({ ...s, [prov.id]: e.target.value }))}
                           className="w-full rounded-md border border-input bg-background px-3 py-1.5 text-sm pr-8"
@@ -326,8 +400,21 @@ export function LLMProviders() {
                         onClick={() => handleSaveConfig(prov.id)}
                         disabled={!keyInputs[prov.id]?.trim() || isSaving}
                       >
-                        {isSaving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : 'Save'}
+                        {isSaving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : text('保存', 'Save')}
                       </Button>
+                      {bp?.apiKeySet && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => handleRemoveKey(prov.id)}
+                          disabled={isSaving}
+                          aria-label={text(`删除 ${prov.name} API Key`, `Remove ${prov.name} API key`)}
+                          title={text('删除当前账号的 Key', 'Remove this account\'s key')}
+                          className="h-8 w-8 text-muted-foreground hover:text-destructive"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      )}
                     </div>
                   </div>
 
@@ -348,11 +435,11 @@ export function LLMProviders() {
                         onClick={() => handleSaveConfig(prov.id)}
                         disabled={!baseUrlInputs[prov.id]?.trim() || isSaving}
                       >
-                        Save
+                        {text('保存', 'Save')}
                       </Button>
                     </div>
                     {bp?.baseUrl && (
-                      <p className="text-[11px] text-muted-foreground truncate">Current: <span className="font-mono">{bp.baseUrl}</span></p>
+                      <p className="text-[11px] text-muted-foreground truncate">{text('当前', 'Current')}: <span className="font-mono">{bp.baseUrl}</span></p>
                     )}
                   </div>
 
@@ -386,7 +473,7 @@ export function LLMProviders() {
                           onClick={() => handleSaveConfig(prov.id, { makeActive: isActive })}
                           disabled={!modelInputs[prov.id]?.trim() || isSaving}
                         >
-                          Save
+                          {text('保存', 'Save')}
                         </Button>
                       </div>
                     </div>
@@ -402,9 +489,9 @@ export function LLMProviders() {
                       className="text-xs"
                     >
                       {tState === 'testing' ? (
-                        <><Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> Testing...</>
+                        <><Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> {text('测试中...', 'Testing...')}</>
                       ) : (
-                        'Test Provider'
+                        text('测试 Provider', 'Test Provider')
                       )}
                     </Button>
                     {!isActive && bp?.apiKeySet && (
@@ -414,7 +501,7 @@ export function LLMProviders() {
                         onClick={() => handleSetActive(prov.id)}
                         className="text-xs"
                       >
-                        Set as Active
+                        {text('设为当前 Provider', 'Set as Active')}
                       </Button>
                     )}
                   </div>

@@ -11,6 +11,8 @@ import logging
 import subprocess
 from typing import Dict, List, Optional, Any
 
+from app.core.user_context import sanitized_subprocess_env
+
 logger = logging.getLogger(__name__)
 
 
@@ -36,6 +38,7 @@ def compile_latex_project(project_dir: str, main_tex: str = "main.tex", engine: 
             encoding="utf-8",
             errors="replace",
             timeout=timeout,
+            env=sanitized_subprocess_env(),
         )
     except subprocess.TimeoutExpired as exc:
         tail = "\n".join((exc.stdout or "").splitlines()[-20:] + (exc.stderr or "").splitlines()[-20:])

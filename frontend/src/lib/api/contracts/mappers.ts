@@ -8,7 +8,6 @@ import type {
   ArtifactPreviewDTO,
   PaperDTO,
   ReviewFindingDTO,
-  ReviewerSimulationDTO,
   SystemHealthDTO,
   SystemLogDTO,
   SystemMetricsDTO,
@@ -23,7 +22,6 @@ import type {
   ArtifactPreview,
   PaperDraft,
   ReviewFinding,
-  ReviewerSimulation,
   SystemHealth,
   LogEntry,
   SystemMetrics,
@@ -225,20 +223,6 @@ export function mapReviewFindingDTOToFinding(dto: ReviewFindingDTO): ReviewFindi
     verifierIds: dto.verifierIds,
     location: dto.location,
     suggestedFix: dto.suggestedFix,
-  }
-}
-
-export function mapReviewerSimulationDTOToSimulation(dto: ReviewerSimulationDTO): ReviewerSimulation {
-  return {
-    id: dto.id,
-    paperId: dto.paperId,
-    reviewerProfile: dto.reviewerProfile,
-    strengths: dto.strengths,
-    weaknesses: dto.weaknesses,
-    questions: dto.questions,
-    recommendation: dto.recommendation,
-    confidence: dto.confidence,
-    createdAt: dto.createdAt,
   }
 }
 

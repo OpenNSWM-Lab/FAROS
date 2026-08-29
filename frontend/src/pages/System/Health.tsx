@@ -4,6 +4,7 @@ import { Badge } from '@/components/ui/badge'
 import { Skeleton } from '@/components/ui/skeleton'
 import { CheckCircle2, AlertCircle, Activity } from 'lucide-react'
 import { useSystemHealth } from '@/lib/hooks/useApi'
+import { useReviewLocale } from '@/lib/reviewLocale'
 
 const statusVariants = {
   ok: 'success' as const,
@@ -19,6 +20,7 @@ const statusIcons = {
 
 export function SystemHealth() {
   const { data: health, isLoading } = useSystemHealth()
+  const { text } = useReviewLocale()
 
   if (isLoading) {
     return (
@@ -35,8 +37,8 @@ export function SystemHealth() {
 
   return (
     <AppPageLayout
-      title="System Health"
-      subtitle="Monitor system status and performance metrics"
+      title={text('系统状态', 'System Health')}
+      subtitle={text('检查后端组件的实际可用状态', 'Check the live availability of backend components')}
       icon={Activity}
       iconColor="cyan"
       accentColor="cyan"
@@ -45,8 +47,8 @@ export function SystemHealth() {
 
       <Card>
         <CardHeader>
-          <CardTitle>System Status</CardTitle>
-          <CardDescription>Overall system health</CardDescription>
+          <CardTitle>{text('系统状态', 'System status')}</CardTitle>
+          <CardDescription>{text('后端返回的总体健康状态', 'Overall health reported by the backend')}</CardDescription>
         </CardHeader>
         <CardContent>
           <div className="flex items-center gap-3">
@@ -55,12 +57,12 @@ export function SystemHealth() {
             </div>
             <div>
               <Badge variant={statusVariants[overallStatus]} className="capitalize">
-                {overallStatus === 'ok' ? 'Healthy' : overallStatus === 'down' ? 'Down' : 'Degraded'}
+                {overallStatus === 'ok' ? text('正常', 'Healthy') : overallStatus === 'down' ? text('不可用', 'Down') : text('部分降级', 'Degraded')}
               </Badge>
               <p className="text-sm text-muted-foreground mt-1">
-                {overallStatus === 'ok' ? 'All systems operational' :
-                  overallStatus === 'down' ? 'Critical services down' :
-                    'Some services degraded'}
+                {overallStatus === 'ok' ? text('所有已报告组件运行正常', 'All reported components are operational') :
+                  overallStatus === 'down' ? text('关键服务不可用', 'Critical services are down') :
+                    text('部分服务状态异常', 'Some services are degraded')}
               </p>
             </div>
           </div>
@@ -69,23 +71,23 @@ export function SystemHealth() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Components ({health?.components.length || 0})</CardTitle>
-          <CardDescription>Individual component status and health checks</CardDescription>
+          <CardTitle>{text('组件', 'Components')} ({health?.components.length || 0})</CardTitle>
+          <CardDescription>{text('各后端组件的最近一次健康检查', 'Latest health check for each backend component')}</CardDescription>
         </CardHeader>
         <CardContent>
           {!health || health.components.length === 0 ? (
             <div className="text-center py-8 text-sm text-muted-foreground">
-              No components to monitor
+              {text('后端未报告可监控组件', 'No components reported by the backend')}
             </div>
           ) : (
             <div className="rounded-md border">
               <table className="w-full">
                 <thead className="border-b bg-muted/50">
                   <tr>
-                    <th className="px-4 py-3 text-left text-sm font-medium">Service</th>
-                    <th className="px-4 py-3 text-left text-sm font-medium">Status</th>
-                    <th className="px-4 py-3 text-left text-sm font-medium">Last Check</th>
-                    <th className="px-4 py-3 text-left text-sm font-medium">Latency</th>
+                    <th className="px-4 py-3 text-left text-sm font-medium">{text('服务', 'Service')}</th>
+                    <th className="px-4 py-3 text-left text-sm font-medium">{text('状态', 'Status')}</th>
+                    <th className="px-4 py-3 text-left text-sm font-medium">{text('检查时间', 'Last check')}</th>
+                    <th className="px-4 py-3 text-left text-sm font-medium">{text('延迟', 'Latency')}</th>
                   </tr>
                 </thead>
                 <tbody>

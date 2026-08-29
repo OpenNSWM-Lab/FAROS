@@ -23,6 +23,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from app.core.settings import get_settings
+from app.core.user_context import call_with_current_context
 from app.contracts import ExecutionAssessment, ExperimentEvidence, QualityAssessment, ResearchDossier
 from app.modules.review.experiment_feedback import (
     ExperimentFeedbackResult,
@@ -248,6 +249,10 @@ class SciFactCompetitionCaseJob(BaseModel):
     reportUrl: Optional[str] = None
     feedbackId: Optional[str] = None
     error: Optional[str] = None
+    stage: Optional[
+        Literal["queued", "preparing", "executing", "registering", "completed", "failed"]
+    ] = None
+    progressPercent: Optional[int] = Field(default=None, ge=0, le=100)
 
 
 class ReliabilityBenchmarkSummary(BaseModel):
@@ -449,7 +454,7 @@ def _run_scifact_case(job_id: str, model: str, bootstrap_samples: int) -> None:
     job = _load_scifact_job(job_id)
     if job is None:
         return
-    job["status"] = "running"
+    job.update({"status": "running", "stage": "preparing", "progressPercent": 10})
     _write_scifact_job(job)
     try:
         from experiments.reviewx_scifact.closed_loop import run_closed_loop
@@ -458,14 +463,20 @@ def _run_scifact_case(job_id: str, model: str, bootstrap_samples: int) -> None:
         backend_data = Path(__file__).resolve().parents[3] / "data"
         dataset_root = ensure_dataset(backend_data / "external" / "scifact", download=True)
         output_dir = _SCIFACT_CASE_ROOT / "runs" / job_id
+        job.update({"stage": "executing", "progressPercent": 25})
+        _write_scifact_job(job)
         summary = run_closed_loop(
             dataset_root,
             output_dir,
             model=model,
             bootstrap_samples=bootstrap_samples,
         )
+        job.update({"stage": "registering", "progressPercent": 90})
+        _write_scifact_job(job)
         job.update({
             "status": "completed",
+            "stage": "completed",
+            "progressPercent": 100,
             "runId": summary["runId"],
             "qualityGate": summary["qualityGate"]["status"],
             "summaryUrl": (
@@ -485,6 +496,8 @@ def _run_scifact_case(job_id: str, model: str, bootstrap_samples: int) -> None:
         logger.exception("SciFact competition case %s failed", job_id)
         job.update({
             "status": "failed",
+            "stage": "failed",
+            "progressPercent": 100,
             "error": "Execution failed. Inspect the server log; credentials are not returned by this API.",
         })
         _write_scifact_job(job)
@@ -790,7 +803,11 @@ async def create_review_endpoint(req: CreateReviewRequest):
         except Exception as e:
             logger.error(f"Review generation failed: {e}", exc_info=True)
 
-    thread = threading.Thread(target=_run, daemon=True)
+    thread = threading.Thread(
+        target=call_with_current_context(_run),
+        args=(),
+        daemon=True,
+    )
     thread.start()
 
     return record
@@ -975,6 +992,8 @@ async def start_scifact_competition_case_endpoint(
         job = _write_scifact_job({
             "jobId": job_id,
             "status": "queued",
+            "stage": "queued",
+            "progressPercent": 5,
             "createdAt": now,
             "updatedAt": now,
             "model": req.model,
@@ -987,7 +1006,7 @@ async def start_scifact_competition_case_endpoint(
             "error": None,
         })
         worker = threading.Thread(
-            target=_run_scifact_case,
+            target=call_with_current_context(_run_scifact_case),
             args=(job_id, req.model, req.bootstrapSamples),
             name=f"faros-{job_id}",
             daemon=True,

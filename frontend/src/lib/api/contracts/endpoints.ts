@@ -31,7 +31,6 @@ export const API_ENDPOINTS = {
 
   // Review
   REVIEW_FINDINGS_LIST: { path: '/api/review/findings', method: 'GET' },
-  REVIEW_SIMULATE: { path: '/api/review/simulate', method: 'POST' },
 
   // System
   SYSTEM_HEALTH: { path: '/api/system/health', method: 'GET' },

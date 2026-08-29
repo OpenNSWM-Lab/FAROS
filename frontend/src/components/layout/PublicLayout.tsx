@@ -1,113 +1,66 @@
-import { Outlet, Link } from 'react-router-dom'
-import { Button } from '@/components/ui/button'
-import { Github, FileText, Activity } from 'lucide-react'
+import { Link, Outlet } from 'react-router-dom'
+import { Activity, FlaskConical, ShieldCheck } from 'lucide-react'
+
 import { AppLogo } from '@/components/branding/AppLogo'
+import { buttonVariants } from '@/components/ui/button'
+import { useReviewLocale } from '@/lib/reviewLocale'
+import { cn } from '@/lib/utils'
+import { LanguageToggle } from './LanguageToggle'
+import { ThemeToggle } from './ThemeToggle'
 
 export function PublicLayout() {
+  const { text } = useReviewLocale()
+
   return (
-    <div className="min-h-screen bg-[#F6F7F9]">
-      {/* Top Navigation */}
-      <header className="border-b border-slate-200 bg-white/80 backdrop-blur-sm sticky top-0 z-50">
-        <div className="max-w-7xl mx-auto px-6 py-4">
-          <div className="flex items-center justify-between">
-            {/* Logo */}
-            <Link to="/" className="hover:opacity-80 transition-opacity">
-              <AppLogo size="md" variant="full" />
+    <div className="min-h-screen bg-background text-foreground" data-public-shell>
+      <header className="sticky top-0 z-50 border-b border-border bg-background/90 backdrop-blur-md">
+        <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-3 sm:px-6">
+          <Link to="/" className="transition-opacity hover:opacity-80">
+            <AppLogo size="md" variant="full" />
+          </Link>
+
+          <nav className="hidden items-center gap-6 md:flex" aria-label={text('首页导航', 'Homepage navigation')}>
+            <Link to="/research/pipeline" className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-teal-600 dark:hover:text-teal-400">
+              <FlaskConical className="h-4 w-4" />
+              {text('科研流程', 'Pipeline')}
             </Link>
+            <Link to="/review/competition" className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-teal-600 dark:hover:text-teal-400">
+              <ShieldCheck className="h-4 w-4" />
+              Track 1B
+            </Link>
+            <Link to="/system/health" className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-teal-600 dark:hover:text-teal-400">
+              <Activity className="h-4 w-4" />
+              {text('系统状态', 'System health')}
+            </Link>
+          </nav>
 
-            {/* Navigation Links */}
-            <nav className="hidden md:flex items-center gap-8">
-              <a
-                href="#"
-                className="text-sm text-slate-600 hover:text-teal-600 transition-colors flex items-center gap-1"
-                aria-label="Documentation"
-              >
-                <FileText className="h-4 w-4" />
-                Docs
-              </a>
-              <a
-                href="#"
-                className="text-sm text-slate-600 hover:text-teal-600 transition-colors flex items-center gap-1"
-                aria-label="System Status"
-              >
-                <Activity className="h-4 w-4" />
-                Status
-              </a>
-              <a
-                href="#"
-                className="text-sm text-slate-600 hover:text-teal-600 transition-colors flex items-center gap-1"
-                aria-label="GitHub Repository"
-              >
-                <Github className="h-4 w-4" />
-                GitHub
-              </a>
-            </nav>
-
-            {/* CTA Button */}
-            <Link to="/research/planning">
-              <Button className="bg-teal-600 hover:bg-teal-700 shadow-sm">
-                Get Started
-              </Button>
+          <div className="flex items-center gap-2">
+            <LanguageToggle />
+            <ThemeToggle />
+            <Link
+              to="/research/pipeline"
+              className={cn(buttonVariants(), 'hidden bg-teal-600 text-white hover:bg-teal-700 sm:inline-flex dark:bg-teal-500 dark:text-neutral-950 dark:hover:bg-teal-400')}
+            >
+              {text('开始使用', 'Get started')}
             </Link>
           </div>
         </div>
       </header>
 
-      {/* Page Content */}
       <main>
         <Outlet />
       </main>
 
-      {/* Footer */}
-      <footer className="border-t border-slate-200 bg-white mt-24">
-        <div className="max-w-7xl mx-auto px-6 py-12">
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-8">
-            <div className="col-span-1">
-              <div className="flex items-center gap-2 font-semibold text-slate-900 mb-4">
-                <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-teal-500 to-cyan-500 flex items-center justify-center">
-                  <span className="text-white font-bold text-sm">LS</span>
-                </div>
-                <span>FAROS</span>
-              </div>
-              <p className="text-sm text-slate-600">
-                Automate AI research workflows with intelligent orchestration.
-              </p>
-            </div>
-
-            <div>
-              <h4 className="font-semibold text-slate-900 mb-3">Platform</h4>
-              <ul className="space-y-2 text-sm text-slate-600">
-                <li><Link to="/research/planning" className="hover:text-teal-600">Research</Link></li>
-                <li><Link to="/runs" className="hover:text-teal-600">Runs</Link></li>
-                <li><Link to="/experiments" className="hover:text-teal-600">Experiments</Link></li>
-                <li><Link to="/papers" className="hover:text-teal-600">Papers</Link></li>
-              </ul>
-            </div>
-
-            <div>
-              <h4 className="font-semibold text-slate-900 mb-3">Resources</h4>
-              <ul className="space-y-2 text-sm text-slate-600">
-                <li><a href="#" className="hover:text-teal-600">Documentation</a></li>
-                <li><a href="#" className="hover:text-teal-600">API Reference</a></li>
-                <li><a href="#" className="hover:text-teal-600">Examples</a></li>
-                <li><a href="#" className="hover:text-teal-600">Changelog</a></li>
-              </ul>
-            </div>
-
-            <div>
-              <h4 className="font-semibold text-slate-900 mb-3">Community</h4>
-              <ul className="space-y-2 text-sm text-slate-600">
-                <li><a href="#" className="hover:text-teal-600">GitHub</a></li>
-                <li><a href="#" className="hover:text-teal-600">Discord</a></li>
-                <li><a href="#" className="hover:text-teal-600">Twitter</a></li>
-                <li><a href="#" className="hover:text-teal-600">Blog</a></li>
-              </ul>
-            </div>
-          </div>
-
-          <div className="border-t border-slate-200 mt-8 pt-8 text-center text-sm text-slate-600">
-            © 2026 FAROS. A foundation AutoResearch runtime for extensible research workflows.
-          </div>
+      <footer className="border-t border-border bg-card">
+        <div className="mx-auto flex max-w-7xl flex-col gap-4 px-6 py-8 text-sm text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
+          <AppLogo size="sm" variant="full" />
+          <nav className="flex flex-wrap gap-x-5 gap-y-2" aria-label={text('页脚导航', 'Footer navigation')}>
+            <Link to="/runs" className="hover:text-teal-600 dark:hover:text-teal-400">Runs</Link>
+            <Link to="/experiments" className="hover:text-teal-600 dark:hover:text-teal-400">{text('实验', 'Experiments')}</Link>
+            <Link to="/papers" className="hover:text-teal-600 dark:hover:text-teal-400">{text('论文', 'Papers')}</Link>
+            <Link to="/review/consistency" className="hover:text-teal-600 dark:hover:text-teal-400">ReviewX</Link>
+          </nav>
+          <span>{text('可追踪、可复核的 AI 科研流程', 'Traceable and auditable AI research')}</span>
         </div>
       </footer>
     </div>

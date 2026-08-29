@@ -3,6 +3,7 @@ from app.modules.idea.evidence_relevance import (
     assess_search_result,
     build_topic_intent_profile,
     deduplicate_search_results,
+    diagnose_literature_failure,
 )
 from app.services.search_service import SearchResult
 from app.models.idea import RawPaper
@@ -22,6 +23,35 @@ def _result(title: str, abstract: str = "") -> SearchResult:
         citation_count=0,
         source="openalex",
     )
+
+
+def test_literature_failure_diagnosis_explains_generic_results_and_requires_rewrite():
+    diagnosis = diagnose_literature_failure(
+        seed="AI scientist",
+        raw_result_count=360,
+        unique_result_count=182,
+        gate={
+            "paperCount": 0,
+            "alignedPaperCount": 0,
+            "requirements": {
+                "minPaperCount": 4,
+                "minAlignedPaperCount": 3,
+                "minAlignmentScore": 0.32,
+            },
+            "roleCoverage": {"issues": []},
+        },
+        rejection_reason_counts={"generic_overlap_only": 182},
+        seed_anchors=["scientist"],
+        repair_queries=["AI scientist evaluation"],
+    )
+
+    assert diagnosis["code"] == "seed_too_broad"
+    assert diagnosis["rawResultCount"] == 360
+    assert diagnosis["uniqueResultCount"] == 182
+    assert diagnosis["eligiblePaperCount"] == 0
+    assert diagnosis["resumeRecommended"] is False
+    assert diagnosis["recommendedAction"] == "rewrite_seed"
+    assert diagnosis["actionCodes"][-1] == "create_new_session"
 
 
 def _red_chamber_profile():

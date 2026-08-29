@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 
 from app.core.settings import get_settings
+from app.core.user_context import get_current_user_id, get_current_user_role
 from app.llm.provider_client import ChatMessage, ProviderError, get_provider_client
 
 router = APIRouter(prefix="/providers", tags=["providers"])
@@ -39,6 +40,9 @@ class ProviderInfoResponse(BaseModel):
 
 
 class ProvidersListResponse(BaseModel):
+    userId: str
+    role: str
+    credentialScope: str
     activeProvider: str
     providers: list[ProviderInfoResponse]
 
@@ -73,17 +77,17 @@ class BigModelModelsResponse(BaseModel):
 @router.post("/test", response_model=ProviderTestResponse, summary="Test Provider Connection")
 async def test_provider(request: ProviderTestRequest) -> ProviderTestResponse:
     settings = get_settings()
-    provider_name = request.providerName or settings.ACTIVE_PROVIDER_NAME
+    provider_name = request.providerName or settings.get_active_provider()
 
     try:
-        config = settings.get_provider_config(provider_name)
-        if not config.is_configured():
+        settings.get_provider_config(provider_name)
+        if not settings.get_api_key(provider_name):
             return ProviderTestResponse(
                 ok=False,
                 providerName=provider_name,
                 model=request.model or settings.get_active_model(provider_name),
                 latencyMs=0,
-                error=f"API key not configured. Set environment variable: {config.api_key_env}",
+                error="API key not configured for the signed-in account.",
             )
 
         client = get_provider_client(provider_name)
@@ -125,7 +129,13 @@ async def test_provider(request: ProviderTestRequest) -> ProviderTestResponse:
 async def list_providers() -> ProvidersListResponse:
     settings = get_settings()
     providers = [ProviderInfoResponse(**settings.get_provider_info(name, mask_key=True)) for name in settings.PROVIDERS.keys()]
-    return ProvidersListResponse(activeProvider=settings.get_active_provider(), providers=providers)
+    return ProvidersListResponse(
+        userId=get_current_user_id(),
+        role=get_current_user_role(),
+        credentialScope="user",
+        activeProvider=settings.get_active_provider(),
+        providers=providers,
+    )
 
 
 @router.post("/set-key", summary="Set API key for a provider at runtime")
@@ -134,6 +144,21 @@ async def set_provider_key(req: SetKeyRequest) -> SettingsResponse:
     try:
         settings.set_runtime_key(req.providerName, req.apiKey)
         return SettingsResponse(ok=True, message=f"Key set for {req.providerName}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.delete("/{provider_name}/key", summary="Remove this account's provider API key")
+async def remove_provider_key(provider_name: str) -> SettingsResponse:
+    settings = get_settings()
+    try:
+        removed = settings.clear_runtime_key(provider_name)
+        message = (
+            f"Key removed for {provider_name}"
+            if removed
+            else f"No account-specific key was set for {provider_name}"
+        )
+        return SettingsResponse(ok=True, message=message)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 

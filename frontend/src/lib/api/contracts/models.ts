@@ -150,18 +150,6 @@ export interface ReviewFindingDTO {
   suggestedFix?: string
 }
 
-export interface ReviewerSimulationDTO {
-  id: string
-  paperId: string
-  reviewerProfile: 'expert' | 'generalist' | 'critical' | 'supportive'
-  strengths: string[]
-  weaknesses: string[]
-  questions: string[]
-  recommendation: 'accept' | 'minor_revision' | 'major_revision' | 'reject'
-  confidence: number
-  createdAt: string
-}
-
 export interface ComponentHealthDTO {
   name: string
   status: 'ok' | 'degraded' | 'down'

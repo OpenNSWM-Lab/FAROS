@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
   AlertTriangle,
@@ -42,11 +42,16 @@ import {
   type PlanReviewerReport,
   type PlanStage,
 } from '@/components/plans/planPackageApi'
+import { useReviewLocale } from '@/lib/reviewLocale'
 
 type GenerationMode = 'hybrid' | 'deterministic'
 type ReviewerMode = 'deterministic' | 'hybrid'
 
 const DEFAULT_REVIEWER_MODE: ReviewerMode = 'hybrid'
+const PLAN_RECOVERY_INTERVAL_MS = 3000
+const PLAN_RECOVERY_TIMEOUT_MS = 8 * 60 * 1000
+const PLAN_CREATION_MARKER_TTL_MS = 20 * 60 * 1000
+const PLAN_CREATION_MARKER_PREFIX = 'faros:plan-creation:'
 
 const EMPTY_GATE: PlanQualityGate = {
   schemaValid: false,
@@ -56,6 +61,7 @@ const EMPTY_GATE: PlanQualityGate = {
   planSpecific: false,
   agentApproved: false,
   humanApproved: false,
+  downstreamReady: false,
   implementationReady: false,
   overallScore: 0,
   reviewDecision: 'draft',
@@ -92,6 +98,52 @@ function uniqueStrings(values: Array<string | null | undefined>): string[] {
 function shortId(id?: string | null) {
   if (!id) return '-'
   return id.length > 18 ? `${id.slice(0, 10)}...${id.slice(-6)}` : id
+}
+
+function isNotFoundError(error: unknown) {
+  return error instanceof Error && /not found|\b404\b/i.test(error.message)
+}
+
+function isNetworkInterruption(error: unknown) {
+  return error instanceof TypeError
+    || (error instanceof Error && /failed to fetch|network|load failed|connection.*(?:closed|reset)/i.test(error.message))
+}
+
+function planCreationMarkerKey(ideaSessionId: string) {
+  return `${PLAN_CREATION_MARKER_PREFIX}${ideaSessionId}`
+}
+
+function markPlanCreation(ideaSessionId: string) {
+  try {
+    window.localStorage.setItem(planCreationMarkerKey(ideaSessionId), String(Date.now()))
+  } catch {
+    // Private browsing or storage policy must not block plan generation.
+  }
+}
+
+function clearPlanCreationMarker(ideaSessionId: string) {
+  try {
+    window.localStorage.removeItem(planCreationMarkerKey(ideaSessionId))
+  } catch {
+    // Ignore unavailable browser storage.
+  }
+}
+
+function hasRecentPlanCreationMarker(ideaSessionId: string) {
+  try {
+    const startedAt = Number(window.localStorage.getItem(planCreationMarkerKey(ideaSessionId)) || 0)
+    if (!startedAt || Date.now() - startedAt > PLAN_CREATION_MARKER_TTL_MS) {
+      clearPlanCreationMarker(ideaSessionId)
+      return false
+    }
+    return true
+  } catch {
+    return false
+  }
+}
+
+function waitForRecoveryInterval() {
+  return new Promise((resolve) => window.setTimeout(resolve, PLAN_RECOVERY_INTERVAL_MS))
 }
 
 function formatDomainContextSignal(value: string) {
@@ -169,15 +221,16 @@ function toReadableStage(stage: PlanStage): PlanReadableStage {
 }
 
 function QualityGateSummary({ gate }: { gate: PlanQualityGate }) {
+  const { text } = useReviewLocale()
   const rows = [
-    { label: 'Schema', ok: gate.schemaValid },
-    { label: 'Evidence', ok: gate.evidenceValid },
-    { label: 'Topic', ok: gate.topicRelevant },
-    { label: 'Citation', ok: gate.citationFaithful },
-    { label: 'Plan', ok: gate.planSpecific },
+    { label: text('结构', 'Schema'), ok: gate.schemaValid },
+    { label: text('证据', 'Evidence'), ok: gate.evidenceValid },
+    { label: text('主题', 'Topic'), ok: gate.topicRelevant },
+    { label: text('引用', 'Citation'), ok: gate.citationFaithful },
+    { label: text('计划', 'Plan'), ok: gate.planSpecific },
     { label: 'Agent', ok: gate.agentApproved },
-    { label: 'Human', ok: gate.humanApproved },
-    { label: 'Ready', ok: gate.implementationReady },
+    { label: text('人工', 'Human'), ok: gate.humanApproved },
+    { label: text('就绪', 'Ready'), ok: gate.implementationReady },
   ]
 
   return (
@@ -233,6 +286,7 @@ function DisclosureBlock({
   icon?: ReactNode
   defaultOpen?: boolean
 }) {
+  const { text } = useReviewLocale()
   const [open, setOpen] = useState(defaultOpen)
 
   return (
@@ -252,7 +306,7 @@ function DisclosureBlock({
         </div>
         <span className="flex shrink-0 items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-2 py-1 text-xs text-slate-600">
           <ChevronDown className={`h-3.5 w-3.5 text-slate-500 transition-transform ${open ? 'rotate-180' : ''}`} />
-          {open ? 'Collapse' : 'Expand'}
+          {open ? text('收起', 'Collapse') : text('展开', 'Expand')}
         </span>
       </button>
 
@@ -262,6 +316,7 @@ function DisclosureBlock({
 }
 
 function ReadableStageBlock({ stage }: { stage: PlanReadableStage }) {
+  const { text } = useReviewLocale()
   const [expanded, setExpanded] = useState(false)
   const [expandedSteps, setExpandedSteps] = useState<Record<string, boolean>>({})
 
@@ -276,7 +331,7 @@ function ReadableStageBlock({ stage }: { stage: PlanReadableStage }) {
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <Badge variant="outline" className="font-mono text-[11px]">
-              Stage {stage.order}
+              {text('阶段', 'Stage')} {stage.order}
             </Badge>
             <h3 className="text-base font-semibold text-slate-900">{stage.title}</h3>
           </div>
@@ -285,11 +340,11 @@ function ReadableStageBlock({ stage }: { stage: PlanReadableStage }) {
         </div>
         <div className="flex shrink-0 items-center gap-2 text-xs text-slate-600">
           <Badge variant="secondary" className="shrink-0">
-            {stage.steps.length} steps
+            {text(`${stage.steps.length} 个步骤`, `${stage.steps.length} steps`)}
           </Badge>
           <span className="flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-2 py-1">
             <ChevronDown className={`h-3.5 w-3.5 text-slate-500 transition-transform ${expanded ? 'rotate-180' : ''}`} />
-            {expanded ? 'Collapse' : 'Expand'}
+            {expanded ? text('收起', 'Collapse') : text('展开', 'Expand')}
           </span>
         </div>
       </button>
@@ -334,12 +389,12 @@ function ReadableStageBlock({ stage }: { stage: PlanReadableStage }) {
                       <p className="mt-2 text-xs text-slate-600">{step.method}</p>
                     </div>
                     <div className="flex shrink-0 items-center gap-2 text-xs text-slate-600">
-                      <Badge variant="secondary">Step {step.order}</Badge>
-                      <Badge variant="outline">{outputs.length} outputs</Badge>
-                      <Badge variant="outline">{expected.length} metrics</Badge>
+                      <Badge variant="secondary">{text('步骤', 'Step')} {step.order}</Badge>
+                      <Badge variant="outline">{text(`${outputs.length} 个输出`, `${outputs.length} outputs`)}</Badge>
+                      <Badge variant="outline">{text(`${expected.length} 个指标`, `${expected.length} metrics`)}</Badge>
                       <span className="flex items-center gap-1 rounded-full border border-slate-200 bg-white px-2 py-1">
                         <ChevronDown className={`h-3.5 w-3.5 text-slate-500 transition-transform ${stepOpen ? 'rotate-180' : ''}`} />
-                        {stepOpen ? 'Collapse' : 'Expand'}
+                        {stepOpen ? text('收起', 'Collapse') : text('展开', 'Expand')}
                       </span>
                     </div>
                   </button>
@@ -347,7 +402,7 @@ function ReadableStageBlock({ stage }: { stage: PlanReadableStage }) {
                   {stepOpen && (
                     <div className="mt-3 grid gap-3 md:grid-cols-2">
                       <div>
-                        <p className="mb-2 text-xs font-semibold uppercase text-slate-500">Outputs</p>
+                        <p className="mb-2 text-xs font-semibold uppercase text-slate-500">{text('输出', 'Outputs')}</p>
                         <div className="space-y-2">
                           {outputs.map((output, index) => (
                             <div key={`${output.name}-${index}`} className="rounded-md border border-l-4 border-slate-300 border-l-blue-700 bg-white px-3 py-2 text-xs">
@@ -363,7 +418,7 @@ function ReadableStageBlock({ stage }: { stage: PlanReadableStage }) {
                         </div>
                       </div>
                       <div>
-                        <p className="mb-2 text-xs font-semibold uppercase text-slate-500">Expected</p>
+                        <p className="mb-2 text-xs font-semibold uppercase text-slate-500">{text('预期指标', 'Expected')}</p>
                         <div className="space-y-2">
                           {expected.map((expectedItem, index) => (
                             <div key={`${expectedItem.metric}-${index}`} className="rounded-md border border-l-4 border-slate-300 border-l-emerald-700 bg-white px-3 py-2 text-xs">
@@ -400,6 +455,7 @@ function ReadableStageBlock({ stage }: { stage: PlanReadableStage }) {
 }
 
 function PaperRow({ paper }: { paper: PlanLiteraturePaperSummary }) {
+  const { text } = useReviewLocale()
   const methods = paper.methods.map(summarizeRecordText).filter(Boolean).slice(0, 2)
   const findings = paper.findings.map(summarizeRecordText).filter(Boolean).slice(0, 2)
 
@@ -422,7 +478,7 @@ function PaperRow({ paper }: { paper: PlanLiteraturePaperSummary }) {
                     : 'border-red-300 bg-red-50 text-red-900'
               }
             >
-              relevance {(paper.relevanceScore * 100).toFixed(0)}
+              {text('相关性', 'relevance')} {(paper.relevanceScore * 100).toFixed(0)}
             </Badge>
             {paper.year ? <span className="text-xs text-muted-foreground">{paper.year}</span> : null}
           </div>
@@ -444,16 +500,16 @@ function PaperRow({ paper }: { paper: PlanLiteraturePaperSummary }) {
       )}
       <div className="mt-3 grid gap-3 lg:grid-cols-3">
         <div>
-          <p className="text-xs font-semibold uppercase text-slate-500">Methods</p>
-          <TextList items={methods} emptyLabel="No method summary" />
+          <p className="text-xs font-semibold uppercase text-slate-500">{text('方法', 'Methods')}</p>
+          <TextList items={methods} emptyLabel={text('暂无方法摘要', 'No method summary')} />
         </div>
         <div>
-          <p className="text-xs font-semibold uppercase text-slate-500">Findings</p>
-          <TextList items={findings} emptyLabel="No finding summary" />
+          <p className="text-xs font-semibold uppercase text-slate-500">{text('发现', 'Findings')}</p>
+          <TextList items={findings} emptyLabel={text('暂无发现摘要', 'No finding summary')} />
         </div>
         <div>
-          <p className="text-xs font-semibold uppercase text-slate-500">Limitations</p>
-          <TextList items={paper.limitations.slice(0, 3)} emptyLabel="No limitation summary" />
+          <p className="text-xs font-semibold uppercase text-slate-500">{text('局限', 'Limitations')}</p>
+          <TextList items={paper.limitations.slice(0, 3)} emptyLabel={text('暂无局限摘要', 'No limitation summary')} />
         </div>
       </div>
     </div>
@@ -543,6 +599,7 @@ function ReviewerReportCard({ report }: { report: PlanReviewerReport }) {
 }
 
 function ReviewerCommitteeDisclosure({ reports }: { reports: PlanReviewerReport[] }) {
+  const { text } = useReviewLocale()
   const [open, setOpen] = useState(false)
 
   return (
@@ -553,16 +610,16 @@ function ReviewerCommitteeDisclosure({ reports }: { reports: PlanReviewerReport[
         onClick={() => setOpen((value) => !value)}
         aria-expanded={open}
       >
-        <span className="text-sm font-medium text-slate-800">Reviewer committee details</span>
+        <span className="text-sm font-medium text-slate-800">{text('多审稿人委员会详情', 'Reviewer committee details')}</span>
         <span className="flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-2 py-1 text-xs text-slate-600">
           <ChevronDown className={`h-3.5 w-3.5 text-slate-500 transition-transform ${open ? 'rotate-180' : ''}`} />
-          {open ? 'Collapse' : 'Expand'}
+          {open ? text('收起', 'Collapse') : text('展开', 'Expand')}
         </span>
       </button>
       {open && (
         <div className="mt-3 space-y-3">
           {reports.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No reviewer reports yet. They are generated automatically when a package is created or revised.</p>
+            <p className="text-sm text-muted-foreground">{text('暂无审查报告；创建或修订计划时会自动生成。', 'No reviewer reports yet. They are generated automatically when a package is created or revised.')}</p>
           ) : (
             <div className="space-y-3">
               {reports.map((report) => (
@@ -587,6 +644,7 @@ function IterationNotesDisclosure({
   reviewSummary?: PlanPackagePresentation['reviewSummary'] | null
   metaReview?: PlanMetaReview | null
 }) {
+  const { text } = useReviewLocale()
   const refinementItems = useMemo(
     () =>
       uniqueStrings([
@@ -608,24 +666,27 @@ function IterationNotesDisclosure({
 
   const itemCount = refinementItems.length + watchItems.length
   const summary = itemCount
-    ? `${itemCount} internal notes grouped from validation, reviewer feedback, and generation warnings`
-    : 'No open iteration notes. The current package is clean enough for the next pass.'
+    ? text(
+        `${itemCount} 条待办，已按校验、审查意见和生成警告归并`,
+        `${itemCount} internal notes grouped from validation, reviewer feedback, and generation warnings`,
+      )
+    : text('没有待处理项，当前计划可以进入下一步。', 'No open iteration notes. The current package is clean enough for the next pass.')
 
   return (
     <DisclosureBlock
-      title="Iteration notes"
+      title={text('修订建议', 'Iteration notes')}
       summary={summary}
       icon={<RefreshCw className="h-4 w-4 text-slate-600" />}
       defaultOpen={false}
     >
       <div className={`grid gap-4 ${refinementItems.length > 0 && watchItems.length > 0 ? 'lg:grid-cols-2' : ''}`}>
         <div>
-          <p className="mb-2 text-xs font-semibold uppercase text-slate-500">Needs refinement</p>
-          <TextList items={refinementItems} emptyLabel="No refinement items" />
+          <p className="mb-2 text-xs font-semibold uppercase text-slate-500">{text('必须处理', 'Needs refinement')}</p>
+          <TextList items={refinementItems} emptyLabel={text('没有必须处理的问题', 'No refinement items')} />
         </div>
         <div>
-          <p className="mb-2 text-xs font-semibold uppercase text-slate-500">Watch list</p>
-          <TextList items={watchItems} emptyLabel="No watch list items" />
+          <p className="mb-2 text-xs font-semibold uppercase text-slate-500">{text('建议关注', 'Watch list')}</p>
+          <TextList items={watchItems} emptyLabel={text('没有额外提醒', 'No watch list items')} />
         </div>
       </div>
     </DisclosureBlock>
@@ -633,8 +694,9 @@ function IterationNotesDisclosure({
 }
 
 function FeedbackList({ feedback }: { feedback: PlanHumanFeedback[] }) {
+  const { text } = useReviewLocale()
   if (!feedback.length) {
-    return <p className="text-sm text-muted-foreground">No human feedback yet.</p>
+    return <p className="text-sm text-muted-foreground">{text('暂无人工反馈。', 'No human feedback yet.')}</p>
   }
   return (
     <div className="space-y-2">
@@ -642,7 +704,7 @@ function FeedbackList({ feedback }: { feedback: PlanHumanFeedback[] }) {
         <div key={item.id} className={`rounded-md border px-3 py-2 text-sm ${item.resolved ? 'border-emerald-200 bg-emerald-50' : 'border-slate-300 bg-white'}`}>
           <div className="flex flex-wrap items-center justify-between gap-2">
             <Badge variant={item.resolved ? 'secondary' : 'default'}>
-              {item.resolved ? 'Resolved' : 'Pending'}
+              {item.resolved ? text('已解决', 'Resolved') : text('待处理', 'Pending')}
             </Badge>
             <span className="text-xs text-slate-500">{new Date(item.createdAt).toLocaleString()}</span>
           </div>
@@ -668,6 +730,7 @@ export function PlanGenerationPanel({
   ideaSeedQuery?: string
 }) {
   const navigate = useNavigate()
+  const { text } = useReviewLocale()
   const [searchParams, setSearchParams] = useSearchParams()
   const [activeTab, setActiveTab] = useState('summary')
   const [planPackage, setPlanPackage] = useState<PlanPackage | null>(null)
@@ -675,6 +738,8 @@ export function PlanGenerationPanel({
   const [packageIdInput, setPackageIdInput] = useState(searchParams.get('packageId')?.trim() || '')
   const [isLoading, setIsLoading] = useState(false)
   const [isCreating, setIsCreating] = useState(false)
+  const [isRecoveringCreation, setIsRecoveringCreation] = useState(false)
+  const [creationMayContinue, setCreationMayContinue] = useState(false)
   const [isRevising, setIsRevising] = useState(false)
   const [isApproving, setIsApproving] = useState(false)
   const [isSubmittingFeedback, setIsSubmittingFeedback] = useState(false)
@@ -682,10 +747,12 @@ export function PlanGenerationPanel({
   const [generationMode, setGenerationMode] = useState<GenerationMode>('hybrid')
   const [maxStages, setMaxStages] = useState(3)
   const [maxStepsPerStage, setMaxStepsPerStage] = useState(3)
-  const [maxReviewIterations, setMaxReviewIterations] = useState(2)
+  const [maxReviewIterations, setMaxReviewIterations] = useState(1)
   const [advancedGenerationOpen, setAdvancedGenerationOpen] = useState(false)
+  const [packageLoaderOpen, setPackageLoaderOpen] = useState(false)
   const [userNotes, setUserNotes] = useState('')
   const [feedbackComment, setFeedbackComment] = useState('')
+  const recoveryRunRef = useRef(0)
 
   const packageIdFromUrl = searchParams.get('packageId')?.trim() || ''
   const ideaSessionIdFromUrl = ideaSessionIdProp || searchParams.get('ideaSessionId')?.trim() || ''
@@ -737,13 +804,22 @@ export function PlanGenerationPanel({
         setPlanPackage(loaded)
         setPresentation(loadedPresentation)
         setPackageIdInput(loaded.packageId)
+        setCreationMayContinue(false)
+        clearPlanCreationMarker(ideaSessionIdFromUrl)
       })
       .catch((err) => {
         if (cancelled) return
         if (err instanceof Error && err.message.includes('not found')) {
           setPlanPackage(null)
           setPresentation(null)
-          setError(null)
+          const mayStillBeRunning = hasRecentPlanCreationMarker(ideaSessionIdFromUrl)
+          setCreationMayContinue(mayStillBeRunning)
+          setError(mayStillBeRunning
+            ? text(
+                '检测到此前的计划生成可能仍在后台运行。请点击“查找生成结果”，不要重复创建。',
+                'A previous plan generation may still be running. Use "Find generated plan" instead of creating a duplicate.',
+              )
+            : null)
         } else {
           setError(err instanceof Error ? err.message : 'Failed to load PlanPackage')
         }
@@ -754,7 +830,11 @@ export function PlanGenerationPanel({
     return () => {
       cancelled = true
     }
-  }, [ideaSessionIdFromUrl, loadPackage, packageIdFromUrl])
+  }, [ideaSessionIdFromUrl, loadPackage, packageIdFromUrl, text])
+
+  useEffect(() => () => {
+    recoveryRunRef.current += 1
+  }, [])
 
   const updatePackageUrl = (packageId: string) => {
     const next = new URLSearchParams(searchParams)
@@ -769,13 +849,79 @@ export function PlanGenerationPanel({
     [navigate],
   )
 
+  const recoverCreatedPackage = async () => {
+    if (!ideaSessionIdFromUrl) return false
+    const runId = ++recoveryRunRef.current
+    const deadline = Date.now() + PLAN_RECOVERY_TIMEOUT_MS
+    setIsCreating(true)
+    setIsRecoveringCreation(true)
+    setCreationMayContinue(true)
+    setError(null)
+
+    try {
+      while (Date.now() < deadline && recoveryRunRef.current === runId) {
+        try {
+          const [loaded, loadedPresentation] = await Promise.all([
+            getPlanPackageByIdeaSession(ideaSessionIdFromUrl),
+            getPlanPackagePresentationByIdeaSession(ideaSessionIdFromUrl),
+          ])
+          if (recoveryRunRef.current !== runId) return false
+          setPlanPackage(loaded)
+          setPresentation(loadedPresentation)
+          setPackageIdInput(loaded.packageId)
+          setCreationMayContinue(false)
+          clearPlanCreationMarker(ideaSessionIdFromUrl)
+          updatePackageUrl(loaded.packageId)
+          setActiveTab('summary')
+          return true
+        } catch (recoveryError) {
+          if (!isNotFoundError(recoveryError)) throw recoveryError
+        }
+        await waitForRecoveryInterval()
+      }
+
+      if (recoveryRunRef.current === runId) {
+        setError(text(
+          '计划仍未返回。后台任务可能还在运行，你可以继续查找；只有确认任务已停止后再重新生成。',
+          'The plan has not returned yet. The background task may still be running; keep checking, and only regenerate after confirming it stopped.',
+        ))
+      }
+      return false
+    } catch (recoveryError) {
+      if (recoveryRunRef.current === runId) {
+        setError(text(
+          `查找生成结果失败：${recoveryError instanceof Error ? recoveryError.message : 'unknown error'}。请检查网络后重试。`,
+          `Could not find the generated plan: ${recoveryError instanceof Error ? recoveryError.message : 'unknown error'}. Check the network and retry.`,
+        ))
+      }
+      return false
+    } finally {
+      if (recoveryRunRef.current === runId) {
+        setIsCreating(false)
+        setIsRecoveringCreation(false)
+      }
+    }
+  }
+
+  const abandonPendingCreation = () => {
+    recoveryRunRef.current += 1
+    clearPlanCreationMarker(ideaSessionIdFromUrl)
+    setCreationMayContinue(false)
+    setIsCreating(false)
+    setIsRecoveringCreation(false)
+    setError(null)
+  }
+
   const createPackage = async () => {
     if (!ideaSessionIdFromUrl) {
-      setError('Open this page from an Idea candidate or paste a PlanPackage ID.')
+      setError(text('请先从研究创意中选择一个候选，或加载已有 PlanPackage。', 'Select a research idea first, or load an existing PlanPackage.'))
       return
     }
     setIsCreating(true)
+    setIsRecoveringCreation(false)
+    setCreationMayContinue(false)
     setError(null)
+    markPlanCreation(ideaSessionIdFromUrl)
     try {
       const response = await createPlanPackageFromIdeaSession(ideaSessionIdFromUrl, {
         candidateId: ideaCandidateIdFromUrl || undefined,
@@ -789,10 +935,19 @@ export function PlanGenerationPanel({
       setPlanPackage(response.package)
       setPresentation(await getPlanPackagePresentation(response.packageId))
       setPackageIdInput(response.packageId)
+      clearPlanCreationMarker(ideaSessionIdFromUrl)
       updatePackageUrl(response.packageId)
       setActiveTab('summary')
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create PlanPackage')
+      if (isNetworkInterruption(err)) {
+        await recoverCreatedPackage()
+      } else {
+        clearPlanCreationMarker(ideaSessionIdFromUrl)
+        setError(text(
+          `计划生成失败：${err instanceof Error ? err.message : 'unknown error'}。请根据提示修改设置或研究创意后重试。`,
+          `Plan generation failed: ${err instanceof Error ? err.message : 'unknown error'}. Adjust the settings or research idea, then retry.`,
+        ))
+      }
     } finally {
       setIsCreating(false)
     }
@@ -800,6 +955,10 @@ export function PlanGenerationPanel({
 
   const approveCurrentPackage = async () => {
     if (!planPackage) return
+    if (planPackage.status === 'approved') {
+      openCodeWorkspace(planPackage.packageId)
+      return
+    }
     setIsApproving(true)
     setError(null)
     try {
@@ -808,9 +967,37 @@ export function PlanGenerationPanel({
       setPresentation(await getPlanPackagePresentation(approved.packageId))
       openCodeWorkspace(approved.packageId)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to approve PlanPackage')
+      setError(text(
+        `暂时不能批准：${err instanceof Error ? err.message : 'unknown error'}。请先按右侧审查意见修订，再重新批准。`,
+        `Approval is not available yet: ${err instanceof Error ? err.message : 'unknown error'}. Revise the plan from the review findings, then approve again.`,
+      ))
     } finally {
       setIsApproving(false)
+    }
+  }
+
+  const reviseFromReview = async () => {
+    if (!planPackage) return
+    setIsRevising(true)
+    setError(null)
+    try {
+      const revised = await revisePlanPackage(planPackage.packageId, {
+        generationMode: 'hybrid',
+        reviewerMode: DEFAULT_REVIEWER_MODE,
+        maxStages,
+        maxStepsPerStage,
+        maxRepairRounds: 1,
+      })
+      setPlanPackage(revised)
+      setPresentation(await getPlanPackagePresentation(revised.packageId))
+      setActiveTab('summary')
+    } catch (err) {
+      setError(text(
+        `自动修订失败：${err instanceof Error ? err.message : 'unknown error'}。请展开“修订建议”，补充人工反馈后再试。`,
+        `Automatic revision failed: ${err instanceof Error ? err.message : 'unknown error'}. Open Iteration notes, add human feedback, and try again.`,
+      ))
+    } finally {
+      setIsRevising(false)
     }
   }
 
@@ -889,19 +1076,44 @@ export function PlanGenerationPanel({
     [planPackage],
   )
 
+  const planStatusLabel = planPackage
+    ? ({
+        draft: text('草稿', 'Draft'),
+        agent_reviewing: text('Agent 审查中', 'Agent reviewing'),
+        needs_revision: text('需要修订', 'Needs revision'),
+        needs_human_review: text('等待人工确认', 'Needs human review'),
+        approved: text('已批准', 'Approved'),
+        rejected: text('已拒绝', 'Rejected'),
+      }[planPackage.status] || planPackage.status)
+    : ''
+
   const planStats = useMemo(() => {
     if (!planPackage) return null
     return {
-      status: planPackage.status,
+      status: planStatusLabel,
       score: `${(planPackage.qualityGate.overallScore * 100).toFixed(0)} / 100`,
-      readiness: planPackage.qualityGate.implementationReady ? 'Ready for handoff' : 'Iterating internally',
-      stages: `${planPackage.stages.length} stages`,
-      steps: `${totalSteps} steps`,
-      papers: `${planPackage.literatureSurvey.papers.length} papers`,
+      readiness: planPackage.qualityGate.implementationReady
+        ? text('可交付下游模块', 'Ready for handoff')
+        : text('内部迭代中', 'Iterating internally'),
+      stages: text(`${planPackage.stages.length} 个阶段`, `${planPackage.stages.length} stages`),
+      steps: text(`${totalSteps} 个步骤`, `${totalSteps} steps`),
+      papers: text(`${planPackage.literatureSurvey.papers.length} 篇论文`, `${planPackage.literatureSurvey.papers.length} papers`),
     }
-  }, [planPackage, totalSteps])
+  }, [planPackage, planStatusLabel, text, totalSteps])
 
   const gate = planPackage?.qualityGate ?? EMPTY_GATE
+  const hasUpstreamRepairBlocker = Boolean(planPackage?.generation.warnings.some((warning) => warning.includes('review_repair_blocked:upstream')))
+  const canApprove = Boolean(
+    planPackage
+      && gate.schemaValid
+      && gate.evidenceValid
+      && gate.topicRelevant
+      && gate.citationFaithful
+      && gate.planSpecific
+      && gate.downstreamReady
+      && gate.agentApproved
+      && gate.errors.length === 0,
+  )
   const summaryTitle = presentation?.title || planPackage?.idea.title || planPackage?.researchQuestion || 'PlanPackage'
   const summaryQuestion = presentation?.researchQuestion || planPackage?.researchQuestion || ''
   const summaryHypothesis = presentation?.hypothesis || planPackage?.hypothesis || ''
@@ -919,57 +1131,121 @@ export function PlanGenerationPanel({
             <div>
               <CardTitle className="flex items-center gap-2 text-xl">
                 <ClipboardList className="h-5 w-5 text-indigo-700" />
-                PlanPackage Workspace
+                PlanPackage {text('工作区', 'Workspace')}
               </CardTitle>
               <CardDescription className="mt-1">
-                Primary handoff for the idea + plan stage. Quality checks run automatically during generation, feedback revision, and approval.
+                {text(
+                  '承接研究创意并生成可执行计划；生成、反馈修订和批准时会自动执行质量检查。',
+                  'Primary handoff for the idea + plan stage. Quality checks run automatically during generation, feedback revision, and approval.',
+                )}
               </CardDescription>
             </div>
-            <div className="flex flex-wrap gap-2">
-              <Button onClick={approveCurrentPackage} disabled={!planPackage || isApproving} className="bg-emerald-700 text-white hover:bg-emerald-800">
-                {isApproving ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <UserCheck className="mr-2 h-4 w-4" />}
-                Approve & Open Code
-              </Button>
-            </div>
+            {planPackage && (
+              <div className="flex flex-wrap gap-2">
+                {planPackage.status === 'approved' ? (
+                  <Button onClick={() => openCodeWorkspace(planPackage.packageId)} className="bg-emerald-700 text-white hover:bg-emerald-800">
+                    <UserCheck className="mr-2 h-4 w-4" />
+                    {text('进入 Code', 'Open Code')}
+                  </Button>
+                ) : canApprove ? (
+                  <Button onClick={approveCurrentPackage} disabled={isApproving} className="bg-emerald-700 text-white hover:bg-emerald-800">
+                    {isApproving ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <UserCheck className="mr-2 h-4 w-4" />}
+                    {text('批准并进入 Code', 'Approve & Open Code')}
+                  </Button>
+                ) : hasUpstreamRepairBlocker ? (
+                  <Button
+                    variant="outline"
+                    onClick={() => document.getElementById('pipeline-phase-1')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+                  >
+                    <Lightbulb className="mr-2 h-4 w-4" />
+                    {text('返回创意阶段调整', 'Return to Idea stage')}
+                  </Button>
+                ) : (
+                  <Button onClick={() => void reviseFromReview()} disabled={isRevising} className="bg-indigo-700 text-white hover:bg-indigo-800">
+                    {isRevising ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <Sparkles className="mr-2 h-4 w-4" />}
+                    {text('让千问按审查意见修订', 'Ask Qwen to revise')}
+                  </Button>
+                )}
+              </div>
+            )}
           </div>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="grid gap-3 lg:grid-cols-[1fr_auto]">
-            <input
-              value={packageIdInput}
-              onChange={(event) => setPackageIdInput(event.target.value)}
-              placeholder="ppkg_..."
-              className="h-10 w-full rounded-md border border-slate-400 px-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-600"
-            />
-            <Button variant="outline" onClick={loadByInput} disabled={!packageIdInput.trim() || isLoading}>
-              {isLoading ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <FileJson className="mr-2 h-4 w-4" />}
-              Load Package
-            </Button>
-          </div>
+          {ideaSessionIdFromUrl && (
+            <button
+              type="button"
+              onClick={() => setPackageLoaderOpen((value) => !value)}
+              className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground"
+              aria-expanded={packageLoaderOpen}
+            >
+              <ChevronDown className={`h-3.5 w-3.5 transition-transform ${packageLoaderOpen ? 'rotate-180' : ''}`} />
+              {text('加载已有 PlanPackage', 'Load an existing PlanPackage')}
+            </button>
+          )}
+          {(!ideaSessionIdFromUrl || packageLoaderOpen) && (
+            <div className="grid gap-3 lg:grid-cols-[1fr_auto]">
+              <input
+                value={packageIdInput}
+                onChange={(event) => setPackageIdInput(event.target.value)}
+                placeholder={text('输入 PlanPackage ID（ppkg_...）', 'Enter a PlanPackage ID (ppkg_...)')}
+                aria-label={text('PlanPackage ID', 'PlanPackage ID')}
+                className="h-10 w-full rounded-md border border-slate-400 px-3 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-600"
+              />
+              <Button variant="outline" onClick={loadByInput} disabled={!packageIdInput.trim() || isLoading}>
+                {isLoading ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <FileJson className="mr-2 h-4 w-4" />}
+                {text('加载', 'Load')}
+              </Button>
+            </div>
+          )}
 
           {(ideaSessionIdFromUrl || ideaCandidateIdFromUrl) && (
             <div className="rounded-md border border-l-4 border-slate-300 border-l-indigo-700 bg-white px-4 py-3 shadow-sm">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Badge variant="outline" className="border-slate-400 bg-slate-50 font-mono text-[11px] text-slate-800">
-                      idea:{shortId(ideaSessionIdFromUrl)}
-                    </Badge>
-                    {ideaCandidateIdFromUrl && (
-                      <Badge variant="outline" className="border-slate-400 bg-slate-50 font-mono text-[11px] text-slate-800">
-                        candidate:{shortId(ideaCandidateIdFromUrl)}
-                      </Badge>
-                    )}
+              {!planPackage && (
+                <>
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Badge variant="outline" className="border-slate-400 bg-slate-50 font-mono text-[11px] text-slate-800">
+                          idea:{shortId(ideaSessionIdFromUrl)}
+                        </Badge>
+                        {ideaCandidateIdFromUrl && (
+                          <Badge variant="outline" className="border-slate-400 bg-slate-50 font-mono text-[11px] text-slate-800">
+                            candidate:{shortId(ideaCandidateIdFromUrl)}
+                          </Badge>
+                        )}
+                      </div>
+                      {ideaCandidateTitleFromUrl && <p className="mt-2 text-sm font-medium text-slate-900">{ideaCandidateTitleFromUrl}</p>}
+                      {ideaSeedQueryFromUrl && <p className="mt-1 text-xs text-slate-600">{ideaSeedQueryFromUrl}</p>}
+                    </div>
+                    <Button
+                      onClick={() => creationMayContinue ? void recoverCreatedPackage() : void createPackage()}
+                      disabled={isCreating || !ideaSessionIdFromUrl}
+                      className="bg-indigo-700 text-white hover:bg-indigo-800"
+                    >
+                      {isCreating ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <Sparkles className="mr-2 h-4 w-4" />}
+                      {isRecoveringCreation
+                        ? text('正在找回结果', 'Recovering result')
+                        : creationMayContinue
+                          ? text('查找生成结果', 'Find generated plan')
+                          : text('生成 PlanPackage', 'Generate PlanPackage')}
+                    </Button>
                   </div>
-                  {ideaCandidateTitleFromUrl && <p className="mt-2 text-sm font-medium text-slate-900">{ideaCandidateTitleFromUrl}</p>}
-                  {ideaSeedQueryFromUrl && <p className="mt-1 text-xs text-slate-600">{ideaSeedQueryFromUrl}</p>}
-                </div>
-                <Button onClick={createPackage} disabled={isCreating || !ideaSessionIdFromUrl} className="bg-indigo-700 text-white hover:bg-indigo-800">
-                  {isCreating ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <Sparkles className="mr-2 h-4 w-4" />}
-                  Generate PlanPackage
-                </Button>
-              </div>
-              <div className="mt-3 flex flex-wrap items-center justify-between gap-3 text-xs text-slate-600">
+                  {isCreating && (
+                    <p className="mt-3 text-xs text-indigo-800">
+                      {isRecoveringCreation
+                        ? text(
+                            '连接已切换为自动找回模式。后台仍在生成，页面每 3 秒检查一次，你无需重新提交。',
+                            'The connection switched to recovery mode. Generation continues in the background and this page checks every 3 seconds; do not resubmit.',
+                          )
+                        : text(
+                            '千问正在把创意整理为可执行步骤并进行质量审查，通常需要 1-3 分钟，请勿重复提交。',
+                            'Qwen is turning the idea into executable steps and reviewing plan quality. This usually takes 1-3 minutes; do not resubmit.',
+                          )}
+                    </p>
+                  )}
+                </>
+              )}
+              <div className={`${planPackage ? '' : 'mt-3'} flex flex-wrap items-center justify-between gap-3 text-xs text-slate-600`}>
                 <button
                   type="button"
                   onClick={() => setAdvancedGenerationOpen((value) => !value)}
@@ -977,28 +1253,30 @@ export function PlanGenerationPanel({
                   aria-expanded={advancedGenerationOpen}
                 >
                   <ChevronDown className={`h-3.5 w-3.5 transition-transform ${advancedGenerationOpen ? 'rotate-180' : ''}`} />
-                  {advancedGenerationOpen ? 'Hide advanced generation settings' : 'Show advanced generation settings'}
+                  {advancedGenerationOpen
+                    ? text('收起高级生成设置', 'Hide advanced generation settings')
+                    : text('展开高级生成设置', 'Show advanced generation settings')}
                 </button>
                 <span className="text-slate-500">
-                  {generationMode === 'hybrid' ? 'Hybrid LLM' : 'Deterministic'} · {maxStages} stages · {maxStepsPerStage} steps/stage · {maxReviewIterations} review passes
+                  {generationMode === 'hybrid' ? 'Hybrid LLM' : text('确定性生成', 'Deterministic')} · {maxStages} {text('个阶段', 'stages')} · {maxStepsPerStage} {text('步/阶段', 'steps/stage')} · {maxReviewIterations} {text('轮审查', 'review passes')}
                 </span>
               </div>
               {advancedGenerationOpen && (
                 <div className="mt-3 border-t border-slate-200 pt-3">
                   <div className="grid gap-3 md:grid-cols-4">
                     <label className="space-y-1 text-xs font-medium text-slate-700">
-                      Generation
+                      {text('生成方式', 'Generation')}
                       <select
                         value={generationMode}
                         onChange={(event) => setGenerationMode(event.target.value as GenerationMode)}
                         className="h-9 w-full rounded-md border border-slate-400 bg-white px-2 text-sm text-slate-900"
                       >
                         <option value="hybrid">Hybrid LLM</option>
-                        <option value="deterministic">Deterministic</option>
+                        <option value="deterministic">{text('确定性生成', 'Deterministic')}</option>
                       </select>
                     </label>
                     <label className="space-y-1 text-xs font-medium text-slate-700">
-                      Max stages: {maxStages}
+                      {text('阶段数上限', 'Max stages')}: {maxStages}
                       <input
                         type="range"
                         min={1}
@@ -1009,7 +1287,7 @@ export function PlanGenerationPanel({
                       />
                     </label>
                     <label className="space-y-1 text-xs font-medium text-slate-700">
-                      Max steps/stage: {maxStepsPerStage}
+                      {text('每阶段步骤上限', 'Max steps/stage')}: {maxStepsPerStage}
                       <input
                         type="range"
                         min={1}
@@ -1020,7 +1298,7 @@ export function PlanGenerationPanel({
                       />
                     </label>
                     <label className="space-y-1 text-xs font-medium text-slate-700">
-                      Review iterations: {maxReviewIterations}
+                      {text('审查迭代轮数', 'Review iterations')}: {maxReviewIterations}
                       <input
                         type="range"
                         min={0}
@@ -1034,7 +1312,7 @@ export function PlanGenerationPanel({
                   <textarea
                     value={userNotes}
                     onChange={(event) => setUserNotes(event.target.value)}
-                    placeholder="Optional planning constraints for this package"
+                    placeholder={text('可选：补充此 PlanPackage 的规划约束', 'Optional planning constraints for this package')}
                     className="mt-3 min-h-[72px] w-full rounded-md border border-slate-400 bg-white px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-600"
                   />
                 </div>
@@ -1044,25 +1322,36 @@ export function PlanGenerationPanel({
 
           {error && (
             <div className="rounded-md border border-l-4 border-red-300 border-l-red-700 bg-white px-4 py-3 text-sm text-red-800 shadow-sm">
-              {error}
+              <p>{error}</p>
+              {creationMayContinue && (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Button type="button" size="sm" variant="outline" onClick={() => void recoverCreatedPackage()} disabled={isCreating}>
+                    <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
+                    {text('继续查找结果', 'Keep checking')}
+                  </Button>
+                  <Button type="button" size="sm" variant="ghost" onClick={abandonPendingCreation} disabled={isCreating}>
+                    {text('放弃等待并允许重新生成', 'Stop waiting and allow regeneration')}
+                  </Button>
+                </div>
+              )}
             </div>
           )}
         </CardContent>
       </Card>
 
-      {!planPackage && !isLoading && (
+      {!planPackage && !isLoading && !isCreating && !ideaSessionIdFromUrl && (
         <Card className="border-slate-200">
           <CardContent className="flex flex-col items-center gap-3 py-10 text-center">
             <FileJson className="h-10 w-10 text-slate-400" />
             <div>
-              <p className="font-medium text-slate-900">No PlanPackage loaded</p>
+              <p className="font-medium text-slate-900">{text('尚未加载 PlanPackage', 'No PlanPackage loaded')}</p>
               <p className="mt-1 text-sm text-muted-foreground">
-                Start from a completed Idea candidate or paste a package ID above.
+                {text('请先选择一个已完成的研究创意，或在上方输入 PlanPackage ID。', 'Start from a completed Idea candidate or paste a package ID above.')}
               </p>
             </div>
             <Button variant="outline" onClick={() => navigate('/research/ideas')}>
               <Lightbulb className="mr-2 h-4 w-4" />
-              Open Ideas
+              {text('打开研究创意', 'Open Ideas')}
             </Button>
           </CardContent>
         </Card>
@@ -1080,19 +1369,19 @@ export function PlanGenerationPanel({
                       {planPackage.packageId}
                     </Badge>
                     <Badge className={planPackage.status === 'approved' ? 'bg-emerald-700 text-white' : planPackage.status === 'needs_revision' ? 'bg-red-700 text-white' : 'bg-amber-700 text-white'}>
-                      {planPackage.status}
+                      {planStatusLabel}
                     </Badge>
                     <Badge className={planPackage.generation.fallbackUsed ? 'bg-amber-700 text-white' : 'bg-emerald-700 text-white'}>
                       {planPackage.generation.mode}
                     </Badge>
                     {planPackage.reviewReports.length > 0 && (
                       <Badge variant="outline" className="border-emerald-400 bg-emerald-50 text-emerald-900">
-                        Quality checked
+                        {text('已完成质量检查', 'Quality checked')}
                       </Badge>
                     )}
                     <Badge variant="secondary">{planPackage.schemaVersion}</Badge>
                     <Badge variant="outline" className="font-mono">
-                      score {(planPackage.qualityGate.overallScore * 100).toFixed(0)}
+                      {text('评分', 'score')} {(planPackage.qualityGate.overallScore * 100).toFixed(0)}
                     </Badge>
                   </div>
                   <CardTitle className="mt-3 text-xl leading-tight">{presentation?.title || planPackage.researchQuestion}</CardTitle>
@@ -1110,17 +1399,44 @@ export function PlanGenerationPanel({
               </div>
             </CardHeader>
               <CardContent className="space-y-4">
+                {planPackage.status === 'approved' ? (
+                  <div className="flex items-start gap-2 rounded-md border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">
+                    <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
+                    <p>{text('计划已通过 Agent 与人工审核，可以进入 Code 阶段。', 'The plan passed agent and human review and can move to Code.')}</p>
+                  </div>
+                ) : canApprove ? (
+                  <div className="flex items-start gap-2 rounded-md border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">
+                    <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
+                    <p>{text('自动质量检查已通过。确认计划内容后，点击“批准并进入 Code”。', 'Automated quality checks passed. Review the plan, then select Approve & Open Code.')}</p>
+                  </div>
+                ) : hasUpstreamRepairBlocker ? (
+                  <div className="flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-950">
+                    <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                    <p>{text(
+                      '审查发现问题来自选题或文献证据，计划阶段不能凭空修补。请返回创意阶段，换一个候选，或让千问重新改写主题后再运行。',
+                      'The review found an upstream idea or evidence problem that planning cannot repair safely. Return to Idea, select another candidate, or ask Qwen to rewrite the topic and rerun.',
+                    )}</p>
+                  </div>
+                ) : (
+                  <div className="flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-950">
+                    <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                    <p>{text(
+                      '计划尚未通过质量检查。可直接让千问按审查意见修订，也可以在右侧补充人工反馈后修订。',
+                      'The plan has not passed quality checks. Ask Qwen to revise from the findings, or add human feedback on the right first.',
+                    )}</p>
+                  </div>
+                )}
                 {planStats && (
                   <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
-                    <StatCard label="Status" value={planStats.status} detail={planStats.readiness} />
-                    <StatCard label="Score" value={planStats.score} detail={summaryTitle} />
-                    <StatCard label="Structure" value={planStats.stages} detail={planStats.steps} />
+                    <StatCard label={text('状态', 'Status')} value={planStats.status} detail={planStats.readiness} />
+                    <StatCard label={text('评分', 'Score')} value={planStats.score} detail={summaryTitle} />
+                    <StatCard label={text('结构', 'Structure')} value={planStats.stages} detail={planStats.steps} />
                     <StatCard
-                      label="Evidence"
+                      label={text('证据', 'Evidence')}
                       value={planStats.papers}
-                      detail={`${planPackage.literatureSurvey.coverage.structuredPaperCount} structured`}
+                      detail={text(`${planPackage.literatureSurvey.coverage.structuredPaperCount} 篇结构化论文`, `${planPackage.literatureSurvey.coverage.structuredPaperCount} structured`)}
                     />
-                    <StatCard label="Created" value={new Date(planPackage.createdAt).toLocaleDateString()} detail={planPackage.schemaVersion} />
+                    <StatCard label={text('创建时间', 'Created')} value={new Date(planPackage.createdAt).toLocaleDateString()} detail={planPackage.schemaVersion} />
                   </div>
                 )}
               </CardContent>
@@ -1128,10 +1444,10 @@ export function PlanGenerationPanel({
 
             <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
               <TabsList className="h-auto flex-wrap justify-start gap-1">
-                <TabsTrigger value="summary">Summary</TabsTrigger>
-                <TabsTrigger value="narrative">Narrative</TabsTrigger>
-                <TabsTrigger value="implementation">Implementation</TabsTrigger>
-                <TabsTrigger value="evidence">Evidence</TabsTrigger>
+                <TabsTrigger value="summary">{text('摘要', 'Summary')}</TabsTrigger>
+                <TabsTrigger value="narrative">{text('研究叙事', 'Narrative')}</TabsTrigger>
+                <TabsTrigger value="implementation">{text('实施计划', 'Implementation')}</TabsTrigger>
+                <TabsTrigger value="evidence">{text('证据', 'Evidence')}</TabsTrigger>
               </TabsList>
 
               <TabsContent value="summary" className="space-y-4">
@@ -1145,19 +1461,19 @@ export function PlanGenerationPanel({
                       <CardContent className="space-y-4">
                         <div className="grid gap-3 md:grid-cols-2">
                           <div className="rounded-md border border-slate-300 bg-slate-50 px-3 py-3">
-                            <p className="text-xs font-semibold uppercase text-slate-500">Research question</p>
+                            <p className="text-xs font-semibold uppercase text-slate-500">{text('研究问题', 'Research question')}</p>
                             <p className="mt-2 text-sm text-slate-800">{summaryQuestion}</p>
                           </div>
                           <div className="rounded-md border border-slate-300 bg-slate-50 px-3 py-3">
-                            <p className="text-xs font-semibold uppercase text-slate-500">Hypothesis</p>
+                            <p className="text-xs font-semibold uppercase text-slate-500">{text('研究假设', 'Hypothesis')}</p>
                             <p className="mt-2 text-sm text-slate-800">{summaryHypothesis}</p>
                           </div>
                         </div>
                         {presentation.nextActions.length > 0 && (
                           <div className="rounded-md border border-slate-300 bg-white px-3 py-3">
-                            <p className="text-xs font-semibold uppercase text-slate-500">Next actions</p>
+                            <p className="text-xs font-semibold uppercase text-slate-500">{text('下一步行动', 'Next actions')}</p>
                             <div className="mt-2">
-                              <TextList items={presentation.nextActions.slice(0, 3)} emptyLabel="No next actions" />
+                              <TextList items={presentation.nextActions.slice(0, 3)} emptyLabel={text('暂无下一步行动', 'No next actions')} />
                             </div>
                           </div>
                         )}
@@ -1166,20 +1482,20 @@ export function PlanGenerationPanel({
 
                     <Card>
                       <CardHeader className="pb-3">
-                        <CardTitle className="text-base">Plan frame</CardTitle>
+                        <CardTitle className="text-base">{text('计划框架', 'Plan frame')}</CardTitle>
                       </CardHeader>
                       <CardContent className="space-y-3">
                         <div className="grid gap-3 md:grid-cols-2">
-                          <StatCard label="Stages" value={`${planPackage.stages.length}`} detail={`${totalSteps} steps`} />
+                          <StatCard label={text('阶段', 'Stages')} value={`${planPackage.stages.length}`} detail={text(`${totalSteps} 个步骤`, `${totalSteps} steps`)} />
                           <StatCard
-                            label="Papers"
+                            label={text('论文', 'Papers')}
                             value={`${planPackage.literatureSurvey.papers.length}`}
                             detail={`${planPackage.literatureSurvey.coverage.structuredPaperCount} structured · ${planPackage.literatureSurvey.coverage.probePaperCount} probe`}
                           />
                         </div>
                         <div className="grid gap-2 md:grid-cols-2">
                           {Object.keys(planPackage.constants).length === 0 ? (
-                            <p className="text-sm text-muted-foreground">No constants declared.</p>
+                            <p className="text-sm text-muted-foreground">{text('未声明固定参数。', 'No constants declared.')}</p>
                           ) : (
                             Object.entries(planPackage.constants).map(([key, value]) => (
                               <div key={key} className="rounded-md border border-slate-300 bg-slate-50 px-3 py-2">
@@ -1195,7 +1511,7 @@ export function PlanGenerationPanel({
                 ) : (
                   <Card>
                     <CardContent className="py-8 text-sm text-muted-foreground">
-                      Presentation view is not available for this package.
+                      {text('此 PlanPackage 暂无展示视图。', 'Presentation view is not available for this package.')}
                     </CardContent>
                   </Card>
                 )}
@@ -1207,7 +1523,7 @@ export function PlanGenerationPanel({
                     <CardHeader className="pb-3">
                       <CardTitle className="flex items-center gap-2 text-base">
                         <Lightbulb className="h-4 w-4 text-amber-600" />
-                        Idea anchor
+                        {text('创意锚点', 'Idea anchor')}
                       </CardTitle>
                     </CardHeader>
                     <CardContent className="space-y-4 text-sm text-slate-800">
@@ -1217,26 +1533,26 @@ export function PlanGenerationPanel({
                         {planPackage.idea.hypothesisStatement && <p className="text-slate-700">{planPackage.idea.hypothesisStatement}</p>}
                       </div>
                       <DisclosureBlock
-                        title="Idea details"
-                        summary="Method, expected outcome, scores, critique, and prior work"
+                        title={text('创意详情', 'Idea details')}
+                        summary={text('方法、预期结果、评分、审查意见与相关工作', 'Method, expected outcome, scores, critique, and prior work')}
                         icon={<Sparkles className="h-4 w-4 text-amber-600" />}
                       >
                         <div className="space-y-4">
                           <div className="grid gap-3 md:grid-cols-2">
                             <div className="rounded-md border border-slate-300 bg-slate-50 px-3 py-3">
-                              <p className="text-xs font-semibold uppercase text-slate-500">Key insight</p>
-                              <p className="mt-2 text-sm text-slate-800">{planPackage.idea.keyInsight || 'No key insight recorded.'}</p>
+                              <p className="text-xs font-semibold uppercase text-slate-500">{text('核心洞察', 'Key insight')}</p>
+                              <p className="mt-2 text-sm text-slate-800">{planPackage.idea.keyInsight || text('未记录核心洞察。', 'No key insight recorded.')}</p>
                             </div>
                             <div className="rounded-md border border-slate-300 bg-slate-50 px-3 py-3">
-                              <p className="text-xs font-semibold uppercase text-slate-500">Method</p>
-                              <p className="mt-2 text-sm text-slate-800">{planPackage.idea.proposedMethod || 'No method recorded.'}</p>
+                              <p className="text-xs font-semibold uppercase text-slate-500">{text('方法', 'Method')}</p>
+                              <p className="mt-2 text-sm text-slate-800">{planPackage.idea.proposedMethod || text('未记录方法。', 'No method recorded.')}</p>
                             </div>
                             <div className="rounded-md border border-slate-300 bg-slate-50 px-3 py-3">
-                              <p className="text-xs font-semibold uppercase text-slate-500">Expected outcome</p>
-                              <p className="mt-2 text-sm text-slate-800">{planPackage.idea.expectedOutcome || 'No expected outcome recorded.'}</p>
+                              <p className="text-xs font-semibold uppercase text-slate-500">{text('预期结果', 'Expected outcome')}</p>
+                              <p className="mt-2 text-sm text-slate-800">{planPackage.idea.expectedOutcome || text('未记录预期结果。', 'No expected outcome recorded.')}</p>
                             </div>
                             <div className="rounded-md border border-slate-300 bg-slate-50 px-3 py-3 md:col-span-2">
-                              <p className="text-xs font-semibold uppercase text-slate-500">Scores</p>
+                              <p className="text-xs font-semibold uppercase text-slate-500">{text('评分', 'Scores')}</p>
                               <div className="mt-3 grid gap-3 sm:grid-cols-2">
                                 {Object.entries(planPackage.idea.scores).slice(0, 4).map(([key, value]) => (
                                   <div key={key} className="rounded-md border border-slate-300 bg-white px-3 py-3">
@@ -1249,16 +1565,16 @@ export function PlanGenerationPanel({
                           </div>
                           {planPackage.idea.critiqueSummary && (
                             <div className="rounded-md border border-slate-300 bg-slate-50 px-3 py-3">
-                              <p className="text-xs font-semibold uppercase text-slate-500">Critique</p>
+                              <p className="text-xs font-semibold uppercase text-slate-500">{text('审查意见', 'Critique')}</p>
                               <p className="mt-2 text-sm text-slate-800">{planPackage.idea.critiqueSummary}</p>
                             </div>
                           )}
                           {planPackage.idea.closestPriorWork.length > 0 && (
                             <div className="rounded-md border border-slate-300 bg-slate-50 px-3 py-3">
-                              <p className="text-xs font-semibold uppercase text-slate-500">Closest prior work</p>
+                              <p className="text-xs font-semibold uppercase text-slate-500">{text('最相关工作', 'Closest prior work')}</p>
                               <TextList
                                 items={planPackage.idea.closestPriorWork.map((item) => summarizeRecordText(item)).filter(Boolean)}
-                                emptyLabel="No prior work recorded"
+                                emptyLabel={text('未记录相关工作', 'No prior work recorded')}
                               />
                             </div>
                           )}
@@ -1269,7 +1585,7 @@ export function PlanGenerationPanel({
 
                   <Card>
                     <CardHeader className="pb-3">
-                      <CardTitle className="text-base">Background and gap</CardTitle>
+                      <CardTitle className="text-base">{text('研究背景与空白', 'Background and gap')}</CardTitle>
                     </CardHeader>
                     <CardContent className="space-y-4 text-sm text-slate-800">
                       <div className="space-y-2">
@@ -1278,30 +1594,30 @@ export function PlanGenerationPanel({
                       </div>
                       <div className="space-y-3">
                         <div>
-                          <p className="mb-2 text-xs font-semibold uppercase text-slate-500">Current limitations</p>
-                          <TextList items={planPackage.background.currentLimitations} emptyLabel="No limitations listed" />
+                          <p className="mb-2 text-xs font-semibold uppercase text-slate-500">{text('现有局限', 'Current limitations')}</p>
+                          <TextList items={planPackage.background.currentLimitations} emptyLabel={text('未列出局限', 'No limitations listed')} />
                         </div>
                       </div>
                       <EvidenceChips refs={planPackage.background.evidenceRefs} />
 
                       <DisclosureBlock
-                        title="Domain context"
-                        summary={`${planPackage.background.domainContext.length} cluster signals from retrieved literature`}
+                        title={text('领域背景', 'Domain context')}
+                        summary={text(`检索文献中提取了 ${planPackage.background.domainContext.length} 个主题聚类信号`, `${planPackage.background.domainContext.length} cluster signals from retrieved literature`)}
                         icon={<BookOpen className="h-4 w-4 text-indigo-600" />}
                       >
                         <div className="space-y-2">
-                          <p className="text-xs text-slate-600">These are raw topic clusters from the retrieval layer, kept collapsed to preserve readability.</p>
+                          <p className="text-xs text-slate-600">{text('以下是检索层产生的原始主题聚类，默认折叠以保持可读性。', 'These are raw topic clusters from the retrieval layer, kept collapsed to preserve readability.')}</p>
                           <TextList
                             items={planPackage.background.domainContext.map((item) => formatDomainContextSignal(item))}
-                            emptyLabel="No domain context listed"
+                            emptyLabel={text('未列出领域背景', 'No domain context listed')}
                           />
                         </div>
                       </DisclosureBlock>
 
                       <div className="rounded-md border border-slate-300 bg-slate-50 px-3 py-3">
-                        <p className="text-xs font-semibold uppercase text-slate-500">Gap summary</p>
+                        <p className="text-xs font-semibold uppercase text-slate-500">{text('研究空白摘要', 'Gap summary')}</p>
                         <p className="mt-2 text-sm text-slate-800">{planPackage.gap.summary}</p>
-                        {planPackage.gap.selectedGapId && <p className="mt-2 text-xs text-slate-600">Selected gap: {planPackage.gap.selectedGapId}</p>}
+                        {planPackage.gap.selectedGapId && <p className="mt-2 text-xs text-slate-600">{text('选定空白', 'Selected gap')}: {planPackage.gap.selectedGapId}</p>}
                       </div>
 
                       <div className={`grid gap-3 ${planPackage.gap.items.length > 1 ? 'lg:grid-cols-2' : ''}`}>
@@ -1316,7 +1632,7 @@ export function PlanGenerationPanel({
                     <CardHeader className="pb-3">
                       <CardTitle className="flex items-center gap-2 text-base">
                         <BookOpen className="h-4 w-4 text-indigo-600" />
-                        Principle and literature
+                        {text('研究原理与文献', 'Principle and literature')}
                       </CardTitle>
                     </CardHeader>
                     <CardContent className="grid gap-4 lg:grid-cols-[1fr_1.1fr]">
@@ -1332,12 +1648,12 @@ export function PlanGenerationPanel({
                         </div>
                         <div className="grid gap-4 lg:grid-cols-2">
                           <div>
-                            <p className="mb-2 text-xs font-semibold uppercase text-slate-500">Assumptions</p>
-                            <TextList items={planPackage.principle.assumptions} emptyLabel="No assumptions listed" />
+                            <p className="mb-2 text-xs font-semibold uppercase text-slate-500">{text('假设条件', 'Assumptions')}</p>
+                            <TextList items={planPackage.principle.assumptions} emptyLabel={text('未列出假设条件', 'No assumptions listed')} />
                           </div>
                           <div>
-                            <p className="mb-2 text-xs font-semibold uppercase text-slate-500">Risks</p>
-                            <TextList items={planPackage.principle.risks} emptyLabel="No risks listed" />
+                            <p className="mb-2 text-xs font-semibold uppercase text-slate-500">{text('风险', 'Risks')}</p>
+                            <TextList items={planPackage.principle.risks} emptyLabel={text('未列出风险', 'No risks listed')} />
                           </div>
                         </div>
                       </div>
@@ -1346,7 +1662,7 @@ export function PlanGenerationPanel({
                         <div className="rounded-md border border-slate-300 bg-white px-4 py-3 shadow-sm">
                           <div className="flex items-center justify-between gap-3">
                             <div>
-                              <p className="text-sm font-semibold text-slate-900">Literature signal</p>
+                              <p className="text-sm font-semibold text-slate-900">{text('文献信号', 'Literature signal')}</p>
                               <p className="mt-1 text-xs text-slate-600">{planPackage.literatureSurvey.summary}</p>
                             </div>
                             <Badge variant="outline" className="border-slate-400 text-slate-700">
@@ -1360,7 +1676,7 @@ export function PlanGenerationPanel({
                           </div>
                           {planPackage.literatureSurvey.papers.length > 2 && (
                             <details className="mt-3 rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
-                              <summary className="cursor-pointer text-sm font-medium text-slate-800">More literature</summary>
+                              <summary className="cursor-pointer text-sm font-medium text-slate-800">{text('更多文献', 'More literature')}</summary>
                               <div className="mt-3 space-y-3">
                                 {planPackage.literatureSurvey.papers.slice(2).map((paper) => (
                                   <PaperRow key={`${paper.source}-${paper.paperId}`} paper={paper} />
@@ -1380,14 +1696,14 @@ export function PlanGenerationPanel({
                   <CardHeader className="pb-3">
                     <CardTitle className="flex items-center gap-2 text-base">
                       <Layers3 className="h-4 w-4 text-blue-600" />
-                      Implementation timeline
+                      {text('实施时间线', 'Implementation timeline')}
                     </CardTitle>
                   </CardHeader>
                   <CardContent className="space-y-3">
                     {readableImplementationStages.length > 0 ? (
                       readableImplementationStages.map((stage) => <ReadableStageBlock key={stage.id} stage={stage} />)
                     ) : (
-                      <p className="text-sm text-muted-foreground">No stages available.</p>
+                      <p className="text-sm text-muted-foreground">{text('暂无实施阶段。', 'No stages available.')}</p>
                     )}
                   </CardContent>
                 </Card>
@@ -1398,22 +1714,22 @@ export function PlanGenerationPanel({
                   <CardHeader className="pb-3">
                     <CardTitle className="flex items-center gap-2 text-base">
                       <ShieldCheck className="h-4 w-4 text-indigo-700" />
-                      Review snapshot
+                      {text('审查快照', 'Review snapshot')}
                     </CardTitle>
-                    <CardDescription>Summary first, reviewer committee details only on demand.</CardDescription>
+                    <CardDescription>{text('优先展示摘要，需要时再展开审查委员会详情。', 'Summary first, reviewer committee details only on demand.')}</CardDescription>
                   </CardHeader>
                   <CardContent className="space-y-4">
                     <div className="grid gap-3 md:grid-cols-3">
-                      <StatCard label="Decision" value={summaryReviewDecision} detail={`${(summaryReviewScore * 100).toFixed(0)} / 100`} />
-                      <StatCard label="Mode" value={summaryReviewerMode} detail={summaryReviewerUsed ? 'LLM reviewer used' : 'Deterministic only'} />
+                      <StatCard label={text('决策', 'Decision')} value={summaryReviewDecision} detail={`${(summaryReviewScore * 100).toFixed(0)} / 100`} />
+                      <StatCard label={text('模式', 'Mode')} value={summaryReviewerMode} detail={summaryReviewerUsed ? text('使用 LLM 审查', 'LLM reviewer used') : text('仅确定性检查', 'Deterministic only')} />
                       <StatCard
-                        label="Next actions"
-                        value={`${presentation?.nextActions.length || 0} items`}
-                        detail={presentation?.nextActions[0] || 'No next actions'}
+                        label={text('下一步行动', 'Next actions')}
+                        value={text(`${presentation?.nextActions.length || 0} 项`, `${presentation?.nextActions.length || 0} items`)}
+                        detail={presentation?.nextActions[0] || text('暂无下一步行动', 'No next actions')}
                       />
                     </div>
                     <p className="text-sm text-slate-600">
-                      Detailed iteration notes are grouped in the Summary tab so this review view stays focused on the decision and evidence chain.
+                      {text('详细迭代说明已归入“摘要”页签，使该视图聚焦于审查决策和证据链。', 'Detailed iteration notes are grouped in the Summary tab so this review view stays focused on the decision and evidence chain.')}
                     </p>
                   </CardContent>
                 </Card>
@@ -1423,69 +1739,70 @@ export function PlanGenerationPanel({
                     <CardHeader className="pb-3">
                       <CardTitle className="flex items-center gap-2 text-base">
                         <Network className="h-4 w-4 text-indigo-700" />
-                        Evidence map
+                        {text('证据图谱', 'Evidence map')}
                       </CardTitle>
                       <CardDescription>
-                        {planPackage.evidenceTrace.structuredPaperIds.length + planPackage.evidenceTrace.selectedPaperIds.length} literature references,
-                        {' '}{planPackage.evidenceTrace.reasoningKgId ? 'reasoning graph attached' : 'no reasoning graph id'},
-                        {' '}{planPackage.evidenceTrace.probeResultIds.length} probe checks.
+                        {text(
+                          `${planPackage.evidenceTrace.structuredPaperIds.length + planPackage.evidenceTrace.selectedPaperIds.length} 条文献引用，${planPackage.evidenceTrace.reasoningKgId ? '已关联推理图谱' : '无推理图谱 ID'}，${planPackage.evidenceTrace.probeResultIds.length} 项 probe 检查。`,
+                          `${planPackage.evidenceTrace.structuredPaperIds.length + planPackage.evidenceTrace.selectedPaperIds.length} literature references, ${planPackage.evidenceTrace.reasoningKgId ? 'reasoning graph attached' : 'no reasoning graph id'}, ${planPackage.evidenceTrace.probeResultIds.length} probe checks.`,
+                        )}
                       </CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-4">
                       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
                         <EvidenceCoverageCard
-                          label="Idea"
+                          label={text('研究创意', 'Idea')}
                           value={shortId(planPackage.evidenceTrace.ideaCandidateId)}
-                          detail={planPackage.idea.title || 'Selected candidate'}
+                          detail={planPackage.idea.title || text('选定候选', 'Selected candidate')}
                           ok={Boolean(planPackage.evidenceTrace.ideaCandidateId)}
                         />
                         <EvidenceCoverageCard
-                          label="Papers"
+                          label={text('论文', 'Papers')}
                           value={String(planPackage.evidenceTrace.structuredPaperIds.length + planPackage.evidenceTrace.selectedPaperIds.length)}
-                          detail={`${evidencePapers.length} matched to summaries`}
+                          detail={text(`${evidencePapers.length} 篇已匹配摘要`, `${evidencePapers.length} matched to summaries`)}
                           ok={planPackage.evidenceTrace.structuredPaperIds.length + planPackage.evidenceTrace.selectedPaperIds.length > 0}
                         />
                         <EvidenceCoverageCard
-                          label="Reasoning Graph"
-                          value={planPackage.evidenceTrace.reasoningKgId ? 'Linked' : 'Missing'}
-                          detail={planPackage.evidenceTrace.reasoningKgId ? shortId(planPackage.evidenceTrace.reasoningKgId) : 'No KG artifact id'}
+                          label={text('推理图谱', 'Reasoning Graph')}
+                          value={planPackage.evidenceTrace.reasoningKgId ? text('已关联', 'Linked') : text('缺失', 'Missing')}
+                          detail={planPackage.evidenceTrace.reasoningKgId ? shortId(planPackage.evidenceTrace.reasoningKgId) : text('无 KG artifact ID', 'No KG artifact id')}
                           ok={Boolean(planPackage.evidenceTrace.reasoningKgId)}
                         />
                         <EvidenceCoverageCard
                           label="Probe"
                           value={String(planPackage.evidenceTrace.probeResultIds.length)}
-                          detail={`${planPackage.evidenceTrace.graphPatchIds.length} graph patches`}
+                          detail={text(`${planPackage.evidenceTrace.graphPatchIds.length} 个图谱补丁`, `${planPackage.evidenceTrace.graphPatchIds.length} graph patches`)}
                           ok={planPackage.evidenceTrace.probeResultIds.length > 0 || planPackage.evidenceTrace.graphPatchIds.length > 0}
                         />
                       </div>
 
                       <div className="rounded-md border border-slate-300 bg-white px-4 py-3 shadow-sm">
-                        <p className="text-sm font-semibold text-slate-900">Evidence path</p>
+                        <p className="text-sm font-semibold text-slate-900">{text('证据路径', 'Evidence path')}</p>
                         <div className="mt-3 grid gap-3 lg:grid-cols-5">
                           {[
                             {
-                              label: 'Selected idea',
+                              label: text('选定创意', 'Selected idea'),
                               value: planPackage.idea.title || shortId(planPackage.evidenceTrace.ideaCandidateId),
                               ok: Boolean(planPackage.evidenceTrace.ideaCandidateId),
                             },
                             {
-                              label: 'Gap',
+                              label: text('研究空白', 'Gap'),
                               value: planPackage.gap.selectedGapId || planPackage.gap.summary,
                               ok: Boolean(planPackage.gap.selectedGapId || planPackage.gap.items.length),
                             },
                             {
-                              label: 'Literature',
-                              value: `${planPackage.literatureSurvey.papers.length} paper summaries`,
+                              label: text('文献', 'Literature'),
+                              value: text(`${planPackage.literatureSurvey.papers.length} 篇论文摘要`, `${planPackage.literatureSurvey.papers.length} paper summaries`),
                               ok: planPackage.literatureSurvey.papers.length > 0,
                             },
                             {
-                              label: 'Reasoning',
-                              value: planPackage.evidenceTrace.reasoningKgId ? shortId(planPackage.evidenceTrace.reasoningKgId) : 'No graph id',
+                              label: text('推理', 'Reasoning'),
+                              value: planPackage.evidenceTrace.reasoningKgId ? shortId(planPackage.evidenceTrace.reasoningKgId) : text('无图谱 ID', 'No graph id'),
                               ok: Boolean(planPackage.evidenceTrace.reasoningKgId),
                             },
                             {
-                              label: 'Plan readiness',
-                              value: planPackage.qualityGate.evidenceValid ? 'Evidence valid' : 'Needs review',
+                              label: text('计划就绪度', 'Plan readiness'),
+                              value: planPackage.qualityGate.evidenceValid ? text('证据有效', 'Evidence valid') : text('需要审查', 'Needs review'),
                               ok: planPackage.qualityGate.evidenceValid,
                             },
                           ].map((item, index) => (
@@ -1505,7 +1822,7 @@ export function PlanGenerationPanel({
                       <div className="grid gap-4 xl:grid-cols-[1.5fr_1fr]">
                         <div className="rounded-md border border-slate-300 bg-white px-4 py-3 shadow-sm">
                           <div className="flex items-center justify-between gap-3">
-                            <p className="text-sm font-semibold text-slate-900">Supporting papers</p>
+                            <p className="text-sm font-semibold text-slate-900">{text('支持性论文', 'Supporting papers')}</p>
                             <Badge variant="outline" className="border-slate-400 text-slate-700">
                               {evidencePapers.length || planPackage.literatureSurvey.papers.length}
                             </Badge>
@@ -1522,11 +1839,11 @@ export function PlanGenerationPanel({
                                 </div>
                                 <p className="mt-2 text-sm font-semibold text-slate-950">{paper.title}</p>
                                 <p className="mt-1 text-sm text-slate-700">{paper.summary}</p>
-                                {paper.limitations.length > 0 && <p className="mt-2 text-xs text-slate-600">Limitation: {paper.limitations[0]}</p>}
+                                {paper.limitations.length > 0 && <p className="mt-2 text-xs text-slate-600">{text('局限', 'Limitation')}: {paper.limitations[0]}</p>}
                               </div>
                             ))}
                             {evidencePapers.length === 0 && planPackage.literatureSurvey.papers.length === 0 && (
-                              <p className="text-sm text-muted-foreground">No paper summaries are attached.</p>
+                              <p className="text-sm text-muted-foreground">{text('未关联论文摘要。', 'No paper summaries are attached.')}</p>
                             )}
                           </div>
                         </div>
@@ -1536,7 +1853,7 @@ export function PlanGenerationPanel({
 
                           {planPackage.revisions.length > 0 && (
                             <details className="rounded-md border border-slate-300 bg-white px-4 py-3 shadow-sm">
-                              <summary className="cursor-pointer text-sm font-medium text-slate-800">Revision history</summary>
+                              <summary className="cursor-pointer text-sm font-medium text-slate-800">{text('修订历史', 'Revision history')}</summary>
                               <div className="mt-3 space-y-2">
                                 {planPackage.revisions.slice(0, 6).map((revision) => (
                                   <div key={revision.id} className="rounded-md border border-slate-300 bg-slate-50 px-3 py-2 text-sm">
@@ -1548,7 +1865,7 @@ export function PlanGenerationPanel({
                                       <span className="text-xs text-slate-500">{new Date(revision.createdAt).toLocaleString()}</span>
                                     </div>
                                     <p className="mt-2 text-slate-800">{revision.summary}</p>
-                                    {revision.changedSections.length > 0 && <p className="mt-1 text-xs text-slate-600">Changed: {revision.changedSections.join(', ')}</p>}
+                                    {revision.changedSections.length > 0 && <p className="mt-1 text-xs text-slate-600">{text('已修改', 'Changed')}: {revision.changedSections.join(', ')}</p>}
                                   </div>
                                 ))}
                               </div>
@@ -1557,15 +1874,15 @@ export function PlanGenerationPanel({
 
                           {evidencePaperIdsWithoutSummary.length > 0 && (
                             <div className="rounded-md border border-amber-300 bg-white px-4 py-3 shadow-sm">
-                              <p className="text-sm font-semibold text-amber-900">Referenced IDs without summaries</p>
+                              <p className="text-sm font-semibold text-amber-900">{text('缺少摘要的引用 ID', 'Referenced IDs without summaries')}</p>
                               <div className="mt-3">
-                                <TextList items={evidencePaperIdsWithoutSummary.map(shortId)} emptyLabel="All referenced IDs are summarized" />
+                                <TextList items={evidencePaperIdsWithoutSummary.map(shortId)} emptyLabel={text('所有引用 ID 均有摘要', 'All referenced IDs are summarized')} />
                               </div>
                             </div>
                           )}
 
                           <details className="rounded-md border border-slate-300 bg-white px-4 py-3 shadow-sm">
-                            <summary className="cursor-pointer text-sm font-medium text-slate-800">Raw package snapshot</summary>
+                            <summary className="cursor-pointer text-sm font-medium text-slate-800">{text('原始 PlanPackage 快照', 'Raw package snapshot')}</summary>
                             <pre className="mt-3 max-h-80 overflow-auto rounded bg-slate-950 p-3 text-xs text-slate-100">
                               {JSON.stringify(
                                 {
@@ -1597,21 +1914,21 @@ export function PlanGenerationPanel({
           <aside className="space-y-6 xl:sticky xl:top-6">
             <Card>
               <CardHeader className="pb-3">
-                <CardTitle className="text-base">Plan snapshot</CardTitle>
-                <CardDescription>Quick status, score, and structure at a glance.</CardDescription>
+                <CardTitle className="text-base">{text('计划快照', 'Plan snapshot')}</CardTitle>
+                <CardDescription>{text('快速查看状态、评分和结构。', 'Quick status, score, and structure at a glance.')}</CardDescription>
               </CardHeader>
               <CardContent className="space-y-3">
                 {planStats && (
                   <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
-                    <StatCard label="Status" value={planStats.status} detail={planStats.readiness} />
-                    <StatCard label="Score" value={planStats.score} detail={summaryTitle} />
-                    <StatCard label="Structure" value={planStats.stages} detail={planStats.steps} />
+                    <StatCard label={text('状态', 'Status')} value={planStats.status} detail={planStats.readiness} />
+                    <StatCard label={text('评分', 'Score')} value={planStats.score} detail={summaryTitle} />
+                    <StatCard label={text('结构', 'Structure')} value={planStats.stages} detail={planStats.steps} />
                     <StatCard
-                      label="Evidence"
+                      label={text('证据', 'Evidence')}
                       value={planStats.papers}
-                      detail={`${planPackage.literatureSurvey.coverage.structuredPaperCount} structured`}
+                      detail={text(`${planPackage.literatureSurvey.coverage.structuredPaperCount} 篇结构化论文`, `${planPackage.literatureSurvey.coverage.structuredPaperCount} structured`)}
                     />
-                    <StatCard label="Created" value={new Date(planPackage.createdAt).toLocaleDateString()} detail={planPackage.schemaVersion} />
+                    <StatCard label={text('创建时间', 'Created')} value={new Date(planPackage.createdAt).toLocaleDateString()} detail={planPackage.schemaVersion} />
                   </div>
                 )}
               </CardContent>
@@ -1619,8 +1936,8 @@ export function PlanGenerationPanel({
 
             <Card>
               <CardHeader className="pb-3">
-                <CardTitle className="text-base">Quality and iteration</CardTitle>
-                <CardDescription>Internal checks stay here instead of crowding the main reading path.</CardDescription>
+                <CardTitle className="text-base">{text('质量与迭代', 'Quality and iteration')}</CardTitle>
+                <CardDescription>{text('内部检查集中展示在此处，避免干扰主要阅读路径。', 'Internal checks stay here instead of crowding the main reading path.')}</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
                 <QualityGateSummary gate={gate} />
@@ -1634,9 +1951,9 @@ export function PlanGenerationPanel({
                   <div className="rounded-md border border-slate-300 bg-white px-4 py-3 shadow-sm">
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <div>
-                        <p className="text-sm font-semibold text-slate-900">Reviewer decision</p>
+                        <p className="text-sm font-semibold text-slate-900">{text('审查决策', 'Reviewer decision')}</p>
                         <p className="mt-1 text-xs text-slate-600">
-                          confidence {(planPackage.metaReview.confidence * 100).toFixed(0)} · {planPackage.metaReview.blockingIssues.length} blocking issues
+                          {text('置信度', 'confidence')} {(planPackage.metaReview.confidence * 100).toFixed(0)} · {planPackage.metaReview.blockingIssues.length} {text('个阻断问题', 'blocking issues')}
                         </p>
                       </div>
                       <Badge className={planPackage.metaReview.decision === 'approve' ? 'bg-emerald-700 text-white' : 'bg-amber-700 text-white'}>
@@ -1650,19 +1967,19 @@ export function PlanGenerationPanel({
 
             <Card>
               <CardHeader className="pb-3">
-                <CardTitle className="text-base">Feedback</CardTitle>
-                <CardDescription>Human edits and revision history for the current plan package.</CardDescription>
+                <CardTitle className="text-base">{text('反馈', 'Feedback')}</CardTitle>
+                <CardDescription>{text('当前 PlanPackage 的人工编辑与修订历史。', 'Human edits and revision history for the current plan package.')}</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div>
                   <div className="mb-3 flex items-center gap-2">
                     <MessageSquareText className="h-4 w-4 text-indigo-700" />
-                    <p className="text-sm font-semibold text-slate-900">Human feedback</p>
+                    <p className="text-sm font-semibold text-slate-900">{text('人工反馈', 'Human feedback')}</p>
                   </div>
                   <textarea
                     value={feedbackComment}
                     onChange={(event) => setFeedbackComment(event.target.value)}
-                    placeholder="Tell FAROS what to change before handoff."
+                    placeholder={text('告诉 FAROS 在交付前需要修改哪些内容。', 'Tell FAROS what to change before handoff.')}
                     className="min-h-[118px] w-full rounded-md border border-slate-400 bg-white px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-600"
                   />
                   <Button
@@ -1671,11 +1988,11 @@ export function PlanGenerationPanel({
                     disabled={!feedbackComment.trim() || isSubmittingFeedback || isRevising}
                   >
                     {isSubmittingFeedback || isRevising ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <Sparkles className="mr-2 h-4 w-4" />}
-                    Revise from Feedback
+                    {text('根据反馈修订', 'Revise from Feedback')}
                   </Button>
                 </div>
                 <div>
-                  <p className="mb-3 text-sm font-semibold text-slate-900">Feedback history</p>
+                  <p className="mb-3 text-sm font-semibold text-slate-900">{text('反馈历史', 'Feedback history')}</p>
                   <FeedbackList feedback={planPackage.humanFeedback} />
                 </div>
               </CardContent>

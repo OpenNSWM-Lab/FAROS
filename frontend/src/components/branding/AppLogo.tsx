@@ -55,7 +55,7 @@ export function AppLogo({ size = 'md', variant = 'full', className }: AppLogoPro
 
       {/* Text */}
       {variant === 'full' && (
-        <span className={cn('font-semibold font-display text-slate-900', textSizeClasses[size])}>
+        <span className={cn('font-semibold font-display text-foreground', textSizeClasses[size])}>
           FAROS
         </span>
       )}

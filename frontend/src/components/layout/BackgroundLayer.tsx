@@ -5,8 +5,7 @@ export function BackgroundLayer() {
       data-testid="app-bg"
       aria-hidden="true"
     >
-      {/* Warm base background */}
-      <div className="absolute inset-0 bg-[#F6F7F9]" />
+      <div className="absolute inset-0 bg-background" />
       
       {/* Subtle radial glows */}
       <div className="absolute inset-0">
@@ -26,7 +25,7 @@ export function BackgroundLayer() {
       
       {/* SVG texture overlay */}
       <div 
-        className="absolute inset-0 opacity-[0.08]"
+        className="absolute inset-0 opacity-[0.08] dark:opacity-[0.035]"
         style={{
           backgroundImage: 'url(/bg/app-bg.svg)',
           backgroundSize: 'cover',

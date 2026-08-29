@@ -28,6 +28,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import AsyncIterator, Optional
 
+from app.core.user_context import call_with_current_context
+
 logger = logging.getLogger(__name__)
 
 CART_BASE_DIR = "cart_artifacts"
@@ -869,11 +871,12 @@ Generate ONLY the Python code, no explanations. Start with `#!/usr/bin/env pytho
             loop = asyncio.get_event_loop()
             response = await loop.run_in_executor(
                 None,
-                lambda: client.chat(
+                call_with_current_context(
+                    client.chat,
                     messages=[ChatMessage(role="user", content=prompt)],
                     temperature=0.3,
                     max_tokens=1800,
-                )
+                ),
             )
 
             code = response.text.strip()

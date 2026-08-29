@@ -12,6 +12,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from typing import Callable, Generic, Iterable, Optional, TypeVar
 
+from app.core.user_context import call_with_current_context
 
 T = TypeVar("T")
 
@@ -46,7 +47,7 @@ class LLMTaskScheduler(Generic[T]):
         if timeout_seconds is None or timeout_seconds <= 0:
             return fn()
         executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="llm-task-timeout")
-        future = executor.submit(fn)
+        future = executor.submit(call_with_current_context(fn))
         try:
             return future.result(timeout=timeout_seconds)
         except FutureTimeoutError as exc:

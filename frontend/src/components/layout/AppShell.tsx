@@ -5,7 +5,7 @@ import { BackgroundLayer } from './BackgroundLayer'
 
 export function AppShell() {
   return (
-    <div className="flex h-screen overflow-hidden bg-[#F6F7F9]">
+    <div className="flex h-screen overflow-hidden bg-background text-foreground" data-app-shell>
       <BackgroundLayer />
       <Sidebar />
       <div className="flex flex-1 flex-col overflow-hidden">

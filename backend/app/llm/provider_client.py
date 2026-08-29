@@ -13,6 +13,7 @@ from typing import Dict, List, Optional, Any
 from dataclasses import dataclass
 
 from app.core.settings import get_settings, ProviderConfig
+from app.core.user_context import get_current_user_id, normalize_user_id
 
 logger = logging.getLogger(__name__)
 
@@ -96,9 +97,14 @@ class ProviderError(Exception):
 class ProviderClient:
     """Unified LLM provider client backed by litellm."""
 
-    def __init__(self, provider_name: Optional[str] = None):
+    def __init__(
+        self,
+        provider_name: Optional[str] = None,
+        user_id: Optional[str] = None,
+    ):
         self.settings = get_settings()
-        self.provider_name = provider_name or self.settings.ACTIVE_PROVIDER_NAME
+        self.user_id = normalize_user_id(user_id, fallback=get_current_user_id())
+        self.provider_name = provider_name or self.settings.get_active_provider(self.user_id)
         self.config = self.settings.get_provider_config(self.provider_name)
 
     def _get_litellm(self):
@@ -115,7 +121,10 @@ class ProviderClient:
             ) from e
 
     def _get_model_string(self, model: Optional[str] = None) -> str:
-        model_name = model or self.settings.get_active_model(self.provider_name)
+        model_name = model or self.settings.get_active_model(
+            self.provider_name,
+            self.user_id,
+        )
         api_format = getattr(self.config, "api_format", "openai")
         if api_format == "openai":
             return f"openai/{model_name}"
@@ -126,9 +135,9 @@ class ProviderClient:
         return model_name
 
     def _get_api_config(self) -> Dict[str, Any]:
-        api_key = self.settings.get_runtime_api_key(self.provider_name) or self.config.get_api_key()
+        api_key = self.settings.get_api_key(self.provider_name, self.user_id)
         base_url = (
-            self.settings.get_runtime_base_url(self.provider_name)
+            self.settings.get_runtime_base_url(self.provider_name, self.user_id)
             or self.config.get_base_url()
             or self.settings._get_default_base_url(self.provider_name)
         )
@@ -136,7 +145,7 @@ class ProviderClient:
         if not api_key:
             raise ProviderError(
                 f"API key not configured for provider '{self.provider_name}'. "
-                f"Set environment variable: {self.config.api_key_env}",
+                "Configure it in Settings while signed in to this account.",
                 self.provider_name,
                 400,
             )
@@ -175,7 +184,10 @@ class ProviderClient:
         if "timeout" in kwargs and kwargs["timeout"]:
             api_config["timeout"] = kwargs["timeout"]
             kwargs = {k: v for k, v in kwargs.items() if k != "timeout"}
-        model_name = model or self.settings.get_active_model(self.provider_name)
+        model_name = model or self.settings.get_active_model(
+            self.provider_name,
+            self.user_id,
+        )
         messages_dict = [{"role": m.role, "content": m.content} for m in messages]
         api_format = getattr(self.config, "api_format", "openai")
 
@@ -305,11 +317,12 @@ class ProviderClient:
     def get_capabilities(self) -> Dict[str, Any]:
         return {
             "providerName": self.provider_name,
-            "model": self.settings.get_active_model(self.provider_name),
-            "configured": self.config.is_configured(),
+            "model": self.settings.get_active_model(self.provider_name, self.user_id),
+            "configured": bool(self.settings.get_api_key(self.provider_name, self.user_id)),
             "timeout": self.config.timeout,
             "maxRetries": self.settings.MAX_RETRIES,
             "sdkInstalled": self._litellm_available(),
+            "credentialScope": "user",
         }
 
     def _litellm_available(self) -> bool:
@@ -320,18 +333,14 @@ class ProviderClient:
             return False
 
 
-_client: Optional[ProviderClient] = None
-
-
-def get_provider_client(provider_name: Optional[str] = None) -> ProviderClient:
-    global _client
-    if provider_name:
-        return ProviderClient(provider_name)
-    if _client is None:
-        _client = ProviderClient()
-    return _client
+def get_provider_client(
+    provider_name: Optional[str] = None,
+    user_id: Optional[str] = None,
+) -> ProviderClient:
+    # Clients capture their owner. Avoid a process-wide singleton that could
+    # retain one user's provider selection and key for another request.
+    return ProviderClient(provider_name, user_id=user_id)
 
 
 def reset_client():
-    global _client
-    _client = None
+    """Backward-compatible no-op; provider clients are request scoped."""

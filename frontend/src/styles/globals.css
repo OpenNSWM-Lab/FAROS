@@ -5,7 +5,8 @@
 @tailwind utilities;
 
 @layer base {
-  :root {
+  :root,
+  .theme-light-surface {
     /* Light mode colors */
     --background: 0 0% 100%;
     --foreground: 0 0% 10%;
@@ -200,4 +201,335 @@
   --radius: 4px;
   --font-heading: 'DM Serif Display', 'Playfair Display', Georgia, serif;
   --font-body: 'Inter', system-ui, sans-serif;
+}
+
+/* Legacy feature screens still contain fixed light-palette utilities. Keep the
+   compatibility mapping inside the authenticated shell so public artwork and
+   export-oriented documents retain their authored colors. */
+.dark [data-app-shell] {
+  --legacy-positive-bg: 2 44 34;
+  --legacy-positive-fg: 110 231 183;
+  --legacy-info-bg: 8 47 73;
+  --legacy-info-fg: 125 211 252;
+  --legacy-warning-bg: 69 26 3;
+  --legacy-warning-fg: 252 211 77;
+  --legacy-danger-bg: 69 10 10;
+  --legacy-danger-fg: 252 165 165;
+  --legacy-violet-bg: 46 16 101;
+  --legacy-violet-fg: 196 181 253;
+}
+
+.dark [data-app-shell] :is(
+  [class~='bg-white'],
+  [class~='bg-white/60'],
+  [class~='bg-white/80'],
+  [class~='bg-white/95']
+) {
+  background-color: hsl(var(--card));
+}
+
+.dark [data-app-shell] :is(
+  [class~='bg-slate-50'],
+  [class~='bg-slate-50/50'],
+  [class~='bg-slate-50/80'],
+  [class~='bg-slate-50/95']
+) {
+  background-color: hsl(var(--muted));
+}
+
+.dark [data-app-shell] :is([class~='bg-slate-100'], [class~='bg-gray-100']) {
+  background-color: hsl(var(--secondary));
+}
+
+.dark [data-app-shell] :is(
+  [class~='bg-slate-200'],
+  [class~='bg-slate-200/70'],
+  [class~='bg-gray-200']
+) {
+  background-color: hsl(var(--accent));
+}
+
+.dark [data-app-shell] :is(
+  [class~='text-slate-950'],
+  [class~='text-slate-900'],
+  [class~='text-slate-800'],
+  [class~='text-gray-950'],
+  [class~='text-gray-900'],
+  [class~='text-gray-800']
+) {
+  color: hsl(var(--foreground));
+}
+
+.dark [data-app-shell] :is(
+  [class~='text-slate-700'],
+  [class~='text-slate-600'],
+  [class~='text-gray-700'],
+  [class~='text-gray-600']
+) {
+  color: hsl(var(--foreground) / 0.82);
+}
+
+.dark [data-app-shell] :is(
+  [class~='text-slate-500'],
+  [class~='text-slate-400'],
+  [class~='text-gray-500'],
+  [class~='text-gray-400']
+) {
+  color: hsl(var(--muted-foreground));
+}
+
+.dark [data-app-shell] :is(
+  [class~='border-slate-100'],
+  [class~='border-slate-200'],
+  [class~='border-slate-300'],
+  [class~='border-slate-400'],
+  [class~='border-gray-100'],
+  [class~='border-gray-200'],
+  [class~='border-gray-300'],
+  [class~='border-gray-400']
+) {
+  border-color: hsl(var(--border));
+}
+
+.dark [data-app-shell] :is(
+  [class~='bg-green-50'],
+  [class~='bg-green-100'],
+  [class~='bg-emerald-50'],
+  [class~='bg-emerald-50/30'],
+  [class~='bg-emerald-50/50'],
+  [class~='bg-emerald-50/60'],
+  [class~='bg-emerald-50/70'],
+  [class~='bg-emerald-50/80'],
+  [class~='bg-emerald-100'],
+  [class~='bg-teal-50'],
+  [class~='bg-teal-50/40'],
+  [class~='bg-teal-50/50'],
+  [class~='bg-teal-100']
+) {
+  background-color: rgb(var(--legacy-positive-bg) / 0.82);
+}
+
+.dark [data-app-shell] :is(
+  [class~='text-green-600'],
+  [class~='text-green-700'],
+  [class~='text-green-800'],
+  [class~='text-emerald-600'],
+  [class~='text-emerald-700'],
+  [class~='text-emerald-800'],
+  [class~='text-emerald-900'],
+  [class~='text-emerald-950'],
+  [class~='text-teal-600'],
+  [class~='text-teal-700'],
+  [class~='text-teal-800'],
+  [class~='text-teal-900']
+) {
+  color: rgb(var(--legacy-positive-fg));
+}
+
+.dark [data-app-shell] :is(
+  [class~='border-green-200'],
+  [class~='border-green-300'],
+  [class~='border-green-400'],
+  [class~='border-emerald-200'],
+  [class~='border-emerald-300'],
+  [class~='border-emerald-400'],
+  [class~='border-teal-200'],
+  [class~='border-teal-400']
+) {
+  border-color: rgb(var(--legacy-positive-fg) / 0.4);
+}
+
+.dark [data-app-shell] :is(
+  [class~='bg-cyan-50'],
+  [class~='bg-sky-50'],
+  [class~='bg-sky-100'],
+  [class~='bg-blue-50'],
+  [class~='bg-blue-50/30'],
+  [class~='bg-blue-100'],
+  [class~='bg-indigo-50'],
+  [class~='bg-indigo-100']
+) {
+  background-color: rgb(var(--legacy-info-bg) / 0.82);
+}
+
+.dark [data-app-shell] :is(
+  [class~='text-cyan-600'],
+  [class~='text-cyan-700'],
+  [class~='text-cyan-800'],
+  [class~='text-sky-700'],
+  [class~='text-sky-800'],
+  [class~='text-sky-900'],
+  [class~='text-blue-600'],
+  [class~='text-blue-700'],
+  [class~='text-blue-800'],
+  [class~='text-blue-900'],
+  [class~='text-indigo-600'],
+  [class~='text-indigo-700'],
+  [class~='text-indigo-800'],
+  [class~='text-indigo-900'],
+  [class~='text-indigo-950']
+) {
+  color: rgb(var(--legacy-info-fg));
+}
+
+.dark [data-app-shell] :is(
+  [class~='border-cyan-200'],
+  [class~='border-sky-200'],
+  [class~='border-sky-300'],
+  [class~='border-blue-200'],
+  [class~='border-blue-300'],
+  [class~='border-blue-400'],
+  [class~='border-indigo-200'],
+  [class~='border-indigo-300'],
+  [class~='border-indigo-400']
+) {
+  border-color: rgb(var(--legacy-info-fg) / 0.4);
+}
+
+.dark [data-app-shell] :is(
+  [class~='bg-amber-50'],
+  [class~='bg-amber-50/30'],
+  [class~='bg-amber-50/70'],
+  [class~='bg-amber-50/80'],
+  [class~='bg-amber-100'],
+  [class~='bg-yellow-50'],
+  [class~='bg-yellow-100'],
+  [class~='bg-orange-50']
+) {
+  background-color: rgb(var(--legacy-warning-bg) / 0.82);
+}
+
+.dark [data-app-shell] :is(
+  [class~='text-amber-600'],
+  [class~='text-amber-700'],
+  [class~='text-amber-800'],
+  [class~='text-amber-900'],
+  [class~='text-amber-950'],
+  [class~='text-yellow-600'],
+  [class~='text-yellow-700'],
+  [class~='text-yellow-800'],
+  [class~='text-yellow-900'],
+  [class~='text-orange-600']
+) {
+  color: rgb(var(--legacy-warning-fg));
+}
+
+.dark [data-app-shell] :is(
+  [class~='border-amber-200'],
+  [class~='border-amber-300'],
+  [class~='border-amber-400'],
+  [class~='border-yellow-200'],
+  [class~='border-yellow-300']
+) {
+  border-color: rgb(var(--legacy-warning-fg) / 0.4);
+}
+
+.dark [data-app-shell] :is(
+  [class~='bg-red-50'],
+  [class~='bg-red-50/30'],
+  [class~='bg-red-50/80'],
+  [class~='bg-red-100']
+) {
+  background-color: rgb(var(--legacy-danger-bg) / 0.82);
+}
+
+.dark [data-app-shell] :is(
+  [class~='text-red-600'],
+  [class~='text-red-700'],
+  [class~='text-red-800'],
+  [class~='text-red-900']
+) {
+  color: rgb(var(--legacy-danger-fg));
+}
+
+.dark [data-app-shell] :is(
+  [class~='border-red-200'],
+  [class~='border-red-300']
+) {
+  border-color: rgb(var(--legacy-danger-fg) / 0.4);
+}
+
+.dark [data-app-shell] :is(
+  [class~='bg-purple-50'],
+  [class~='bg-violet-50']
+) {
+  background-color: rgb(var(--legacy-violet-bg) / 0.82);
+}
+
+.dark [data-app-shell] :is(
+  [class~='text-purple-600'],
+  [class~='text-purple-800'],
+  [class~='text-violet-600'],
+  [class~='text-violet-700'],
+  [class~='text-violet-800']
+) {
+  color: rgb(var(--legacy-violet-fg));
+}
+
+.dark [data-app-shell] :is(
+  [class~='border-purple-200'],
+  [class~='border-violet-200'],
+  [class~='border-violet-300'],
+  [class~='border-violet-400']
+) {
+  border-color: rgb(var(--legacy-violet-fg) / 0.4);
+}
+
+.dark [data-app-shell] [class~='from-slate-50'] {
+  --tw-gradient-from: hsl(var(--card)) var(--tw-gradient-from-position);
+  --tw-gradient-to: hsl(var(--card) / 0) var(--tw-gradient-to-position);
+}
+
+.dark [data-app-shell] :is(
+  [class~='from-teal-50'],
+  [class~='from-teal-50/50']
+) {
+  --tw-gradient-from: rgb(var(--legacy-positive-bg) / 0.82) var(--tw-gradient-from-position);
+  --tw-gradient-to: rgb(var(--legacy-positive-bg) / 0) var(--tw-gradient-to-position);
+}
+
+.dark [data-app-shell] :is(
+  [class~='from-blue-50/50'],
+  [class~='from-indigo-50']
+) {
+  --tw-gradient-from: rgb(var(--legacy-info-bg) / 0.82) var(--tw-gradient-from-position);
+  --tw-gradient-to: rgb(var(--legacy-info-bg) / 0) var(--tw-gradient-to-position);
+}
+
+.dark [data-app-shell] :is(
+  [class~='from-orange-50/50'],
+  [class~='from-amber-50/50']
+) {
+  --tw-gradient-from: rgb(var(--legacy-warning-bg) / 0.82) var(--tw-gradient-from-position);
+  --tw-gradient-to: rgb(var(--legacy-warning-bg) / 0) var(--tw-gradient-to-position);
+}
+
+.dark [data-app-shell] [class~='from-red-50/50'] {
+  --tw-gradient-from: rgb(var(--legacy-danger-bg) / 0.82) var(--tw-gradient-from-position);
+  --tw-gradient-to: rgb(var(--legacy-danger-bg) / 0) var(--tw-gradient-to-position);
+}
+
+.dark [data-app-shell] [class~='to-white'] {
+  --tw-gradient-to: hsl(var(--card)) var(--tw-gradient-to-position);
+}
+
+.dark [data-app-shell] :is(textarea, select, input:not([type='range']):not([type='checkbox']):not([type='radio'])) {
+  border-color: hsl(var(--input));
+  background-color: hsl(var(--background));
+  color: hsl(var(--foreground));
+}
+
+.dark [data-app-shell] :is(input, textarea)::placeholder {
+  color: hsl(var(--muted-foreground));
+}
+
+/* Bright status fills intentionally keep dark ink for maximum contrast. */
+.dark [data-app-shell] :is(
+  [class~='bg-emerald-400'][class~='text-emerald-950']
+) {
+  color: rgb(var(--legacy-positive-bg));
+}
+
+.dark [data-app-shell] [class~='bg-amber-300'][class~='text-amber-950'] {
+  color: rgb(var(--legacy-warning-bg));
 }

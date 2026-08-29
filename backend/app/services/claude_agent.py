@@ -25,6 +25,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import AsyncIterator, Optional
 
+from app.core.user_context import sanitized_subprocess_env
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL = os.getenv("CLAUDE_AGENT_MODEL", "claude-sonnet-4-6")
@@ -58,16 +60,11 @@ def _get_settings_model_and_key() -> tuple[str, str, str]:
     try:
         from app.core.settings import get_settings
         settings = get_settings()
-        active = settings.ACTIVE_PROVIDER_NAME
+        active = settings.get_active_provider()
 
         # --- Active provider: model + key ---
         model = settings.get_active_model(active) or DEFAULT_MODEL
-        api_key = settings.get_runtime_api_key(active) or ""
-        if not api_key:
-            try:
-                api_key = settings.get_provider_config(active).get_api_key() or ""
-            except Exception:
-                pass
+        api_key = settings.get_api_key(active) or ""
 
         # --- Base URL: prefer Anthropic-compatible proxy (Claude CLI speaks Anthropic API) ---
         base_url = ""
@@ -265,7 +262,7 @@ class ClaudeCodeAgent:
         proc = None
         try:
             # Ensure npm global bin is in PATH for Claude CLI
-            proc_env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+            proc_env = sanitized_subprocess_env({"PYTHONUNBUFFERED": "1"})
             npm_bin = os.path.dirname(claude_bin)
             if npm_bin and npm_bin not in proc_env.get("PATH", ""):
                 proc_env["PATH"] = npm_bin + os.pathsep + proc_env.get("PATH", "")

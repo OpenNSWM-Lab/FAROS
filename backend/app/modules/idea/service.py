@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from typing import Optional, List, Dict, Any, Tuple
 
+from app.core.user_context import call_with_current_context
 from app.modules.idea.contracts import (
     IdeaSession,
     IdeaSessionStatus,
@@ -85,6 +86,7 @@ from app.modules.idea.evidence_relevance import (
     better_evidence_tier,
     build_topic_intent_profile,
     deduplicate_search_results,
+    diagnose_literature_failure,
     evidence_tier_allows_dimension,
     raw_paper_identity_keys,
     role_requirements_for_paper_type,
@@ -406,11 +408,11 @@ def _topic_terms_from_seed(seed: Any, domain: Any = "", extra_terms: Optional[Li
         *(str(term) for term in (extra_terms or []) if term is not None),
     ]).lower().replace("-", " ")
     stopwords = {
-        "about", "against", "also", "among", "and", "are", "based", "between",
+        "about", "accuracy", "against", "also", "among", "and", "are", "based", "benchmark", "benchmarks", "between",
         "can", "could", "does", "for", "from", "how", "into", "large", "language",
-        "learning", "method", "methods", "model", "models", "paper", "research",
-        "should", "study", "than", "that", "the", "their", "this", "through",
-        "using", "what", "when", "where", "with", "within", "would",
+        "learning", "method", "methods", "metric", "metrics", "model", "models", "novelty", "paper", "research",
+        "score", "scores", "should", "study", "than", "that", "the", "their", "this", "through",
+        "using", "validation", "evaluated", "evaluating", "evaluation", "evaluations", "expert", "experts", "what", "when", "where", "with", "within", "would",
         "是否", "如何", "研究", "方法", "模型", "系统",
     }
     terms: List[str] = []
@@ -551,7 +553,12 @@ def _evaluate_paper_quality_gate(
             "evidenceTier": tier,
         })
     scored.sort(key=lambda item: item["score"], reverse=True)
-    aligned = [item for item in scored if item["score"] >= 0.32]
+    try:
+        min_alignment = float(os.getenv("FAROS_PAPER_GATE_MIN_ALIGNMENT", "0.32"))
+    except ValueError:
+        min_alignment = 0.32
+    min_alignment = max(0.0, min(1.0, min_alignment))
+    aligned = [item for item in scored if item["score"] >= min_alignment]
     external = [
         item for item in scored
         if any(source and source != "local" for source in item["sources"])
@@ -634,6 +641,11 @@ def _evaluate_paper_quality_gate(
         "sourceQuality": source_quality,
         "providerFallbackRisk": provider_fallback_risk,
         "avgTopAlignment": round(avg_top_score, 3),
+        "requirements": {
+            "minPaperCount": min_papers,
+            "minAlignedPaperCount": min_aligned,
+            "minAlignmentScore": min_alignment,
+        },
         "roleCoverage": {
             "enabled": role_aware,
             "passed": role_coverage_passed,
@@ -644,6 +656,47 @@ def _evaluate_paper_quality_gate(
         "topicTerms": topic_terms[:12],
         "topPapers": scored[:8],
     }
+
+
+def _literature_failure_message(diagnosis: Dict[str, Any]) -> str:
+    raw_count = int(diagnosis.get("rawResultCount", 0) or 0)
+    unique_count = int(diagnosis.get("uniqueResultCount", 0) or 0)
+    eligible_count = int(diagnosis.get("eligiblePaperCount", 0) or 0)
+    aligned_count = int(diagnosis.get("alignedPaperCount", 0) or 0)
+    requirements = diagnosis.get("requirements", {})
+    min_papers = int(requirements.get("minPaperCount", 4) or 4)
+    min_aligned = int(requirements.get("minAlignedPaperCount", 3) or 3)
+    code = str(diagnosis.get("code", "evidence_quality_failed"))
+    seed = str(diagnosis.get("seedQuery", "")).strip()
+    template = str(diagnosis.get("queryTemplate", "")).strip()
+
+    reason_by_code = {
+        "no_search_results": "No literature source returned a usable result, which may be transient or query-related.",
+        "seed_too_broad": "The seed query is too broad or under-specified, so the retrieved papers only have generic overlap.",
+        "eligible_pool_too_small": "Some papers were relevant, but too few survived relevance filtering.",
+        "weak_topic_alignment": "The retained papers do not align strongly enough with the seed query.",
+        "missing_evidence_roles": "The paper pool does not cover the required task, method, and evaluation roles.",
+        "evidence_quality_failed": "The retrieved evidence did not satisfy the literature quality gate.",
+    }
+    reason = reason_by_code.get(code, reason_by_code["evidence_quality_failed"])
+    if diagnosis.get("resumeRecommended"):
+        action = (
+            "Wait for literature API cooldown, use an English academic query if possible, "
+            "then resume this session."
+        )
+    else:
+        action = (
+            f"Rewrite the seed using the template '{template}' and start a new session; "
+            "Resume would reuse the unchanged seed."
+        )
+
+    return (
+        "Literature evidence gate stopped before deep reading. "
+        f"Seed: '{seed}'. Retrieved {raw_count} raw results ({unique_count} unique), "
+        f"but only {eligible_count} passed relevance filtering and {aligned_count} met semantic alignment "
+        f"(required: {min_papers} eligible / {min_aligned} aligned). "
+        f"Diagnosis: {reason} Action: {action}"
+    )
 
 
 def _paper_type_coverage_requirements(paper_type: str) -> List[str]:
@@ -896,9 +949,9 @@ def _env_bool(name: str, default: bool) -> bool:
 
 def _deep_read_max_papers() -> int:
     try:
-        configured = int(os.getenv("FAROS_IDEA_DEEP_READ_MAX_PAPERS", "24"))
+        configured = int(os.getenv("FAROS_IDEA_DEEP_READ_MAX_PAPERS", "12"))
     except ValueError:
-        configured = 24
+        configured = 12
     return max(4, min(40, configured))
 
 
@@ -4274,13 +4327,17 @@ class IdeaGenerationService:
                 session.status = e.waiting_status
                 session.errorMessage = str(e)
                 session.endedAt = None
-                session.qualityLoopSummary = {
+                quality_summary = {
                     **(session.qualityLoopSummary or {}),
                     "qualityStatus": e.waiting_status.value,
                     "requiresRegeneration": True,
                     "resumeFrom": e.resume_from,
                     "blockingReason": str(e),
                 }
+                failure_diagnosis = e.step_outputs.get("failureDiagnosis")
+                if isinstance(failure_diagnosis, dict):
+                    quality_summary["recoveryGuidance"] = failure_diagnosis
+                session.qualityLoopSummary = quality_summary
                 if session.trace:
                     session.trace.endedAt = None
                 return self.session_storage.update(session)
@@ -4751,6 +4808,17 @@ class IdeaGenerationService:
             )
 
         if not raw_quality_gate.get("passed", False):
+            failure_diagnosis = diagnose_literature_failure(
+                seed=seed,
+                raw_result_count=len(all_results),
+                unique_result_count=ranked_count,
+                gate=raw_quality_gate,
+                rejection_reason_counts=Counter(
+                    result.rejection_reason for result in rejected_results
+                ),
+                seed_anchors=profile.seed_anchors,
+                repair_queries=repair_queries,
+            )
             diagnostic_outputs = {
                 "searchQueries": search_queries,
                 "coreSearchQueries": core_queries,
@@ -4776,10 +4844,10 @@ class IdeaGenerationService:
                 "paperQualityGate": raw_quality_gate,
                 "repairAttempted": repair_attempted,
                 "repairQueries": repair_queries,
+                "failureDiagnosis": failure_diagnosis,
             }
-            errors = "; ".join(raw_quality_gate.get("errors", [])[:4])
             raise AwaitingLiteratureEvidenceError(
-                f"Literature evidence is insufficient before deep reading: {errors}",
+                _literature_failure_message(failure_diagnosis),
                 inputs={
                     "seedQuery": seed,
                     "maxPapers": max_papers,
@@ -5668,7 +5736,13 @@ class IdeaGenerationService:
                     with ThreadPoolExecutor(max_workers=max_dir_workers) as executor:
                         future_to_idx = {}
                         for idx, direction in enumerate(research_directions):
-                            future = executor.submit(_run_direction_tree, idx, direction)
+                            future = executor.submit(
+                                call_with_current_context(
+                                    _run_direction_tree,
+                                    idx,
+                                    direction,
+                                )
+                            )
                             future_to_idx[future] = idx
                         for future in as_completed(future_to_idx):
                             try:
@@ -8063,7 +8137,9 @@ class IdeaGenerationService:
                     thread_name_prefix="idea-reviewer",
                 ) as executor:
                     future_to_spec = {
-                        executor.submit(_run_one_llm_reviewer, spec): spec
+                        executor.submit(
+                            call_with_current_context(_run_one_llm_reviewer, spec)
+                        ): spec
                         for spec in IDEA_REVIEWER_SPECS
                     }
                     for future in as_completed(future_to_spec):

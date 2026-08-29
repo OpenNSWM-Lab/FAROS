@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { PlayCircle, ExternalLink, Code2, BarChart3, Clock, CheckCircle2, XCircle, Loader2, RefreshCw } from 'lucide-react'
+import { useReviewLocale } from '@/lib/reviewLocale'
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || ''
 
@@ -34,6 +35,7 @@ const statusColors: Record<string, string> = {
 
 export function RunsList() {
   const navigate = useNavigate()
+  const { text } = useReviewLocale()
   const [runs, setRuns] = useState<RunRecord[]>([])
   const [sessions, setSessions] = useState<RunRecord[]>([])
   const [loading, setLoading] = useState(true)
@@ -78,14 +80,14 @@ export function RunsList() {
   return (
     <AppPageLayout
       title="Runs"
-      subtitle="Latest run and experiment-linked code generation sessions"
+      subtitle={text('科研执行与实验工程运行记录', 'Research executions and experiment project runs')}
       icon={PlayCircle}
       iconColor="teal"
       accentColor="teal"
       headerViz="sparkline"
       actions={
         <Button variant="outline" size="sm" onClick={fetchData} disabled={loading}>
-          <RefreshCw className={`h-4 w-4 mr-2 ${loading ? 'animate-spin' : ''}`} /> Refresh
+          <RefreshCw className={`h-4 w-4 mr-2 ${loading ? 'animate-spin' : ''}`} /> {text('刷新', 'Refresh')}
         </Button>
       }
     >
@@ -93,19 +95,19 @@ export function RunsList() {
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
         <Card><CardContent className="pt-4 pb-3 text-center">
           <div className="text-2xl font-bold">{allRuns.length}</div>
-          <div className="text-xs text-muted-foreground">Total Runs</div>
+          <div className="text-xs text-muted-foreground">{text('运行总数', 'Total runs')}</div>
         </CardContent></Card>
         <Card><CardContent className="pt-4 pb-3 text-center">
           <div className="flex items-center justify-center gap-1 text-2xl font-bold text-blue-600"><Loader2 className="h-4 w-4" />{runningCount}</div>
-          <div className="text-xs text-muted-foreground">Running</div>
+          <div className="text-xs text-muted-foreground">{text('运行中', 'Running')}</div>
         </CardContent></Card>
         <Card><CardContent className="pt-4 pb-3 text-center">
           <div className="flex items-center justify-center gap-1 text-2xl font-bold text-green-600"><CheckCircle2 className="h-4 w-4" />{completedCount}</div>
-          <div className="text-xs text-muted-foreground">Completed</div>
+          <div className="text-xs text-muted-foreground">{text('已完成', 'Completed')}</div>
         </CardContent></Card>
         <Card><CardContent className="pt-4 pb-3 text-center">
           <div className="flex items-center justify-center gap-1 text-2xl font-bold text-red-600"><XCircle className="h-4 w-4" />{failedCount}</div>
-          <div className="text-xs text-muted-foreground">Failed</div>
+          <div className="text-xs text-muted-foreground">{text('失败', 'Failed')}</div>
         </CardContent></Card>
       </div>
 
@@ -114,7 +116,7 @@ export function RunsList() {
         <Card className="mb-6 border-teal-200">
           <CardHeader className="pb-2">
             <CardTitle className="flex items-center gap-2 text-base">
-              <Clock className="h-4 w-4 text-teal-500" /> Latest Run
+              <Clock className="h-4 w-4 text-teal-500" /> {text('最近运行', 'Latest run')}
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -125,19 +127,19 @@ export function RunsList() {
                   <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${statusColors[latestRun.status] || 'bg-gray-100'}`}>{latestRun.status}</span>
                 </div>
                 <div className="text-xs text-muted-foreground">
-                  Created: {new Date(latestRun.createdAt).toLocaleString()}
+                  {text('创建于', 'Created')}: {new Date(latestRun.createdAt).toLocaleString()}
                   {latestRun.notes && <span className="ml-2">| {latestRun.notes}</span>}
                 </div>
               </div>
               <div className="flex items-center gap-2">
                 {latestRun.projectId && (
                   <Button variant="outline" size="sm" onClick={() => navigate(`/code/projects/${latestRun.projectId}`)}>
-                    <Code2 className="h-3 w-3 mr-1" /> Project
+                    <Code2 className="h-3 w-3 mr-1" /> {text('项目', 'Project')}
                   </Button>
                 )}
                 {latestRun.experimentId && (
                   <Button variant="outline" size="sm" onClick={() => navigate(`/experiments/${latestRun.experimentId}`)}>
-                    <BarChart3 className="h-3 w-3 mr-1" /> Experiment
+                    <BarChart3 className="h-3 w-3 mr-1" /> {text('实验', 'Experiment')}
                   </Button>
                 )}
               </div>
@@ -149,18 +151,18 @@ export function RunsList() {
       {/* All runs table */}
       <Card>
         <CardHeader className="pb-2">
-          <CardTitle className="text-base">All Runs &amp; Sessions ({allRuns.length})</CardTitle>
+          <CardTitle className="text-base">{text('全部 Runs 与执行会话', 'All runs and execution sessions')} ({allRuns.length})</CardTitle>
         </CardHeader>
         <CardContent>
           {loading ? (
             <div className="flex items-center justify-center py-12 text-muted-foreground">
-              <Loader2 className="h-5 w-5 animate-spin mr-2" /> Loading runs...
+              <Loader2 className="h-5 w-5 animate-spin mr-2" /> {text('正在加载运行记录...', 'Loading runs...')}
             </div>
           ) : allRuns.length === 0 ? (
             <div className="text-center py-12 text-muted-foreground">
-              <p className="mb-2">No runs yet.</p>
-              <Button variant="outline" size="sm" onClick={() => navigate('/code')}>
-                Start a Code Generation Session
+              <p className="mb-2">{text('暂无运行记录。', 'No runs yet.')}</p>
+              <Button variant="outline" size="sm" onClick={() => navigate('/research/pipeline')}>
+                {text('开始科研流程', 'Start research pipeline')}
               </Button>
             </div>
           ) : (

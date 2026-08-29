@@ -14,9 +14,15 @@ import os as _os
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.core.user_context import (
+    get_current_user_id,
+    get_current_user_role,
+    reset_current_user_id,
+    set_current_user_id,
+)
 from app.faros.api.faros_api import router as faros_router
 from app.modules.code import router as code_router
 from app.modules.idea import router as idea_router
@@ -72,6 +78,27 @@ app.add_middleware(
 )
 
 
+@app.middleware("http")
+async def bind_authenticated_user(request: Request, call_next):
+    """Bind the username asserted by the loopback Caddy reverse proxy."""
+    try:
+        token = set_current_user_id(request.headers.get("X-Faros-User"))
+    except ValueError:
+        from fastapi.responses import JSONResponse
+
+        return JSONResponse(status_code=400, content={"detail": "Invalid user identity"})
+
+    request.state.user_id = get_current_user_id()
+    request.state.user_role = get_current_user_role()
+    try:
+        response = await call_next(request)
+        response.headers["X-Faros-User"] = request.state.user_id
+        response.headers["X-Faros-Role"] = request.state.user_role
+        return response
+    finally:
+        reset_current_user_id(token)
+
+
 
 @app.get("/api/system/health")
 async def health_check():
@@ -79,6 +106,15 @@ async def health_check():
         "status": "healthy",
         "service": SERVICE_NAME,
         "version": APP_VERSION,
+    }
+
+
+@app.get("/api/system/session")
+async def session_info():
+    return {
+        "userId": get_current_user_id(),
+        "role": get_current_user_role(),
+        "credentialScope": "user",
     }
 
 

@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from app.core.user_context import call_with_current_context
 from app.code.sandbox import (
     ExecutionEvent,
     ExecutionTrace,
@@ -598,7 +599,12 @@ class CodeAgentLoop:
         loop = asyncio.get_event_loop()
         report = await loop.run_in_executor(
             None,
-            lambda: repair_svc.auto_fix(project_id, repo_dir, failed_steps),
+            call_with_current_context(
+                repair_svc.auto_fix,
+                project_id,
+                repo_dir,
+                failed_steps,
+            ),
         )
         return report
 

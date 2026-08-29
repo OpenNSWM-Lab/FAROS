@@ -14,7 +14,6 @@ import type {
   ArtifactPreviewDTO,
   PaperDTO,
   ReviewFindingDTO,
-  ReviewerSimulationDTO,
   SystemHealthDTO,
   SystemLogDTO,
   SystemMetricsDTO,
@@ -28,7 +27,6 @@ import {
   mapArtifactPreviewDTOToPreview,
   mapPaperDTOToPaper,
   mapReviewFindingDTOToFinding,
-  mapReviewerSimulationDTOToSimulation,
   mapSystemHealthDTOToHealth,
   mapSystemLogDTOToLog,
   mapSystemMetricsDTOToMetrics,
@@ -237,13 +235,6 @@ export class RealApiClient implements ApiClient {
     return dtos.map(mapReviewFindingDTOToFinding)
   }
 
-  async getReviewerSimulations(paperId: string) {
-    const dtos = await this.fetchWithError<ReviewerSimulationDTO[]>(
-      `/api/review/simulations?paperId=${paperId}`
-    )
-    return dtos.map(mapReviewerSimulationDTOToSimulation)
-  }
-
   async runConsistencyCheck(input: string | { paperId: string; budgetMode?: string }) {
     const paperId = typeof input === 'string' ? input : input.paperId
     const budgetMode = typeof input === 'string' ? 'balanced' : input.budgetMode ?? 'balanced'
@@ -252,14 +243,6 @@ export class RealApiClient implements ApiClient {
       body: JSON.stringify({ paperId, budgetMode }),
     })
     return dtos.map(mapReviewFindingDTOToFinding)
-  }
-
-  async runReviewerSimulation(paperId: string, profile: string) {
-    const dto = await this.fetchWithError<ReviewerSimulationDTO>('/api/review/simulate', {
-      method: 'POST',
-      body: JSON.stringify({ paperId, profile }),
-    })
-    return mapReviewerSimulationDTOToSimulation(dto)
   }
 
   // System

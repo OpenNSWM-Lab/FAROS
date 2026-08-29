@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useReviewLocale } from '@/lib/reviewLocale'
 
 type HeaderVizVariant = 'sparkline' | 'miniBars' | 'donut' | 'metricCapsules'
 
@@ -9,21 +9,8 @@ interface HeaderVizProps {
 }
 
 export function HeaderViz({ variant, data = [], className = '' }: HeaderVizProps) {
-  const defaultData = useMemo(() => {
-    if (data.length > 0) return data
-    switch (variant) {
-      case 'sparkline':
-        return [20, 35, 28, 45, 38, 52, 48, 60, 55, 68, 62, 75]
-      case 'miniBars':
-        return [45, 62, 38, 71, 55, 68, 42, 58, 65, 52]
-      case 'donut':
-        return [75]
-      case 'metricCapsules':
-        return [68, 82, 55]
-      default:
-        return []
-    }
-  }, [variant, data])
+  const { text } = useReviewLocale()
+  const defaultData = data
 
   const renderSparkline = () => {
     const points = defaultData
@@ -100,7 +87,7 @@ export function HeaderViz({ variant, data = [], className = '' }: HeaderVizProps
   }
 
   const renderDonut = () => {
-    const percentage = defaultData[0] || 75
+    const percentage = defaultData[0] ?? 0
     const radius = 14
     const circumference = 2 * Math.PI * radius
     const offset = circumference - (percentage / 100) * circumference
@@ -142,9 +129,9 @@ export function HeaderViz({ variant, data = [], className = '' }: HeaderVizProps
 
   const renderMetricCapsules = () => {
     const metrics = [
-      { label: 'Active', value: defaultData[0] || 68, color: '#0EA5A4' },
-      { label: 'Success', value: defaultData[1] || 82, color: '#22D3EE' },
-      { label: 'Pending', value: defaultData[2] || 55, color: '#6366F1' },
+      { label: text('活跃', 'Active'), value: defaultData[0] ?? 0, color: '#0EA5A4' },
+      { label: text('成功', 'Success'), value: defaultData[1] ?? 0, color: '#22D3EE' },
+      { label: text('待处理', 'Pending'), value: defaultData[2] ?? 0, color: '#6366F1' },
     ]
 
     return (
@@ -180,6 +167,8 @@ export function HeaderViz({ variant, data = [], className = '' }: HeaderVizProps
       </div>
     )
   }
+
+  if (defaultData.length === 0) return null
 
   switch (variant) {
     case 'sparkline':

@@ -11,9 +11,11 @@ import { allTemplates } from '@/lib/taxonomy/templates'
 import { CategoryGroup, categoryGroups, getDirectionById, getDirectionsByGroup } from '@/lib/taxonomy/categories'
 import { useCreateRun } from '@/lib/hooks/useApi'
 import type { ResearchTemplate } from '@/lib/taxonomy/templates'
+import { useReviewLocale } from '@/lib/reviewLocale'
 
 export function ResearchWorkflows() {
   const navigate = useNavigate()
+  const { text } = useReviewLocale()
   const createRunMutation = useCreateRun()
 
   const [groupFilter, setGroupFilter] = useState<CategoryGroup | 'all'>('all')
@@ -73,8 +75,8 @@ export function ResearchWorkflows() {
 
   return (
     <AppPageLayout
-      title="Workflows"
-      subtitle="Manage and monitor research workflow templates"
+      title={text('科研工作流', 'Workflows')}
+      subtitle={text('选择、配置并运行科研工作流模板', 'Manage and monitor research workflow templates')}
       headerViz="miniBars"
     >
       <FiltersBar
@@ -82,7 +84,7 @@ export function ResearchWorkflows() {
           <div className="relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
             <Input
-              placeholder="Search templates..."
+              placeholder={text('搜索模板...', 'Search templates...')}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="pl-9 border-slate-300 focus:ring-2 focus:ring-teal-500"
@@ -99,7 +101,7 @@ export function ResearchWorkflows() {
               }}
               className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
             >
-              <option value="all">All Groups</option>
+              <option value="all">{text('全部分组', 'All Groups')}</option>
               {Object.entries(categoryGroups).map(([id, group]) => (
                 <option key={id} value={id}>
                   {group.label}
@@ -113,7 +115,7 @@ export function ResearchWorkflows() {
               disabled={groupFilter === 'all'}
               className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 disabled:opacity-50"
             >
-              <option value="all">All Directions</option>
+              <option value="all">{text('全部方向', 'All Directions')}</option>
               {directions.map(dir => (
                 <option key={dir.id} value={dir.id}>
                   {dir.title}
@@ -129,7 +131,7 @@ export function ResearchWorkflows() {
         {filteredTemplates.length === 0 ? (
           <Card className="col-span-full">
             <CardContent className="py-12 text-center">
-              <p className="text-muted-foreground">No templates found matching your filters</p>
+              <p className="text-muted-foreground">{text('没有符合筛选条件的模板', 'No templates found matching your filters')}</p>
             </CardContent>
           </Card>
         ) : (
@@ -161,19 +163,19 @@ export function ResearchWorkflows() {
                 {/* Template Details */}
                 <div className="space-y-2 text-sm">
                   <div className="flex justify-between">
-                    <span className="text-muted-foreground">Steps:</span>
+                    <span className="text-muted-foreground">{text('步骤', 'Steps')}:</span>
                     <span className="font-medium">{template.workflowSteps?.length || 0}</span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-muted-foreground">Artifacts:</span>
+                    <span className="text-muted-foreground">Artifact:</span>
                     <span className="font-medium">{template.expectedArtifacts.length}</span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-muted-foreground">Est. Duration:</span>
+                    <span className="text-muted-foreground">{text('预计时长', 'Est. Duration')}:</span>
                     <span className="font-medium">{template.estimatedDuration}</span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-muted-foreground">Budget:</span>
+                    <span className="text-muted-foreground">{text('预算', 'Budget')}:</span>
                     <span className="font-medium">${template.config.budget || 'N/A'}</span>
                   </div>
                 </div>
@@ -181,7 +183,7 @@ export function ResearchWorkflows() {
                 {/* Steps Preview */}
                 {template.workflowSteps && template.workflowSteps.length > 0 && (
                   <div className="space-y-1">
-                    <div className="text-xs font-medium text-muted-foreground">Steps:</div>
+                    <div className="text-xs font-medium text-muted-foreground">{text('步骤', 'Steps')}:</div>
                     <div className="space-y-1">
                       {template.workflowSteps.slice(0, 3).map((step, idx) => (
                         <div key={idx} className="text-xs text-muted-foreground flex items-start gap-2">
@@ -190,7 +192,7 @@ export function ResearchWorkflows() {
                         </div>
                       ))}
                       {template.workflowSteps.length > 3 && (
-                        <div className="text-xs text-muted-foreground">+ {template.workflowSteps.length - 3} more steps</div>
+                        <div className="text-xs text-muted-foreground">+ {template.workflowSteps.length - 3} {text('个步骤', 'more steps')}</div>
                       )}
                     </div>
                   </div>
@@ -205,7 +207,7 @@ export function ResearchWorkflows() {
                     onClick={() => handleApplyToPlanning(template)}
                   >
                     <FileText className="h-4 w-4 mr-2" />
-                    Apply to Planning
+                    {text('用于计划生成', 'Apply to Planning')}
                   </Button>
                   <Button
                     size="sm"
@@ -214,7 +216,7 @@ export function ResearchWorkflows() {
                     disabled={createRunMutation.isPending}
                   >
                     <Play className="h-4 w-4 mr-2" />
-                    Start Run
+                    {text('开始运行', 'Start Run')}
                   </Button>
                 </div>
               </CardContent>
@@ -227,7 +229,7 @@ export function ResearchWorkflows() {
       <Card>
         <CardContent className="py-4">
           <p className="text-sm text-slate-600 text-center">
-            Showing {filteredTemplates.length} of {allTemplates.length} templates
+            {text(`显示 ${filteredTemplates.length} / ${allTemplates.length} 个模板`, `Showing ${filteredTemplates.length} of ${allTemplates.length} templates`)}
           </p>
         </CardContent>
       </Card>

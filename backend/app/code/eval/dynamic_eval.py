@@ -15,6 +15,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 
+from app.core.user_context import sanitized_subprocess_env
+
 logger = logging.getLogger(__name__)
 
 # Default timeout for command execution (seconds)
@@ -117,7 +119,7 @@ class DynamicEvaluator:
         start_time = datetime.utcnow()
         
         # Prepare environment
-        run_env = os.environ.copy()
+        run_env = sanitized_subprocess_env()
         if env:
             run_env.update(env)
         

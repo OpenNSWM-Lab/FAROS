@@ -65,7 +65,7 @@ export function ExperimentDetail() {
       title={`Experiment ${experiment.id.slice(0, 8)}`}
       subtitle={experiment.name || 'Experiment Details'}
       headerViz="donut"
-      headerVizData={[accuracyMetric ? accuracyMetric.value * 100 : 75]}
+      headerVizData={accuracyMetric ? [accuracyMetric.value * 100] : undefined}
       breadcrumb={
         <button onClick={() => navigate('/experiments')} className="flex items-center gap-2 text-teal-600 hover:text-teal-700">
           <ArrowLeft className="h-4 w-4" />
