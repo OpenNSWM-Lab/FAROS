@@ -10,7 +10,7 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from app.models.idea import IdeaCandidate, DraftPlan, RiskItem, ExperimentSpec
-from app.services.ranking_service import RankingService
+from app.services.ranking_service import PAPER_TYPE_WEIGHTS, RankingService
 from datetime import datetime
 
 
@@ -91,6 +91,34 @@ def _make_candidate(idx: int, session_id: str = "test_session") -> IdeaCandidate
         ),
         createdAt=datetime.utcnow(),
     )
+
+
+def test_parse_embedded_nested_json_response():
+    """LLM ranking JSON may be wrapped in explanatory prose."""
+    service = RankingService()
+    response = """
+    Here is the ranking result:
+    {
+      "novelty": {"score": 9.0, "rationale": "Fresh direction"},
+      "feasibility": {"score": 8.0, "rationale": "Buildable"},
+      "impact": {"score": 7.0, "rationale": "Useful"},
+      "clarity": {"score": 6.0, "rationale": "Clear enough"},
+      "risk": {"score": 5.0, "rationale": "Manageable"},
+      "alignment": {"score": 4.0, "rationale": "Partial fit"},
+      "referenceSupport": {"score": 3.0, "rationale": "Sparse refs"},
+      "experimentSpecificity": {"score": 2.0, "rationale": "Needs detail"},
+      "overallRationale": "Good candidate",
+      "confidence": 0.9
+    }
+    """
+
+    result = service._parse_llm_response("cand_embedded", response, PAPER_TYPE_WEIGHTS["default"])
+
+    assert result.criteria["novelty"].value == 9.0
+    assert result.criteria["experimentSpecificity"].value == 2.0
+    assert result.overallRationale == "Good candidate"
+    assert result.confidence == 0.9
+    print("PASS: test_parse_embedded_nested_json_response")
 
 
 def test_heuristic_scores_are_not_all_equal():
@@ -197,6 +225,7 @@ def test_score_breakdown_structure():
 
 
 if __name__ == "__main__":
+    test_parse_embedded_nested_json_response()
     test_overall_score_uses_all_8_criteria()
     test_score_breakdown_structure()
     test_heuristic_scores_are_not_all_equal()
