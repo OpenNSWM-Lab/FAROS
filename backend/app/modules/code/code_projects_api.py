@@ -1296,7 +1296,8 @@ async def get_pipeline_results(
         results_path = os.path.join(repo_dir, "pipeline_results.json")
         if os.path.exists(results_path):
             try:
-                data = json.loads(open(results_path, encoding="utf-8").read())
+                with open(results_path, encoding="utf-8") as _f:
+                    data = json.loads(_f.read())
                 return PipelineRunResponse(**data)
             except (json.JSONDecodeError, TypeError):
                 pass
@@ -1370,7 +1371,8 @@ async def auto_fix_pipeline(
     results_path = os.path.join(repo_dir, "pipeline_results.json")
     if os.path.exists(results_path):
         try:
-            prev = json.loads(open(results_path, encoding="utf-8").read())
+            with open(results_path, encoding="utf-8") as _f:
+                prev = json.loads(_f.read())
             failed_steps = [s for s in prev.get("steps", []) if s.get("status") == "failed"]
         except (json.JSONDecodeError, TypeError):
             pass
