@@ -82,7 +82,7 @@ class FarosStateStore:
         runs = []
         for path in sorted(self.root.glob("*/run.json"), reverse=True):
             try:
-                runs.append(json.loads(path.read_text()))
+                runs.append(json.loads(path.read_text(encoding="utf-8")))
             except Exception:
                 continue
         return runs
@@ -91,7 +91,7 @@ class FarosStateStore:
         path = self._run_path(run_id)
         if not path.is_file():
             return None
-        return json.loads(path.read_text())
+        return json.loads(path.read_text(encoding="utf-8"))
 
     def update_run(self, run_id: str, updates: Dict[str, Any]) -> Dict[str, Any]:
         record = self.get_run(run_id)
@@ -120,7 +120,7 @@ class FarosStateStore:
         path = self._events_path(run_id)
         if not path.is_file():
             return []
-        return json.loads(path.read_text())
+        return json.loads(path.read_text(encoding="utf-8"))
 
     def append_event(self, run_id: str, event: Dict[str, Any]) -> None:
         events = self.list_events(run_id)
@@ -131,7 +131,7 @@ class FarosStateStore:
         path = self._artifacts_path(run_id)
         if not path.is_file():
             return []
-        return json.loads(path.read_text())
+        return json.loads(path.read_text(encoding="utf-8"))
 
     def append_artifacts(self, run_id: str, artifacts: List[Dict[str, Any]]) -> None:
         existing: List[Dict[str, Any]] = []
@@ -158,7 +158,7 @@ class FarosStateStore:
         path = self._memory_path(run_id)
         if not path.is_file():
             return {}
-        return json.loads(path.read_text())
+        return json.loads(path.read_text(encoding="utf-8"))
 
     def save_memory(self, run_id: str, memory: Dict[str, Any]) -> None:
         self._save_json(self._memory_path(run_id), memory)
@@ -181,4 +181,4 @@ class FarosStateStore:
 
     def _save_json(self, path: Path, payload: Any) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(payload, indent=2, default=str))
+        path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
