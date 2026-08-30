@@ -107,10 +107,14 @@ class ArtifactStorage:
         
         return self._deserialize_artifact(artifact_dict)
     
-    def list_all(self) -> List[Artifact]:
+    def list_all(self, limit: int = 100, offset: int = 0) -> List[Artifact]:
         """
-        List all Artifacts.
+        List all Artifacts with pagination.
         
+        Args:
+            limit: Maximum number of artifacts to return (default 100)
+            offset: Number of artifacts to skip (default 0)
+            
         Returns:
             List of artifacts, sorted by creation time (newest first)
         """
@@ -125,14 +129,17 @@ class ArtifactStorage:
         # Sort by creation time (newest first)
         artifacts.sort(key=lambda a: a.createdAt, reverse=True)
         
-        return artifacts
+        # Apply pagination
+        return artifacts[offset:offset + limit]
     
-    def list_by_run(self, runId: str) -> List[Artifact]:
+    def list_by_run(self, runId: str, limit: int = 100, offset: int = 0) -> List[Artifact]:
         """
-        List all Artifacts for a specific Run.
+        List all Artifacts for a specific Run with pagination.
         
         Args:
             runId: Run identifier
+            limit: Maximum number of artifacts to return (default 100)
+            offset: Number of artifacts to skip (default 0)
             
         Returns:
             List of artifacts linked to this run, sorted by creation time
@@ -148,7 +155,8 @@ class ArtifactStorage:
         
         artifacts.sort(key=lambda a: a.createdAt, reverse=True)
         
-        return artifacts
+        # Apply pagination
+        return artifacts[offset:offset + limit]
     
     def exists(self, artifact_id: str) -> bool:
         """

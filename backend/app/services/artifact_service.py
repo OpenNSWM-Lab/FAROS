@@ -78,20 +78,22 @@ class ArtifactService:
         """
         return self.storage.get(artifact_id)
     
-    def list_artifacts(self, runId: Optional[str] = None) -> List[Artifact]:
+    def list_artifacts(self, runId: Optional[str] = None, limit: int = 100, offset: int = 0) -> List[Artifact]:
         """
-        List Artifacts with optional filters.
+        List Artifacts with optional filters and pagination.
         
         Args:
             runId: Optional runId filter
+            limit: Maximum number of artifacts to return (default 100)
+            offset: Number of artifacts to skip (default 0)
             
         Returns:
             List of artifacts matching filters, sorted by creation time (newest first)
         """
         if runId:
-            return self.storage.list_by_run(runId)
+            return self.storage.list_by_run(runId, limit=limit, offset=offset)
         else:
-            return self.storage.list_all()
+            return self.storage.list_all(limit=limit, offset=offset)
 
 
 # Global service instance
