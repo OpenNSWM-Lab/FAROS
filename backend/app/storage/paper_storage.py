@@ -97,7 +97,7 @@ def get_paper(paper_id: str) -> Optional[Dict[str, Any]]:
     path = os.path.join(PAPERS_DIR, paper_id, "meta.json")
     if not os.path.isfile(path):
         return None
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         return _normalize_record(json.load(f))
 
 
@@ -109,7 +109,7 @@ def list_papers() -> List[Dict[str, Any]]:
         meta = os.path.join(PAPERS_DIR, name, "meta.json")
         if os.path.isfile(meta):
             try:
-                with open(meta) as f:
+                with open(meta, encoding="utf-8") as f:
                     results.append(_normalize_record(json.load(f)))
             except Exception:
                 pass
