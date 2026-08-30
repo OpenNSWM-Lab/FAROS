@@ -52,10 +52,10 @@ def create_experiment(data: Dict[str, Any]) -> Dict[str, Any]:
     }
     exp_dir = os.path.join(_EXPERIMENTS_DIR, exp_id)
     os.makedirs(exp_dir, exist_ok=True)
-    with open(os.path.join(exp_dir, "experiment.json"), "w") as f:
+    with open(os.path.join(exp_dir, "experiment.json"), "w", encoding="utf-8") as f:
         json.dump(record, f, indent=2)
     # Initialize empty metrics
-    with open(os.path.join(exp_dir, "metrics.json"), "w") as f:
+    with open(os.path.join(exp_dir, "metrics.json"), "w", encoding="utf-8") as f:
         json.dump([], f)
     return record
 
@@ -64,7 +64,7 @@ def get_experiment(exp_id: str) -> Optional[Dict[str, Any]]:
     path = os.path.join(_EXPERIMENTS_DIR, exp_id, "experiment.json")
     if not os.path.isfile(path):
         return None
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -76,7 +76,7 @@ def list_experiments(project_id: Optional[str] = None) -> List[Dict[str, Any]]:
         exp_path = os.path.join(_EXPERIMENTS_DIR, name, "experiment.json")
         if os.path.isfile(exp_path):
             try:
-                with open(exp_path) as f:
+                with open(exp_path, encoding="utf-8") as f:
                     data = json.load(f)
                 if project_id and data.get("projectId") != project_id:
                     continue
@@ -93,7 +93,7 @@ def update_experiment(exp_id: str, updates: Dict[str, Any]) -> Optional[Dict[str
     record.update(updates)
     record["updatedAt"] = _utcnow_iso()
     path = os.path.join(_EXPERIMENTS_DIR, exp_id, "experiment.json")
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8") as f:
         json.dump(record, f, indent=2)
     return record
 
@@ -131,7 +131,7 @@ def ingest_metrics(exp_id: str, metrics: List[Dict[str, Any]]) -> int:
         return 0
     existing = []
     if os.path.isfile(metrics_path):
-        with open(metrics_path) as f:
+        with open(metrics_path, encoding="utf-8") as f:
             existing = json.load(f)
     now = _utcnow_iso()
     for m in metrics:
@@ -145,7 +145,7 @@ def ingest_metrics(exp_id: str, metrics: List[Dict[str, Any]]) -> int:
             "timestamp": m.get("timestamp", now),
         }
         existing.append(entry)
-    with open(metrics_path, "w") as f:
+    with open(metrics_path, "w", encoding="utf-8") as f:
         json.dump(existing, f, indent=2)
     return len(metrics)
 
@@ -154,7 +154,7 @@ def get_metrics(exp_id: str) -> List[Dict[str, Any]]:
     metrics_path = os.path.join(_EXPERIMENTS_DIR, exp_id, "metrics.json")
     if not os.path.isfile(metrics_path):
         return []
-    with open(metrics_path) as f:
+    with open(metrics_path, encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -200,7 +200,7 @@ def save_figure_artifact(
         "fileName": fig_filename,
         "title": title,
     }
-    with open(os.path.join(fig_dir, "spec.json"), "w") as f:
+    with open(os.path.join(fig_dir, "spec.json"), "w", encoding="utf-8") as f:
         json.dump(spec_data, f, indent=2)
 
     # Save PNG with proper naming
@@ -228,7 +228,7 @@ def save_figure_artifact(
     # Save plot code
     if plot_code:
         code_path = os.path.join(fig_dir, "plot.py")
-        with open(code_path, "w") as f:
+        with open(code_path, "w", encoding="utf-8") as f:
             f.write(plot_code)
         spec_data["pathCode"] = code_path
         spec_data["hasCode"] = True
@@ -236,7 +236,7 @@ def save_figure_artifact(
         spec_data["hasCode"] = False
 
     # Update spec with paths
-    with open(os.path.join(fig_dir, "spec.json"), "w") as f:
+    with open(os.path.join(fig_dir, "spec.json"), "w", encoding="utf-8") as f:
         json.dump(spec_data, f, indent=2)
 
     # Add to experiment's figure list
@@ -244,11 +244,11 @@ def save_figure_artifact(
     figures_index_path = os.path.join(exp_dir, "figures.json")
     figures_list = []
     if os.path.isfile(figures_index_path):
-        with open(figures_index_path) as f:
+        with open(figures_index_path, encoding="utf-8") as f:
             figures_list = json.load(f)
     figures_list.append(spec_data)
     os.makedirs(exp_dir, exist_ok=True)
-    with open(figures_index_path, "w") as f:
+    with open(figures_index_path, "w", encoding="utf-8") as f:
         json.dump(figures_list, f, indent=2)
 
     return spec_data
@@ -258,7 +258,7 @@ def get_figure(fig_id: str) -> Optional[Dict[str, Any]]:
     spec_path = os.path.join(_FIGURES_DIR, fig_id, "spec.json")
     if not os.path.isfile(spec_path):
         return None
-    with open(spec_path) as f:
+    with open(spec_path, encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -266,7 +266,7 @@ def list_figures(exp_id: str) -> List[Dict[str, Any]]:
     figures_path = os.path.join(_EXPERIMENTS_DIR, exp_id, "figures.json")
     if not os.path.isfile(figures_path):
         return []
-    with open(figures_path) as f:
+    with open(figures_path, encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -287,7 +287,7 @@ def save_dataset(exp_id: str, name: str, fmt: str, raw_bytes: bytes, parsed_prev
         f.write(raw_bytes)
 
     preview_path = os.path.join(ds_dir, "preview.json")
-    with open(preview_path, "w") as f:
+    with open(preview_path, "w", encoding="utf-8") as f:
         json.dump(parsed_preview[:200], f, indent=2, default=str)
 
     meta = {
@@ -300,7 +300,7 @@ def save_dataset(exp_id: str, name: str, fmt: str, raw_bytes: bytes, parsed_prev
         "columns": list(parsed_preview[0].keys()) if parsed_preview else [],
         "createdAt": _utcnow_iso(),
     }
-    with open(os.path.join(ds_dir, "meta.json"), "w") as f:
+    with open(os.path.join(ds_dir, "meta.json"), "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
 
     # Index under experiment
@@ -309,10 +309,10 @@ def save_dataset(exp_id: str, name: str, fmt: str, raw_bytes: bytes, parsed_prev
     idx_path = os.path.join(exp_dir, "datasets.json")
     idx = []
     if os.path.isfile(idx_path):
-        with open(idx_path) as f:
+        with open(idx_path, encoding="utf-8") as f:
             idx = json.load(f)
     idx.append(meta)
-    with open(idx_path, "w") as f:
+    with open(idx_path, "w", encoding="utf-8") as f:
         json.dump(idx, f, indent=2)
 
     return meta
@@ -322,7 +322,7 @@ def get_dataset(ds_id: str) -> Optional[Dict[str, Any]]:
     meta_path = os.path.join(_DATASETS_DIR, ds_id, "meta.json")
     if not os.path.isfile(meta_path):
         return None
-    with open(meta_path) as f:
+    with open(meta_path, encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -330,7 +330,7 @@ def get_dataset_preview(ds_id: str) -> List[Dict]:
     preview_path = os.path.join(_DATASETS_DIR, ds_id, "preview.json")
     if not os.path.isfile(preview_path):
         return []
-    with open(preview_path) as f:
+    with open(preview_path, encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -338,5 +338,5 @@ def list_datasets(exp_id: str) -> List[Dict[str, Any]]:
     idx_path = os.path.join(_EXPERIMENTS_DIR, exp_id, "datasets.json")
     if not os.path.isfile(idx_path):
         return []
-    with open(idx_path) as f:
+    with open(idx_path, encoding="utf-8") as f:
         return json.load(f)
