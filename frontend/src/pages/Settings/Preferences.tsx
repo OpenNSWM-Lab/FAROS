@@ -5,18 +5,54 @@ import { Button } from '@/components/ui/button'
 import { CheckCircle2 } from 'lucide-react'
 import { useTheme } from '@/lib/hooks/use-theme'
 
+const STORAGE_KEY = 'faros.preferences'
+
+interface PreferencesData {
+  density: 'comfortable' | 'compact'
+  tableRowSize: number
+  enableNotifications: boolean
+  autoSaveDrafts: boolean
+  showLineNumbers: boolean
+}
+
+const defaultPreferences: PreferencesData = {
+  density: 'comfortable',
+  tableRowSize: 48,
+  enableNotifications: true,
+  autoSaveDrafts: true,
+  showLineNumbers: false,
+}
+
+function loadPreferences(): PreferencesData {
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY)
+    if (stored) {
+      const parsed = JSON.parse(stored)
+      return { ...defaultPreferences, ...parsed }
+    }
+  } catch {
+    // corrupted data — fall through to defaults
+  }
+  return { ...defaultPreferences }
+}
+
 export function Preferences() {
   const { theme, setTheme } = useTheme()
-  const [density, setDensity] = useState<'comfortable' | 'compact'>('comfortable')
-  const [tableRowSize, setTableRowSize] = useState(48)
-  const [enableNotifications, setEnableNotifications] = useState(true)
-  const [autoSaveDrafts, setAutoSaveDrafts] = useState(true)
-  const [showLineNumbers, setShowLineNumbers] = useState(false)
+  const [prefs, setPrefs] = useState<PreferencesData>(loadPreferences)
   const [showToast, setShowToast] = useState(false)
 
+  const updatePref = <K extends keyof PreferencesData>(key: K, value: PreferencesData[K]) => {
+    setPrefs((prev) => ({ ...prev, [key]: value }))
+  }
+
   const handleSave = () => {
-    setShowToast(true)
-    setTimeout(() => setShowToast(false), 3000)
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(prefs))
+      setShowToast(true)
+      setTimeout(() => setShowToast(false), 3000)
+    } catch {
+      // localStorage unavailable (private browsing, quota exceeded)
+    }
   }
 
   return (
@@ -25,7 +61,7 @@ export function Preferences() {
         {showToast && (
           <div className="fixed top-4 right-4 z-50 bg-primary text-primary-foreground px-4 py-3 rounded-md shadow-lg flex items-center gap-2 animate-in slide-in-from-top">
             <CheckCircle2 className="h-4 w-4" />
-            <span className="text-sm font-medium">Preferences saved locally (mock)</span>
+            <span className="text-sm font-medium">Preferences saved</span>
           </div>
         )}
 
@@ -56,8 +92,8 @@ export function Preferences() {
               <div className="flex gap-2">
                 <button
                   type="button"
-                  onClick={() => setDensity('comfortable')}
-                  className={`flex-1 px-4 py-2 rounded-md text-sm font-medium transition-colors ${density === 'comfortable'
+                  onClick={() => updatePref('density', 'comfortable')}
+                  className={`flex-1 px-4 py-2 rounded-md text-sm font-medium transition-colors ${prefs.density === 'comfortable'
                     ? 'bg-primary text-primary-foreground'
                     : 'bg-muted hover:bg-muted/80'
                     }`}
@@ -66,8 +102,8 @@ export function Preferences() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => setDensity('compact')}
-                  className={`flex-1 px-4 py-2 rounded-md text-sm font-medium transition-colors ${density === 'compact'
+                  onClick={() => updatePref('density', 'compact')}
+                  className={`flex-1 px-4 py-2 rounded-md text-sm font-medium transition-colors ${prefs.density === 'compact'
                     ? 'bg-primary text-primary-foreground'
                     : 'bg-muted hover:bg-muted/80'
                     }`}
@@ -89,14 +125,14 @@ export function Preferences() {
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="space-y-2">
-              <label className="text-sm font-medium">Row Height: {tableRowSize}px</label>
+              <label className="text-sm font-medium">Row Height: {prefs.tableRowSize}px</label>
               <input
                 type="range"
                 min="32"
                 max="64"
                 step="4"
-                value={tableRowSize}
-                onChange={(e) => setTableRowSize(parseInt(e.target.value))}
+                value={prefs.tableRowSize}
+                onChange={(e) => updatePref('tableRowSize', parseInt(e.target.value))}
                 className="w-full"
               />
               <div className="flex justify-between text-xs text-muted-foreground">
@@ -121,13 +157,13 @@ export function Preferences() {
               <button
                 type="button"
                 role="switch"
-                aria-checked={showLineNumbers}
-                onClick={() => setShowLineNumbers(!showLineNumbers)}
-                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${showLineNumbers ? 'bg-primary' : 'bg-input'
+                aria-checked={prefs.showLineNumbers}
+                onClick={() => updatePref('showLineNumbers', !prefs.showLineNumbers)}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${prefs.showLineNumbers ? 'bg-primary' : 'bg-input'
                   }`}
               >
                 <span
-                  className={`inline-block h-4 w-4 transform rounded-full bg-background transition-transform ${showLineNumbers ? 'translate-x-6' : 'translate-x-1'
+                  className={`inline-block h-4 w-4 transform rounded-full bg-background transition-transform ${prefs.showLineNumbers ? 'translate-x-6' : 'translate-x-1'
                     }`}
                 />
               </button>
@@ -149,13 +185,13 @@ export function Preferences() {
               <button
                 type="button"
                 role="switch"
-                aria-checked={enableNotifications}
-                onClick={() => setEnableNotifications(!enableNotifications)}
-                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${enableNotifications ? 'bg-primary' : 'bg-input'
+                aria-checked={prefs.enableNotifications}
+                onClick={() => updatePref('enableNotifications', !prefs.enableNotifications)}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${prefs.enableNotifications ? 'bg-primary' : 'bg-input'
                   }`}
               >
                 <span
-                  className={`inline-block h-4 w-4 transform rounded-full bg-background transition-transform ${enableNotifications ? 'translate-x-6' : 'translate-x-1'
+                  className={`inline-block h-4 w-4 transform rounded-full bg-background transition-transform ${prefs.enableNotifications ? 'translate-x-6' : 'translate-x-1'
                     }`}
                 />
               </button>
@@ -169,13 +205,13 @@ export function Preferences() {
               <button
                 type="button"
                 role="switch"
-                aria-checked={autoSaveDrafts}
-                onClick={() => setAutoSaveDrafts(!autoSaveDrafts)}
-                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${autoSaveDrafts ? 'bg-primary' : 'bg-input'
+                aria-checked={prefs.autoSaveDrafts}
+                onClick={() => updatePref('autoSaveDrafts', !prefs.autoSaveDrafts)}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${prefs.autoSaveDrafts ? 'bg-primary' : 'bg-input'
                   }`}
               >
                 <span
-                  className={`inline-block h-4 w-4 transform rounded-full bg-background transition-transform ${autoSaveDrafts ? 'translate-x-6' : 'translate-x-1'
+                  className={`inline-block h-4 w-4 transform rounded-full bg-background transition-transform ${prefs.autoSaveDrafts ? 'translate-x-6' : 'translate-x-1'
                     }`}
                 />
               </button>
