@@ -179,6 +179,8 @@ class FarosOrchestrator:
                         'blueprintName': blueprint.name,
                         'profileName': profile.name,
                         'agentRole': runtime_node['agentRole'],
+                        'verificationPolicy': profile.verification_policy,
+                        'executionMode': run.get('execution_mode', 'execute'),
                     },
                 )
                 agent_plan = AgentExecutionPlan(
@@ -203,6 +205,41 @@ class FarosOrchestrator:
                     required_outputs=self._required_outputs_for_node(blueprint, node.capability),
                 )
                 if verification.status != 'passed':
+                    outputs_summary = {
+                        key: value
+                        for key, value in result.outputs.items()
+                        if key not in {'ideaCandidates', 'actionItems'}
+                    }
+                    self.state_store.update_step(
+                        run_id,
+                        node.id,
+                        {
+                            'status': 'failed',
+                            'agent_id': runtime_node['agentId'],
+                            'skill_ids': runtime_node['skillIds'],
+                            'ended_at': utc_now_iso(),
+                            'outputs_summary': outputs_summary,
+                            'verification': verification.model_dump(),
+                            'error': verification.message,
+                            'checkpoint': {
+                                'status': 'failed',
+                                'at': utc_now_iso(),
+                                'outputKeys': sorted(result.outputs.keys()),
+                                'error': verification.message,
+                            },
+                        },
+                    )
+                    self.artifact_store.add(run_id, result.artifacts)
+                    memory.merge(result.outputs, scope=node.id)
+                    memory.record_step(node.id, result.outputs)
+                    for event in result.events:
+                        level = event.get('level', 'info')
+                        message = event.get('message', f"{node.capability} event")
+                        details = {k: v for k, v in event.items() if k not in {'level', 'message'}}
+                        if level == 'error':
+                            self.event_log.error(run_id, node.id, message, **details)
+                        else:
+                            self.event_log.info(run_id, node.id, message, **details)
                     raise FarosVerificationError(verification.message)
 
                 outputs_summary = {key: value for key, value in result.outputs.items() if key not in {'ideaCandidates', 'actionItems'}}

@@ -13,11 +13,14 @@ Skills abstraction: searchWeb, summarize, planRepoStructure, synthesizeCode
 (Web search / GitHub gracefully degrade if unavailable)
 """
 
+import ast
 import json
 import re
 import os
+import sys
 import logging
 from datetime import datetime
+from pathlib import Path
 from typing import Optional, List, Dict, Any
 
 from app.llm.provider_client import get_provider_client, ChatMessage, ProviderError
@@ -26,8 +29,14 @@ from app.services.code_project_service import (
     write_project_files,
     CODE_PROJECTS_DIR,
 )
-from app.storage.plan_session_storage import get_session_storage, get_candidate_storage
-from app.db.engine import get_session as get_db_session
+from app.models.plan_session import CandidatePlan, PlanSession, PlanSessionConfig, PlanSessionStatus
+from app.storage.plan_session_storage import (
+    generate_candidate_plan_id,
+    generate_plan_session_id,
+    get_candidate_storage,
+    get_session_storage,
+)
+from app.db.engine import get_session_context
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +119,9 @@ BLUEPRINT_PROMPT = """You are a senior software architect. Given the following r
 2. Include: README.md, requirements.txt (or package.json), config files, source modules, tests, docs
 3. Organize code into logical modules/packages
 4. Include a main entry point
+5. This is a scientific experiment, not a web application. Include executable baseline and evaluation code
+6. The main entry point must compute results from data or simulation and write metrics.json; never hard-code claimed outcomes
+7. Every metrics.json item must contain name, value, unit, definition, and split
 
 **Output (strict JSON):**
 ```json
@@ -178,6 +190,9 @@ Generate the COMPLETE content for ALL of the following files. Return strict JSON
 Requirements:
 - Production-quality code with imports, docstrings, type hints
 - Functional and runnable
+- Implement the declared scientific baseline and evaluation rather than returning placeholder metrics
+- The main entry point must write metrics.json with name, value, unit, definition, and split for each measured metric
+- Never invent or hard-code successful metric values
 - README with setup/usage/structure
 - Config files with sensible defaults
 - Test files with real test cases
@@ -185,8 +200,108 @@ Requirements:
 Return ONLY valid JSON.
 """
 
+SCIENTIFIC_ENTRYPOINT_PROMPT = """Generate one self-contained Python scientific experiment entry point.
+
+Research title: {title}
+Research question: {abstract}
+Method: {method}
+Baseline(s): {baselines}
+Required metrics: {metrics}
+Datasets: {datasets}
+
+Strict requirements:
+1. Return only complete Python source code for src/main.py, without Markdown fences.
+2. Use only the Python standard library and NumPy. Do not import any local project module.
+3. Use a fixed random seed and a deterministic synthetic-data or computational experiment.
+4. Implement both the declared method and baseline. Compute all values at runtime; never hard-code outcomes.
+5. Evaluate on a held-out test split when data is involved.
+6. Write repo-root metrics.json as a JSON list. Every item must contain name, numeric value, unit, definition, and split.
+7. Metric names or splits must distinguish the baseline from the proposed method.
+8. Print the same metric list as JSON and exit nonzero on an invalid or non-finite result.
+9. Include a main() function and an if __name__ == "__main__" guard.
+"""
+
 
 # ── Agent pipeline ──────────────────────────────────────────────
+
+def generate_project_from_research_candidate(
+    candidate: Dict[str, Any],
+    *,
+    idea_session_id: Optional[str] = None,
+    provider_name: str = "qwen",
+    model: str = "qwen-max",
+    language: str = "python",
+    framework: str = "numpy",
+    existing_project_id: Optional[str] = None,
+) -> str:
+    """Bridge an Idea candidate into the established Plan-based Code agent."""
+
+    session_id = generate_plan_session_id()
+    candidate_id = generate_candidate_plan_id()
+    title = str(candidate.get("title") or "Research Project")
+    problem = str(candidate.get("problem") or candidate.get("hypothesisStatement") or "")
+    method = str(candidate.get("proposedMethod") or candidate.get("keyInsight") or "")
+    specs = candidate.get("experimentSpecs") or candidate.get("requiredExperiments") or []
+    metrics = [
+        str(metric)
+        for spec in specs
+        if isinstance(spec, dict)
+        for metric in (spec.get("metrics") or [])
+    ]
+    datasets = [
+        str(dataset)
+        for spec in specs
+        if isinstance(spec, dict)
+        for dataset in (spec.get("datasets") or [])
+    ]
+
+    plan_candidate = CandidatePlan(
+        id=candidate_id,
+        sessionId=session_id,
+        indexNumber=1,
+        title=title,
+        planAbstract=problem,
+        method=method,
+        experimentDesign={
+            "research_question": problem,
+            "hypothesis": str(candidate.get("hypothesisStatement") or candidate.get("keyInsight") or problem),
+            "variables": {},
+            "methodology": {"description": method, "metrics": metrics, "datasets": datasets},
+            "expected_outcomes": {"metrics": metrics},
+        },
+        evaluationProtocol={"metrics": metrics, "datasets": datasets},
+        baselines=[str(item) for item in (candidate.get("baselines") or [])],
+    )
+    session = PlanSession(
+        id=session_id,
+        config=PlanSessionConfig(
+            providerName=provider_name,
+            model=model,
+            ideaSessionId=idea_session_id,
+            ideaCandidateId=str(candidate.get("id") or "") or None,
+            ideaCandidateTitle=title,
+            ideaSeedQuery=problem,
+            maxCandidates=1,
+        ),
+        status=PlanSessionStatus.COMPLETED,
+        candidateIds=[candidate_id],
+        selectedCandidateId=candidate_id,
+    )
+    get_session_storage().create(session)
+    get_candidate_storage().create(plan_candidate)
+
+    return generate_project_from_plan(
+        plan_session_id=session_id,
+        candidate_id=candidate_id,
+        provider_name=provider_name,
+        model=model,
+        language=language,
+        framework=framework,
+        enable_web_search=False,
+        enable_github=False,
+        existing_project_id=existing_project_id,
+        scientific_mode=True,
+    )
 
 def generate_project_from_plan(
     plan_session_id: str,
@@ -198,6 +313,7 @@ def generate_project_from_plan(
     enable_web_search: bool = False,
     enable_github: bool = False,
     existing_project_id: Optional[str] = None,
+    scientific_mode: bool = False,
 ) -> str:
     """
     Main entry point: generate a code project from a plan candidate.
@@ -229,13 +345,13 @@ def generate_project_from_plan(
         project_id = existing_project_id
         # Update project title/description in DB
         from app.db import crud as _crud
-        with get_db_session() as db:
+        with get_session_context() as db:
             _crud.update_project_v2(db, project_id, {
                 "title": f"{title} [{language}]",
                 "description": f"{abstract}\n\nMethod: {method}",
             })
     else:
-        with get_db_session() as db:
+        with get_session_context() as db:
             project = create_project(
                 db=db,
                 title=f"{title} [{language}]",
@@ -269,14 +385,27 @@ def generate_project_from_plan(
             except Exception as e:
                 _set_status(project_id, "github_explore", "skipped", str(e))
 
-        # Step 4: Repo blueprint
-        _set_status(project_id, "blueprint", "running", "Designing project structure...")
-        blueprint = _step_blueprint(client, model, title, abstract, method, rq, language, framework)
-        _set_status(project_id, "blueprint", "ok", f"Designed {len(blueprint.get('files', []))} files")
-
-        # Step 5: Code synthesis (batch)
-        _set_status(project_id, "synthesis", "running", "Generating code...")
-        files_dict = _step_synthesize(client, model, project_id, blueprint, title, abstract, method, language)
+        # FAROS scientific runs favor one coherent executable over a large set
+        # of independently generated modules. The general Code workspace keeps
+        # the established multi-file path.
+        if scientific_mode and language.lower() == "python":
+            _set_status(project_id, "blueprint", "ok", "Using compact scientific execution blueprint")
+            _set_status(project_id, "synthesis", "running", "Generating scientific entrypoint...")
+            files_dict = _read_existing_project_files(project_id)
+            files_dict["src/main.py"] = _step_synthesize_scientific_entrypoint(
+                client=client,
+                model=model,
+                title=title,
+                abstract=abstract,
+                method=method,
+                candidate=candidate,
+            )
+        else:
+            _set_status(project_id, "blueprint", "running", "Designing project structure...")
+            blueprint = _step_blueprint(client, model, title, abstract, method, rq, language, framework)
+            _set_status(project_id, "blueprint", "ok", f"Designed {len(blueprint.get('files', []))} files")
+            _set_status(project_id, "synthesis", "running", "Generating code...")
+            files_dict = _step_synthesize(client, model, project_id, blueprint, title, abstract, method, language)
         _set_status(project_id, "synthesis", "ok", f"Generated {len(files_dict)} files")
 
         # Step 6: Self-check
@@ -290,7 +419,7 @@ def generate_project_from_plan(
         # Step 7: Persist to filesystem + DB index
         _set_status(project_id, "persist", "running", "Writing files to disk...")
         files_list = [{"path": p, "content": c} for p, c in files_dict.items()]
-        with get_db_session() as db:
+        with get_session_context() as db:
             write_project_files(db, project_id, files_list)
         _set_status(project_id, "persist", "ok", f"Wrote {len(files_dict)} files to disk")
 
@@ -371,6 +500,105 @@ def _default_blueprint(title: str, language: str) -> Dict:
             {"path": "Makefile" if language.lower() == "python" else "Dockerfile", "description": "Build automation", "type": "config"},
         ],
     }
+
+
+def _read_existing_project_files(project_id: str) -> Dict[str, str]:
+    """Load the small, source-controlled portion of an existing workspace."""
+    root = Path(CODE_PROJECTS_DIR) / project_id / "repo"
+    result: Dict[str, str] = {}
+    skipped_parts = {".git", "artifacts", "outputs", "results", "__pycache__"}
+    skipped_names = {".env", "metrics.json", "experiment_report.md"}
+    if not root.is_dir():
+        return result
+    for path in root.rglob("*"):
+        if not path.is_file() or path.name in skipped_names:
+            continue
+        relative = path.relative_to(root)
+        if any(part in skipped_parts for part in relative.parts) or path.stat().st_size > 2_000_000:
+            continue
+        try:
+            result[relative.as_posix()] = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+    return result
+
+
+def _clean_generated_source(text: str) -> str:
+    content = text.strip()
+    if content.startswith("```"):
+        lines = content.splitlines()
+        if lines:
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        content = "\n".join(lines).strip()
+    return content + "\n"
+
+
+def _scientific_entrypoint_issues(content: str) -> List[str]:
+    issues: List[str] = []
+    tree = None
+    try:
+        tree = ast.parse(content, "src/main.py")
+        compile(tree, "src/main.py", "exec")
+    except SyntaxError as exc:
+        issues.append(f"syntax error: {exc.msg}")
+    if tree is not None:
+        imported_roots = {
+            alias.name.split(".", 1)[0]
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Import)
+            for alias in node.names
+        }
+        imported_roots.update(
+            (node.module or "").split(".", 1)[0]
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and node.level == 0
+        )
+        unsupported = sorted(
+            item
+            for item in imported_roots
+            if item and item != "numpy" and item not in sys.stdlib_module_names
+        )
+        if unsupported:
+            issues.append("unsupported dependencies: " + ", ".join(unsupported))
+    if re.search(r"^\s*(?:from\s+src\b|import\s+src\b)", content, re.MULTILINE):
+        issues.append("local src imports are forbidden")
+    if "metrics.json" not in content or "json.dump" not in content:
+        issues.append("the program must write metrics.json with json.dump")
+    if "if __name__" not in content or "def main" not in content:
+        issues.append("main() and the __main__ guard are required")
+    return issues
+
+
+def _step_synthesize_scientific_entrypoint(
+    *, client, model: str, title: str, abstract: str, method: str, candidate: CandidatePlan,
+) -> str:
+    protocol = candidate.evaluationProtocol or {}
+    prompt = SCIENTIFIC_ENTRYPOINT_PROMPT.format(
+        title=title,
+        abstract=abstract,
+        method=method,
+        baselines=json.dumps(candidate.baselines, ensure_ascii=False),
+        metrics=json.dumps(protocol.get("metrics") or [], ensure_ascii=False),
+        datasets=json.dumps(protocol.get("datasets") or [], ensure_ascii=False),
+    )
+    last_issues: List[str] = []
+    for attempt in range(2):
+        request = prompt
+        if attempt and last_issues:
+            request += "\nThe previous response was rejected for: " + "; ".join(last_issues)
+        response = client.chat(
+            messages=[ChatMessage(role="user", content=request)],
+            model=model,
+            temperature=0.2,
+            max_tokens=4000,
+        )
+        content = _clean_generated_source(response.text)
+        last_issues = _scientific_entrypoint_issues(content)
+        if not last_issues:
+            return content
+    raise ValueError("Invalid scientific entrypoint: " + "; ".join(last_issues))
 
 
 def _step_synthesize(client, model: str, project_id: str, blueprint: Dict, title: str, abstract: str, method: str, language: str) -> Dict[str, str]:

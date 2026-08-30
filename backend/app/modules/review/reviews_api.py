@@ -9,14 +9,29 @@ Endpoints:
 - GET  /reviews/requests     (list improvement requests)
 """
 
+import json
 import logging
 import threading
+from pathlib import Path
 from typing import Any, Dict, Optional, List
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from app.core.settings import get_settings
+from app.contracts import ExecutionAssessment, ExperimentEvidence, QualityAssessment, ResearchDossier
+from app.modules.review.experiment_feedback import (
+    ExperimentFeedbackResult,
+    ExperimentIterationDecision,
+    ExperimentOptimizationPolicy,
+    review_experiment_feedback,
+)
+from app.modules.review.experiment_feedback_storage import (
+    create_experiment_feedback,
+    get_experiment_feedback,
+    list_experiment_feedback,
+    update_experiment_feedback,
+)
 from app.modules.review.storage import (
     create_review as _create_review, get_review as _get_review,
     list_reviews as _list_reviews, update_review as _update_review,
@@ -50,6 +65,68 @@ class RunReviewXRequest(BaseModel):
 
 class UpdateImprovementRequest(BaseModel):
     status: str
+
+
+class RunExperimentFeedbackRequest(BaseModel):
+    dossier: ResearchDossier
+    experimentEvidence: ExperimentEvidence
+    executionAssessment: Optional[ExecutionAssessment] = None
+    previousExperimentEvidence: Optional[ExperimentEvidence] = None
+    optimizationPolicy: Optional[ExperimentOptimizationPolicy] = None
+    planPackageId: Optional[str] = None
+    applyToPlanPackage: bool = False
+
+
+class PlanFeedbackApplication(BaseModel):
+    requested: bool = False
+    applied: bool = False
+    packageId: Optional[str] = None
+    targetSections: List[str] = Field(default_factory=list)
+    reason: str = ""
+
+
+class RunExperimentFeedbackResponse(BaseModel):
+    qualityAssessment: QualityAssessment
+    iterationDecision: ExperimentIterationDecision
+    planFeedback: PlanFeedbackApplication
+
+
+class RunStoredExperimentFeedbackRequest(BaseModel):
+    dossierArtifactId: Optional[str] = None
+    executionAssessmentArtifactId: Optional[str] = None
+    experimentEvidenceArtifactId: Optional[str] = None
+    previousExperimentArtifactId: Optional[str] = None
+    optimizationPolicy: Optional[ExperimentOptimizationPolicy] = None
+    planPackageId: Optional[str] = None
+    applyToPlanPackage: bool = False
+
+
+class RunStoredExperimentFeedbackResponse(RunExperimentFeedbackResponse):
+    feedbackId: str
+    createdAt: str
+    runId: str
+    sourceArtifacts: Dict[str, str] = Field(default_factory=dict)
+
+
+class ReviseExperimentPlanRequest(BaseModel):
+    generationMode: str = "deterministic"
+    reviewerMode: str = "deterministic"
+
+
+class ReviseExperimentPlanResponse(BaseModel):
+    feedbackId: str
+    packageId: str
+    status: str
+    revisionId: Optional[str] = None
+    changedSections: List[str] = Field(default_factory=list)
+
+
+class CreateNextExperimentRunResponse(BaseModel):
+    feedbackId: str
+    runId: str
+    planPackageId: str
+    status: str
+    reused: bool = False
 
 
 def _reviewx_finding_to_dto(finding: Dict[str, Any], review: Dict[str, Any]) -> Dict[str, Any]:
@@ -446,6 +523,528 @@ async def get_reviewx_eval_record_endpoint(
     if review.get("reviewKind") != "reviewx":
         raise HTTPException(status_code=400, detail="Review is not a ReviewX run")
     return _reviewx_eval_record(review)
+
+
+@router.post(
+    "/reviewx/experiment-feedback",
+    response_model=RunExperimentFeedbackResponse,
+    summary="Audit experiment evidence and route the next research iteration",
+)
+async def run_experiment_feedback_endpoint(
+    req: RunExperimentFeedbackRequest,
+) -> RunExperimentFeedbackResponse:
+    """Run the Direction-B gate and optionally attach its feedback to a PlanPackage."""
+
+    result: ExperimentFeedbackResult = review_experiment_feedback(
+        req.dossier,
+        req.experimentEvidence,
+        execution_assessment=req.executionAssessment,
+        previous_experiment=req.previousExperimentEvidence,
+        optimization_policy=req.optimizationPolicy,
+    )
+    application = PlanFeedbackApplication(
+        requested=req.applyToPlanPackage,
+        packageId=req.planPackageId,
+        targetSections=result.iterationDecision.targetSections,
+    )
+
+    if req.applyToPlanPackage:
+        if not req.planPackageId:
+            raise HTTPException(status_code=422, detail="planPackageId is required when applyToPlanPackage is true")
+        if result.iterationDecision.decision == "accept_results":
+            application.reason = "Accepted results do not require a corrective PlanPackage feedback item."
+        else:
+            from app.services.plan_package_service import (
+                PlanPackageNotFoundError,
+                get_plan_package_service,
+            )
+
+            try:
+                get_plan_package_service().add_feedback(
+                    req.planPackageId,
+                    section_path="experimentFeedback",
+                    display_label="ReviewX experiment feedback",
+                    source_view="reviewx",
+                    target_sections=result.iterationDecision.targetSections or ["stages", "expectedMetrics"],
+                    feedback_type="correction",
+                    comment=result.iterationDecision.feedbackComment,
+                    severity=(
+                        "blocking"
+                        if result.qualityAssessment.gateStatus == "fail"
+                        else "high"
+                    ),
+                    requested_action=(
+                        "repair"
+                        if result.iterationDecision.decision == "rerun_experiment"
+                        else "revise"
+                    ),
+                )
+            except PlanPackageNotFoundError as exc:
+                raise HTTPException(status_code=404, detail=str(exc))
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc))
+            application.applied = True
+            application.reason = "ReviewX experiment feedback was attached to the PlanPackage."
+
+    return RunExperimentFeedbackResponse(
+        qualityAssessment=result.qualityAssessment,
+        iterationDecision=result.iterationDecision,
+        planFeedback=application,
+    )
+
+
+def _load_run_contract_artifact(
+    run_id: str,
+    filename: str,
+    model_type,
+    artifact_id: Optional[str] = None,
+    *,
+    require_platform_run_match: bool = True,
+):
+    from app.storage.artifact_storage import get_storage as get_artifact_storage
+
+    artifact_storage = get_artifact_storage()
+    if artifact_id:
+        artifact = artifact_storage.get(artifact_id)
+        if artifact is None:
+            raise HTTPException(status_code=404, detail=f"Artifact '{artifact_id}' not found")
+        if require_platform_run_match and artifact.runId != run_id:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Artifact '{artifact_id}' belongs to run '{artifact.runId}', not '{run_id}'",
+            )
+    else:
+        candidates = [
+            item
+            for item in artifact_storage.list_by_run(run_id)
+            if Path(item.filename).name.lower() == filename.lower()
+        ]
+        if not candidates:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "message": f"Run '{run_id}' is missing required ReviewX evidence",
+                    "requiredFilename": filename,
+                    "runId": run_id,
+                },
+            )
+        artifact = candidates[0]
+
+    path = Path(artifact.storagePath)
+    if not path.is_file():
+        raise HTTPException(
+            status_code=422,
+            detail=f"Artifact '{artifact.id}' has no readable file at '{artifact.storagePath}'",
+        )
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        model = model_type.model_validate(payload)
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Artifact '{artifact.id}' is not valid {model_type.__name__}: {exc}",
+        )
+    return artifact, model
+
+
+def _faros_contract_context(run_id: str):
+    """Resolve ReviewX contracts from the current FAROS runtime memory."""
+
+    from app.faros.runtime.orchestrator import get_orchestrator
+
+    orchestrator = get_orchestrator()
+    run = orchestrator.get_run(run_id)
+    memory = orchestrator.get_run_memory(run_id)
+    if run is None or memory is None:
+        raise HTTPException(status_code=404, detail=f"FAROS run '{run_id}' not found")
+    data = memory.get("data", {})
+    try:
+        assessment = ExecutionAssessment.model_validate(data.get("executionAssessment"))
+        evidence = ExperimentEvidence.model_validate(data.get("experimentEvidence"))
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": f"FAROS run '{run_id}' has no valid experiment handoff: {exc}",
+                "runId": run_id,
+            },
+        )
+
+    design = data.get("experimentDesign") or {}
+    question = str(data.get("seedQuery") or design.get("seedQuery") or "Unspecified research question")
+    objective = str(design.get("objective") or design.get("hypothesis") or question)
+    hypothesis = str(design.get("hypothesis") or objective)
+    if len(question.strip()) < 5:
+        question = f"Research question: {question.strip() or run_id}"
+    if len(hypothesis.strip()) < 5:
+        hypothesis = f"Evaluate whether {objective.strip() or question}"
+    metric_names = list(dict.fromkeys(
+        [name for name in assessment.validationMetrics if name]
+        + [metric.name for metric in evidence.metrics if metric.name]
+    ))
+    stop_conditions = assessment.stopConditions or ["Stop when the configured evaluation cannot be reproduced."]
+    dossier = ResearchDossier.model_validate({
+        "runId": evidence.runId,
+        "questionId": evidence.questionId,
+        "problemFrame": {
+            "originalQuestion": question,
+            "scopedQuestion": question,
+            "observableVariables": metric_names,
+            "assumptions": list(design.get("controlled_variables") or []),
+        },
+        "evidenceMap": {
+            "unresolvedGaps": [
+                "The compatibility dossier contains runtime experiment context; literature evidence remains in the Idea artifacts."
+            ],
+        },
+        "hypotheses": [{
+            "id": f"{run_id}:hypothesis",
+            "statement": hypothesis,
+            "rationale": objective,
+            "falsificationCriteria": stop_conditions,
+        }],
+        "researchPlan": {
+            "objective": objective,
+            "steps": [{
+                "id": f"{run_id}:experiment",
+                "order": 1,
+                "title": str(design.get("title") or "Execute and evaluate experiment"),
+                "objective": objective,
+                "inputs": assessment.availableInputs,
+                "tools": assessment.toolsAndEnvironment,
+                "method": [evidence.method] if evidence.method else [],
+                "outputs": ["experiment_evidence.json"],
+                "metrics": metric_names,
+                "stopConditions": stop_conditions,
+            }],
+            "requiredData": assessment.availableInputs,
+            "expectedOutcomes": list(evidence.supportedClaims),
+            "constraints": list(assessment.safetyConstraints),
+            "executionClass": assessment.executionClass.value,
+        },
+        "uncertainties": list(assessment.warnings),
+        "generationTrace": {
+            "providerName": run.get("profile_id"),
+            "warnings": ["Research dossier adapted from FAROS runtime memory for ReviewX."],
+        },
+    })
+    artifacts = orchestrator.list_artifacts(run_id)
+    artifact_by_type = {item.get("type"): item for item in artifacts}
+    source_artifacts = {
+        "researchDossier": f"{run_id}:memory:research_dossier",
+        "executionAssessment": (artifact_by_type.get("execution_assessment") or {}).get(
+            "id", f"{run_id}:memory:execution_assessment"
+        ),
+        "experimentEvidence": (artifact_by_type.get("experiment_evidence") or {}).get(
+            "id", f"{run_id}:memory:experiment_evidence"
+        ),
+    }
+    return dossier, assessment, evidence, source_artifacts
+
+
+@router.get(
+    "/reviewx/experiment-runs",
+    summary="List FAROS runs containing experiment evidence for ReviewX",
+)
+async def list_reviewx_experiment_runs_endpoint():
+    from app.faros.runtime.orchestrator import get_orchestrator
+
+    orchestrator = get_orchestrator()
+    records = []
+    for run in orchestrator.list_runs():
+        if run.get("status") not in {"completed", "failed"}:
+            continue
+        memory = orchestrator.get_run_memory(run["id"]) or {}
+        data = memory.get("data", {})
+        if not data.get("experimentEvidence"):
+            continue
+        evidence_status = data.get("experimentEvidence", {}).get("status", "not_assessed")
+        inputs = run.get("inputs") or {}
+        records.append({
+            "id": run["id"],
+            "status": run.get("status"),
+            "startedAt": run.get("started_at") or run.get("created_at"),
+            "config": {
+                "workplaceName": inputs.get("seedQuery") or data.get("projectTitle") or run["id"],
+                "model": run.get("profile_id"),
+            },
+            "artifacts": [
+                {"id": f"{run['id']}:memory:research_dossier", "filename": "research_dossier.json"},
+                {"id": f"{run['id']}:memory:execution_assessment", "filename": "execution_assessment.json"},
+                {"id": f"{run['id']}:memory:experiment_evidence", "filename": "experiment_evidence.json"},
+            ],
+            "evidenceStatus": evidence_status,
+        })
+    records.sort(key=lambda item: item.get("startedAt") or "", reverse=True)
+    return {"runs": records, "total": len(records)}
+
+
+@router.post(
+    "/reviewx/runs/{run_id}/experiment-feedback",
+    response_model=RunStoredExperimentFeedbackResponse,
+    summary="Resolve a run's scientific artifacts and audit its experiment feedback",
+)
+async def run_stored_experiment_feedback_endpoint(
+    run_id: str,
+    req: RunStoredExperimentFeedbackRequest,
+) -> RunStoredExperimentFeedbackResponse:
+    """Resolve contract artifacts produced by the integrated FAROS run."""
+
+    if run_id.startswith("faros_"):
+        dossier, execution_assessment, evidence, source_artifacts = _faros_contract_context(run_id)
+    else:
+        dossier_artifact, dossier = _load_run_contract_artifact(
+            run_id,
+            "research_dossier.json",
+            ResearchDossier,
+            req.dossierArtifactId,
+        )
+        evidence_artifact, evidence = _load_run_contract_artifact(
+            run_id,
+            "experiment_evidence.json",
+            ExperimentEvidence,
+            req.experimentEvidenceArtifactId,
+        )
+        source_artifacts = {
+            "researchDossier": dossier_artifact.id,
+            "experimentEvidence": evidence_artifact.id,
+        }
+
+        execution_assessment = None
+        try:
+            assessment_artifact, execution_assessment = _load_run_contract_artifact(
+                run_id,
+                "execution_assessment.json",
+                ExecutionAssessment,
+                req.executionAssessmentArtifactId,
+            )
+            source_artifacts["executionAssessment"] = assessment_artifact.id
+        except HTTPException as exc:
+            missing_optional = (
+                req.executionAssessmentArtifactId is None
+                and exc.status_code == 422
+                and isinstance(exc.detail, dict)
+                and exc.detail.get("requiredFilename") == "execution_assessment.json"
+            )
+            if not missing_optional:
+                raise
+
+    previous_experiment = None
+    if req.previousExperimentArtifactId:
+        previous_artifact, previous_experiment = _load_run_contract_artifact(
+            run_id,
+            "experiment_evidence.json",
+            ExperimentEvidence,
+            req.previousExperimentArtifactId,
+            require_platform_run_match=False,
+        )
+        source_artifacts["previousExperimentEvidence"] = previous_artifact.id
+    elif not run_id.startswith("faros_"):
+        from app.storage.artifact_storage import get_storage as get_artifact_storage
+
+        earlier_evidence = [
+            artifact
+            for artifact in get_artifact_storage().list_by_run(run_id)
+            if Path(artifact.filename).name.lower() == "experiment_evidence.json"
+            and artifact.id != evidence_artifact.id
+        ]
+        if earlier_evidence:
+            previous_artifact, previous_experiment = _load_run_contract_artifact(
+                run_id,
+                "experiment_evidence.json",
+                ExperimentEvidence,
+                earlier_evidence[0].id,
+            )
+            source_artifacts["previousExperimentEvidence"] = previous_artifact.id
+
+    plan_package_id = req.planPackageId or (
+        execution_assessment.planPackageId if execution_assessment else None
+    )
+    response = await run_experiment_feedback_endpoint(
+        RunExperimentFeedbackRequest(
+            dossier=dossier,
+            experimentEvidence=evidence,
+            executionAssessment=execution_assessment,
+            previousExperimentEvidence=previous_experiment,
+            optimizationPolicy=req.optimizationPolicy,
+            planPackageId=plan_package_id,
+            applyToPlanPackage=req.applyToPlanPackage,
+        )
+    )
+    record_payload = {
+        "runId": run_id,
+        "scientificRunId": dossier.runId,
+        "questionId": dossier.questionId,
+        "planPackageId": plan_package_id,
+        "sourceArtifacts": source_artifacts,
+        "qualityAssessment": response.qualityAssessment.model_dump(mode="json"),
+        "iterationDecision": response.iterationDecision.model_dump(mode="json"),
+        "planFeedback": response.planFeedback.model_dump(mode="json"),
+    }
+    stored = None
+    if not req.applyToPlanPackage:
+        policy = record_payload["iterationDecision"].get("optimizationPolicy")
+        stored = next(
+            (
+                item
+                for item in list_experiment_feedback(run_id=run_id, limit=100)
+                if item.get("sourceArtifacts") == source_artifacts
+                and item.get("iterationDecision", {}).get("optimizationPolicy") == policy
+                and not item.get("planFeedback", {}).get("requested")
+            ),
+            None,
+        )
+    if stored is None:
+        stored = create_experiment_feedback(record_payload)
+    return RunStoredExperimentFeedbackResponse(
+        qualityAssessment=QualityAssessment.model_validate(stored["qualityAssessment"]),
+        iterationDecision=ExperimentIterationDecision.model_validate(stored["iterationDecision"]),
+        planFeedback=PlanFeedbackApplication.model_validate(stored["planFeedback"]),
+        feedbackId=stored["id"],
+        createdAt=stored["createdAt"],
+        runId=run_id,
+        sourceArtifacts=stored["sourceArtifacts"],
+    )
+
+
+@router.get(
+    "/reviewx/experiment-feedback/history",
+    summary="List persisted ReviewX experiment feedback iterations",
+)
+async def list_experiment_feedback_endpoint(
+    runId: Optional[str] = None,
+    limit: int = Query(default=20, ge=1, le=100),
+):
+    records = list_experiment_feedback(run_id=runId, limit=limit)
+    return {"records": records, "total": len(records)}
+
+
+@router.post(
+    "/reviewx/experiment-feedback/{feedback_id}/revise-plan",
+    response_model=ReviseExperimentPlanResponse,
+    summary="Revise the PlanPackage targeted by an experiment feedback decision",
+)
+async def revise_experiment_plan_endpoint(
+    feedback_id: str,
+    req: ReviseExperimentPlanRequest,
+) -> ReviseExperimentPlanResponse:
+    record = get_experiment_feedback(feedback_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"Experiment feedback '{feedback_id}' not found")
+    package_id = record.get("planPackageId")
+    if not package_id:
+        raise HTTPException(status_code=409, detail="The feedback record is not linked to a PlanPackage")
+    if not record.get("planFeedback", {}).get("applied"):
+        raise HTTPException(
+            status_code=409,
+            detail="Attach the ReviewX correction to the PlanPackage before revising it",
+        )
+
+    from app.services.plan_package_service import (
+        PlanPackageConflictError,
+        PlanPackageNotFoundError,
+        get_plan_package_service,
+    )
+
+    target_sections = record.get("iterationDecision", {}).get("targetSections") or None
+    try:
+        package = get_plan_package_service().revise(
+            package_id,
+            generation_mode=req.generationMode,
+            target_sections=target_sections,
+            reviewer_mode=req.reviewerMode,
+        )
+    except PlanPackageNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except PlanPackageConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    revision = package.revisions[-1] if package.revisions else None
+    revision_summary = {
+        "revisionId": revision.id if revision else None,
+        "changedSections": revision.changedSections if revision else [],
+        "generationMode": req.generationMode,
+    }
+    update_experiment_feedback(feedback_id, {"planRevision": revision_summary})
+    return ReviseExperimentPlanResponse(
+        feedbackId=feedback_id,
+        packageId=package.packageId,
+        status=package.status.value,
+        revisionId=revision_summary["revisionId"],
+        changedSections=revision_summary["changedSections"],
+    )
+
+
+@router.post(
+    "/reviewx/experiment-feedback/{feedback_id}/next-run",
+    response_model=CreateNextExperimentRunResponse,
+    summary="Create the next experiment run from reviewed or revised plan state",
+)
+async def create_next_experiment_run_endpoint(
+    feedback_id: str,
+) -> CreateNextExperimentRunResponse:
+    record = get_experiment_feedback(feedback_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"Experiment feedback '{feedback_id}' not found")
+    package_id = record.get("planPackageId")
+    if not package_id:
+        raise HTTPException(status_code=409, detail="The feedback record is not linked to a PlanPackage")
+
+    decision = record.get("iterationDecision", {}).get("decision")
+    if decision == "revise_plan" and not record.get("planRevision"):
+        raise HTTPException(status_code=409, detail="Revise the PlanPackage before creating the next run")
+    if decision == "needs_human":
+        raise HTTPException(status_code=409, detail="A human decision is required before creating the next run")
+
+    from app.models.run import RunType
+    from app.schemas.run import RunCreate
+    from app.services.run_service import get_service as get_run_service
+
+    run_service = get_run_service()
+    existing_next_run_id = record.get("nextRunId")
+    if existing_next_run_id:
+        existing = run_service.get_run(existing_next_run_id)
+        if existing is not None:
+            return CreateNextExperimentRunResponse(
+                feedbackId=feedback_id,
+                runId=existing.id,
+                planPackageId=package_id,
+                status=existing.status.value,
+                reused=True,
+            )
+
+    source_run = run_service.get_run(record["runId"])
+    if source_run is None:
+        raise HTTPException(status_code=404, detail=f"Source run '{record['runId']}' not found")
+    iteration_number = len(list_experiment_feedback(run_id=record["runId"], limit=100)) + 1
+    note = f"ReviewX next iteration from {feedback_id}"
+    ideas = f"{source_run.config.ideas}\n{note}" if source_run.config.ideas else note
+    next_config = source_run.config.model_copy(
+        update={
+            "ideas": ideas,
+            "workplaceName": f"{source_run.config.workplaceName}_iter_{iteration_number}",
+        }
+    )
+    try:
+        next_run = run_service.create_run(
+            RunCreate(
+                planId=package_id,
+                type=RunType.PLAN,
+                config=next_config,
+                isMock=source_run.isMock,
+            )
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    update_experiment_feedback(feedback_id, {"nextRunId": next_run.id})
+    return CreateNextExperimentRunResponse(
+        feedbackId=feedback_id,
+        runId=next_run.id,
+        planPackageId=package_id,
+        status=next_run.status.value,
+    )
 
 
 @router.get("/reviewx/{review_id}")
