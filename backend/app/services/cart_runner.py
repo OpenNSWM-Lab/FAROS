@@ -17,6 +17,7 @@ Flow:
 from __future__ import annotations
 
 import asyncio
+import csv
 import json
 import logging
 import os
@@ -80,7 +81,7 @@ class CartProgressEvent:
 
 
 class CartRunner:
-    """Executes a PlanPackage DAG node-by-node using Claude Code agent."""
+    """Executes a PlanPackage DAG node-by-node using the configured agents."""
 
     def __init__(self, base_dir: Optional[str] = None):
         if base_dir:
@@ -456,6 +457,7 @@ class CartRunner:
                     "inputFrom": step.get("inputFrom", []),
                     "outputs": step.get("outputs", []),
                     "expected": step.get("expected", []),
+                    "evidenceRefs": step.get("evidenceRefs", []),
                     "codeHints": step.get("codeHints", ""),
                     "stage_id": stage["id"],
                     "stage_title": stage.get("title", ""),
@@ -561,65 +563,73 @@ class CartRunner:
         from app.services.claude_agent import ClaudeCodeAgent, _get_settings_model_and_key
         settings_model, _, _ = _get_settings_model_and_key()
 
-        # ---- Primary: Claude Code agent (always try first) ----
-        if progress_callback:
-            await progress_callback(CartProgressEvent(
-                event_type="node_progress",
-                node_id=node_id,
-                status="running",
-                message=f"🤖 启动 Claude 智能体 (model={settings_model})...",
-                timestamp=time.strftime("%H:%M:%S"),
-            ))
+        # ---- Primary: Claude Code agent, when the server has the CLI ----
+        npm_claude = os.path.expandvars(r"%APPDATA%\npm\claude.cmd")
+        claude_available = os.path.isfile(npm_claude) or bool(shutil.which("claude"))
+        if claude_available:
+            if progress_callback:
+                await progress_callback(CartProgressEvent(
+                    event_type="node_progress",
+                    node_id=node_id,
+                    status="running",
+                    message=f"Starting coding agent (model={settings_model})...",
+                    timestamp=time.strftime("%H:%M:%S"),
+                ))
 
-        agent = ClaudeCodeAgent(
-            timeout=self._remaining_node_timeout(node_deadline, node_timeout_sec),
-            max_budget=node_budget_usd,
-        )
-        try:
-            events_list: list = []
-            final_parts: list[str] = []
-            progress_milestones: set[str] = set()
-            async for event in agent.stream(
-                workspace=run_dir, goal=prompt,
-                system_prompt=(
-                    "Execute directly. Write code, run it, and report results. No questions. "
-                    "Minimize token usage: do not explain routine steps, do not paste long command output, "
-                    "and keep the final answer to a compact status summary."
-                ),
-            ):
-                d = event.to_dict()
-                events_list.append(d)
-                if d.get("event_type") == "done" and d.get("content"):
-                    final_parts.append(str(d.get("content", ""))[:800])
-                if progress_callback:
-                    msg = self._claude_progress_milestone(d, progress_milestones)
-                    if msg:
-                        await progress_callback(CartProgressEvent(
-                            event_type="node_progress", node_id=node_id, status="running",
-                            message=msg, timestamp=time.strftime("%H:%M:%S"),
-                        ))
-                    continue
-            files_after = os.listdir(run_dir) if os.path.isdir(run_dir) else []
-            has_output = any(not f.startswith('.') and not f.endswith('.pyc') for f in files_after)
-            claude_failed = any(e.get("event_type") == "error" for e in events_list)
-            result.success = has_output or (not claude_failed and len(events_list) > 1)
-            missing_outputs = self._missing_expected_outputs(node, self._scan_outputs(run_dir, node.get("outputs", [])))
-            if result.success and missing_outputs:
+            agent = ClaudeCodeAgent(
+                timeout=self._remaining_node_timeout(node_deadline, node_timeout_sec),
+                max_budget=node_budget_usd,
+            )
+            try:
+                events_list: list = []
+                final_parts: list[str] = []
+                progress_milestones: set[str] = set()
+                async for event in agent.stream(
+                    workspace=run_dir, goal=prompt,
+                    system_prompt=(
+                        "Execute directly. Write code, run it, and report results. No questions. "
+                        "Minimize token usage: do not explain routine steps, do not paste long command output, "
+                        "and keep the final answer to a compact status summary."
+                    ),
+                ):
+                    d = event.to_dict()
+                    events_list.append(d)
+                    if d.get("event_type") == "done" and d.get("content"):
+                        final_parts.append(str(d.get("content", ""))[:800])
+                    if progress_callback:
+                        msg = self._claude_progress_milestone(d, progress_milestones)
+                        if msg:
+                            await progress_callback(CartProgressEvent(
+                                event_type="node_progress", node_id=node_id, status="running",
+                                message=msg, timestamp=time.strftime("%H:%M:%S"),
+                            ))
+                        continue
+                files_after = os.listdir(run_dir) if os.path.isdir(run_dir) else []
+                has_output = any(not f.startswith('.') and not f.endswith('.pyc') for f in files_after)
+                claude_failed = any(e.get("event_type") == "error" for e in events_list)
+                result.success = has_output or (not claude_failed and len(events_list) > 1)
+                missing_outputs = self._missing_expected_outputs(
+                    node, self._scan_outputs(run_dir, node.get("outputs", []))
+                )
+                if result.success and missing_outputs:
+                    result.success = False
+                    result.message = (
+                        "Missing expected outputs after coding-agent execution: "
+                        f"{', '.join(missing_outputs[:5])}"
+                    )
+                if result.success:
+                    clean = [p for p in final_parts if "tool_use_id" not in p]
+                    result.message = "\n".join(clean) if clean else "Coding agent completed"
+            except Exception as exc:
+                logger.warning("Claude CLI failed for %s: %s", node_id, exc)
                 result.success = False
-                result.message = f"Missing expected outputs after Claude execution: {', '.join(missing_outputs[:5])}"
-            if result.success:
-                clean = [p for p in final_parts if "tool_use_id" not in p]
-                result.message = "\n".join(clean) if clean else "Claude 智能体执行完成"
-        except Exception as exc:
-            logger.warning("Claude CLI failed for %s: %s", node_id, exc)
-            result.success = False
 
-        # ---- Fallback 1: LLM API agent (if Claude CLI failed) ----
+        # ---- Fallback 1: configured LLM API agent ----
         if not result.success:
             if progress_callback:
                 await progress_callback(CartProgressEvent(
                     event_type="node_progress", node_id=node_id, status="running",
-                    message=f"🧠 Claude 智能体不可用，调用 {settings_model} API 生成代码...",
+                    message=f"Calling configured {settings_model or 'LLM'} API to generate code...",
                     timestamp=time.strftime("%H:%M:%S"),
                 ))
             llm_ok = await self._execute_via_llm_api(
@@ -633,12 +643,26 @@ class CartRunner:
             if llm_ok:
                 result.success = True
 
-        # ---- Fallback 2: direct execution (last resort) ----
+        # ---- Fallback 2: exact planning-artifact contract repair ----
         if not result.success:
             if progress_callback:
                 await progress_callback(CartProgressEvent(
                     event_type="node_progress", node_id=node_id, status="running",
-                    message="⏳ 智能体均失败，尝试直接执行...",
+                    message=(
+                        "Model code did not satisfy the output contract; "
+                        "building grounded planning artifacts..."
+                    ),
+                    timestamp=time.strftime("%H:%M:%S"),
+                ))
+            if self._materialize_planning_artifacts(node, ppkg, run_dir, result):
+                result.success = True
+
+        # ---- Fallback 3: direct execution (last resort for executable tasks) ----
+        if not result.success:
+            if progress_callback:
+                await progress_callback(CartProgressEvent(
+                    event_type="node_progress", node_id=node_id, status="running",
+                    message="Agents did not complete the task; trying the deterministic runner...",
                     timestamp=time.strftime("%H:%M:%S"),
                 ))
             direct_ok = self._execute_direct(
@@ -651,7 +675,8 @@ class CartRunner:
                 result.success = True
                 result.message = "直接执行完成"
 
-        # (Execution handled above: Claude CLI → LLM API → direct fallback)
+        # Execution order: optional coding CLI -> LLM API -> grounded planning
+        # contract repair -> deterministic executable fallback.
 
         # Collect artifacts
         artifacts = self._scan_outputs(run_dir, node.get("outputs", []))
@@ -740,6 +765,8 @@ class CartRunner:
             for fname in files:
                 if fname.startswith('.') or fname.endswith('.pyc'):
                     continue
+                if fname.startswith(("_llm_", "_fallback_", "_run_")):
+                    continue
                 fpath = os.path.join(root, fname)
                 rel = os.path.relpath(fpath, run_dir)
                 try:
@@ -790,6 +817,425 @@ class CartRunner:
             if name not in artifact_keys and base_name not in artifact_keys:
                 missing.append(name)
         return missing
+
+    @staticmethod
+    def _compact_plan_context(node: dict, ppkg: dict) -> dict:
+        """Keep the scientific grounding needed for code generation within prompt limits."""
+
+        def clipped(value: object, limit: int = 700) -> str:
+            text = str(value or "").strip()
+            return text if len(text) <= limit else f"{text[:limit - 3]}..."
+
+        literature = ppkg.get("literatureSurvey", {}) or {}
+        paper_items = literature.get("papers", []) or []
+        papers: list[dict] = []
+        baselines: list[dict] = []
+        seen_baselines: set[str] = set()
+        for paper in paper_items:
+            if not isinstance(paper, dict):
+                continue
+            paper_id = clipped(paper.get("paperId"), 120)
+            methods = paper.get("methods", []) or []
+            paper_baselines: list[str] = []
+            for method in methods:
+                if not isinstance(method, dict) or str(method.get("role", "")).lower() != "baseline":
+                    continue
+                name = clipped(method.get("name"), 240)
+                if not name:
+                    continue
+                paper_baselines.append(name)
+                key = name.casefold()
+                if key not in seen_baselines:
+                    baselines.append({
+                        "name": name,
+                        "sourcePaperId": paper_id,
+                        "description": clipped(method.get("description"), 360),
+                    })
+                    seen_baselines.add(key)
+            if len(papers) < 8:
+                papers.append({
+                    "paperId": paper_id,
+                    "title": clipped(paper.get("title"), 320),
+                    "year": paper.get("year"),
+                    "venue": clipped(paper.get("venue"), 120),
+                    "url": clipped(paper.get("url"), 400),
+                    "role": clipped(paper.get("role"), 100),
+                    "summary": clipped(paper.get("summary"), 620),
+                    "limitations": [clipped(item, 280) for item in (paper.get("limitations", []) or [])[:3]],
+                    "baselineMethods": paper_baselines[:5],
+                })
+
+        raw_constants = ppkg.get("constants", {}) or {}
+        constants = raw_constants if isinstance(raw_constants, dict) else {}
+        for key, value in constants.items():
+            if "baseline" not in str(key).lower():
+                continue
+            values = value if isinstance(value, list) else [value]
+            for item in values:
+                name = clipped(item, 240)
+                if not name or name.casefold() in seen_baselines:
+                    continue
+                baselines.append({
+                    "name": name,
+                    "sourcePaperId": "plan.constants",
+                    "description": f"Declared by PlanPackage constant {key}",
+                })
+                seen_baselines.add(name.casefold())
+
+        gap = ppkg.get("gap", {}) or {}
+        gap_items = [item for item in (gap.get("items", []) or []) if isinstance(item, dict)]
+        selected_gap_id = str(gap.get("selectedGapId", ""))
+        selected_gap = next((item for item in gap_items if str(item.get("id", "")) == selected_gap_id), None)
+        if selected_gap is None and gap_items:
+            selected_gap = gap_items[0]
+
+        principle = ppkg.get("principle", {}) or {}
+        idea = ppkg.get("idea", {}) or {}
+        contributions = []
+        for item in (ppkg.get("contributionStatement", []) or [])[:6]:
+            if isinstance(item, dict):
+                contributions.append({
+                    "id": clipped(item.get("id"), 120),
+                    "type": clipped(item.get("type"), 80),
+                    "statement": clipped(item.get("statement"), 500),
+                    "noveltyBasis": clipped(item.get("noveltyBasis"), 500),
+                })
+
+        return {
+            "packageId": ppkg.get("packageId", ""),
+            "researchQuestion": clipped(ppkg.get("researchQuestion"), 900),
+            "hypothesis": clipped(ppkg.get("hypothesis") or idea.get("hypothesisStatement"), 1200),
+            "idea": {
+                "title": clipped(idea.get("title"), 500),
+                "problem": clipped(idea.get("problem"), 900),
+                "proposedMethod": clipped(idea.get("proposedMethod"), 1400),
+                "expectedOutcome": clipped(idea.get("expectedOutcome"), 900),
+            },
+            "literature": {
+                "summary": clipped(literature.get("summary"), 700),
+                "coverage": literature.get("coverage", {}),
+                "papers": papers,
+            },
+            "selectedGap": selected_gap or {"summary": clipped(gap.get("summary"), 700)},
+            "principle": {
+                "summary": clipped(principle.get("summary"), 700),
+                "mechanism": clipped(principle.get("mechanism"), 1000),
+                "noveltyClaim": clipped(principle.get("noveltyClaim"), 700),
+                "assumptions": [clipped(item, 400) for item in (principle.get("assumptions", []) or [])[:6]],
+                "risks": [clipped(item, 400) for item in (principle.get("risks", []) or [])[:8]],
+            },
+            "contributions": contributions,
+            "baselineCandidates": baselines[:16],
+            "constants": {
+                str(key): clipped(json.dumps(value, ensure_ascii=False, default=str), 500)
+                for key, value in list(constants.items())[:24]
+            },
+            "step": {
+                "id": node.get("id", ""),
+                "title": clipped(node.get("title"), 400),
+                "description": clipped(node.get("desc"), 900),
+                "method": clipped(node.get("method"), 1000),
+                "expectedMetrics": node.get("expected", []) or [],
+                "outputContract": node.get("outputs", []) or [],
+            },
+        }
+
+    @staticmethod
+    def _safe_output_path(run_dir: str, name: str) -> Optional[Path]:
+        root = Path(run_dir).resolve()
+        try:
+            target = (root / name).resolve()
+            target.relative_to(root)
+        except (OSError, ValueError):
+            return None
+        return target
+
+    @staticmethod
+    def _materialize_planning_artifacts(
+        node: dict,
+        ppkg: dict,
+        run_dir: str,
+        result: CartNodeResult,
+    ) -> bool:
+        """Repair planning-only contracts without inventing observed experiment results."""
+        supported_extensions = {".md", ".json", ".csv", ".png"}
+        supported_types = {"report", "table", "chart", "metrics", "checkpoint", "log", "code", ""}
+        outputs = [item for item in (node.get("outputs", []) or []) if isinstance(item, dict)]
+        targets: list[tuple[dict, Path]] = []
+        for output in outputs:
+            name = str(output.get("name", "")).strip().replace("\\", "/")
+            output_type = str(output.get("type", "")).strip().lower()
+            target = CartRunner._safe_output_path(run_dir, name) if name else None
+            code_is_planning_json = (
+                output_type == "code"
+                and target is not None
+                and target.suffix.lower() == ".json"
+                and "implementation_plan" in target.stem.lower()
+            )
+            if (
+                target is None
+                or target.suffix.lower() not in supported_extensions
+                or output_type not in supported_types
+                or (output_type == "code" and not code_is_planning_json)
+            ):
+                return False
+            targets.append((output, target))
+        if not targets:
+            return False
+
+        context = CartRunner._compact_plan_context(node, ppkg)
+        expected = [item for item in (node.get("expected", []) or []) if isinstance(item, dict)]
+        baselines = context.get("baselineCandidates", []) or []
+        papers = context.get("literature", {}).get("papers", []) or []
+        principle = context.get("principle", {}) or {}
+        selected_gap = context.get("selectedGap", {}) or {}
+        status = "planned_not_executed"
+        written: list[Path] = []
+
+        def csv_safe(value: object) -> object:
+            if not isinstance(value, str):
+                return value
+            return f"'{value}" if value.startswith(("=", "+", "-", "@")) else value
+
+        def write_csv(target: Path, rows: list[dict], fields: list[str]) -> None:
+            with target.open("w", encoding="utf-8", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=fields)
+                writer.writeheader()
+                for row in rows:
+                    writer.writerow({field: csv_safe(row.get(field, "")) for field in fields})
+
+        def markdown_for(name: str) -> str:
+            title = str(node.get("title", "Planning artifact"))
+            lines = [
+                f"# {title}",
+                "",
+                f"> Artifact status: `{status}`. This file records a grounded plan; it does not claim observed results.",
+                "",
+                "## Task",
+                "",
+                str(node.get("desc", "") or "No additional description was provided."),
+                "",
+                "## Method",
+                "",
+                str(node.get("method", "") or context.get("idea", {}).get("proposedMethod", "")),
+                "",
+            ]
+            lower_name = name.lower()
+            if "literature" in lower_name:
+                lines.extend(["## Evidence inventory", ""])
+                for index, paper in enumerate(papers, start=1):
+                    paper_title = paper.get("title", "Untitled paper")
+                    url = paper.get("url", "")
+                    heading = f"{index}. [{paper_title}]({url})" if url else f"{index}. **{paper_title}**"
+                    lines.extend([
+                        heading,
+                        f"   - Evidence ID: `{paper.get('paperId', '')}`; year: {paper.get('year') or 'unknown'}; role: {paper.get('role') or 'unspecified'}",
+                        f"   - Summary: {paper.get('summary') or 'Not recorded.'}",
+                    ])
+                    if paper.get("limitations"):
+                        lines.append(f"   - Limitation: {paper['limitations'][0]}")
+                if not papers:
+                    lines.append("No structured papers were available in the PlanPackage.")
+                lines.append("")
+            elif "failure" in lower_name or "risk" in lower_name:
+                lines.extend(["## Preregistered failure checks", ""])
+                risks = principle.get("risks", []) or []
+                for index, risk in enumerate(risks, start=1):
+                    lines.append(f"{index}. {risk}")
+                if not risks:
+                    lines.append("1. Record model, data, metric, and runtime failures before interpreting results.")
+                lines.extend([
+                    "",
+                    "## Required evidence before a conclusion",
+                    "",
+                    "- Populate observed values only after the declared dataset and evaluator have run.",
+                    "- Preserve failed runs and negative findings in the audit trail.",
+                    "- Escalate unsupported or ambiguous claims to human review.",
+                    "",
+                ])
+            else:
+                lines.extend([
+                    "## Scientific grounding",
+                    "",
+                    f"- Research question: {context.get('researchQuestion') or 'Not recorded.'}",
+                    f"- Selected gap: {selected_gap.get('statement') or selected_gap.get('summary') or 'Not recorded.'}",
+                    f"- Principle: {principle.get('summary') or 'Not recorded.'}",
+                    f"- Mechanism: {principle.get('mechanism') or 'Not recorded.'}",
+                    "",
+                ])
+            lines.extend(["## Preregistered targets", ""])
+            for item in expected:
+                lines.append(f"- {item.get('metric', 'metric')}: {item.get('target', 'not specified')} (observed: not executed)")
+            if not expected:
+                lines.append("- No quantitative target was declared for this step.")
+            lines.extend([
+                "",
+                "## Execution boundary",
+                "",
+                "The target values above are hypotheses or acceptance criteria. They are not measurements. "
+                "A later executable run must attach dataset provenance, logs, and observed values before scientific claims are accepted.",
+                "",
+            ])
+            return "\n".join(lines)
+
+        try:
+            for output, target in targets:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                suffix = target.suffix.lower()
+                lower_name = target.name.lower()
+                if suffix == ".md":
+                    target.write_text(markdown_for(target.name), encoding="utf-8")
+                elif suffix == ".json":
+                    payload = {
+                        "schemaVersion": "faros/planning-artifact/v1",
+                        "status": status,
+                        "observedResults": None,
+                        "source": {
+                            "packageId": ppkg.get("packageId", ""),
+                            "stepId": node.get("id", ""),
+                            "artifact": str(output.get("name", "")),
+                        },
+                        "task": context.get("step", {}),
+                        "selectedGap": selected_gap,
+                        "principle": principle,
+                        "baselineCandidates": baselines,
+                        "expectedMetrics": [
+                            {
+                                "metric": item.get("metric", ""),
+                                "target": item.get("target", ""),
+                                "observedValue": None,
+                                "status": status,
+                            }
+                            for item in expected
+                        ],
+                        "evidencePapers": papers,
+                    }
+                    _write_json(str(target), payload)
+                elif suffix == ".csv":
+                    if "baseline" in lower_name:
+                        fields = ["baseline_name", "source_paper_id", "description", "observed_value", "status"]
+                        rows = [
+                            {
+                                "baseline_name": item.get("name", ""),
+                                "source_paper_id": item.get("sourcePaperId", ""),
+                                "description": item.get("description", ""),
+                                "observed_value": "",
+                                "status": status,
+                            }
+                            for item in baselines
+                        ]
+                        if not rows:
+                            rows = [{
+                                "baseline_name": "requires_human_confirmation",
+                                "source_paper_id": "",
+                                "description": "No baseline was grounded in the PlanPackage.",
+                                "observed_value": "",
+                                "status": "blocked_missing_baseline",
+                            }]
+                    elif "ablation" in lower_name:
+                        fields = ["component", "comparison", "metric", "target", "observed_value", "status"]
+                        mechanism = principle.get("mechanism") or context.get("idea", {}).get("proposedMethod", "")
+                        rows = [
+                            {
+                                "component": mechanism,
+                                "comparison": "full method vs. component removed",
+                                "metric": item.get("metric", ""),
+                                "target": item.get("target", ""),
+                                "observed_value": "",
+                                "status": status,
+                            }
+                            for item in expected
+                        ] or [{
+                            "component": mechanism or "method component to be registered",
+                            "comparison": "full method vs. component removed",
+                            "metric": "requires_human_confirmation",
+                            "target": "",
+                            "observed_value": "",
+                            "status": status,
+                        }]
+                    elif "result" in lower_name or "metric" in lower_name:
+                        fields = ["metric", "target", "observed_value", "evidence_path", "status"]
+                        rows = [
+                            {
+                                "metric": item.get("metric", ""),
+                                "target": item.get("target", ""),
+                                "observed_value": "",
+                                "evidence_path": "",
+                                "status": status,
+                            }
+                            for item in expected
+                        ] or [{
+                            "metric": "requires_human_confirmation",
+                            "target": "",
+                            "observed_value": "",
+                            "evidence_path": "",
+                            "status": status,
+                        }]
+                    else:
+                        fields = ["item_type", "name", "description", "observed_value", "status"]
+                        rows = [
+                            {
+                                "item_type": "expected_metric",
+                                "name": item.get("metric", ""),
+                                "description": item.get("target", ""),
+                                "observed_value": "",
+                                "status": status,
+                            }
+                            for item in expected
+                        ] or [{
+                            "item_type": "planning_step",
+                            "name": node.get("title", ""),
+                            "description": node.get("method", ""),
+                            "observed_value": "",
+                            "status": status,
+                        }]
+                    write_csv(target, rows, fields)
+                elif suffix == ".png":
+                    import matplotlib
+                    matplotlib.use("Agg")
+                    import matplotlib.pyplot as plt
+
+                    labels = ["Evidence papers", "Baselines", "Metric slots", "Risk checks"]
+                    values = [
+                        len(papers),
+                        len(baselines),
+                        len(expected),
+                        len(principle.get("risks", []) or []),
+                    ]
+                    fig, ax = plt.subplots(figsize=(10, 5.4))
+                    bars = ax.bar(labels, values, color=["#2563EB", "#059669", "#FFB300", "#DC2626"])
+                    ax.bar_label(bars, padding=4, fontsize=11)
+                    ax.set_ylabel("Count declared in PlanPackage")
+                    ax.set_title("Planned evidence inventory (not executed)", fontsize=15, weight="bold")
+                    ax.set_ylim(0, max(max(values, default=0) + 2, 2))
+                    ax.spines[["top", "right"]].set_visible(False)
+                    fig.text(
+                        0.5,
+                        0.01,
+                        "Targets are preregistered slots; this chart contains no observed experiment values.",
+                        ha="center",
+                        fontsize=9,
+                        color="#475569",
+                    )
+                    fig.tight_layout(rect=(0, 0.05, 1, 1))
+                    fig.savefig(target, dpi=160, bbox_inches="tight", facecolor="white")
+                    plt.close(fig)
+                written.append(target)
+        except Exception as exc:
+            logger.warning("Planning-artifact repair failed for %s: %s", node.get("id", ""), exc)
+            for target in written:
+                try:
+                    target.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            return False
+
+        result.error = None
+        result.message = (
+            f"Generated {len(written)} grounded planning artifact(s) from the PlanPackage; "
+            f"status={status}. No observed experiment result was asserted."
+        )
+        return True
 
     @staticmethod
     def _collect_artifacts(run_dir: str, data_dir: str, result: CartNodeResult) -> None:
@@ -843,9 +1289,12 @@ class CartRunner:
                 timestamp=time.strftime("%H:%M:%S"),
             ))
 
-        # Build code generation prompt
+        # Build code generation prompt with the actual PlanPackage evidence. The
+        # model must distinguish preregistered targets from observed results.
         output_names = [o.get("name", "") for o in outputs] if outputs else []
         expected_metrics = [f"- {e.get('metric','')}: {e.get('target','')}" for e in expected] if expected else []
+        plan_context = self._compact_plan_context(node, ppkg)
+        context_json = json.dumps(plan_context, ensure_ascii=False, indent=2, default=str)
 
         prompt = f"""You are executing a scientific experiment step. Generate a COMPLETE Python script that:
 
@@ -856,15 +1305,21 @@ class CartRunner:
 **Expected metrics**:
 {chr(10).join(expected_metrics) if expected_metrics else 'N/A'}
 
+**Grounded PlanPackage context**:
+{context_json}
+
 Requirements:
 1. The script MUST be self-contained and runnable with `python script.py`
-2. Write all output files to the current directory
+2. Create EVERY expected output at the EXACT relative path and filename shown above
 3. Keep the implementation minimal and robust; avoid unnecessary abstractions
 4. Keep stdout short: at the end, print only one compact JSON summary
-5. Generate realistic experiment code — data loading, processing, analysis, visualization
+5. Use only evidence and values present in the PlanPackage or accessible input files
 6. Do not print large arrays, dataframes, stack traces, or verbose logs unless failing
-7. Generate only the files needed by the expected outputs
-8. If the task involves literature/data summarization, create structured output files
+7. Generate only the files needed by the expected-output contract
+8. Treat expected metric targets as preregistered targets, NEVER as observed measurements
+9. If no executable data or observed measurements are available, write a planning artifact with
+   status `planned_not_executed`, null/blank observed values, and an explicit execution boundary
+10. Never fabricate citations, measurements, significance tests, model runs, or human audits
 
 Generate ONLY the Python code, no explanations. Start with `#!/usr/bin/env python3`."""
 
@@ -876,7 +1331,7 @@ Generate ONLY the Python code, no explanations. Start with `#!/usr/bin/env pytho
                     client.chat,
                     messages=[ChatMessage(role="user", content=prompt)],
                     temperature=0.3,
-                    max_tokens=1800,
+                    max_tokens=3200,
                 ),
             )
 
@@ -900,7 +1355,7 @@ Generate ONLY the Python code, no explanations. Start with `#!/usr/bin/env pytho
                 ))
 
             # Write generated code
-            script_name = f"_run_{node_id.replace('-', '_')}.py"
+            script_name = f"_llm_{node_id.replace('-', '_')}.py"
             script_path = os.path.join(run_dir, script_name)
             with open(script_path, "w", encoding="utf-8") as f:
                 f.write(code)
@@ -917,11 +1372,25 @@ Generate ONLY the Python code, no explanations. Start with `#!/usr/bin/env pytho
             stderr_preview = proc.stderr[-300:] if proc.stderr else ""
 
             if proc.returncode == 0:
-                result.message = f"✅ LLM 生成代码执行成功 (stdout: {len(proc.stdout)}B)"
+                artifacts = self._scan_outputs(run_dir, outputs)
+                missing_outputs = self._missing_expected_outputs(node, artifacts)
+                if missing_outputs:
+                    result.message = (
+                        "LLM code ran but did not satisfy the output contract: "
+                        f"missing {', '.join(missing_outputs[:5])}"
+                    )
+                    if progress_callback:
+                        await progress_callback(CartProgressEvent(
+                            event_type="node_progress", node_id=node_id, status="running",
+                            message=result.message,
+                            timestamp=time.strftime("%H:%M:%S"),
+                        ))
+                    return False
+                result.message = f"LLM-generated code completed (stdout: {len(proc.stdout)}B)"
                 if progress_callback:
                     await progress_callback(CartProgressEvent(
                         event_type="node_progress", node_id=node_id, status="running",
-                        message="✅ 实验代码执行完成，收集结果...",
+                        message="Generated code completed; validating artifacts...",
                         timestamp=time.strftime("%H:%M:%S"),
                     ))
                 return True
@@ -961,7 +1430,7 @@ Generate ONLY the Python code, no explanations. Start with `#!/usr/bin/env pytho
             return False
 
         # Write code file
-        script_name = f"_run_{node_id.replace('-', '_')}.py"
+        script_name = f"_fallback_{node_id.replace('-', '_')}.py"
         script_path = os.path.join(run_dir, script_name)
         try:
             with open(script_path, "w", encoding="utf-8") as f:
