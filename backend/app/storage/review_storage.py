@@ -66,7 +66,7 @@ def get_review(review_id: str) -> Optional[Dict[str, Any]]:
     path = os.path.join(REVIEWS_DIR, review_id, "meta.json")
     if not os.path.isfile(path):
         return None
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -88,7 +88,7 @@ def list_reviews(paper_id: Optional[str] = None) -> List[Dict[str, Any]]:
         meta = os.path.join(REVIEWS_DIR, name, "meta.json")
         if os.path.isfile(meta):
             try:
-                with open(meta) as f:
+                with open(meta, encoding="utf-8") as f:
                     data = json.load(f)
                 if paper_id and data.get("paperId") != paper_id:
                     continue
@@ -101,7 +101,7 @@ def list_reviews(paper_id: Optional[str] = None) -> List[Dict[str, Any]]:
 def _save_record(review_id: str, record: Dict):
     review_dir = os.path.join(REVIEWS_DIR, review_id)
     os.makedirs(review_dir, exist_ok=True)
-    with open(os.path.join(review_dir, "meta.json"), "w") as f:
+    with open(os.path.join(review_dir, "meta.json"), "w", encoding="utf-8") as f:
         json.dump(record, f, indent=2, default=str)
 
 
@@ -140,7 +140,7 @@ def create_improvement_request(data: Dict[str, Any]) -> Dict[str, Any]:
     }
     req_dir = os.path.join(IMPROVEMENT_REQUESTS_DIR, req_id)
     os.makedirs(req_dir, exist_ok=True)
-    with open(os.path.join(req_dir, "meta.json"), "w") as f:
+    with open(os.path.join(req_dir, "meta.json"), "w", encoding="utf-8") as f:
         json.dump(record, f, indent=2, default=str)
 
     # Index under review
@@ -149,10 +149,10 @@ def create_improvement_request(data: Dict[str, Any]) -> Dict[str, Any]:
         idx_path = os.path.join(review_dir, "requests.json")
         idx = []
         if os.path.isfile(idx_path):
-            with open(idx_path) as f:
+            with open(idx_path, encoding="utf-8") as f:
                 idx = json.load(f)
         idx.append(record)
-        with open(idx_path, "w") as f:
+        with open(idx_path, "w", encoding="utf-8") as f:
             json.dump(idx, f, indent=2, default=str)
 
     return record
@@ -166,7 +166,7 @@ def list_improvement_requests(review_id: Optional[str] = None, paper_id: Optiona
         meta = os.path.join(IMPROVEMENT_REQUESTS_DIR, name, "meta.json")
         if os.path.isfile(meta):
             try:
-                with open(meta) as f:
+                with open(meta, encoding="utf-8") as f:
                     data = json.load(f)
                 if review_id and data.get("reviewId") != review_id:
                     continue
@@ -184,7 +184,7 @@ def get_improvement_request(req_id: str) -> Optional[Dict[str, Any]]:
     path = os.path.join(IMPROVEMENT_REQUESTS_DIR, req_id, "meta.json")
     if not os.path.isfile(path):
         return None
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -195,6 +195,6 @@ def update_improvement_request(req_id: str, updates: Dict[str, Any]) -> Optional
     record.update(updates)
     record["updatedAt"] = _utcnow_iso()
     req_dir = os.path.join(IMPROVEMENT_REQUESTS_DIR, req_id)
-    with open(os.path.join(req_dir, "meta.json"), "w") as f:
+    with open(os.path.join(req_dir, "meta.json"), "w", encoding="utf-8") as f:
         json.dump(record, f, indent=2, default=str)
     return record
