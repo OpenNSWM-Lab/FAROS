@@ -32,7 +32,7 @@ router = APIRouter(prefix="/code/sessions", tags=["code_sessions"])
 
 class CreateSessionRequest(BaseModel):
     """Request to create a code session."""
-    repoPath: str = Field(..., description="Path to repository")
+    repoPath: str = Field(..., max_length=1024, description="Path to repository")
     goal: str = Field(..., description="What code to generate/modify")
     providerName: Optional[str] = Field(default=None, description="LLM provider; omit for Settings default")
     model: Optional[str] = Field(default=None, description="Model; omit for Settings default")
