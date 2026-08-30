@@ -4,12 +4,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from app.core.paths import get_data_dir
+
 
 class PackageAuditStore:
     """File-backed audit log and backup store for FAROS package lifecycle events."""
 
     def __init__(self, root: Optional[Path] = None):
-        base = Path(__file__).resolve().parents[3] / "data" / "faros" / "packages"
+        base = get_data_dir() / "faros" / "packages"
         self.root = root or base
         self.root.mkdir(parents=True, exist_ok=True)
         self.path = self.root / "audit.json"

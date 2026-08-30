@@ -14,6 +14,7 @@ pytest.importorskip('sqlmodel')
 
 from fastapi.testclient import TestClient
 
+from app.core.paths import get_data_dir
 from app.main import app
 from app.faros.loaders.blueprint_loader import BlueprintLoader
 from app.faros.registry.blueprint_registry import BlueprintRegistry
@@ -325,7 +326,7 @@ def test_faros_package_trust_validation_endpoint_verifies_signature(tmp_path: Pa
     (package_dir / 'skill.json').write_text(json.dumps(skill_payload, indent=2))
     (package_dir / 'README.md').write_text('# Signed Skill\n')
 
-    keyring_path = Path(__file__).resolve().parents[1] / 'data' / 'faros' / 'packages' / 'trust_keyring.json'
+    keyring_path = get_data_dir() / 'faros' / 'packages' / 'trust_keyring.json'
     keyring_path.parent.mkdir(parents=True, exist_ok=True)
     keyring_path.write_text(json.dumps({'faros-test-signer': {'secret': 'faros-test-secret'}}, indent=2))
 

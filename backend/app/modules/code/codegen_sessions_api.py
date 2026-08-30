@@ -234,6 +234,26 @@ def _run_agent(session_id: str):
         logger.error(f"Agent run failed for session {session_id}: {e}", exc_info=True)
 
 
+def _repair_agent(session_id: str):
+    session = get_session(session_id)
+    if not session:
+        logger.error("Session %s not found for repair", session_id)
+        return
+    config = session.config
+    kernel = AgentKernel(
+        provider_name=session.providerName,
+        model=session.model,
+        language=config.get("language", "python"),
+        framework=config.get("framework", "research-pipeline"),
+        enable_web_search=False,
+        enable_github=False,
+    )
+    try:
+        kernel.repair(session)
+    except Exception as exc:
+        logger.error("Agent repair failed for session %s: %s", session_id, exc, exc_info=True)
+
+
 @router.post("/sessions/{session_id}/start", status_code=status.HTTP_202_ACCEPTED)
 async def start_codegen_session(session_id: str, background_tasks: BackgroundTasks):
     """Start the agent pipeline for a session (runs in background)."""
@@ -254,6 +274,30 @@ async def start_codegen_session(session_id: str, background_tasks: BackgroundTas
     thread.start()
 
     return {"sessionId": session_id, "status": "starting", "message": "Agent pipeline started"}
+
+
+@router.post("/sessions/{session_id}/repair", status_code=status.HTTP_202_ACCEPTED)
+async def repair_codegen_session(session_id: str):
+    """Re-run the executable quality gate and bounded repair on saved output."""
+    session = get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+    if session.status == "running":
+        raise HTTPException(status_code=409, detail="Session is already running")
+    if not session.memory.generated_files:
+        raise HTTPException(status_code=409, detail="No generated-file checkpoint is available")
+
+    thread = threading.Thread(
+        target=call_with_current_context(_repair_agent),
+        args=(session_id,),
+        daemon=True,
+    )
+    thread.start()
+    return {
+        "sessionId": session_id,
+        "status": "starting",
+        "message": "Executable quality-gate repair started",
+    }
 
 
 @router.get("/sessions/{session_id}")

@@ -292,7 +292,8 @@ def test_competition_dashboard_exposes_one_verified_evidence_story(tmp_path: Pat
         feedback_record={
             "id": "feedback-1",
             "humanSignoffs": {"plan": {}, "repair": {}, "conclusion": {}},
-            "enforceReviewerSeparation": True,
+            "enforceReviewerSeparation": False,
+            "reviewerPolicy": "single_accountable_reviewer",
         },
         public_artifacts=artifacts,
     )
@@ -312,6 +313,8 @@ def test_competition_dashboard_exposes_one_verified_evidence_story(tmp_path: Pat
     assert payload["externalReview"]["fairTop5"]["findingLimit"] == 5
     assert payload["externalReview"]["fairTop5"]["reviewxEffects"][0]["meanLatencyDeltaMs"] == -9100
     assert payload["externalReview"]["fullAudit"]["fairMethodComparison"] is False
+    assert payload["humanGovernance"]["responsibleReviewerCount"] == 1
+    assert payload["humanGovernance"]["reviewerPolicy"] == "single_accountable_reviewer"
 
 
 def test_competition_dashboard_marks_tampered_contract_not_ready(tmp_path: Path):

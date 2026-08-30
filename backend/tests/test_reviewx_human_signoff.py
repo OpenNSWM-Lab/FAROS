@@ -271,6 +271,53 @@ def test_signoff_api_persists_identity_rationale_and_history(monkeypatch, tmp_pa
     assert len(plan["history"]) == 1
 
 
+def test_single_accountable_reviewer_can_approve_all_required_stages(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(experiment_feedback_storage, "_STORAGE_DIR", tmp_path)
+    record = _record(decision="accept_results")
+    record["enforceReviewerSeparation"] = False
+    record["reviewerPolicy"] = "single_accountable_reviewer"
+    stored = experiment_feedback_storage.create_experiment_feedback(record)
+    request = reviews_api.HumanSignoffBatchDecisionRequest(
+        reviewerRole="team_lead",
+        reviewerId="competition-reviewer",
+        rationale="Checked the frozen protocol, recomputed metrics, and accepted the stated limitations.",
+    )
+
+    response = asyncio.run(reviews_api.approve_required_experiment_signoffs_endpoint(
+        stored["id"], request,
+    ))
+
+    assert response.humanSignoffs["plan"]["status"] == "approved"
+    assert response.humanSignoffs["conclusion"]["status"] == "approved"
+    assert response.humanSignoffs["repair"]["required"] is False
+    assert response.humanSignoffs["repair"]["status"] == "pending"
+    assert response.humanSignoffs["plan"]["reviewerId"] == "competition-reviewer"
+    assert response.humanSignoffs["conclusion"]["reviewerId"] == "competition-reviewer"
+    assert response.publicationReady is True
+
+    history = asyncio.run(reviews_api.list_experiment_feedback_endpoint(limit=20))
+    assert history["records"][0]["reviewerPolicy"] == "single_accountable_reviewer"
+    assert history["records"][0]["publicationReady"] is True
+
+
+def test_batch_signoff_respects_explicit_reviewer_separation(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(experiment_feedback_storage, "_STORAGE_DIR", tmp_path)
+    record = _record(decision="accept_results")
+    record["enforceReviewerSeparation"] = True
+    stored = experiment_feedback_storage.create_experiment_feedback(record)
+    request = reviews_api.HumanSignoffBatchDecisionRequest(
+        reviewerRole="team_lead",
+        reviewerId="competition-reviewer",
+        rationale="Reviewed the complete evidence package.",
+    )
+
+    with pytest.raises(HTTPException) as conflict:
+        asyncio.run(reviews_api.approve_required_experiment_signoffs_endpoint(
+            stored["id"], request,
+        ))
+    assert conflict.value.status_code == 409
+
+
 def test_signoff_api_can_require_authenticated_matching_identity(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(experiment_feedback_storage, "_STORAGE_DIR", tmp_path)
     monkeypatch.setenv("FAROS_REVIEWX_REQUIRE_AUTH", "true")

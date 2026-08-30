@@ -13,11 +13,13 @@ import logging
 from datetime import UTC, datetime
 from typing import Optional, List, Dict, Any
 
+from app.core.paths import get_data_dir
+
 logger = logging.getLogger(__name__)
 
-_BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-_EXPERIMENTS_DIR = os.path.join(_BASE_DIR, "data", "experiments")
-_FIGURES_DIR = os.path.join(_BASE_DIR, "data", "figures")
+_DATA_DIR = get_data_dir()
+_EXPERIMENTS_DIR = str(_DATA_DIR / "experiments")
+_FIGURES_DIR = str(_DATA_DIR / "figures")
 os.makedirs(_EXPERIMENTS_DIR, exist_ok=True)
 os.makedirs(_FIGURES_DIR, exist_ok=True)
 
@@ -94,6 +96,30 @@ def update_experiment(exp_id: str, updates: Dict[str, Any]) -> Optional[Dict[str
     with open(path, "w") as f:
         json.dump(record, f, indent=2)
     return record
+
+
+def save_execution_evidence(exp_id: str, evidence: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Persist a verified execution bundle alongside an experiment."""
+    if not get_experiment(exp_id):
+        return None
+    exp_dir = os.path.join(_EXPERIMENTS_DIR, exp_id)
+    os.makedirs(exp_dir, exist_ok=True)
+    path = os.path.join(exp_dir, "execution_evidence.json")
+    temp_path = f"{path}.{os.getpid()}.tmp"
+    with open(temp_path, "w", encoding="utf-8") as handle:
+        json.dump(evidence, handle, indent=2, sort_keys=True)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temp_path, path)
+    return evidence
+
+
+def get_execution_evidence(exp_id: str) -> Optional[Dict[str, Any]]:
+    path = os.path.join(_EXPERIMENTS_DIR, exp_id, "execution_evidence.json")
+    if not os.path.isfile(path):
+        return None
+    with open(path, encoding="utf-8") as handle:
+        return json.load(handle)
 
 
 # ── Metrics ──────────────────────────────────────────────
@@ -246,7 +272,7 @@ def list_figures(exp_id: str) -> List[Dict[str, Any]]:
 
 # ── Datasets ──────────────────────────────────────────────
 
-_DATASETS_DIR = os.path.join(_BASE_DIR, "data", "experiment_datasets")
+_DATASETS_DIR = str(_DATA_DIR / "experiment_datasets")
 os.makedirs(_DATASETS_DIR, exist_ok=True)
 
 
@@ -255,7 +281,7 @@ def save_dataset(exp_id: str, name: str, fmt: str, raw_bytes: bytes, parsed_prev
     ds_dir = os.path.join(_DATASETS_DIR, ds_id)
     os.makedirs(ds_dir, exist_ok=True)
 
-    ext = "csv" if fmt == "csv" else "json"
+    ext = fmt if fmt in {"csv", "json", "jsonl"} else "json"
     raw_path = os.path.join(ds_dir, f"raw.{ext}")
     with open(raw_path, "wb") as f:
         f.write(raw_bytes)

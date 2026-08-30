@@ -4,9 +4,10 @@
  * Lists generated or imported code projects.
  */
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { AppPageLayout } from '@/components/layout/AppPageLayout'
+import { DataScopeNotice } from '@/components/data/DataScopeNotice'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -48,7 +49,7 @@ export function CodeProjects() {
   const [importing, setImporting] = useState(false)
   const bundleInputRef = useRef<HTMLInputElement>(null)
 
-  const loadProjects = async (searchTerm?: string) => {
+  const loadProjects = useCallback(async (searchTerm?: string) => {
     try {
       setLoading(true)
       setError(null)
@@ -59,9 +60,9 @@ export function CodeProjects() {
     } finally {
       setLoading(false)
     }
-  }
+  }, [text])
 
-  useEffect(() => { loadProjects() }, [])
+  useEffect(() => { void loadProjects() }, [loadProjects])
 
   const handleSearch = () => { loadProjects(search) }
 
@@ -110,6 +111,8 @@ export function CodeProjects() {
       iconColor="violet"
       accentColor="violet"
     >
+      <DataScopeNotice />
+
       {/* Code sub-navigation tabs */}
       <div className="flex items-center gap-1 mb-6 border-b pb-2">
         {[

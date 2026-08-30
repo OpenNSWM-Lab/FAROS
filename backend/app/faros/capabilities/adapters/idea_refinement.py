@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 from app.contracts import RunMode, ScientificQuestion
+from app.core.paths import get_data_dir
 from app.faros.capabilities.base import BaseCapability
 from app.faros.models.artifact import ArtifactRecord
 from app.faros.models.capability import CapabilityResult
@@ -118,7 +119,7 @@ class IdeaRefinementCapability(BaseCapability):
             provider_name=provider_name,
             model=model,
         )
-        run_dir = Path(__file__).resolve().parents[4] / "data" / "faros" / "runs" / context.run_id
+        run_dir = get_data_dir() / "faros" / "runs" / context.run_id
         run_dir.mkdir(parents=True, exist_ok=True)
         dossier_path = run_dir / "research_dossier.json"
         dossier_path.write_text(

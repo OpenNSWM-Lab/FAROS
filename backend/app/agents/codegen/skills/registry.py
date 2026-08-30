@@ -8,15 +8,25 @@ Skills degrade gracefully if network/resources are unavailable.
 import json
 import os
 import re
+import ast
+import tomllib
 import logging
+import shutil
+import shlex
+import subprocess
+import tempfile
+import time
+import uuid
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
 
 # Workspace root for security boundary
-_BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
-WORKSPACE_ROOT = os.path.join(_BASE_DIR, "data")
+from app.core.paths import get_data_dir
+
+WORKSPACE_ROOT = str(get_data_dir())
 
 # LLM-simulated search skills return JSON arrays; keep output budget generous to avoid truncation.
 _JSON_ARRAY_MAX_TOKENS = 2048
@@ -301,7 +311,7 @@ class SummarizeSkill(BaseSkill):
 
 class PlanFileTreeSkill(BaseSkill):
     name = "planFileTree"
-    description = "Plan a project file tree from plan context (project-grade, 45+ files)"
+    description = "Plan a focused, reproducible scientific experiment repository"
 
     def __init__(self, llm_client=None, model: str = ""):
         self.client = llm_client
@@ -319,7 +329,13 @@ class PlanFileTreeSkill(BaseSkill):
                 framework=framework,
             )
             msgs = [ChatMessage(role="user", content=prompt)]
-            resp = self.client.chat(messages=msgs, model=self.model, temperature=0.4, max_tokens=6000)
+            resp = self.client.chat(
+                messages=msgs,
+                model=self.model,
+                temperature=0.3,
+                max_tokens=5000,
+                structured_output=True,
+            )
             text = resp.text.strip()
             if "```" in text:
                 text = text.split("```json")[-1].split("```")[0] if "```json" in text else text.split("```")[1].split("```")[0]
@@ -333,6 +349,28 @@ class CompileCheckSkill(BaseSkill):
     name = "compileCheck"
     description = "Thorough structural + quality verification of project files"
 
+    _HEAVY_OPTIONAL_MODULES = {
+        "torch",
+        "tensorflow",
+        "transformers",
+        "sentence_transformers",
+        "spacy",
+    }
+
+    @staticmethod
+    def _test_has_assertion(node: ast.AST) -> bool:
+        """Recognise plain asserts, pytest.raises, and unittest-style assertions."""
+        for child in ast.walk(node):
+            if isinstance(child, ast.Assert):
+                return True
+            if not isinstance(child, ast.Call):
+                continue
+            target = child.func
+            if isinstance(target, ast.Attribute):
+                if target.attr == "raises" or target.attr.startswith("assert"):
+                    return True
+        return False
+
     def execute(self, project_root: str = "", language: str = "python", files: Dict[str, str] = None, **kwargs) -> SkillResult:
         if not files:
             return SkillResult(ok=False, error="No files provided")
@@ -344,26 +382,68 @@ class CompileCheckSkill(BaseSkill):
         # ── Required files check ──
         required_root = ["README.md"]
         if language.lower() == "python":
-            required_root.extend(["requirements.txt", ".gitignore"])
+            required_root.extend([".gitignore"])
         else:
             required_root.extend(["package.json", ".gitignore"])
 
         for req in required_root:
             if req not in paths:
-                issues.append({"file": req, "severity": "warning", "message": f"Missing required root file: {req}"})
-                score -= 3
+                issues.append({"file": req, "severity": "error", "message": f"Missing required root file: {req}"})
+                score -= 10
+
+        if language.lower() == "python":
+            has_requirements = bool((files.get("requirements.txt") or "").strip())
+            pyproject = files.get("pyproject.toml") or ""
+            pyproject_valid = False
+            parsed_pyproject = {}
+            if pyproject.strip():
+                try:
+                    parsed_pyproject = tomllib.loads(pyproject)
+                    pyproject_valid = bool(parsed_pyproject.get("project") or parsed_pyproject.get("build-system"))
+                except tomllib.TOMLDecodeError as exc:
+                    issues.append({"file": "pyproject.toml", "severity": "error", "message": f"Invalid TOML: {exc}"})
+                    score -= 10
+            if not has_requirements and not pyproject_valid:
+                issues.append({
+                    "file": "pyproject.toml",
+                    "severity": "error",
+                    "message": "Python dependencies are not installable: provide requirements.txt or a valid pyproject project/build-system table",
+                })
+                score -= 15
+
+            core_dependencies = list((parsed_pyproject.get("project") or {}).get("dependencies") or [])
+            core_dependencies.extend(
+                line.strip()
+                for line in (files.get("requirements.txt") or "").splitlines()
+                if line.strip() and not line.lstrip().startswith("#")
+            )
+            for dependency in core_dependencies:
+                package = re.split(r"[<>=!~;\[\s]", str(dependency), maxsplit=1)[0]
+                normalized = package.strip().lower().replace("-", "_")
+                if normalized in self._HEAVY_OPTIONAL_MODULES:
+                    issues.append({
+                        "file": "pyproject.toml" if pyproject.strip() else "requirements.txt",
+                        "severity": "error",
+                        "message": (
+                            f"Heavy dependency '{package}' is required by the default install; "
+                            "move it to an optional full-mode extra so the offline smoke path stays lightweight"
+                        ),
+                    })
+                    score -= 10
 
         # ── Structure categories ──
         test_files = [p for p in paths if "test" in p.lower() and p.endswith(".py" if language.lower() == "python" else ".ts")]
         config_files = [p for p in paths if any(p.endswith(e) for e in [".yml", ".yaml", ".toml", ".cfg", ".ini", ".json", ".env", ".example"])]
         doc_files = [p for p in paths if p.endswith(".md") or p.startswith("docs/")]
-        ci_files = [p for p in paths if ".github" in p or "ci" in p.lower()]
-        db_files = [p for p in paths if "db" in p.lower() or "model" in p.lower() or "migration" in p.lower()]
+        ci_files = [
+            p for p in paths
+            if p.startswith(".github/workflows/") or p.startswith("ci/")
+        ]
         source_files = [p for p in paths if p.endswith(".py" if language.lower() == "python" else ".ts") and "test" not in p.lower()]
 
         # ── Category thresholds ──
         if len(test_files) < 3:
-            issues.append({"file": "*", "severity": "warning", "message": f"Only {len(test_files)} test files (expected >= 5)"})
+            issues.append({"file": "*", "severity": "warning", "message": f"Only {len(test_files)} test files (expected >= 3)"})
             score -= 5
         if len(doc_files) < 2:
             issues.append({"file": "*", "severity": "warning", "message": f"Only {len(doc_files)} doc files (expected >= 3)"})
@@ -371,42 +451,171 @@ class CompileCheckSkill(BaseSkill):
         if len(ci_files) < 1:
             issues.append({"file": "*", "severity": "warning", "message": "No CI/CD configuration found"})
             score -= 5
-        if len(db_files) < 1:
-            issues.append({"file": "*", "severity": "warning", "message": "No database layer files found"})
+        evidence_files = [p for p in paths if any(token in p.lower() for token in ("metric", "evaluation", "manifest", "provenance"))]
+        if len(evidence_files) < 2:
+            issues.append({"file": "*", "severity": "warning", "message": "Experiment evidence outputs are underspecified"})
             score -= 5
 
         # ── File count check ──
         total = len(paths)
-        if total < 20:
-            issues.append({"file": "*", "severity": "error", "message": f"Only {total} files (expected >= 40 for project-grade)"})
+        if total < 15:
+            issues.append({"file": "*", "severity": "error", "message": f"Only {total} files (expected >= 15 for a reproducible experiment)"})
             score -= 20
-        elif total < 40:
-            issues.append({"file": "*", "severity": "warning", "message": f"Only {total} files (target >= 45 for project-grade)"})
+        elif total < 20:
+            issues.append({"file": "*", "severity": "warning", "message": f"Only {total} files (target >= 20 for a reproducible experiment)"})
             score -= 10
 
         # ── Python-specific checks ──
         if language.lower() == "python":
+            parsed_trees = {}
             for path, content in files.items():
                 if not path.endswith(".py"):
                     continue
                 lines = content.split("\n")
 
-                # Broken import check
-                for i, line in enumerate(lines[:60], 1):
-                    stripped = line.strip()
-                    if stripped.startswith("import ") or stripped.startswith("from "):
-                        if stripped.endswith(",") or stripped.count("(") != stripped.count(")"):
-                            issues.append({"file": path, "line": i, "severity": "error", "message": f"Broken import: {stripped[:80]}"})
+                try:
+                    tree = ast.parse(content, filename=path)
+                    parsed_trees[path] = tree
+                except SyntaxError as exc:
+                    issues.append({
+                        "file": path,
+                        "line": exc.lineno,
+                        "severity": "error",
+                        "message": f"Python syntax error: {exc.msg}",
+                    })
+                    score -= 10
+                    continue
+
+                abstract_stub_lines = {
+                    child.lineno
+                    for node in ast.walk(tree)
+                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and any(
+                        (isinstance(decorator, ast.Name) and decorator.id == "abstractmethod")
+                        or (isinstance(decorator, ast.Attribute) and decorator.attr == "abstractmethod")
+                        for decorator in node.decorator_list
+                    )
+                    for child in node.body
+                    if isinstance(child, ast.Pass)
+                }
+
+                # Importing the package and running smoke tests must not require a
+                # heavyweight model stack. Full-mode implementations can still use
+                # these packages through lazy imports inside methods/functions.
+                for node in tree.body:
+                    imported_root = None
+                    if isinstance(node, ast.Import) and node.names:
+                        imported_root = node.names[0].name.split(".", 1)[0]
+                    elif isinstance(node, ast.ImportFrom) and node.module:
+                        imported_root = node.module.split(".", 1)[0]
+                    if imported_root in self._HEAVY_OPTIONAL_MODULES:
+                        issues.append({
+                            "file": path,
+                            "line": getattr(node, "lineno", None),
+                            "severity": "error",
+                            "message": (
+                                f"Heavy optional dependency '{imported_root}' is imported at module load; "
+                                "move it inside the full-mode implementation so offline smoke tests can import"
+                            ),
+                        })
+                        score -= 10
+
+                if path.startswith("tests/") or "/tests/" in path:
+                    imports_project_code = any(
+                        isinstance(node, ast.ImportFrom)
+                        and bool(node.module)
+                        and (node.module == "src" or node.module.startswith("src."))
+                        for node in ast.walk(tree)
+                    )
+                    invokes_project_script = "scripts/" in content and "subprocess" in content
+                    if not imports_project_code and not invokes_project_script:
+                        issues.append({
+                            "file": path,
+                            "severity": "error",
+                            "message": "Test file does not import or execute production project code",
+                        })
+                        score -= 10
+                    for node in tree.body:
+                        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                            is_fixture = any(
+                                (isinstance(decorator, ast.Name) and decorator.id == "fixture")
+                                or (isinstance(decorator, ast.Attribute) and decorator.attr == "fixture")
+                                for decorator in node.decorator_list
+                            )
+                            if not node.name.startswith(("test_", "_")) and not is_fixture:
+                                issues.append({
+                                    "file": path,
+                                    "line": getattr(node, "lineno", None),
+                                    "severity": "error",
+                                    "message": (
+                                        f"Test helper '{node.name}' looks like a reimplementation; "
+                                        "exercise production code or make a narrowly scoped private helper"
+                                    ),
+                                })
+                                score -= 5
+                    for node in ast.walk(tree):
+                        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                            continue
+                        if not node.name.startswith("test_"):
+                            continue
+                        if not self._test_has_assertion(node):
+                            issues.append({
+                                "file": path,
+                                "line": getattr(node, "lineno", None),
+                                "severity": "error",
+                                "message": f"Test '{node.name}' has no executable assertion",
+                            })
                             score -= 5
 
                 # TODO/placeholder check
                 for i, line in enumerate(lines, 1):
                     stripped = line.strip()
                     if stripped == "pass" and i > 3 and not path.endswith("__init__.py"):
+                        if i in abstract_stub_lines:
+                            continue
                         ctx = lines[max(0, i-3):i]
                         if any("def " in c or "class " in c for c in ctx):
-                            issues.append({"file": path, "line": i, "severity": "warning", "message": "Function/class body is just 'pass' (stub)"})
-                            score -= 1
+                            severity = "error" if path.startswith("tests/") else "warning"
+                            issues.append({"file": path, "line": i, "severity": severity, "message": "Function/class body is just 'pass' (stub)"})
+                            score -= 5 if severity == "error" else 1
+
+            internal_roots = {"src"}
+            internal_roots.update(
+                path.split("/", 2)[1]
+                for path in paths
+                if path.startswith("src/") and path.count("/") >= 2
+            )
+
+            def module_exists(module: str) -> bool:
+                module_path = module.replace(".", "/")
+                candidates = {
+                    f"{module_path}.py",
+                    f"{module_path}/__init__.py",
+                    f"src/{module_path}.py",
+                    f"src/{module_path}/__init__.py",
+                }
+                return bool(candidates & paths)
+
+            for path, tree in parsed_trees.items():
+                package_parts = path.removesuffix(".py").split("/")[:-1]
+                for node in ast.walk(tree):
+                    if not isinstance(node, ast.ImportFrom) or not node.module:
+                        continue
+                    module = node.module
+                    if node.level:
+                        keep = max(0, len(package_parts) - node.level + 1)
+                        module = ".".join(package_parts[:keep] + module.split("."))
+                        is_internal = True
+                    else:
+                        is_internal = module.split(".", 1)[0] in internal_roots
+                    if is_internal and not module_exists(module):
+                        issues.append({
+                            "file": path,
+                            "line": getattr(node, "lineno", None),
+                            "severity": "error",
+                            "message": f"Internal import does not resolve to a planned file: {module}",
+                        })
+                        score -= 10
         else:
             if "package.json" not in paths:
                 issues.append({"file": "package.json", "severity": "warning", "message": "Missing package.json"})
@@ -418,9 +627,45 @@ class CompileCheckSkill(BaseSkill):
 
         # ── README quality ──
         readme = files.get("README.md", "")
-        if readme and len(readme.split()) < 50:
-            issues.append({"file": "README.md", "severity": "warning", "message": f"README too short ({len(readme.split())} words, expected >= 200)"})
-            score -= 5
+        if readme and len(readme.split()) < 100:
+            issues.append({"file": "README.md", "severity": "error", "message": f"README too short ({len(readme.split())} words, expected >= 100)"})
+            score -= 10
+
+        for path in ci_files:
+            content = files.get(path, "")
+            if path.endswith((".yml", ".yaml")) and "jobs:" not in content:
+                issues.append({"file": path, "severity": "error", "message": "CI workflow has no jobs definition"})
+                score -= 10
+
+        for path, content in files.items():
+            lowered = content.lower()
+            if "generation failed:" in lowered:
+                issues.append({"file": path, "severity": "error", "message": "File contains a generation-failure fallback"})
+                score -= 10
+            is_experiment_metadata = path.startswith(("configs/", "data/", "evidence/"))
+            if is_experiment_metadata and any(
+                marker in lowered
+                for marker in (
+                    "placeholder",
+                    "replace with actual",
+                    "s3://scirev-benchmark",
+                )
+            ):
+                issues.append({"file": path, "severity": "error", "message": "Experiment metadata contains placeholder or fabricated provenance"})
+                score -= 10
+            if is_experiment_metadata and "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" in lowered:
+                issues.append({"file": path, "severity": "error", "message": "Dataset manifest uses the SHA-256 checksum of an empty file"})
+                score -= 10
+            if path.endswith((".py", ".ts")) and any(
+                marker in lowered
+                for marker in (
+                    "placeholder implementation",
+                    "example path",
+                    "simplified scoring logic for demonstration",
+                )
+            ):
+                issues.append({"file": path, "severity": "error", "message": "Executable source still contains placeholder experiment logic"})
+                score -= 10
 
         has_errors = any(i["severity"] == "error" for i in issues)
         score = max(0, min(100, score))
@@ -437,8 +682,211 @@ class CompileCheckSkill(BaseSkill):
                 "config": len(config_files),
                 "docs": len(doc_files),
                 "ci": len(ci_files),
-                "db": len(db_files),
+                "evidence": len(evidence_files),
             },
+        })
+
+
+class ExecutionSmokeCheckSkill(BaseSkill):
+    """Execute the generated smoke path in an offline, resource-limited container."""
+
+    name = "executionSmokeCheck"
+    description = "Run the generated offline smoke script in a locked-down Docker sandbox"
+
+    _SMOKE_CANDIDATES = ("scripts/smoke_test.py", "scripts/run_smoke.py")
+
+    def execute(self, files: Dict[str, str] = None, **kwargs) -> SkillResult:
+        files = files or {}
+        smoke_path = next((path for path in self._SMOKE_CANDIDATES if path in files), None)
+        if not smoke_path:
+            issue = {
+                "file": "scripts/run_smoke.py",
+                "severity": "error",
+                "message": "No executable offline smoke script was generated",
+            }
+            return SkillResult(ok=False, data={"status": "failed", "issues": [issue], "errorCount": 1})
+
+        docker = shutil.which("docker")
+        if not docker:
+            issue = {
+                "file": smoke_path,
+                "severity": "error",
+                "message": "Docker is required for the isolated executable smoke gate but is unavailable",
+            }
+            return SkillResult(ok=False, data={"status": "unavailable", "issues": [issue], "errorCount": 1})
+
+        smoke_image = os.getenv("FAROS_CODEGEN_SMOKE_IMAGE", "python:3.12-slim")
+        test_image = os.getenv("FAROS_CODEGEN_TEST_IMAGE", "faros/codegen-test:3.12")
+        image_probe = subprocess.run(
+            [docker, "image", "inspect", test_image],
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+        run_full_tests = image_probe.returncode == 0
+        if os.getenv("FAROS_CODEGEN_REQUIRE_TESTS", "0") == "1" and not run_full_tests:
+            issue = {
+                "file": smoke_path,
+                "severity": "error",
+                "message": (
+                    f"Required code-generation test image '{test_image}' is unavailable. "
+                    "Build it with scripts/build_codegen_test_image.sh"
+                ),
+            }
+            return SkillResult(ok=False, data={"status": "unavailable", "issues": [issue], "errorCount": 1})
+
+        image = test_image if run_full_tests else smoke_image
+        smoke_command = f"python {shlex.quote(smoke_path)}"
+        execution_args = (
+            ["sh", "-c", f"{smoke_command} && python -m pytest -q"]
+            if run_full_tests
+            else ["python", smoke_path]
+        )
+        display_command = (
+            f"{smoke_command} && python -m pytest -q"
+            if run_full_tests
+            else smoke_command
+        )
+        container_name = f"faros-codegen-smoke-{uuid.uuid4().hex[:12]}"
+        started = time.monotonic()
+        with tempfile.TemporaryDirectory(
+            prefix="faros-codegen-smoke-",
+            ignore_cleanup_errors=True,
+        ) as temp_dir:
+            root = Path(temp_dir)
+            # Docker Desktop may remap container root to an unprivileged host
+            # UID. The directory is an isolated disposable copy, so allow the
+            # smoke run to emit evidence artifacts inside that copy.
+            root.chmod(0o777)
+            for relative, content in files.items():
+                target = (root / relative).resolve()
+                if root.resolve() not in target.parents:
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(content, encoding="utf-8")
+                target.chmod(0o644)
+
+            command = [
+                docker,
+                "run",
+                "--rm",
+                "--name",
+                container_name,
+                "--network",
+                "none",
+                "--memory",
+                "512m",
+                "--cpus",
+                "0.5",
+                "--pids-limit",
+                "64",
+                "--security-opt",
+                "no-new-privileges",
+                "--cap-drop",
+                "ALL",
+                "--user",
+                f"{os.getuid()}:{os.getgid()}",
+                "--read-only",
+                "--tmpfs",
+                "/tmp:rw,noexec,nosuid,size=64m",
+                "--volume",
+                f"{root}:/workspace:rw",
+                "--workdir",
+                "/workspace",
+                image,
+                *execution_args,
+            ]
+            try:
+                completed = subprocess.run(
+                    command,
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                    check=False,
+                    env={"PATH": os.environ.get("PATH", "")},
+                )
+            except subprocess.TimeoutExpired as exc:
+                subprocess.run(
+                    [docker, "rm", "-f", container_name],
+                    capture_output=True,
+                    timeout=10,
+                    check=False,
+                )
+                output = ((exc.stdout or "") + "\n" + (exc.stderr or ""))[-4000:]
+                issue = {
+                    "file": smoke_path,
+                    "severity": "error",
+                    "message": f"Offline smoke execution timed out after 60 seconds. Output:\n{output}",
+                }
+                return SkillResult(ok=False, data={
+                    "status": "timeout",
+                    "command": display_command,
+                    "durationMs": int((time.monotonic() - started) * 1000),
+                    "testStatus": "timeout" if run_full_tests else "not_run",
+                    "issues": [issue],
+                    "errorCount": 1,
+                })
+
+        duration_ms = int((time.monotonic() - started) * 1000)
+        stdout = completed.stdout or ""
+        stderr = completed.stderr or ""
+        if completed.returncode == 0:
+            return SkillResult(ok=True, data={
+                "status": "passed",
+                "command": display_command,
+                "durationMs": duration_ms,
+                "exitCode": 0,
+                "testStatus": "passed" if run_full_tests else "not_run",
+                "stdoutTail": stdout[-2000:],
+                "stderrTail": stderr[-2000:],
+                "issues": [],
+                "errorCount": 0,
+            })
+
+        combined = (stdout + "\n" + stderr)[-5000:]
+        traceback_paths = []
+        for path in re.findall(r'File "/workspace/([^"\n]+)"', combined):
+            if path in files and path not in traceback_paths:
+                traceback_paths.append(path)
+        for path in re.findall(r"(?:^|\n)((?:src|tests|scripts)/[^:\n]+\.py):\d+", combined):
+            if path in files and path not in traceback_paths:
+                traceback_paths.append(path)
+        missing_call = re.search(r"TypeError: ([A-Za-z_]\w*)\(\) missing", combined)
+        if missing_call:
+            function_name = missing_call.group(1)
+            for path, content in files.items():
+                if path.endswith(".py") and re.search(rf"^def\s+{re.escape(function_name)}\s*\(", content, re.MULTILINE):
+                    if path not in traceback_paths:
+                        traceback_paths.append(path)
+        class_constructor = re.search(r"TypeError: ([A-Za-z_]\w*)\.__init__\(\)", combined)
+        if class_constructor:
+            class_name = class_constructor.group(1)
+            for path, content in files.items():
+                if path.endswith(".py") and re.search(rf"^class\s+{re.escape(class_name)}\b", content, re.MULTILINE):
+                    if path not in traceback_paths:
+                        traceback_paths.append(path)
+        affected = traceback_paths[:5] or [smoke_path]
+        issues = []
+        for index, path in enumerate(affected):
+            detail = combined if index == 0 else "See the runtime traceback attached to the first affected file."
+            issues.append({
+                "file": path,
+                "severity": "error",
+                "message": (
+                    f"Offline Docker {'test suite' if run_full_tests else 'smoke'} failed with exit code "
+                    f"{completed.returncode}. Fix the runtime contract, not just the assertion. Output:\n{detail}"
+                ),
+            })
+        return SkillResult(ok=False, data={
+            "status": "failed",
+            "command": display_command,
+            "durationMs": duration_ms,
+            "exitCode": completed.returncode,
+            "testStatus": "failed" if run_full_tests else "not_run",
+            "stdoutTail": stdout[-2000:],
+            "stderrTail": stderr[-2000:],
+            "issues": issues,
+            "errorCount": len(issues),
         })
 
 
@@ -688,6 +1136,7 @@ class SkillsRegistry:
         self.register(SummarizeSkill(llm_client, model))
         self.register(PlanFileTreeSkill(llm_client, model))
         self.register(CompileCheckSkill())
+        self.register(ExecutionSmokeCheckSkill())
 
         # Register imported agent skills
         self.register(SkillCreatorSkill(llm_client, model))

@@ -15,6 +15,7 @@ from typing import List, Optional
 from datetime import datetime
 
 from app.models.artifact import Artifact
+from app.core.paths import get_data_dir
 
 
 class ArtifactStorage:
@@ -27,14 +28,14 @@ class ArtifactStorage:
     - Traceability: Can query artifacts by runId
     """
     
-    def __init__(self, storage_dir: str = "data/artifacts"):
+    def __init__(self, storage_dir: Optional[str] = None):
         """
         Initialize storage with specified directory.
         
         Args:
             storage_dir: Directory for storing artifact metadata JSON files
         """
-        self.storage_dir = Path(storage_dir)
+        self.storage_dir = Path(storage_dir) if storage_dir else get_data_dir() / "artifacts"
         self.storage_dir.mkdir(parents=True, exist_ok=True)
     
     def _get_artifact_path(self, artifact_id: str) -> Path:

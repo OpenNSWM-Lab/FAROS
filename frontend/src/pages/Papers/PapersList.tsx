@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { AppPageLayout } from '@/components/layout/AppPageLayout'
+import { DataScopeNotice } from '@/components/data/DataScopeNotice'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
@@ -1020,6 +1021,8 @@ export function PapersList() {
         </div>
       }
     >
+      <DataScopeNotice />
+
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-4" style={{ minHeight: '70vh' }}>
         {/* Left Panel: Create + List */}
         <div className="space-y-3">

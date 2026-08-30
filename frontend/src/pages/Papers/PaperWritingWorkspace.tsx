@@ -6,6 +6,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { LLM_PROVIDERS, getModelsByProvider } from '@/lib/models/providers'
+import { useReviewLocale } from '@/lib/reviewLocale'
 import { paperDisplayStatusClass, paperDisplayStatusLabel } from './paperStatus'
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || ''
@@ -187,6 +188,7 @@ const jsonPreview = (value: unknown, max = 1400) => {
 export function PaperWritingWorkspace() {
   const { id, stage } = useParams()
   const navigate = useNavigate()
+  const { text } = useReviewLocale()
   const currentStage: Stage = validStage(stage) ? stage : 'start'
   const [paper, setPaper] = useState<PaperRecord | null>(null)
   const [templates, setTemplates] = useState<TemplateInfo[]>([])
@@ -569,7 +571,7 @@ export function PaperWritingWorkspace() {
   return (
     <AppPageLayout
       title={paper?.title || 'Paper Writing'}
-      subtitle="Paper writing workspace"
+      subtitle={text('论文证据组织与写作工作区', 'Paper evidence and writing workspace')}
       icon={BookOpen}
       iconColor="indigo"
       accentColor="indigo"
@@ -577,7 +579,7 @@ export function PaperWritingWorkspace() {
         <div className="flex items-center gap-2">
           {paper && <Badge variant="outline" className={paperDisplayStatusClass(paper)}>{paperDisplayStatusLabel(paper)}</Badge>}
           <Link to="/papers">
-            <Button variant="outline" size="sm"><ArrowLeft className="mr-1 h-4 w-4" /> Papers</Button>
+            <Button variant="outline" size="sm"><ArrowLeft className="mr-1 h-4 w-4" /> {text('论文', 'Papers')}</Button>
           </Link>
         </div>
       }
@@ -586,14 +588,22 @@ export function PaperWritingWorkspace() {
         {STAGES.map((item, index) => (
           <button
             key={item.id}
-            className={`rounded-md border px-3 py-2 text-left transition-colors ${currentStage === item.id ? 'border-indigo-400 bg-indigo-50 text-indigo-900' : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'}`}
+            className={`rounded-md border px-3 py-2 text-left transition-colors ${currentStage === item.id ? 'border-indigo-400 bg-indigo-50 text-indigo-900 dark:border-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-100' : 'border-border bg-card text-foreground hover:bg-accent'}`}
             onClick={() => setStage(item.id)}
           >
             <div className="flex items-center gap-2 text-sm font-medium">
               <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-white text-[11px]">{index + 1}</span>
-              {item.label}
+              {item.id === 'start' && text('准备', 'Start')}
+              {item.id === 'brief' && 'Brief'}
+              {item.id === 'writing' && text('反馈式写作', 'Feedback Writing')}
+              {item.id === 'result' && text('结果', 'Results')}
             </div>
-            <div className="mt-1 text-xs text-slate-500">{item.description}</div>
+            <div className="mt-1 text-xs text-muted-foreground">
+              {item.id === 'start' && text('论文、模板、关联与证据', 'Paper, template, links, evidence')}
+              {item.id === 'brief' && text('论文与章节写作约束', 'Paper and section brief')}
+              {item.id === 'writing' && text('Agent 闭环与定向修订', 'Agent loop and revision requests')}
+              {item.id === 'result' && text('文件与 PDF 预览', 'Files and PDF preview')}
+            </div>
           </button>
         ))}
       </div>
@@ -637,8 +647,12 @@ function StartStage(props: {
   saveMetadata: () => void
   savingMetadata: boolean
 }) {
+  const { text } = useReviewLocale()
   const evidence = props.paper.evidenceJson
   const modelOptions = getModelsByProvider(props.draftProvider)
+  const visibleModelOptions = props.draftModel && !modelOptions.some(model => model.id === props.draftModel)
+    ? [{ id: props.draftModel, name: props.draftModel }, ...modelOptions]
+    : modelOptions
   const templateOptions = props.templates.length
     ? props.templates.map(template => ({ value: template.id, label: template.name || template.id }))
     : TEMPLATE_FALLBACK_OPTIONS.map(templateId => ({ value: templateId, label: templateId }))
@@ -646,31 +660,31 @@ function StartStage(props: {
     <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
       <Card className="xl:col-span-1">
         <CardHeader className="pb-3">
-          <CardTitle className="text-base">Paper & Template</CardTitle>
+          <CardTitle className="text-base">{text('论文与模板', 'Paper & Template')}</CardTitle>
         </CardHeader>
         <CardContent className="space-y-3 text-sm">
           <div className="space-y-1">
-            <label className="text-xs font-medium text-slate-600">Title</label>
+            <label className="text-xs font-medium text-muted-foreground">{text('标题', 'Title')}</label>
             <input
-              className="w-full rounded-md border bg-white px-2 py-2 text-sm"
+              className="w-full rounded-md border bg-background px-2 py-2 text-sm text-foreground"
               value={props.draftTitle}
               onChange={event => props.setDraftTitle(event.target.value)}
-              placeholder="Paper title"
+              placeholder={text('论文标题', 'Paper title')}
             />
           </div>
           <SelectBlock
-            label="Type"
+            label={text('类型', 'Type')}
             value={props.draftPaperType}
             onChange={props.setDraftPaperType}
             options={PAPER_TYPE_OPTIONS.map(type => ({ value: type, label: type }))}
-            emptyLabel="Select type"
+            emptyLabel={text('选择类型', 'Select type')}
           />
           <SelectBlock
-            label="Template"
+            label={text('模板', 'Template')}
             value={props.selectedTemplate}
             onChange={props.setSelectedTemplate}
             options={templateOptions}
-            emptyLabel="Select template"
+            emptyLabel={text('选择模板', 'Select template')}
           />
           <SelectBlock
             label="Provider"
@@ -683,44 +697,52 @@ function StartStage(props: {
             label="Model"
             value={props.draftModel}
             onChange={props.setDraftModel}
-            options={modelOptions.map(model => ({ value: model.id, label: model.id }))}
+            options={visibleModelOptions.map(model => ({ value: model.id, label: model.id }))}
             emptyLabel="Select model"
           />
           <Button size="sm" variant="outline" className="w-full" onClick={props.saveMetadata} disabled={props.savingMetadata || !props.draftTitle.trim()}>
             {props.savingMetadata ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <Save className="mr-1 h-4 w-4" />}
-            Save paper settings
+            {text('保存论文设置', 'Save paper settings')}
           </Button>
-          <Button className="w-full" onClick={props.goBrief}>Continue to Brief</Button>
+          <Button className="w-full" onClick={props.goBrief}>{text('继续完善 Brief', 'Continue to Brief')}</Button>
         </CardContent>
       </Card>
 
       <Card className="xl:col-span-1">
         <CardHeader className="pb-3">
-          <CardTitle className="text-base">Module Links</CardTitle>
+          <CardTitle className="text-base">{text('模块关联', 'Module Links')}</CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
-          <SelectBlock label="Code project" value={props.contextProjectId} onChange={props.setContextProjectId} options={props.projects.map(project => ({ value: project.id, label: `${project.title} (${project.id})` }))} emptyLabel="No linked project" />
+          <SelectBlock label="Code Project" value={props.contextProjectId} onChange={props.setContextProjectId} options={props.projects.map(project => ({ value: project.id, label: `${project.title} (${project.id})` }))} emptyLabel={text('未关联项目', 'No linked project')} />
           <ChecklistBlock label="Runs" values={props.contextRunIds} setValues={props.setContextRunIds} items={props.runs.map(run => ({ value: run.id, label: `${run.id} [${run.status}] ${run.config?.model || run.type}` }))} />
           <ChecklistBlock label="Experiments" values={props.contextExperimentIds} setValues={props.setContextExperimentIds} items={props.experiments.map(exp => ({ value: exp.id, label: `${exp.name} (${exp.id})` }))} />
           <Button size="sm" variant="outline" className="w-full" onClick={props.saveContext} disabled={props.savingContext}>
             {props.savingContext ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <Save className="mr-1 h-4 w-4" />}
-            Save links
+            {text('保存关联', 'Save links')}
           </Button>
         </CardContent>
       </Card>
 
       <Card className="xl:col-span-1">
         <CardHeader className="pb-3">
-          <CardTitle className="text-base">Idea / Code Evidence</CardTitle>
+          <CardTitle className="text-base">{text('Idea / Code 证据', 'Idea / Code Evidence')}</CardTitle>
         </CardHeader>
         <CardContent className="space-y-3 text-sm">
-          <LinkedEvidence title="Linked project" items={props.linkedProject ? [`${props.linkedProject.title}: ${props.linkedProject.description || props.linkedProject.language || props.linkedProject.id}`] : []} />
-          <LinkedEvidence title="Linked runs" items={props.linkedRuns.map(run => `${run.id}: ${run.status}, artifacts ${run.artifacts?.length || 0}${run.errorMessage ? `, error ${run.errorMessage}` : ''}`)} />
-          <LinkedEvidence title="Linked experiments" items={props.linkedExperiments.map(exp => `${exp.name}: ${exp.status || exp.id}`)} />
-          <div className="rounded-md border bg-slate-50 p-3">
-            <div className="mb-2 text-xs font-medium text-slate-600">Collected evidence JSON</div>
-            <pre className="max-h-64 overflow-auto whitespace-pre-wrap text-[11px] text-slate-700">{evidence ? jsonPreview(evidence) : 'No collected evidence yet.'}</pre>
+          <div className="flex flex-wrap gap-2">
+            {props.paper.evidenceStatus === 'collected' && (
+              <Badge variant="outline" className="border-emerald-300 text-emerald-700 dark:border-emerald-800 dark:text-emerald-300">
+                {text('证据已收集', 'Evidence collected')}
+              </Badge>
+            )}
+            {props.paper.authors?.length === 0 && <Badge variant="outline">{text('匿名', 'Anonymous')}</Badge>}
           </div>
+          <LinkedEvidence title={text('关联项目', 'Linked project')} items={props.linkedProject ? [`${props.linkedProject.title} · ${props.linkedProject.language || props.linkedProject.id}`] : []} />
+          {props.linkedRuns.length > 0 && <LinkedEvidence title={text('关联运行', 'Linked runs')} items={props.linkedRuns.map(run => `${run.id}: ${run.status}, artifacts ${run.artifacts?.length || 0}${run.errorMessage ? `, error ${run.errorMessage}` : ''}`)} />}
+          <LinkedEvidence title={text('关联实验', 'Linked experiments')} items={props.linkedExperiments.map(exp => `${exp.name}: ${exp.status || exp.id}`)} />
+          <details className="rounded-md border bg-muted/40 p-3">
+            <summary className="cursor-pointer text-xs font-medium text-muted-foreground">{text('查看采集的证据 JSON', 'Inspect collected evidence JSON')}</summary>
+            <pre className="mt-3 max-h-64 overflow-auto whitespace-pre-wrap text-[11px] text-muted-foreground">{evidence ? jsonPreview(evidence) : text('尚未采集证据。', 'No collected evidence yet.')}</pre>
+          </details>
         </CardContent>
       </Card>
     </div>
@@ -980,8 +1002,8 @@ function ResultStage(props: {
 function SelectBlock(props: { label: string; value: string; onChange: (value: string) => void; options: { value: string; label: string }[]; emptyLabel: string }) {
   return (
     <div className="space-y-1">
-      <label className="text-xs font-medium text-slate-600">{props.label}</label>
-      <select className="w-full rounded-md border bg-white px-2 py-2 text-sm" value={props.value} onChange={event => props.onChange(event.target.value)}>
+      <label className="text-xs font-medium text-muted-foreground">{props.label}</label>
+      <select className="w-full rounded-md border bg-background px-2 py-2 text-sm text-foreground" value={props.value} onChange={event => props.onChange(event.target.value)}>
         <option value="">{props.emptyLabel}</option>
         {props.options.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
       </select>
@@ -990,11 +1012,12 @@ function SelectBlock(props: { label: string; value: string; onChange: (value: st
 }
 
 function ChecklistBlock(props: { label: string; values: string[]; setValues: (values: string[]) => void; items: { value: string; label: string }[] }) {
+  const { text } = useReviewLocale()
   return (
     <div className="space-y-1">
-      <div className="text-xs font-medium text-slate-600">{props.label}</div>
+      <div className="text-xs font-medium text-muted-foreground">{props.label}</div>
       <div className="max-h-36 space-y-1 overflow-auto rounded-md border p-2">
-        {props.items.length === 0 ? <div className="text-xs text-slate-500">No items</div> : props.items.map(item => (
+        {props.items.length === 0 ? <div className="text-xs text-muted-foreground">{text('暂无可选项', 'No items')}</div> : props.items.map(item => (
           <label key={item.value} className="flex items-start gap-2 text-xs">
             <input type="checkbox" checked={props.values.includes(item.value)} onChange={() => props.setValues(toggleList(props.values, item.value))} />
             <span>{item.label}</span>
@@ -1006,11 +1029,12 @@ function ChecklistBlock(props: { label: string; values: string[]; setValues: (va
 }
 
 function LinkedEvidence({ title, items }: { title: string; items: string[] }) {
+  const { text } = useReviewLocale()
   return (
-    <div className="rounded-md border bg-white p-3">
-      <div className="mb-2 text-xs font-medium text-slate-600">{title}</div>
-      {items.length === 0 ? <div className="text-xs text-slate-500">None linked</div> : (
-        <ul className="list-disc space-y-1 pl-4 text-xs text-slate-700">
+    <div className="rounded-md border bg-background p-3">
+      <div className="mb-2 text-xs font-medium text-muted-foreground">{title}</div>
+      {items.length === 0 ? <div className="text-xs text-muted-foreground">{text('未关联', 'None linked')}</div> : (
+        <ul className="list-disc space-y-1 pl-4 text-xs text-foreground">
           {items.map(item => <li key={item}>{item}</li>)}
         </ul>
       )}

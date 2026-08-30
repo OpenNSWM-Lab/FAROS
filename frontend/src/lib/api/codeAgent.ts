@@ -249,7 +249,7 @@ export function streamCartRun(
       if (!reader) { onDone('No response body'); return; }
       const decoder = new TextDecoder();
       let buffer = '';
-      while (true) {
+      for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
@@ -300,7 +300,7 @@ export function streamClaudeAgent(
       }
       const decoder = new TextDecoder();
       let buffer = '';
-      while (true) {
+      for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
         buffer += decoder.decode(value, { stream: true });

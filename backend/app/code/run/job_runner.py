@@ -19,14 +19,14 @@ from typing import Optional, Dict, Any, List, Callable
 from pathlib import Path
 
 from app.core.user_context import sanitized_subprocess_env
+from app.core.paths import get_data_dir
 
 from .workspace import WorkspaceManager
 
 logger = logging.getLogger(__name__)
 
 # Base directory for artifacts
-_BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-ARTIFACTS_DIR = os.path.join(_BASE_DIR, "data", "artifacts")
+ARTIFACTS_DIR = str(get_data_dir() / "artifacts")
 
 # Dangerous command patterns to block
 DANGEROUS_PATTERNS = [

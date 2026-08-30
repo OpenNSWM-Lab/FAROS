@@ -1,0 +1,16 @@
+{
+  "schemaVersion": "reviewx_method_matrix_v1",
+  "methods": [
+    {
+      "id": "reviewx_balanced_qwen38max_matched_budget",
+      "kind": "reviewx",
+      "budgetMode": "balanced",
+      "ablationMode": "full",
+      "providerName": "qwen",
+      "model": "qwen3.8-max",
+      "repetitions": 3,
+      "maxEstimatedTokens": 4000,
+      "notes": "Model-scaling rerun on the frozen PeerQA fresh-validation split. Keep prompts, ranking, thresholds, repetition count, and token cap unchanged from the qwen3.7 protocol."
+    }
+  ]
+}

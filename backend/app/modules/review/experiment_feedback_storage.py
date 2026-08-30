@@ -8,8 +8,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from app.core.paths import get_data_dir
 
-_STORAGE_DIR = Path(__file__).resolve().parents[3] / "data" / "reviewx_experiment_feedback"
+
+_STORAGE_DIR = get_data_dir() / "reviewx_experiment_feedback"
 
 
 def _now() -> str:

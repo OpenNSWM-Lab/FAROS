@@ -15,6 +15,7 @@ from typing import List, Optional
 from datetime import datetime
 
 from app.models.run import Run, RunStatus
+from app.core.paths import get_data_dir
 
 
 class RunStorage:
@@ -28,14 +29,14 @@ class RunStorage:
     - Traceability: Filesystem timestamps provide audit trail
     """
     
-    def __init__(self, storage_dir: str = "data/runs"):
+    def __init__(self, storage_dir: Optional[str] = None):
         """
         Initialize storage with specified directory.
         
         Args:
             storage_dir: Directory for storing run JSON files
         """
-        self.storage_dir = Path(storage_dir)
+        self.storage_dir = Path(storage_dir) if storage_dir else get_data_dir() / "runs"
         self.storage_dir.mkdir(parents=True, exist_ok=True)
     
     def _get_run_path(self, run_id: str) -> Path:

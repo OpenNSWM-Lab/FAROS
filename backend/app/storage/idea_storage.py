@@ -40,6 +40,7 @@ from app.models.idea import (
     # Step 6 models
     RankedIdeaOutput,
 )
+from app.core.paths import get_data_dir
 
 
 def generate_session_id() -> str:
@@ -59,8 +60,7 @@ def generate_candidate_id() -> str:
 
 def _get_data_dir() -> str:
     """Return the backend-level data directory regardless of current cwd."""
-    base = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    return os.path.join(base, "data")
+    return str(get_data_dir())
 
 
 def _write_json_atomic(path: Path, data: Dict[str, Any], *, default=None) -> None:

@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 from app.faros.errors import FarosTrustError
+from app.core.paths import get_data_dir
 
 ALLOWED_TRUST_LEVELS = {'verified', 'internal', 'community'}
 ALLOWED_INTEGRITY_ALGORITHMS = {'sha256'}
@@ -20,7 +21,7 @@ def _sha256_file(path: Path) -> str:
 
 
 def _trust_keyring_path() -> Path:
-    return Path(__file__).resolve().parents[3] / 'data' / 'faros' / 'packages' / 'trust_keyring.json'
+    return get_data_dir() / 'faros' / 'packages' / 'trust_keyring.json'
 
 
 def _load_trust_keyring() -> Dict[str, Any]:

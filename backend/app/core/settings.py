@@ -19,6 +19,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from pydantic import BaseModel, Field, PrivateAttr
 
 from app.core.user_context import get_current_user_id, normalize_user_id
+from app.core.paths import get_data_dir as get_runtime_data_dir
 
 logger = logging.getLogger(__name__)
 
@@ -399,10 +400,7 @@ class Settings(BaseModel):
 
     def _get_config_path(self) -> str:
         """Path to the legacy global runtime config JSON."""
-        base = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        data_dir = os.path.join(base, "data")
-        os.makedirs(data_dir, exist_ok=True)
-        return os.path.join(data_dir, "provider_config.json")
+        return str(get_runtime_data_dir() / "provider_config.json")
 
     def _provider_config_root(self) -> Path:
         configured = os.getenv("FAROS_PROVIDER_CONFIG_DIR", "").strip()

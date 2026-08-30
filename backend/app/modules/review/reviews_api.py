@@ -23,6 +23,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from app.core.settings import get_settings
+from app.core.paths import get_data_dir
 from app.core.user_context import call_with_current_context
 from app.contracts import ExecutionAssessment, ExperimentEvidence, QualityAssessment, ResearchDossier
 from app.modules.review.experiment_feedback import (
@@ -62,6 +63,7 @@ from app.modules.review.human_feedback_verification import (
 )
 from app.modules.review.audit_chain import record_audit_integrity
 from app.modules.review.competition_evidence import build_competition_evidence_dashboard
+from app.modules.review.competition_workspace import build_competition_workspace_dashboard
 from app.modules.review.reviewer_auth import ReviewAuthenticationError, authorize_reviewer
 from app.modules.review.storage import (
     create_review as _create_review, get_review as _get_review,
@@ -147,6 +149,8 @@ class RunStoredExperimentFeedbackResponse(RunExperimentFeedbackResponse):
     humanSignoffs: Dict[str, Any] = Field(default_factory=dict)
     humanFeedback: Dict[str, Any] = Field(default_factory=dict)
     humanConditionVerifications: Dict[str, Any] = Field(default_factory=dict)
+    reviewerPolicy: str = "single_accountable_reviewer"
+    publicationReady: bool = False
 
 
 class ReviseExperimentPlanRequest(BaseModel):
@@ -185,6 +189,12 @@ class HumanSignoffDecisionRequest(BaseModel):
     rationale: str = Field(min_length=3, max_length=2000)
     conditions: List[str] = Field(default_factory=list, max_length=20)
     targetSections: List[str] = Field(default_factory=list, max_length=20)
+
+
+class HumanSignoffBatchDecisionRequest(BaseModel):
+    reviewerRole: str = Field(min_length=2, max_length=80)
+    reviewerId: str = Field(min_length=2, max_length=120)
+    rationale: str = Field(min_length=3, max_length=2000)
 
 
 class HumanSignoffResponse(BaseModel):
@@ -270,12 +280,8 @@ class ReliabilityBenchmarkSummary(BaseModel):
     reportUrl: str
 
 
-_SCIFACT_CASE_ROOT = (
-    Path(__file__).resolve().parents[3]
-    / "data"
-    / "competition_cases"
-    / "reviewx_scifact"
-)
+_DATA_ROOT = get_data_dir()
+_SCIFACT_CASE_ROOT = _DATA_ROOT / "competition_cases" / "reviewx_scifact"
 _SCIFACT_JOB_LOCK = threading.Lock()
 _PUBLIC_SCIFACT_ARTIFACTS = {
     "summary.json",
@@ -293,32 +299,10 @@ _PUBLIC_SCIFACT_ARTIFACTS = {
     "reviewx_round_2.json",
     "human_signoff.json",
 }
-_RELIABILITY_RESULT_ROOT = (
-    Path(__file__).resolve().parents[3]
-    / "data"
-    / "experiments"
-    / "reviewx_reliability"
-)
-_PLANNING_RESULT_PATH = (
-    Path(__file__).resolve().parents[3]
-    / "data"
-    / "experiments"
-    / "reviewx_planning"
-    / "stability_summary.json"
-)
-_MULTIDOMAIN_RESULT_PATH = (
-    Path(__file__).resolve().parents[3]
-    / "data"
-    / "experiments"
-    / "reviewx_multidomain"
-    / "summary.json"
-)
-_PEERQA_RESULT_ROOT = (
-    Path(__file__).resolve().parents[3]
-    / "data"
-    / "experiments"
-    / "reviewx_peerqa"
-)
+_RELIABILITY_RESULT_ROOT = _DATA_ROOT / "experiments" / "reviewx_reliability"
+_PLANNING_RESULT_PATH = _DATA_ROOT / "experiments" / "reviewx_planning" / "stability_summary.json"
+_MULTIDOMAIN_RESULT_PATH = _DATA_ROOT / "experiments" / "reviewx_multidomain" / "summary.json"
+_PEERQA_RESULT_ROOT = _DATA_ROOT / "experiments" / "reviewx_peerqa"
 
 
 def _scifact_job_path(job_id: str) -> Path:
@@ -366,9 +350,12 @@ def _register_scifact_human_review(job: Dict[str, Any]) -> Optional[Dict[str, An
     if feedback_id:
         existing = get_experiment_feedback(feedback_id)
         if existing is not None:
-            if existing.get("enforceReviewerSeparation") is not True:
+            if existing.get("enforceReviewerSeparation") is not False:
                 existing = update_experiment_feedback(
-                    existing["id"], {"enforceReviewerSeparation": True},
+                    existing["id"], {
+                        "enforceReviewerSeparation": False,
+                        "reviewerPolicy": "single_accountable_reviewer",
+                    },
                 )
             return existing
 
@@ -381,9 +368,12 @@ def _register_scifact_human_review(job: Dict[str, Any]) -> Optional[Dict[str, An
         None,
     )
     if existing is not None:
-        if existing.get("enforceReviewerSeparation") is not True:
+        if existing.get("enforceReviewerSeparation") is not False:
             existing = update_experiment_feedback(
-                existing["id"], {"enforceReviewerSeparation": True},
+                existing["id"], {
+                    "enforceReviewerSeparation": False,
+                    "reviewerPolicy": "single_accountable_reviewer",
+                },
             )
         job["feedbackId"] = existing["id"]
         _write_scifact_job(job)
@@ -443,7 +433,8 @@ def _register_scifact_human_review(job: Dict[str, Any]) -> Optional[Dict[str, An
         ).model_dump(mode="json"),
         "competitionCaseJobId": str(job["jobId"]),
         "competitionCase": "SciFact",
-        "enforceReviewerSeparation": True,
+        "enforceReviewerSeparation": False,
+        "reviewerPolicy": "single_accountable_reviewer",
     })
     job["feedbackId"] = stored["id"]
     _write_scifact_job(job)
@@ -460,7 +451,7 @@ def _run_scifact_case(job_id: str, model: str, bootstrap_samples: int) -> None:
         from experiments.reviewx_scifact.closed_loop import run_closed_loop
         from experiments.reviewx_scifact.run import ensure_dataset
 
-        backend_data = Path(__file__).resolve().parents[3] / "data"
+        backend_data = get_data_dir()
         dataset_root = ensure_dataset(backend_data / "external" / "scifact", download=True)
         output_dir = _SCIFACT_CASE_ROOT / "runs" / job_id
         job.update({"stage": "executing", "progressPercent": 25})
@@ -503,6 +494,17 @@ def _run_scifact_case(job_id: str, model: str, bootstrap_samples: int) -> None:
         _write_scifact_job(job)
 
 
+def _reviewer_policy(record: Dict[str, Any]) -> str:
+    return str(
+        record.get("reviewerPolicy")
+        or (
+            "separated_reviewers"
+            if record.get("enforceReviewerSeparation")
+            else "single_accountable_reviewer"
+        )
+    )
+
+
 def _stored_feedback_response(record: Dict[str, Any]) -> RunStoredExperimentFeedbackResponse:
     return RunStoredExperimentFeedbackResponse(
         qualityAssessment=QualityAssessment.model_validate(record.get("qualityAssessment") or {}),
@@ -533,6 +535,8 @@ def _stored_feedback_response(record: Dict[str, Any]) -> RunStoredExperimentFeed
         humanSignoffs=human_signoff_state(record),
         humanFeedback=human_feedback_state(record),
         humanConditionVerifications=human_condition_verification_state(record),
+        reviewerPolicy=_reviewer_policy(record),
+        publicationReady=publication_ready(record),
     )
 
 
@@ -1106,6 +1110,21 @@ async def get_competition_evidence_dashboard_endpoint():
 
 
 @router.get(
+    "/reviewx/competition/workspace",
+    summary="Get the validated Idea-to-ReviewX representative research chain",
+)
+async def get_competition_workspace_dashboard_endpoint():
+    try:
+        return build_competition_workspace_dashboard(get_data_dir())
+    except (FileNotFoundError, json.JSONDecodeError, ValueError) as exc:
+        logger.warning("Competition workspace evidence is incomplete: %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail=f"Competition workspace evidence is incomplete or invalid: {exc}",
+        ) from exc
+
+
+@router.get(
     "/reviewx/competition/peerqa/report",
     summary="Download the frozen fair Top-5 PeerQA proxy report",
 )
@@ -1294,7 +1313,7 @@ def _load_run_contract_artifact(
                 )
             raw_path = Path(str(item["uri"]).removeprefix("file://"))
             if not raw_path.is_absolute():
-                raw_path = Path(__file__).resolve().parents[3] / "data" / raw_path
+                raw_path = get_data_dir() / raw_path
             artifact = SimpleNamespace(
                 id=item["id"],
                 runId=artifact_run_id,
@@ -1542,6 +1561,8 @@ async def run_stored_experiment_feedback_endpoint(
         humanSignoffs=human_signoff_state(stored),
         humanFeedback=human_feedback_state(stored),
         humanConditionVerifications=human_condition_verification_state(stored),
+        reviewerPolicy=_reviewer_policy(stored),
+        publicationReady=publication_ready(stored),
     )
 
 
@@ -1567,6 +1588,8 @@ async def list_experiment_feedback_endpoint(
             "humanSignoffs": human_signoff_state(record),
             "humanFeedback": human_feedback_state(record),
             "humanConditionVerifications": human_condition_verification_state(record),
+            "reviewerPolicy": _reviewer_policy(record),
+            "publicationReady": publication_ready(record),
         }
         for record in records
     ]
@@ -1644,6 +1667,71 @@ async def decide_experiment_signoff_endpoint(
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     updated = update_experiment_feedback(feedback_id, {"humanSignoffs": signoffs})
+    return HumanSignoffResponse(
+        feedbackId=feedback_id,
+        humanSignoffs=human_signoff_state(updated),
+        humanFeedback=human_feedback_state(updated),
+        humanConditionVerifications=human_condition_verification_state(updated),
+        publicationReady=publication_ready(updated),
+    )
+
+
+@router.put(
+    "/reviewx/experiment-feedback/{feedback_id}/signoffs",
+    response_model=HumanSignoffResponse,
+    summary="Approve every currently required ReviewX gate with one accountable reviewer",
+)
+async def approve_required_experiment_signoffs_endpoint(
+    feedback_id: str,
+    req: HumanSignoffBatchDecisionRequest,
+    authorization: Optional[str] = Header(default=None),
+) -> HumanSignoffResponse:
+    record = get_experiment_feedback(feedback_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"Experiment feedback '{feedback_id}' not found")
+    if record.get("enforceReviewerSeparation"):
+        raise HTTPException(
+            status_code=409,
+            detail="This record explicitly requires separate reviewers; approve each stage individually",
+        )
+
+    stages = ["plan"]
+    if signoff_required(record, "repair"):
+        stages.append("repair")
+    if str((record.get("iterationDecision") or {}).get("decision") or "") == "accept_results":
+        stages.append("conclusion")
+
+    try:
+        for stage in stages:
+            authorize_reviewer(
+                stage=stage,
+                reviewer_role=req.reviewerRole,
+                reviewer_id=req.reviewerId,
+                authorization=authorization if isinstance(authorization, str) else None,
+                technical_test=record.get("reviewPurpose") == "technical_test",
+            )
+            record["humanSignoffs"] = decide_human_signoff(
+                record,
+                stage=stage,
+                status="approved",
+                reviewer_role=req.reviewerRole,
+                reviewer_id=req.reviewerId,
+                rationale=f"{req.rationale.strip()} [{stage}]",
+            )
+    except ReviewAuthenticationError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    updated = update_experiment_feedback(
+        feedback_id,
+        {
+            "humanSignoffs": record["humanSignoffs"],
+            "reviewerPolicy": "single_accountable_reviewer",
+        },
+    )
     return HumanSignoffResponse(
         feedbackId=feedback_id,
         humanSignoffs=human_signoff_state(updated),

@@ -22,6 +22,7 @@ from pathlib import Path
 from sqlmodel import Session
 
 from app.db import crud
+from app.core.paths import get_data_dir
 from app.db.models import (
     CodeProjectV2, CodeProjectV2Create,
     CodeProjectFileCreate, CodeProjectFile,
@@ -32,8 +33,7 @@ from app.db.models import (
 logger = logging.getLogger(__name__)
 
 # Base storage paths
-_BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-CODE_PROJECTS_DIR = os.path.join(_BASE_DIR, "data", "code_projects")
+CODE_PROJECTS_DIR = str(get_data_dir() / "code_projects")
 
 
 def _get_project_repo_dir(project_id: str) -> str:

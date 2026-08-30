@@ -37,7 +37,15 @@ from app.modules.paper.skills.utils import (
     normalize_section_figure_references,
 )
 from app.storage.experiment_storage import create_experiment, save_figure_artifact
-from app.version import APP_NAME, APP_VERSION, API_VERSION, CAPABILITIES, RELEASE_PHASE, SERVICE_NAME
+from app.version import (
+    API_VERSION,
+    APP_NAME,
+    APP_VERSION,
+    CAPABILITIES,
+    RELEASE_PHASE,
+    SERVICE_NAME,
+    SOURCE_REVISION,
+)
 
 client = TestClient(app)
 
@@ -53,6 +61,7 @@ def test_health_endpoint_version_is_consistent():
     payload = response.json()
     assert payload["service"] == SERVICE_NAME
     assert payload["version"] == APP_VERSION
+    assert payload["revision"] == SOURCE_REVISION
 
 
 def test_version_endpoint_payload_is_consistent():
@@ -61,6 +70,7 @@ def test_version_endpoint_payload_is_consistent():
     payload = response.json()
     assert payload["api_version"] == API_VERSION
     assert payload["backend_version"] == APP_VERSION
+    assert payload["source_revision"] == SOURCE_REVISION
     assert payload["phase"] == RELEASE_PHASE
     assert payload["capabilities"] == CAPABILITIES
 

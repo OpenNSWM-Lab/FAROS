@@ -13,10 +13,11 @@ import logging
 from datetime import UTC, datetime
 from typing import Optional, Dict, Any, List
 
+from app.core.paths import get_data_dir
+
 logger = logging.getLogger(__name__)
 
-_BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-PAPERS_DIR = os.path.join(_BASE_DIR, "data", "papers")
+PAPERS_DIR = str(get_data_dir() / "papers")
 os.makedirs(PAPERS_DIR, exist_ok=True)
 
 

@@ -20,21 +20,26 @@ The kernel runs a multi-phase pipeline:
 import json
 import os
 import re
+import ast
 import time
 import logging
 from datetime import datetime
+from pathlib import Path
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass, field
 
 from app.llm.provider_client import get_provider_client, ChatMessage, ProviderClient
+from app.core.paths import get_data_dir
 from app.agents.codegen.skills.registry import SkillsRegistry, SkillResult
 
 logger = logging.getLogger(__name__)
 
-# Storage for session traces
-_BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-_SESSIONS_DIR = os.path.join(_BASE_DIR, "data", "codegen_sessions")
+# Storage for session traces and resumable generation checkpoints.
+_SESSIONS_DIR = str(get_data_dir() / "codegen_sessions")
+_CHECKPOINTS_DIR = os.path.join(_SESSIONS_DIR, "checkpoints")
 os.makedirs(_SESSIONS_DIR, exist_ok=True)
+os.makedirs(_CHECKPOINTS_DIR, exist_ok=True)
+_GENERATION_BATCH_SIZE = max(2, int(os.getenv("FAROS_CODEGEN_BATCH_SIZE", "4")))
 
 
 @dataclass
@@ -57,6 +62,8 @@ class MemoryStore:
     file_tree: Optional[Dict] = None
     generated_files: Dict[str, str] = field(default_factory=dict)
     verification_results: List[Dict] = field(default_factory=list)
+    verification_summary: Dict[str, Any] = field(default_factory=dict)
+    execution_result: Dict[str, Any] = field(default_factory=dict)
     patches_applied: int = 0
 
     def to_dict(self) -> Dict:
@@ -68,8 +75,42 @@ class MemoryStore:
             "fileTreePlanned": self.file_tree is not None,
             "generatedFileCount": len(self.generated_files),
             "verificationCount": len(self.verification_results),
+            "verificationSummary": self.verification_summary,
+            "executionStatus": self.execution_result.get("status", "not_run"),
+            "executionTestStatus": self.execution_result.get("testStatus", "not_run"),
+            "executionCommand": self.execution_result.get("command"),
+            "executionDurationMs": self.execution_result.get("durationMs", 0),
             "patchesApplied": self.patches_applied,
         }
+
+    def to_checkpoint_dict(self) -> Dict:
+        return {
+            "references": self.references,
+            "githubRepos": self.github_repos,
+            "summaries": self.summaries,
+            "designDoc": self.design_doc,
+            "fileTree": self.file_tree,
+            "generatedFiles": self.generated_files,
+            "verificationResults": self.verification_results,
+            "verificationSummary": self.verification_summary,
+            "executionResult": self.execution_result,
+            "patchesApplied": self.patches_applied,
+        }
+
+    @staticmethod
+    def from_checkpoint_dict(data: Dict) -> "MemoryStore":
+        return MemoryStore(
+            references=list(data.get("references") or []),
+            github_repos=list(data.get("githubRepos") or []),
+            summaries=list(data.get("summaries") or []),
+            design_doc=data.get("designDoc"),
+            file_tree=data.get("fileTree"),
+            generated_files=dict(data.get("generatedFiles") or {}),
+            verification_results=list(data.get("verificationResults") or []),
+            verification_summary=dict(data.get("verificationSummary") or {}),
+            execution_result=dict(data.get("executionResult") or {}),
+            patches_applied=int(data.get("patchesApplied") or 0),
+        )
 
     @staticmethod
     def from_dict(d: Dict) -> "MemoryStore":
@@ -82,6 +123,8 @@ class MemoryStore:
         m.file_tree = {"files": []} if d.get("fileTreePlanned") else None
         m.generated_files = {f"file_{i}": "" for i in range(d.get("generatedFileCount", 0))}
         m.verification_results = [{} for _ in range(d.get("verificationCount", 0))]
+        m.verification_summary = dict(d.get("verificationSummary") or {})
+        m.execution_result = {"status": d.get("executionStatus", "not_run")}
         m.patches_applied = d.get("patchesApplied", 0)
         return m
 
@@ -139,11 +182,21 @@ def _gen_id() -> str:
     return f"cgs_{uuid.uuid4().hex[:12]}"
 
 
+def _write_json_atomic(path: str, payload: Dict) -> None:
+    temp_path = f"{path}.{os.getpid()}.tmp"
+    with open(temp_path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2, default=str)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temp_path, path)
+
+
 def _save_session(session: CodeGenSession):
-    """Persist session to JSON file."""
+    """Persist the public trace and private resumable memory atomically."""
     path = os.path.join(_SESSIONS_DIR, f"{session.id}.json")
-    with open(path, "w") as f:
-        json.dump(session.to_dict(), f, indent=2, default=str)
+    checkpoint_path = os.path.join(_CHECKPOINTS_DIR, f"{session.id}.json")
+    _write_json_atomic(path, session.to_dict())
+    _write_json_atomic(checkpoint_path, session.memory.to_checkpoint_dict())
 
 
 def get_session(session_id: str) -> Optional[CodeGenSession]:
@@ -167,16 +220,29 @@ def get_session(session_id: str) -> Optional[CodeGenSession]:
             errorMessage=data.get("errorMessage"),
             config=data.get("config", {}),
         )
-        # Reconstruct memory from saved counts
-        mem_data = data.get("memory", {})
-        if mem_data:
-            session.memory = MemoryStore.from_dict(mem_data)
+        checkpoint_path = os.path.join(_CHECKPOINTS_DIR, f"{session_id}.json")
+        if os.path.isfile(checkpoint_path):
+            with open(checkpoint_path, encoding="utf-8") as handle:
+                session.memory = MemoryStore.from_checkpoint_dict(json.load(handle))
+        else:
+            mem_data = data.get("memory", {})
+            if mem_data:
+                session.memory = MemoryStore.from_dict(mem_data)
         for s in data.get("steps", []):
             session.steps.append(StepResult(
                 name=s["name"], status=s["status"],
                 detail=s.get("detail", ""), durationMs=s.get("durationMs", 0),
                 toolCalls=s.get("toolCalls", []),
             ))
+        if session.status == "running":
+            session.status = "failed"
+            session.errorMessage = "Generation was interrupted by a server restart; restart the session to resume from its checkpoint."
+            for step in reversed(session.steps):
+                if step.status == "running":
+                    step.status = "failed"
+                    step.detail = "Interrupted by server restart"
+                    break
+            _save_session(session)
         _sessions[session_id] = session
         return session
     return None
@@ -229,7 +295,7 @@ def _extract_json(text: str) -> Optional[Dict]:
 
 # ── Prompt templates ──────────────────────────────────────────────────
 
-DESIGN_DOC_PROMPT = """You are a senior software architect creating a PRODUCTION-GRADE design document.
+DESIGN_DOC_PROMPT = """You are a senior research software architect creating a REPRODUCIBLE EXPERIMENT design.
 
 **Plan Context:**
 - Title: {title}
@@ -241,25 +307,25 @@ DESIGN_DOC_PROMPT = """You are a senior software architect creating a PRODUCTION
 **References found:** {references}
 **Similar repos:** {repos}
 
-Write a comprehensive design document (800-1200 words) covering ALL of the following:
+Write a focused design document (600-900 words) covering ALL of the following:
 
-1. **System Architecture Overview** — layered architecture: API layer, service/domain layer, storage/repository layer, database layer, utility layer.
-2. **Module Inventory** — at least 8 modules/packages with clear responsibilities.
-3. **Database Design** — SQLite schema with at least 4 tables including migrations plan. Describe each table, columns, relationships.
-4. **API Design** — RESTful endpoints grouped by resource. Describe request/response schemas.
-5. **Configuration Management** — environment variables, config classes, secrets handling.
-6. **Logging & Observability** — structured logging, log levels, key instrumentation points.
-7. **Caching Strategy** — what to cache, TTL policy, invalidation.
-8. **Data Flow** — request lifecycle from API → service → storage → DB → response.
-9. **Testing Strategy** — unit tests (per module), integration tests (API-level), fixtures, mocking strategy.
-10. **CI/CD Pipeline** — linting (ruff/black), type checking (mypy), test execution, coverage reporting.
-11. **Evaluation Harness** — scaffolding for benchmarking: metrics collection, dataset loading, result persistence.
-12. **Security** — input validation, path sanitization, no raw secret logging.
+1. **Research contract** — operational hypothesis, independent/dependent variables, controls, and falsification criteria.
+2. **Data contract** — real dataset source, immutable split policy, schema validation, checksums, and leakage prevention.
+3. **Method** — the smallest implementation that tests the proposed mechanism without unrelated product infrastructure.
+4. **Baselines and ablations** — comparable controls and one-variable-at-a-time interventions.
+5. **Evaluation** — preregistered primary/guardrail metrics, uncertainty or confidence intervals, and failure analysis.
+6. **Reproducibility** — deterministic seeds, frozen config, environment capture, one-command smoke/full runs.
+7. **Evidence outputs** — machine-readable metrics, run manifest, logs, plots, and artifact hashes for FAROS/ReviewX ingestion.
+8. **Module inventory** — dataset, method, baseline, evaluation, orchestration, and reporting responsibilities.
+9. **Testing and CI** — unit tests, a tiny offline fixture, integration smoke test, lint/type checks.
+10. **Safety and honesty** — no fabricated measurements, explicit limitations, no secrets in logs or artifacts.
+
+Do not add a web API, database, cache, or deployment layer unless the research method genuinely requires it.
 
 Return plain text Markdown (no JSON).
 """
 
-FILE_TREE_PROMPT = """You are a senior software architect. Design a PRODUCTION-GRADE project file tree.
+FILE_TREE_PROMPT = """You are a senior research software architect. Design a compact, executable experiment repository.
 
 **Design Document:**
 {design_doc}
@@ -267,25 +333,21 @@ FILE_TREE_PROMPT = """You are a senior software architect. Design a PRODUCTION-G
 **Language:** {language}
 **Framework:** {framework}
 
-**MANDATORY structure (ALL must be present):**
+**MANDATORY structure (22-30 files total):**
 
-1. **Root configs (≥6 files):** README.md, requirements.txt (or package.json), pyproject.toml (or tsconfig.json), .gitignore, Makefile, Dockerfile, .env.example
-2. **CI/CD (≥2 files):** .github/workflows/ci.yml, .github/workflows/lint.yml
-3. **Source — API layer (≥4 files):** src/api/ or app/api/ with routers, schemas, middleware, deps
-4. **Source — Service/Domain (≥5 files):** src/services/ or app/services/ with business logic modules
-5. **Source — Storage/Repository (≥3 files):** src/storage/ or app/storage/ with repository pattern, queries
-6. **Source — Database (≥4 files):** src/db/ with engine.py, models.py, migrations/, seed.py (SQLite)
-7. **Source — Core/Config (≥3 files):** config.py, logging_config.py, constants.py, cache.py
-8. **Source — Utils (≥2 files):** src/utils/ with helpers, validators
-9. **Tests — Unit (≥5 files):** tests/unit/ with test files per module
-10. **Tests — Integration (≥3 files):** tests/integration/ with API-level tests, fixtures
-11. **Tests — conftest (1 file):** tests/conftest.py with shared fixtures
-12. **Docs (≥3 files):** docs/architecture.md, docs/api.md, docs/getting-started.md
-13. **Scripts (≥2 files):** scripts/seed_db.py, scripts/run_eval.py
-14. **Evaluation harness (≥2 files):** evaluation/harness.py, evaluation/metrics.py
-15. **Data (≥1 file):** data/.gitkeep or data/sample.json
+1. Root: README, dependency lock/config, pyproject/tool config, .gitignore, Makefile, and LICENSE.
+2. Frozen experiment config: dataset URI/version/checksum, split policy, seeds, method parameters, baselines, ablations, metrics, and stop conditions.
+3. Source: dataset validation/loading, proposed method, baseline, ablation switches, metrics/statistics, orchestration, provenance, and artifact writing.
+4. Scripts: one smoke command and one full experiment command using the same code path.
+5. Tests: at least three focused test files plus a tiny explicitly synthetic fixture.
+6. Evidence: JSON schemas or examples for run manifest and metrics. Never include invented final results.
+7. Docs: protocol, reproducibility, and limitations.
+8. CI: one workflow that installs, lints, and runs offline tests.
 
-**Total: MUST have at least 45 files.**
+Every test must import and exercise production modules; never duplicate the implementation inside
+the test file. Dataset URIs and checksums must be authentic and versioned, not invented examples.
+
+Prefer a CLI experiment package. Do not add FastAPI, a database, or generic CRUD unless required by the method.
 
 **Output (strict JSON):**
 ```json
@@ -298,7 +360,7 @@ FILE_TREE_PROMPT = """You are a senior software architect. Design a PRODUCTION-G
 }}
 ```
 
-Return ONLY valid JSON. Count your files — MUST be >= 45.
+Return ONLY valid JSON. Keep the repository focused and internally coherent.
 """
 
 BATCH_CODE_PROMPT = """You are an expert {language} developer building a PRODUCTION-GRADE research project.
@@ -306,6 +368,9 @@ BATCH_CODE_PROMPT = """You are an expert {language} developer building a PRODUCT
 **Project:** {project_name}
 **Description:** {description}
 **Design:** {design_summary}
+
+The design block includes the authoritative repository file map and interfaces already generated.
+Imports and commands MUST reference only paths/modules in that map. Keep public names consistent across batches.
 
 Generate content for ALL files below. Return strict JSON.
 
@@ -322,23 +387,29 @@ Generate content for ALL files below. Return strict JSON.
 ```
 
 **MANDATORY quality requirements:**
-- Every Python file: proper imports, docstrings, type hints, logging
-- Database models: SQLAlchemy ORM with SQLite, at least 4 tables with relationships
-- Migration: alembic-style init script or explicit CREATE TABLE SQL
-- Config: pydantic Settings class reading from .env
-- API routes: FastAPI routers with Pydantic schemas, proper HTTP status codes, error handling
-- Services: business logic separated from API, dependency injection pattern
-- Storage: repository pattern with CRUD operations
-- Cache: simple in-memory or file-based cache utility with TTL
-- Logging: structured logging with module-level loggers, log config file
-- Tests: real assertions (not just pass), fixtures in conftest.py, at least 3 test functions per test file
-- CI: GitHub Actions workflow running lint + test
-- README: 200+ words with Installation, Quick Start, Architecture, Testing, API sections
-- Makefile: targets for install, lint, test, run, docker-build
-- Dockerfile: multi-stage build
-- Evaluation harness: load data → run model → compute metrics → save results
-- .env.example: all environment variables with descriptions
-- No placeholder TODOs — every file must have real, functional content
+- Every source file is complete, typed where supported, and import-compatible with the other requested files.
+- The smoke mode runs offline on the synthetic fixture; the full mode validates a real dataset checksum before use.
+- The package and its tests MUST import in a lightweight CPU-only environment. Heavy ML packages
+  (for example torch, transformers, tensorflow, or sentence-transformers) are optional full-mode
+  extras only: import them lazily inside the concrete full-mode implementation and provide a
+  deterministic lightweight implementation/test double for smoke tests. Smoke tests must never
+  download a model, dataset, or other network resource.
+- The smoke script and every module it imports must use the Python standard library only so it can
+  execute in a clean `python:3.12-slim` container with networking disabled. Put optional scientific
+  and model dependencies behind full-mode entry points and optional dependency groups.
+- Method, baseline, and ablation share the same split and evaluation code.
+- Deterministic seeds and frozen configuration are recorded in a run manifest.
+- Metrics include the primary endpoint, guardrails, and uncertainty when sample size permits.
+- Result writers emit machine-readable JSON/CSV plus plot-ready data; never invent final measurements.
+- Every `test_*` function contains a real assertion (or an explicit expected-exception assertion)
+  for schema, leakage prevention, metrics, or the end-to-end smoke run. No empty/pass-only tests.
+- Tests import production code and use the production schema; never reimplement metrics, loaders,
+  or methods inside test files merely to make tests pass.
+- README contains exact install, smoke, full-run, artifact, and ReviewX handoff commands.
+- Synthetic smoke data proves wiring only: label it synthetic and never report its hand-crafted
+  difference as scientific evidence or a supported hypothesis.
+- No placeholder TODOs, empty-file checksums, fabricated dataset URIs, fake downloads,
+  hard-coded secrets, or claims of unmeasured improvement.
 
 Return ONLY valid JSON.
 """
@@ -360,7 +431,13 @@ REPAIR_PROMPT = """You are a code repair assistant. Fix the issues below in the 
 **Current file contents:**
 {file_contents}
 
-For each issue, provide a fix. Return strict JSON:
+**Authoritative repository contract:**
+{repository_contract}
+
+For each issue, provide a fix. The repaired project and all tests must import and run in a
+lightweight CPU-only offline environment. Heavy ML dependencies must be lazy optional imports;
+tests and smoke mode must use deterministic lightweight implementations and must never download
+models or datasets. Replace pass-only tests with meaningful assertions. Return strict JSON:
 ```json
 {{
   "patches": [
@@ -442,14 +519,17 @@ class AgentKernel:
         _save_session(session)
 
         try:
-            # Phase 1: Research & Context
-            self._run_step(session, "research_web_search", self._step_web_search, title, abstract)
-            self._run_step(session, "research_github_search", self._step_github_search, title)
-            self._run_step(session, "research_summarize", self._step_summarize, session, title, abstract)
+            if session.memory.design_doc and session.memory.file_tree:
+                self._run_step(session, "resume_checkpoint", self._step_resume_checkpoint, session)
+            else:
+                # Phase 1: Research & Context
+                self._run_step(session, "research_web_search", self._step_web_search, title, abstract)
+                self._run_step(session, "research_github_search", self._step_github_search, title)
+                self._run_step(session, "research_summarize", self._step_summarize, session, title, abstract)
 
-            # Phase 2: Architecture
-            self._run_step(session, "design_document", self._step_design_doc, session, title, abstract, method, research_question, gap_analysis)
-            self._run_step(session, "plan_file_tree", self._step_plan_tree, session)
+                # Phase 2: Architecture
+                self._run_step(session, "design_document", self._step_design_doc, session, title, abstract, method, research_question, gap_analysis)
+                self._run_step(session, "plan_file_tree", self._step_plan_tree, session)
 
             # Phase 3: Code Synthesis
             self._run_step(session, "code_synthesis_batch", self._step_synthesize_batch, session, title)
@@ -469,6 +549,44 @@ class AgentKernel:
 
             # Phase 6: Persist
             self._run_step(session, "persist_files", self._step_persist, session)
+            remaining_errors = [
+                item for item in session.memory.verification_results
+                if item.get("severity") == "error"
+            ]
+            if remaining_errors:
+                raise ValueError(
+                    f"Generated project failed the executable quality gate with {len(remaining_errors)} error(s)"
+                )
+
+            # Phase 7: isolated, offline runtime proof. A structural pass alone
+            # must never be presented as executable evidence.
+            self._run_step(session, "execute_offline_smoke", self._step_smoke, session)
+            for cycle in range(self.max_repair_cycles):
+                runtime_errors = [
+                    item for item in session.memory.verification_results
+                    if item.get("severity") == "error"
+                ]
+                if not runtime_errors:
+                    break
+                self._run_step(session, f"runtime_repair_{cycle + 1}", self._step_repair, session, runtime_errors)
+                self._run_step(session, f"runtime_static_verify_{cycle + 1}", self._step_verify, session)
+                static_errors = [
+                    item for item in session.memory.verification_results
+                    if item.get("severity") == "error"
+                ]
+                if static_errors:
+                    continue
+                self._run_step(session, f"persist_runtime_repair_{cycle + 1}", self._step_persist, session)
+                self._run_step(session, f"execute_offline_smoke_{cycle + 1}", self._step_smoke, session)
+
+            runtime_errors = [
+                item for item in session.memory.verification_results
+                if item.get("severity") == "error"
+            ]
+            if runtime_errors or session.memory.execution_result.get("status") != "passed":
+                raise ValueError(
+                    f"Generated project failed isolated offline execution with {len(runtime_errors)} error(s)"
+                )
 
             session.status = "completed"
             session.completedAt = datetime.utcnow().isoformat()
@@ -483,7 +601,121 @@ class AgentKernel:
             _save_session(session)
             raise
 
+    def repair(self, session: CodeGenSession) -> str:
+        """Revalidate and repair a persisted generated project from its checkpoint."""
+        if not session.memory.generated_files:
+            raise ValueError("No generated-file checkpoint is available for repair")
+        session.status = "running"
+        session.errorMessage = None
+        session.startedAt = datetime.utcnow().isoformat()
+        _save_session(session)
+        try:
+            self._run_step(session, "sync_persisted_workspace", self._step_sync_workspace, session)
+            self._run_step(session, "manual_revalidate", self._step_verify, session)
+            for cycle in range(self.max_repair_cycles):
+                errors = [
+                    item for item in session.memory.verification_results
+                    if item.get("severity") == "error"
+                ]
+                if not errors:
+                    break
+                self._run_step(
+                    session,
+                    f"manual_repair_{cycle + 1}",
+                    self._step_repair,
+                    session,
+                    errors,
+                )
+                self._run_step(
+                    session,
+                    f"manual_reverify_{cycle + 1}",
+                    self._step_verify,
+                    session,
+                )
+            remaining = [
+                item for item in session.memory.verification_results
+                if item.get("severity") == "error"
+            ]
+            if remaining:
+                raise ValueError(
+                    f"Project still has {len(remaining)} executable quality-gate error(s) after bounded repair"
+                )
+            self._run_step(session, "persist_repaired_files", self._step_persist, session)
+            self._run_step(session, "manual_execute_offline_smoke", self._step_smoke, session)
+            for cycle in range(self.max_repair_cycles):
+                errors = [
+                    item for item in session.memory.verification_results
+                    if item.get("severity") == "error"
+                ]
+                if not errors:
+                    break
+                self._run_step(session, f"manual_runtime_repair_{cycle + 1}", self._step_repair, session, errors)
+                self._run_step(session, f"manual_runtime_static_verify_{cycle + 1}", self._step_verify, session)
+                static_errors = [
+                    item for item in session.memory.verification_results
+                    if item.get("severity") == "error"
+                ]
+                if static_errors:
+                    continue
+                self._run_step(session, f"manual_persist_runtime_repair_{cycle + 1}", self._step_persist, session)
+                self._run_step(session, f"manual_execute_offline_smoke_{cycle + 1}", self._step_smoke, session)
+            remaining = [
+                item for item in session.memory.verification_results
+                if item.get("severity") == "error"
+            ]
+            if remaining or session.memory.execution_result.get("status") != "passed":
+                raise ValueError(
+                    f"Project still fails isolated offline execution after bounded repair ({len(remaining)} error(s))"
+                )
+            session.status = "completed"
+            session.completedAt = datetime.utcnow().isoformat()
+            _save_session(session)
+            return session.projectId
+        except Exception as exc:
+            session.status = "failed"
+            session.errorMessage = str(exc)[:1000]
+            session.completedAt = datetime.utcnow().isoformat()
+            _save_session(session)
+            raise
+
     # ── Step implementations ──────────────────────────────────────
+
+    def _step_sync_workspace(self, session: CodeGenSession, _session_arg):
+        """Adopt persisted editor/repair changes before revalidation."""
+        root = get_data_dir() / "code_projects" / session.projectId / "repo"
+        if not root.is_dir():
+            session.steps[-1].detail = "No persisted workspace found; using checkpoint files"
+            return
+
+        excluded_parts = {
+            ".git", ".venv", "venv", "__pycache__", ".pytest_cache",
+            ".mypy_cache", ".ruff_cache", "node_modules", "artifacts",
+        }
+        excluded_names = {"uv.lock"}
+        loaded: Dict[str, str] = {}
+        for path in sorted(root.rglob("*")):
+            if not path.is_file() or path.name in excluded_names:
+                continue
+            relative = path.relative_to(root)
+            if any(part in excluded_parts or part.endswith(".egg-info") for part in relative.parts):
+                continue
+            try:
+                if path.stat().st_size > 1_000_000:
+                    continue
+                loaded[str(relative)] = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+        if loaded:
+            session.memory.generated_files = loaded
+            session.steps[-1].detail = f"Synchronized {len(loaded)} persisted project files"
+        else:
+            session.steps[-1].detail = "Persisted workspace contained no readable project files"
+
+    def _step_resume_checkpoint(self, session: CodeGenSession, _session_arg):
+        step = session.steps[-1]
+        planned = len((session.memory.file_tree or {}).get("files") or [])
+        generated = len(session.memory.generated_files)
+        step.detail = f"Resumed {generated}/{planned} generated files from an atomic checkpoint"
 
     def _step_web_search(self, session: CodeGenSession, title: str, abstract: str):
         result = self.skills.execute("webSearch", query=f"{title} {abstract[:100]}")
@@ -555,36 +787,34 @@ class AgentKernel:
         if not tree:
             raise ValueError("No file tree planned")
 
-        files = tree.get("files", [])
+        files = [
+            item for item in tree.get("files", [])
+            if item.get("path") and item["path"] not in session.memory.generated_files
+        ]
+        files.sort(key=self._generation_priority)
         project_name = tree.get("projectName", title)
         description = tree.get("description", "")
-        design_summary = (session.memory.design_doc or "")[:1500]
 
-        files_list_str = "\n".join([
-            f"- {f['path']}: {f.get('description', '')} ({f.get('type', 'source')})"
-            for f in files
-        ])
-
-        prompt = BATCH_CODE_PROMPT.format(
-            language=self.language,
-            project_name=project_name,
-            description=description,
-            design_summary=design_summary,
-            files_list=files_list_str,
-        )
-
-        resp = self.client.chat(messages=[ChatMessage(role="user", content=prompt)], model=self.model, temperature=0.4, max_tokens=8000)
-        parsed = _extract_json(resp.text)
-
-        if parsed and "files" in parsed:
-            for f in parsed["files"]:
-                path = f.get("path", "")
-                content = f.get("content", "")
-                if path and content:
-                    session.memory.generated_files[path] = content
+        failed_batches = 0
+        for start in range(0, len(files), _GENERATION_BATCH_SIZE):
+            try:
+                self._generate_file_batch(
+                    session,
+                    files[start:start + _GENERATION_BATCH_SIZE],
+                    project_name=project_name,
+                    description=description,
+                    design_summary=self._generation_context(session),
+                )
+            except Exception as exc:
+                failed_batches += 1
+                logger.warning("Code generation batch failed and will be retried in fill: %s", exc)
+            _save_session(session)
 
         step = session.steps[-1]
-        step.detail = f"Batch synthesized {len(session.memory.generated_files)} files"
+        step.detail = (
+            f"Batch synthesized {len(session.memory.generated_files)} files; "
+            f"{failed_batches} batch(es) deferred to bounded fill"
+        )
 
     def _step_synthesize_fill(self, session: CodeGenSession, _session_arg, title: str):
         tree = session.memory.file_tree
@@ -597,31 +827,142 @@ class AgentKernel:
         missing = [f for f in files if f["path"] not in session.memory.generated_files]
 
         filled = 0
-        for f in missing:
+        for start in range(0, len(missing), _GENERATION_BATCH_SIZE):
+            batch = missing[start:start + _GENERATION_BATCH_SIZE]
+            before = len(session.memory.generated_files)
             try:
-                context = ", ".join(list(session.memory.generated_files.keys())[:10])
-                prompt = SINGLE_FILE_PROMPT.format(
-                    language=self.language,
+                self._generate_file_batch(
+                    session,
+                    batch,
                     project_name=project_name,
                     description=description,
-                    file_path=f["path"],
-                    file_type=f.get("type", "source"),
-                    file_description=f.get("description", ""),
-                    context=context,
+                    design_summary=self._generation_context(session),
                 )
-                resp = self.client.chat(messages=[ChatMessage(role="user", content=prompt)], model=self.model, temperature=0.3, max_tokens=2000)
-                content = resp.text.strip()
-                if content.startswith("```"):
-                    lines = content.split("\n")
-                    content = "\n".join(lines[1:-1]) if lines[-1].strip() == "```" else "\n".join(lines[1:])
-                session.memory.generated_files[f["path"]] = content
-                filled += 1
-            except Exception as e:
-                logger.warning(f"Failed to fill {f['path']}: {e}")
-                session.memory.generated_files[f["path"]] = f"# {f['path']}\n# Generation failed: {e}\n"
+            except Exception as exc:
+                logger.warning("Failed to fill code batch: %s", exc)
+            for item in batch:
+                path = item["path"]
+                if path not in session.memory.generated_files:
+                    session.memory.generated_files[path] = self._fallback_file_content(item)
+            filled += len(session.memory.generated_files) - before
+            _save_session(session)
 
         step = session.steps[-1]
         step.detail = f"Filled {filled} missing files (total: {len(session.memory.generated_files)})"
+
+    def _generate_file_batch(
+        self,
+        session: CodeGenSession,
+        files: List[Dict[str, Any]],
+        *,
+        project_name: str,
+        description: str,
+        design_summary: str,
+    ) -> int:
+        if not files:
+            return 0
+        files_list = "\n".join(
+            f"- {item['path']}: {item.get('description', '')} ({item.get('type', 'source')})"
+            for item in files
+        )
+        prompt = BATCH_CODE_PROMPT.format(
+            language=self.language,
+            project_name=project_name,
+            description=description,
+            design_summary=design_summary,
+            files_list=files_list,
+        )
+        response = self.client.chat(
+            messages=[ChatMessage(role="user", content=prompt)],
+            model=self.model,
+            temperature=0.3,
+            max_tokens=4500,
+            structured_output=True,
+            request_max_retries=0,
+        )
+        parsed = _extract_json(response.text) or {}
+        allowed = {item["path"] for item in files}
+        written = 0
+        for item in parsed.get("files") or []:
+            path = str(item.get("path") or "")
+            content = item.get("content")
+            if path in allowed and isinstance(content, str) and content.strip():
+                session.memory.generated_files[path] = content
+                written += 1
+        return written
+
+    @staticmethod
+    def _generation_priority(item: Dict[str, Any]) -> tuple[int, str]:
+        path = str(item.get("path") or "")
+        if path.startswith(("configs/", "schemas/", "data/")):
+            return (0, path)
+        if path.startswith("src/"):
+            return (1, path)
+        if path.startswith("scripts/"):
+            return (2, path)
+        if path.startswith("tests/"):
+            return (3, path)
+        if path.startswith("docs/") or path == "README.md":
+            return (4, path)
+        return (5, path)
+
+    @staticmethod
+    def _interface_index(files: Dict[str, str]) -> str:
+        rows = []
+        for path, content in sorted(files.items()):
+            if not path.endswith(".py"):
+                continue
+            try:
+                tree = ast.parse(content, filename=path)
+            except SyntaxError:
+                continue
+            names = []
+            for node in tree.body:
+                if isinstance(node, ast.ClassDef):
+                    fields = [
+                        child.target.id
+                        for child in node.body
+                        if isinstance(child, ast.AnnAssign)
+                        and isinstance(child.target, ast.Name)
+                    ]
+                    field_text = f"({', '.join(fields)})" if fields else ""
+                    names.append(f"class {node.name}{field_text}")
+                elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    try:
+                        arguments = ast.unparse(node.args)
+                    except Exception:
+                        arguments = "..."
+                    names.append(f"{node.name}({arguments})")
+            if names:
+                rows.append(f"- {path}: {', '.join(names)}")
+        return "\n".join(rows)
+
+    def _generation_context(self, session: CodeGenSession) -> str:
+        planned = [
+            str(item.get("path"))
+            for item in (session.memory.file_tree or {}).get("files") or []
+            if item.get("path")
+        ]
+        file_map = "\n".join(f"- {path}" for path in planned)
+        interfaces = self._interface_index(session.memory.generated_files) or "- No interfaces generated yet"
+        return (
+            f"{(session.memory.design_doc or '')[:1800]}\n\n"
+            f"AUTHORITATIVE FILE MAP:\n{file_map}\n\n"
+            f"EXISTING PYTHON INTERFACES:\n{interfaces}"
+        )[:7000]
+
+    @staticmethod
+    def _fallback_file_content(item: Dict[str, Any]) -> str:
+        path = str(item.get("path") or "artifact")
+        purpose = str(item.get("description") or "Generated experiment artifact")
+        if path.endswith(".py"):
+            return f'"""{purpose}."""\n'
+        if path.endswith(".md"):
+            title = Path(path).stem.replace("-", " ").replace("_", " ").title()
+            return f"# {title}\n\n{purpose}.\n"
+        if path.endswith((".yaml", ".yml", ".toml", ".ini", ".cfg")):
+            return f"# {purpose}\n"
+        return f"{purpose}\n"
 
     def _step_verify(self, session: CodeGenSession, _session_arg):
         result = self.skills.execute(
@@ -632,39 +973,99 @@ class AgentKernel:
         )
         step = session.steps[-1]
         step.toolCalls.append({"skill": "compileCheck", "ok": result.ok})
-        if result.ok:
+        if result.data:
             issues = result.data.get("issues", []) if result.data else []
             session.memory.verification_results = issues
+            session.memory.verification_summary = {
+                key: result.data.get(key)
+                for key in ("qualityScore", "fileCount", "errorCount", "warningCount", "categories")
+            }
             step.detail = f"Verified: {result.data.get('fileCount', 0)} files, {result.data.get('errorCount', 0)} errors"
         else:
             session.memory.verification_results = []
             step.detail = result.error or "Verification failed"
 
+    def _step_smoke(self, session: CodeGenSession, _session_arg):
+        result = self.skills.execute(
+            "executionSmokeCheck",
+            files=session.memory.generated_files,
+        )
+        data = dict(result.data or {})
+        session.memory.execution_result = data
+        session.memory.verification_results = list(data.get("issues") or [])
+        step = session.steps[-1]
+        step.toolCalls.append({"skill": "executionSmokeCheck", "ok": result.ok})
+        status = data.get("status", "failed")
+        duration = data.get("durationMs", 0)
+        errors = data.get("errorCount", len(session.memory.verification_results))
+        step.detail = f"Offline Docker smoke: {status}, {errors} errors, {duration}ms"
+
     def _step_repair(self, session: CodeGenSession, _session_arg, error_issues: List[Dict]):
-        issues_str = json.dumps(error_issues[:10], indent=2)
-        # Show relevant file contents
-        affected_files = set(i.get("file", "") for i in error_issues if i.get("file") != "*")
-        file_contents_str = ""
-        for path in list(affected_files)[:5]:
-            content = session.memory.generated_files.get(path, "")
-            file_contents_str += f"\n--- {path} ---\n{content[:1000]}\n"
+        runtime_failure = any(
+            "Offline Docker" in str(issue.get("message") or "")
+            for issue in error_issues
+        )
+        affected_files = [
+            str(issue.get("file") or "")
+            for issue in error_issues
+            if issue.get("file") not in (None, "", "*")
+            and issue.get("file") in session.memory.generated_files
+        ]
+        affected_files = list(dict.fromkeys(affected_files))
 
-        prompt = REPAIR_PROMPT.format(issues=issues_str, file_contents=file_contents_str)
-        resp = self.client.chat(messages=[ChatMessage(role="user", content=prompt)], model=self.model, temperature=0.2, max_tokens=4000)
-        parsed = _extract_json(resp.text)
+        if runtime_failure and len(affected_files) > 2:
+            grouped: Dict[str, List[str]] = {}
+            for path in affected_files:
+                stem = Path(path).stem.removeprefix("test_")
+                grouped.setdefault(stem, []).append(path)
+            repair_groups = list(grouped.values())[:3]
+        else:
+            repair_groups = [affected_files[:5]]
 
+        shared_issues = json.dumps(error_issues[:10], indent=2)
         patches_applied = 0
-        if parsed and "patches" in parsed:
+        repair_calls = 0
+        for group in repair_groups:
+            file_contents_str = ""
+            for path in group:
+                content = session.memory.generated_files.get(path, "")
+                file_contents_str += f"\n--- {path} ---\n{content[:7000]}\n"
+            scoped_contract = self._generation_context(session)
+            if group:
+                scoped_contract += (
+                    "\n\nPATCH SCOPE: Return complete corrected content only for these files: "
+                    + ", ".join(group)
+                )
+            prompt = REPAIR_PROMPT.format(
+                issues=shared_issues,
+                file_contents=file_contents_str,
+                repository_contract=scoped_contract,
+            )
+            resp = self.client.chat(
+                messages=[ChatMessage(role="user", content=prompt)],
+                model=self.model,
+                temperature=0.2,
+                max_tokens=7000 if runtime_failure else 4500,
+                structured_output=True,
+                request_max_retries=0,
+            )
+            repair_calls += 1
+            parsed = _extract_json(resp.text)
+            if not parsed or "patches" not in parsed:
+                continue
             for patch in parsed["patches"]:
                 path = patch.get("path", "")
                 content = patch.get("content", "")
-                if path and content and path in session.memory.generated_files:
+                if path and content and path in group and path in session.memory.generated_files:
                     session.memory.generated_files[path] = content
                     patches_applied += 1
 
+        if not patches_applied:
+            raise ValueError("Qwen returned no applicable bounded repair patches")
+
         session.memory.patches_applied += patches_applied
         step = session.steps[-1]
-        step.detail = f"Applied {patches_applied} patches"
+        step.detail = f"Applied {patches_applied} patches in {repair_calls} bounded call(s)"
 
     def _step_persist(self, session: CodeGenSession, _session_arg):
         files = session.memory.generated_files
@@ -682,79 +1083,41 @@ class AgentKernel:
             raise ValueError(f"Failed to persist: {result.error}")
 
     def _default_file_tree(self) -> Dict:
-        """Fallback file tree if LLM planning fails. Produces 48 files for project-grade output."""
+        """Fallback to a focused, reproducible experiment repository."""
         ext = "py" if self.language.lower() == "python" else "ts"
         py = ext == "py"
         return {
             "projectName": "research-project",
-            "description": "Production-grade research project with DB, tests, CI, and evaluation harness",
+            "description": "Reproducible research experiment with frozen protocol and evidence outputs",
             "files": [
-                # Root configs (7)
-                {"path": "README.md", "description": "Project readme with setup, architecture, API docs", "type": "doc"},
+                {"path": "README.md", "description": "Exact setup, smoke/full runs, artifacts, and ReviewX handoff", "type": "doc"},
                 {"path": "requirements.txt" if py else "package.json", "description": "Dependencies", "type": "config"},
-                {"path": "pyproject.toml" if py else "tsconfig.json", "description": "Project config", "type": "config"},
+                {"path": "pyproject.toml" if py else "tsconfig.json", "description": "Lint, test, and package configuration", "type": "config"},
                 {"path": ".gitignore", "description": "Git ignore rules", "type": "config"},
-                {"path": "Makefile", "description": "Build/lint/test/run targets", "type": "config"},
-                {"path": "Dockerfile", "description": "Multi-stage container build", "type": "config"},
-                {"path": ".env.example", "description": "Environment variable template", "type": "config"},
-                # CI (2)
-                {"path": ".github/workflows/ci.yml", "description": "CI pipeline: lint + test", "type": "ci"},
-                {"path": ".github/workflows/lint.yml", "description": "Linting workflow", "type": "ci"},
-                # API layer (5)
+                {"path": "Makefile", "description": "Install, lint, test, smoke, and full-run targets", "type": "config"},
+                {"path": ".github/workflows/ci.yml", "description": "Offline lint and test workflow", "type": "ci"},
+                {"path": "configs/experiment.yaml", "description": "Frozen seeds, method, baselines, ablations, metrics, and stop conditions", "type": "config"},
+                {"path": "configs/dataset.yaml", "description": "Dataset URI, version, checksum, schema, and split policy", "type": "config"},
                 {"path": f"src/__init__.{ext}" if py else "src/index.ts", "description": "Package init", "type": "source"},
-                {"path": f"src/api/__init__.{ext}" if py else "src/api/index.ts", "description": "API package init", "type": "source"},
-                {"path": f"src/api/router.{ext}", "description": "Main API router with all routes", "type": "source"},
-                {"path": f"src/api/schemas.{ext}", "description": "Pydantic request/response schemas", "type": "source"},
-                {"path": f"src/api/middleware.{ext}", "description": "Request logging, error handling middleware", "type": "source"},
-                # Services (5)
-                {"path": f"src/services/__init__.{ext}" if py else "src/services/index.ts", "description": "Services init", "type": "source"},
-                {"path": f"src/services/pipeline_service.{ext}", "description": "Core processing pipeline", "type": "source"},
-                {"path": f"src/services/analysis_service.{ext}", "description": "Analysis and computation logic", "type": "source"},
-                {"path": f"src/services/export_service.{ext}", "description": "Export and formatting service", "type": "source"},
-                {"path": f"src/services/cache_service.{ext}", "description": "In-memory cache with TTL", "type": "source"},
-                # Storage (3)
-                {"path": f"src/storage/__init__.{ext}" if py else "src/storage/index.ts", "description": "Storage init", "type": "source"},
-                {"path": f"src/storage/repository.{ext}", "description": "Repository pattern CRUD", "type": "source"},
-                {"path": f"src/storage/queries.{ext}", "description": "SQL query builders", "type": "source"},
-                # Database (4)
-                {"path": f"src/db/__init__.{ext}" if py else "src/db/index.ts", "description": "DB init", "type": "source"},
-                {"path": f"src/db/engine.{ext}", "description": "SQLite engine setup", "type": "source"},
-                {"path": f"src/db/models.{ext}", "description": "ORM models (4+ tables)", "type": "source"},
-                {"path": f"src/db/migrations.{ext}", "description": "Migration scripts", "type": "source"},
-                {"path": f"src/db/seed.{ext}", "description": "Seed data loader", "type": "source"},
-                # Core/Config (4)
-                {"path": f"src/main.{ext}", "description": "Application entry point", "type": "source"},
-                {"path": f"src/config.{ext}", "description": "Settings class reading .env", "type": "source"},
-                {"path": f"src/logging_config.{ext}", "description": "Structured logging setup", "type": "source"},
-                {"path": f"src/constants.{ext}", "description": "Project constants", "type": "source"},
-                # Utils (2)
-                {"path": f"src/utils/__init__.{ext}" if py else "src/utils/index.ts", "description": "Utils init", "type": "source"},
-                {"path": f"src/utils/validators.{ext}", "description": "Input validators", "type": "source"},
-                # Tests unit (6)
-                {"path": f"tests/__init__.{ext}" if py else "tests/setup.ts", "description": "Tests init", "type": "test"},
+                {"path": f"src/config.{ext}", "description": "Validated frozen experiment configuration", "type": "source"},
+                {"path": f"src/data.{ext}", "description": "Checksum, schema, split, and leakage-safe dataset loader", "type": "source"},
+                {"path": f"src/method.{ext}", "description": "Proposed research method", "type": "source"},
+                {"path": f"src/baseline.{ext}", "description": "Comparable baseline implementation", "type": "source"},
+                {"path": f"src/metrics.{ext}", "description": "Primary and guardrail metrics", "type": "source"},
+                {"path": f"src/statistics.{ext}", "description": "Confidence intervals and paired comparisons", "type": "source"},
+                {"path": f"src/provenance.{ext}", "description": "Run manifest and artifact hashing", "type": "source"},
+                {"path": f"src/pipeline.{ext}", "description": "Shared smoke and full experiment pipeline", "type": "source"},
+                {"path": f"src/cli.{ext}", "description": "Command-line entry point", "type": "source"},
+                {"path": f"scripts/run_smoke.{ext}", "description": "Offline synthetic smoke run", "type": "script"},
+                {"path": f"scripts/run_full.{ext}", "description": "Checksum-validated full experiment run", "type": "script"},
                 {"path": "tests/conftest.py" if py else "tests/helpers.ts", "description": "Shared fixtures", "type": "test"},
-                {"path": f"tests/unit/__init__.{ext}" if py else "tests/unit/setup.ts", "description": "Unit tests init", "type": "test"},
-                {"path": f"tests/unit/test_pipeline.{ext}", "description": "Pipeline service tests", "type": "test"},
-                {"path": f"tests/unit/test_analysis.{ext}", "description": "Analysis service tests", "type": "test"},
-                {"path": f"tests/unit/test_models.{ext}", "description": "DB model tests", "type": "test"},
-                {"path": f"tests/unit/test_repository.{ext}", "description": "Repository tests", "type": "test"},
-                {"path": f"tests/unit/test_cache.{ext}", "description": "Cache tests", "type": "test"},
-                # Tests integration (3)
-                {"path": f"tests/integration/__init__.{ext}" if py else "tests/integration/setup.ts", "description": "Integration init", "type": "test"},
-                {"path": f"tests/integration/test_api.{ext}", "description": "API endpoint tests", "type": "test"},
-                {"path": f"tests/integration/test_db.{ext}", "description": "DB integration tests", "type": "test"},
-                # Docs (3)
-                {"path": "docs/architecture.md", "description": "Architecture overview", "type": "doc"},
-                {"path": "docs/api.md", "description": "API endpoint documentation", "type": "doc"},
-                {"path": "docs/getting-started.md", "description": "Quickstart guide", "type": "doc"},
-                # Scripts (2)
-                {"path": f"scripts/seed_db.{ext}", "description": "Database seeding script", "type": "script"},
-                {"path": f"scripts/run_eval.{ext}", "description": "Run evaluation harness", "type": "script"},
-                # Evaluation (2)
-                {"path": f"evaluation/__init__.{ext}" if py else "evaluation/index.ts", "description": "Eval init", "type": "eval"},
-                {"path": f"evaluation/harness.{ext}", "description": "Evaluation harness runner", "type": "eval"},
-                {"path": f"evaluation/metrics.{ext}", "description": "Evaluation metrics computation", "type": "eval"},
-                # Data (1)
-                {"path": "data/.gitkeep", "description": "Data directory placeholder", "type": "data"},
+                {"path": f"tests/test_data.{ext}", "description": "Schema, checksum, and leakage tests", "type": "test"},
+                {"path": f"tests/test_metrics.{ext}", "description": "Metric and uncertainty tests", "type": "test"},
+                {"path": f"tests/test_smoke.{ext}", "description": "End-to-end offline smoke test", "type": "test"},
+                {"path": "tests/fixtures/synthetic.json", "description": "Tiny explicitly synthetic offline fixture", "type": "data"},
+                {"path": "schemas/run_manifest.schema.json", "description": "Machine-readable provenance contract", "type": "data"},
+                {"path": "docs/protocol.md", "description": "Preregistered hypothesis, controls, metrics, and stop conditions", "type": "doc"},
+                {"path": "docs/reproducibility.md", "description": "Environment, seeds, dataset, and rerun instructions", "type": "doc"},
+                {"path": "docs/limitations.md", "description": "Known validity limits and prohibited claims", "type": "doc"},
             ],
         }

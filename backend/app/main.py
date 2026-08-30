@@ -29,7 +29,15 @@ from app.modules.idea import router as idea_router
 from app.modules.paper import router as paper_router
 from app.modules.platform import router as platform_router
 from app.modules.review import router as review_router
-from app.version import API_VERSION, APP_NAME, APP_VERSION, CAPABILITIES, RELEASE_PHASE, SERVICE_NAME
+from app.version import (
+    API_VERSION,
+    APP_NAME,
+    APP_VERSION,
+    CAPABILITIES,
+    RELEASE_PHASE,
+    SERVICE_NAME,
+    SOURCE_REVISION,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +114,7 @@ async def health_check():
         "status": "healthy",
         "service": SERVICE_NAME,
         "version": APP_VERSION,
+        "revision": SOURCE_REVISION,
     }
 
 
@@ -132,6 +141,7 @@ async def version_info():
     return {
         "api_version": API_VERSION,
         "backend_version": APP_VERSION,
+        "source_revision": SOURCE_REVISION,
         "phase": RELEASE_PHASE,
         "capabilities": CAPABILITIES,
         "llm": llm_info,

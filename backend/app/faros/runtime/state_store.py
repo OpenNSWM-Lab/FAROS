@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from app.faros.errors import FarosNotFoundError
+from app.core.paths import get_data_dir
 from app.faros.models.execution import (
     FarosRunRecord,
     StepState,
@@ -17,7 +18,7 @@ class FarosStateStore:
     """File-backed state store for FAROS runs."""
 
     def __init__(self, root: Optional[Path] = None):
-        base = Path(__file__).resolve().parents[3] / "data" / "faros" / "runs"
+        base = get_data_dir() / "faros" / "runs"
         self.root = root or base
         self.root.mkdir(parents=True, exist_ok=True)
 

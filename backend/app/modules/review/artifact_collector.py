@@ -6,11 +6,13 @@ import json
 import os
 from typing import Any, Dict, List
 
+from app.core.paths import get_data_dir
+
 from app.modules.review.storage import get_paper, list_paper_files, read_paper_file
 
 
-_BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-_DATA_DIR = os.path.join(_BASE_DIR, "data")
+_BASE_DIR = str(get_data_dir().parent)
+_DATA_DIR = str(get_data_dir())
 
 
 def _read_json(path: str, fallback: Any) -> Any:

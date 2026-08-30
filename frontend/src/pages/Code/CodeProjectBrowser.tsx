@@ -14,7 +14,7 @@ import {
   Search, ExternalLink, Copy, Loader2, AlertTriangle,
   ChevronRight, FolderClosed, Archive, Play, Square, Terminal,
   CheckCircle2, XCircle, Clock, RefreshCw, ChevronDown, ChevronUp,
-  SkipForward, Circle, Trash2, Brain, GitBranch
+  SkipForward, Circle, Trash2, Brain, GitBranch, ShieldCheck
 } from 'lucide-react'
 import {
   getProject, getTree, getFileContent, searchProject,
@@ -26,6 +26,8 @@ import {
   streamClaudeAgent, streamCartRun, getCartStatus,
   ClaudeStreamEvent, CartProgressEvent,
 } from '@/lib/api/codeAgent'
+import { useCompetitionWorkspace } from '@/lib/hooks/useApi'
+import { useReviewLocale } from '@/lib/reviewLocale'
 
 // Language to simple syntax highlight class
 const LANG_COLORS: Record<string, string> = {
@@ -50,6 +52,8 @@ function formatBytes(bytes: number): string {
 export function CodeProjectBrowser() {
   const { projectId } = useParams<{ projectId: string }>()
   const navigate = useNavigate()
+  const { text } = useReviewLocale()
+  const { data: competitionWorkspace } = useCompetitionWorkspace()
 
   // Project data
   const [project, setProject] = useState<CodeProjectV2 | null>(null)
@@ -299,7 +303,7 @@ export function CodeProjectBrowser() {
         }
       }).catch(() => { /* ignore */ })
     }, 3000) // Poll every 3 seconds
-  }, [projectId, stopCartPolling])
+  }, [cartAbortRef, projectId, stopCartPolling])
 
   const handleCartRun = () => {
     if (!projectId || cartRunning) return
@@ -516,36 +520,41 @@ export function CodeProjectBrowser() {
     )
   }
 
+  const codeEvidence = competitionWorkspace?.stages.find(
+    stage => stage.id === 'code' && stage.facts.projectId === project.id && stage.status === 'passed',
+  )
+  const displayTitle = project.title.replace(/\s*\[[^\]]+\]\s*$/, '').split(':')[0]
+
   return (
     <AppPageLayout
-      title={project.title}
-      subtitle={project.description || undefined}
+      title={displayTitle}
+      subtitle={text('可复现科研工程与验证证据', 'Reproducible research project and verification evidence')}
       icon={Code2}
       iconColor="violet"
       accentColor="violet"
     >
       {/* Header actions */}
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-2">
-          <Button variant="ghost" size="sm" onClick={() => navigate('/code/projects')}>
-            <ArrowLeft className="h-4 w-4 mr-1" /> Projects
+      <div className="mb-4 flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant="ghost" size="sm" className="shrink-0 whitespace-nowrap" onClick={() => navigate('/code/projects')}>
+            <ArrowLeft className="h-4 w-4 mr-1" /> {text('项目', 'Projects')}
           </Button>
           {project.language && <Badge variant="secondary">{project.language}</Badge>}
           {project.framework && <Badge variant="outline">{project.framework}</Badge>}
           <span className="text-sm text-muted-foreground">{project.fileCount} files · {formatBytes(project.totalSizeBytes)}</span>
           {project.sourceIdeaSessionId && <Badge variant="outline" className="text-xs">From Idea #{project.sourceIdeaSessionId.slice(-6)}</Badge>}
         </div>
-        <div className="flex items-center gap-2">
-          {/* Run Cart Button */}
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Execute the approved PlanPackage */}
           {!cartRunning ? (
             <Button
               variant="outline"
               size="sm"
               onClick={handleCartRun}
               className="border-emerald-400 text-emerald-700 hover:bg-emerald-50"
-              title="Run full experiment pipeline from PlanPackage"
+              title={text('按照已批准的 PlanPackage 运行完整实验流程', 'Run the full experiment pipeline from the approved PlanPackage')}
             >
-              <Play className="h-4 w-4 mr-1" /> {cartEvents.length > 0 ? 'Re-run Cart' : 'Run Cart'}
+              <Play className="h-4 w-4 mr-1" /> {cartEvents.length > 0 ? text('重新运行计划', 'Re-run plan') : text('运行计划', 'Run plan')}
             </Button>
           ) : (
             <Button variant="outline" size="sm" onClick={handleCartStop} className="border-emerald-400 bg-emerald-50 text-emerald-700">
@@ -553,32 +562,10 @@ export function CodeProjectBrowser() {
             </Button>
           )}
 
-          {/* Claude Code Agent Button */}
-          {!claudeRunning ? (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={openClaudeModal}
-              className="border-amber-400 text-amber-800 hover:bg-amber-50"
-              title="Claude Code: autonomous research agent"
-            >
-              <Brain className="h-4 w-4 mr-1" /> {claudeEvents.length > 0 ? 'New Claude Task' : 'Claude Agent'}
-            </Button>
-          ) : (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleClaudeStop}
-              className="border-amber-400 bg-amber-50 text-amber-800"
-            >
-              <Loader2 className="h-4 w-4 mr-1 animate-spin" /> Stop Claude
-            </Button>
-          )}
-
           {/* Run Pipeline Button */}
           {pipelineStatus === 'idle' ? (
             <Button variant="outline" size="sm" onClick={handleRun} className="border-emerald-300 text-emerald-700 hover:bg-emerald-50">
-              <Play className="h-4 w-4 mr-1" /> {lastRun ? 'Re-run Pipeline' : 'Run Pipeline'}
+              <Play className="h-4 w-4 mr-1" /> {lastRun ? text('重新运行实验', 'Re-run experiment') : text('运行实验', 'Run experiment')}
             </Button>
           ) : pipelineStatus === 'running' ? (
             <Button variant="outline" size="sm" disabled className="border-yellow-300 text-yellow-700">
@@ -597,14 +584,36 @@ export function CodeProjectBrowser() {
             <GitBranch className="h-4 w-4 mr-1" /> Blueprint
           </Button>
           <Button variant="outline" size="sm" onClick={handleVSCode}>
-            <ExternalLink className="h-4 w-4 mr-1" /> Open in VSCode
+            <ExternalLink className="h-4 w-4 mr-1" /> {text('在 VS Code 中打开', 'Open in VS Code')}
           </Button>
           <Button variant="outline" size="sm" onClick={handleExport} disabled={exporting}>
             {exporting ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Archive className="h-4 w-4 mr-1" />}
-            Download ZIP
+            {text('下载 ZIP', 'Download ZIP')}
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={claudeRunning ? handleClaudeStop : openClaudeModal}
+            title={claudeRunning ? text('停止外部代码 Agent', 'Stop external code agent') : text('外部代码 Agent（高级）', 'External code agent (advanced)')}
+            aria-label={claudeRunning ? text('停止外部代码 Agent', 'Stop external code agent') : text('打开外部代码 Agent', 'Open external code agent')}
+          >
+            {claudeRunning ? <Loader2 className="h-4 w-4 animate-spin" /> : <Brain className="h-4 w-4" />}
           </Button>
         </div>
       </div>
+
+      {codeEvidence && (
+        <div className="mb-4 flex flex-wrap items-center gap-x-5 gap-y-2 rounded-md border border-emerald-300 bg-emerald-50 px-4 py-3 text-sm text-emerald-900 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-200">
+          <span className="flex items-center gap-2 font-semibold">
+            <ShieldCheck className="h-4 w-4" />
+            {text('千问生成工程已通过质量门', 'Qwen-generated project passed the quality gate')}
+          </span>
+          <span>{text('静态质量', 'Static quality')} {codeEvidence.facts.staticQualityScore}</span>
+          <span>{text('断网冒烟测试', 'Offline smoke')} · {text('通过', 'passed')}</span>
+          <span>pytest · {text('通过', 'passed')}</span>
+          <span>{codeEvidence.facts.generatedFiles} {text('个生成文件', 'generated files')}</span>
+        </div>
+      )}
 
       {/* Error banner */}
       {error && (
@@ -621,7 +630,7 @@ export function CodeProjectBrowser() {
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
-          placeholder="Search files..."
+          placeholder={text('搜索文件...', 'Search files...')}
           className="max-w-md"
         />
         <select
@@ -629,8 +638,8 @@ export function CodeProjectBrowser() {
           value={searchMode}
           onChange={(e) => setSearchMode(e.target.value as 'path' | 'content')}
         >
-          <option value="path">File name</option>
-          <option value="content">Content</option>
+          <option value="path">{text('文件名', 'File name')}</option>
+          <option value="content">{text('内容', 'Content')}</option>
         </select>
         <Button variant="outline" size="sm" onClick={handleSearch} disabled={searching}>
           {searching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}

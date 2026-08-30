@@ -7,6 +7,8 @@ import { Homepage } from './Homepage'
 
 vi.mock('@/lib/hooks/useApi', () => ({
   useRuns: () => ({ data: [], isLoading: false, isError: false }),
+  useCompetitionSnapshot: () => ({ data: undefined, isLoading: false, isError: true }),
+  useCompetitionWorkspace: () => ({ data: undefined, isLoading: false, isError: true }),
 }))
 
 describe('Homepage', () => {
