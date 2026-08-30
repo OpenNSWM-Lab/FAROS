@@ -21,6 +21,7 @@ import json
 import logging
 import os
 import shutil
+import sys
 import time
 import uuid
 from datetime import datetime, timezone
@@ -28,7 +29,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import AsyncIterator, Optional
 
-from app.core.user_context import call_with_current_context
+from app.core.user_context import call_with_current_context, sanitized_subprocess_env
 
 logger = logging.getLogger(__name__)
 
@@ -906,10 +907,10 @@ Generate ONLY the Python code, no explanations. Start with `#!/usr/bin/env pytho
 
             # Execute the generated code
             proc = _sp.run(
-                ["python", script_path],
+                [sys.executable, script_path],
                 capture_output=True, text=True,
                 timeout=timeout_sec, cwd=run_dir,
-                env={**os.environ, "PYTHONUNBUFFERED": "1"},
+                env=sanitized_subprocess_env({"PYTHONUNBUFFERED": "1"}),
             )
 
             stdout_preview = proc.stdout[-500:] if proc.stdout else ""
@@ -972,10 +973,10 @@ Generate ONLY the Python code, no explanations. Start with `#!/usr/bin/env pytho
         # Execute
         try:
             proc = _sp.run(
-                ["python", script_path],
+                [sys.executable, script_path],
                 capture_output=True, text=True,
                 timeout=timeout_sec, cwd=run_dir,
-                env={**os.environ, "PYTHONUNBUFFERED": "1"},
+                env=sanitized_subprocess_env({"PYTHONUNBUFFERED": "1"}),
             )
             result.message += f"\n[Direct exec: exit={proc.returncode}, stdout={len(proc.stdout)}B, stderr={len(proc.stderr)}B]"
             if proc.stdout:
