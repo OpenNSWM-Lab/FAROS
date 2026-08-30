@@ -395,14 +395,20 @@ def build_research_dossier(
     """
     rid = run_id or session.id
     qid = question.id if question else f"question_{session.id}"
+    config = getattr(session, "config", None)
+    seed_query = (
+        getattr(config, "seedQuery", None)
+        or getattr(session, "seedQuery", None)
+        or str(getattr(session, "seed", ""))
+    )
 
     # 1. Build ProblemFrame
     if question is None:
         question = ScientificQuestion(
             id=qid,
-            text=session.config.seedQuery if hasattr(session, 'config') and hasattr(session.config, 'seedQuery') else (session.seedQuery if hasattr(session, 'seedQuery') else str(getattr(session, 'seed', ''))),
-            domainHint=session.config.domain if session.config else None,
-            constraints=session.config.constraints if session.config else [],
+            text=seed_query,
+            domainHint=getattr(config, "domain", None),
+            constraints=list(getattr(config, "constraints", None) or []),
         )
 
     use_llm = mode == RunMode.DEEP
@@ -412,7 +418,7 @@ def build_research_dossier(
     all_evidence = _deduplicate_evidence(
         _literature_to_evidence_records(literature)
     )
-    supporting, counter, context = _classify_evidence_by_relevance(literature, session.config.seedQuery if hasattr(session, 'config') and hasattr(session.config, 'seedQuery') else (session.seedQuery if hasattr(session, 'seedQuery') else str(getattr(session, 'seed', ''))))
+    supporting, counter, context = _classify_evidence_by_relevance(literature, seed_query)
 
     # Deduplicate each bucket
     supporting = _deduplicate_evidence(supporting)
@@ -465,8 +471,8 @@ def build_research_dossier(
 
     # 5. Generation trace
     gen_trace = GenerationTrace(
-        providerName=provider_name or (session.config.providerName if session.config else None),
-        model=model or (session.config.model if session.config else None),
+        providerName=provider_name or getattr(config, "providerName", None),
+        model=model or getattr(config, "model", None),
         localRulePasses=["evidence_reference_check", "falsification_check"],
         llmCalls=[],
         warnings=[],
