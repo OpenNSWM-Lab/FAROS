@@ -394,6 +394,12 @@ async def cart_stream(request: CartRunRequest, db: Session = Depends(get_session
             detail={
                 "code": "SCIENTIFIC_EXECUTION_BLOCKED",
                 "message": gate.reason,
+                "missingInputs": gate.missingInputs,
+                "suggestedActions": [
+                    "Declare an accessible dataset URL or local data file in the Plan inputs.",
+                    "For generated projects, add data/manifest.json with source_uri and a SHA-256 checksum.",
+                    "Save or regenerate the plan, then run it again.",
+                ],
                 "assessment": execution_assessment.model_dump(mode="json"),
             },
         )
@@ -415,6 +421,7 @@ async def cart_stream(request: CartRunRequest, db: Session = Depends(get_session
 
     active_task = cart_stream._active_carts.get(active_key)
     active_meta = cart_stream._active_cart_meta.get(active_key, {})
+    execution_task = active_task
 
     if active_task and not active_task.done() and active_meta:
         # Cart already running, just stream existing events
@@ -487,6 +494,7 @@ async def cart_stream(request: CartRunRequest, db: Session = Depends(get_session
 
         task = _asyncio.create_task(_run_cart())
         cart_stream._active_carts[active_key] = task
+        execution_task = task
 
     cart_id = active_meta["cart_id"]
     cart_dir = active_meta["cart_dir"]
@@ -496,6 +504,8 @@ async def cart_stream(request: CartRunRequest, db: Session = Depends(get_session
         """Stream events from the event log file (polling).
         This survives SSE client disconnects — the cart keeps running."""
         sent_count = 0
+        idle_ticks = 0
+        yield "retry: 3000\n: connected\n\n"
         while True:
             # Read current event log
             events = []
@@ -511,14 +521,14 @@ async def cart_stream(request: CartRunRequest, db: Session = Depends(get_session
                 sse_data = f"data: {json.dumps(evt, ensure_ascii=False)}\n\n"
                 yield sse_data
                 sent_count += 1
+                idle_ticks = 0
 
             # Check if cart is complete
             if events and events[-1].get("event_type") == "cart_complete":
                 return
 
             # Check if task finished
-            active_task = cart_stream._active_carts.get(active_key)
-            if active_task and active_task.done():
+            if execution_task and execution_task.done():
                 # Send any remaining events and exit
                 if os.path.isfile(event_log_path):
                     try:
@@ -526,10 +536,24 @@ async def cart_stream(request: CartRunRequest, db: Session = Depends(get_session
                             events = json.load(f)
                         for evt in events[sent_count:]:
                             yield f"data: {json.dumps(evt, ensure_ascii=False)}\n\n"
+                            sent_count += 1
                     except Exception:
                         pass
+                if not events or events[-1].get("event_type") != "cart_complete":
+                    terminal = {
+                        "event_type": "cart_complete",
+                        "node_id": cart_id,
+                        "status": "failed",
+                        "message": "Cart execution ended without a terminal event. Check backend logs and retry.",
+                        "result": None,
+                        "timestamp": time.strftime("%H:%M:%S"),
+                    }
+                    yield f"data: {json.dumps(terminal, ensure_ascii=False)}\n\n"
                 return
 
+            idle_ticks += 1
+            if idle_ticks % 15 == 0:
+                yield ": keep-alive\n\n"
             await _asyncio.sleep(1)  # Poll every 1 second
 
     return StreamingResponse(

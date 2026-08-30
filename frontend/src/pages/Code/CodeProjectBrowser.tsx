@@ -24,7 +24,7 @@ import {
 } from '@/lib/api/codeProjects'
 import {
   streamClaudeAgent, streamCartRun, getCartStatus,
-  ClaudeStreamEvent, CartProgressEvent,
+  ClaudeStreamEvent, CartProgressEvent, CartStreamIssue,
 } from '@/lib/api/codeAgent'
 import { useCompetitionWorkspace } from '@/lib/hooks/useApi'
 import { useReviewLocale } from '@/lib/reviewLocale'
@@ -100,10 +100,14 @@ export function CodeProjectBrowser() {
   // ---- Cart Runner state ----
   const [cartRunning, setCartRunning] = useState(false)
   const [cartEvents, setCartEvents] = useState<CartProgressEvent[]>([])
+  const [cartIssue, setCartIssue] = useState<CartStreamIssue | null>(null)
   const [cartAbortRef] = useState<{ current: AbortController | null }>({ current: null })
   const cartPanelRef = useRef<HTMLDivElement>(null)
   const [expandedCartNodes, setExpandedCartNodes] = useState<Record<number, boolean>>({})
   const cartPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const cartIdlePollsRef = useRef(0)
+  const cartFailedPollsRef = useRef(0)
+  const cartPollingStartedAtRef = useRef(0)
 
   const stopPolling = useCallback(() => {
     if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
@@ -282,9 +286,13 @@ export function CodeProjectBrowser() {
   // Poll cart status as fallback for SSE (ensures we get events even if SSE disconnects)
   const startCartPolling = useCallback(() => {
     stopCartPolling()
+    cartIdlePollsRef.current = 0
+    cartFailedPollsRef.current = 0
+    cartPollingStartedAtRef.current = Date.now()
     cartPollRef.current = setInterval(() => {
       if (!projectId) return
       getCartStatus(projectId).then(status => {
+        cartFailedPollsRef.current = 0
         if (status.events && status.events.length > 0) {
           setCartEvents(prev => {
             // Only update if backend has more events than frontend
@@ -294,21 +302,73 @@ export function CodeProjectBrowser() {
             }
             return prev
           })
-          // Stop if cart is complete
-          if (status.status !== 'running' && status.status !== 'idle') {
-            setCartRunning(false)
-            stopCartPolling()
-            cartAbortRef.current?.abort()
-          }
         }
-      }).catch(() => { /* ignore */ })
+
+        if (status.status !== 'running' && status.status !== 'idle') {
+          setCartRunning(false)
+          setCartIssue(null)
+          stopCartPolling()
+          cartAbortRef.current?.abort()
+          return
+        }
+
+        if (status.status === 'running') {
+          cartIdlePollsRef.current = 0
+          return
+        }
+
+        cartIdlePollsRef.current += 1
+        if (cartIdlePollsRef.current >= 3) {
+          setCartRunning(false)
+          stopCartPolling()
+          cartAbortRef.current?.abort()
+          setCartIssue({
+            kind: 'connection',
+            message: text(
+              '后台连续三次未找到运行中的任务。任务可能未启动，请检查下方提示后重试。',
+              'No active task was found in three consecutive checks. The run may not have started; review the notice below and retry.',
+            ),
+            missingInputs: [],
+            suggestedActions: [],
+          })
+        }
+      }).catch(() => {
+        cartFailedPollsRef.current += 1
+        if (cartFailedPollsRef.current >= 3) {
+          setCartRunning(false)
+          stopCartPolling()
+          cartAbortRef.current?.abort()
+          setCartIssue({
+            kind: 'connection',
+            message: text(
+              '连续三次无法获取后台状态，请检查网络后重新运行。',
+              'The background status could not be fetched three times. Check the network and run again.',
+            ),
+            missingInputs: [],
+            suggestedActions: [],
+          })
+        }
+      })
+
+      if (Date.now() - cartPollingStartedAtRef.current > 930_000) {
+        setCartRunning(false)
+        stopCartPolling()
+        cartAbortRef.current?.abort()
+        setCartIssue({
+          kind: 'connection',
+          message: text('运行超过 15 分钟仍未结束，已停止等待。请检查后台状态后重试。', 'The run did not finish within 15 minutes. Check the background status before retrying.'),
+          missingInputs: [],
+          suggestedActions: [],
+        })
+      }
     }, 3000) // Poll every 3 seconds
-  }, [cartAbortRef, projectId, stopCartPolling])
+  }, [cartAbortRef, projectId, stopCartPolling, text])
 
   const handleCartRun = () => {
     if (!projectId || cartRunning) return
     setCartRunning(true)
     setCartEvents([])
+    setCartIssue(null)
     const ctrl = streamCartRun(
       { projectId, timeout: 900 },
       (event) => {
@@ -324,18 +384,24 @@ export function CodeProjectBrowser() {
         // Stop running state on cart_complete
         if (event.event_type === 'cart_complete') {
           setCartRunning(false)
+          setCartIssue(null)
           stopCartPolling()
         }
       },
-      (error) => {
-        // SSE ended (possibly prematurely) — polling will catch up
-        if (error && error !== 'Cancelled') {
-          setCartEvents(prev => [...prev, {
-            event_type: 'node_progress', node_id: '', status: 'running',
-            message: `SSE 连接断开，正在通过轮询同步状态...`, timestamp: new Date().toLocaleTimeString()
-          }])
+      (issue) => {
+        if (!issue) {
+          setCartRunning(false)
+          setCartIssue(null)
+          stopCartPolling()
+          return
         }
-        // Don't set cartRunning to false — let polling handle it
+        if (issue.kind === 'cancelled') return
+        setCartIssue(issue)
+        if (issue.kind === 'blocked' || issue.kind === 'api') {
+          setCartRunning(false)
+          stopCartPolling()
+        }
+        // Connection/protocol failures keep polling because the backend task may continue.
       }
     )
     cartAbortRef.current = ctrl
@@ -346,6 +412,7 @@ export function CodeProjectBrowser() {
   const handleCartStop = () => {
     cartAbortRef.current?.abort()
     setCartRunning(false)
+    stopCartPolling()
   }
 
   // ---- step helpers ----
@@ -650,6 +717,78 @@ export function CodeProjectBrowser() {
           </Button>
         )}
       </div>
+
+      {cartIssue && (
+        <div
+          role="alert"
+          className={`mb-4 border-l-4 px-4 py-3 ${
+            cartIssue.kind === 'blocked' || cartIssue.kind === 'api'
+              ? 'border-red-600 bg-red-50 text-red-950 dark:border-red-500 dark:bg-red-950/30 dark:text-red-100'
+              : 'border-amber-600 bg-amber-50 text-amber-950 dark:border-amber-500 dark:bg-amber-950/30 dark:text-amber-100'
+          }`}
+        >
+          <div className="flex items-start gap-3">
+            <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0" />
+            <div className="min-w-0 flex-1">
+              <div className="font-semibold">
+                {cartIssue.kind === 'blocked'
+                  ? text('运行计划未启动：科研前置条件未满足', 'Run not started: scientific prerequisites are missing')
+                  : cartIssue.kind === 'api'
+                    ? text('运行计划未启动', 'Run did not start')
+                    : text('实时进度连接异常', 'Live progress connection issue')}
+              </div>
+              <p className="mt-1 text-sm leading-6">
+                {cartIssue.kind === 'blocked'
+                  ? text(
+                    '这不是 SSE 网络断线。FAROS 在执行前主动拦截了缺少可复现输入的计划，避免生成无法验证的实验结果。',
+                    'This is not an SSE network failure. FAROS stopped the run before execution because reproducible inputs are missing.',
+                  )
+                  : cartIssue.message}
+              </p>
+              {cartIssue.kind === 'blocked' && (
+                <p className="mt-1 text-sm text-red-800 dark:text-red-200">{cartIssue.message}</p>
+              )}
+              {cartIssue.missingInputs.length > 0 && (
+                <div className="mt-3 text-sm">
+                  <div className="font-medium">{text('缺少的输入', 'Missing inputs')}</div>
+                  <ul className="mt-1 list-disc space-y-1 pl-5">
+                    {cartIssue.missingInputs.map((item) => <li key={item}>{item}</li>)}
+                  </ul>
+                </div>
+              )}
+              {(cartIssue.kind === 'blocked' || cartIssue.suggestedActions.length > 0) && (
+                <div className="mt-3 text-sm">
+                  <div className="font-medium">{text('如何处理', 'How to resolve it')}</div>
+                  <ol className="mt-1 list-decimal space-y-1 pl-5">
+                    {(cartIssue.kind === 'blocked'
+                      ? [
+                        text('回到 Plan 页面，在数据与资源中填写可访问的数据集 URL，或上传本地数据文件。', 'Return to Plan and provide an accessible dataset URL or a local data file.'),
+                        text('若 Code 工程已包含数据清单，确认 data/manifest.json 同时声明 source_uri 和 SHA-256。', 'If the Code project has a data manifest, ensure data/manifest.json declares both source_uri and SHA-256.'),
+                        text('保存计划或重新生成工程后，再点击“运行计划”。', 'Save the plan or regenerate the project, then select Run plan again.'),
+                      ]
+                      : cartIssue.suggestedActions).map((item) => <li key={item}>{item}</li>)}
+                  </ol>
+                </div>
+              )}
+              {(cartIssue.code || cartIssue.executionClass) && (
+                <div className="mt-3 font-mono text-xs opacity-70">
+                  {[cartIssue.code, cartIssue.executionClass].filter(Boolean).join(' · ')}
+                </div>
+              )}
+            </div>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 shrink-0"
+              onClick={() => setCartIssue(null)}
+              aria-label={text('关闭提示', 'Dismiss notice')}
+              title={text('关闭提示', 'Dismiss notice')}
+            >
+              <XCircle className="h-4 w-4" />
+            </Button>
+          </div>
+        </div>
+      )}
 
       {/* ---- Cart Pipeline Execution Panel ---- */}
       {(cartEvents.length > 0 || cartRunning) && (() => {

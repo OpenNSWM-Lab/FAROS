@@ -13,6 +13,7 @@ backend/tests/*
 !backend/tests/test_codegen_research_generation.py
 !backend/tests/test_competition_workspace.py
 !backend/tests/test_execution_assessment.py
+!backend/tests/test_code_project_runtime.py
 !backend/tests/test_experiment_evidence.py
 !backend/tests/test_experiment_evidence_import.py
 !backend/tests/test_provider_client_proxy.py

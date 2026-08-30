@@ -219,6 +219,58 @@ export interface CartStatusResponse {
   failedNodes: number;
 }
 
+export interface CartStreamIssue {
+  kind: 'blocked' | 'api' | 'connection' | 'cancelled' | 'protocol';
+  message: string;
+  status?: number;
+  code?: string;
+  executionClass?: string;
+  missingInputs: string[];
+  suggestedActions: string[];
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function stringList(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+}
+
+export function parseCartRunIssue(status: number, responseText: string): CartStreamIssue {
+  let body: Record<string, unknown> | null = null;
+  try {
+    body = asRecord(JSON.parse(responseText));
+  } catch {
+    // A proxy may return plain text or HTML. Keep a short, displayable fallback.
+  }
+
+  const rawDetail = body?.detail;
+  const detail = asRecord(rawDetail);
+  const assessment = asRecord(detail?.assessment);
+  const code = typeof detail?.code === 'string' ? detail.code : undefined;
+  const message = (
+    typeof detail?.message === 'string' ? detail.message
+      : typeof rawDetail === 'string' ? rawDetail
+        : typeof body?.message === 'string' ? body.message
+          : responseText.trim().slice(0, 500) || `HTTP ${status}`
+  );
+
+  return {
+    kind: status === 409 && code === 'SCIENTIFIC_EXECUTION_BLOCKED' ? 'blocked' : 'api',
+    message,
+    status,
+    code,
+    executionClass: typeof assessment?.executionClass === 'string' ? assessment.executionClass : undefined,
+    missingInputs: stringList(detail?.missingInputs).length > 0
+      ? stringList(detail?.missingInputs)
+      : stringList(assessment?.missingInputs),
+    suggestedActions: stringList(detail?.suggestedActions),
+  };
+}
+
 /** Fetch the latest cart execution status for a project. */
 export async function getCartStatus(projectId: string): Promise<CartStatusResponse> {
   const resp = await fetch(`${API_BASE}/api/v1/code/agent/cart/status/${encodeURIComponent(projectId)}`);
@@ -230,9 +282,15 @@ export async function getCartStatus(projectId: string): Promise<CartStatusRespon
 export function streamCartRun(
   request: CartRunRequest,
   onEvent: (event: CartProgressEvent) => void,
-  onDone: (error?: string) => void,
+  onDone: (issue?: CartStreamIssue) => void,
 ): AbortController {
   const controller = new AbortController();
+  let completed = false;
+  const finish = (issue?: CartStreamIssue) => {
+    if (completed) return;
+    completed = true;
+    onDone(issue);
+  };
   fetch(`${API_BASE}/api/v1/code/agent/cart/run`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -241,14 +299,21 @@ export function streamCartRun(
   })
     .then(async (response) => {
       if (!response.ok) {
-        const text = await response.text().catch(() => 'Unknown');
-        onDone(`API error ${response.status}: ${text}`);
+        const responseText = await response.text().catch(() => '');
+        finish(parseCartRunIssue(response.status, responseText));
         return;
       }
       const reader = response.body?.getReader();
-      if (!reader) { onDone('No response body'); return; }
+      if (!reader) {
+        finish({
+          kind: 'protocol', message: 'The server returned no progress stream.',
+          missingInputs: [], suggestedActions: [],
+        });
+        return;
+      }
       const decoder = new TextDecoder();
       let buffer = '';
+      let terminalEventSeen = false;
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -260,15 +325,34 @@ export function streamCartRun(
             try {
               const event: CartProgressEvent = JSON.parse(line.slice(6));
               onEvent(event);
-              if (event.event_type === 'cart_complete') { onDone(); return; }
+              if (event.event_type === 'cart_complete') {
+                terminalEventSeen = true;
+                finish();
+                return;
+              }
             } catch { /* skip */ }
           }
         }
       }
-      onDone();
+      if (!terminalEventSeen) {
+        finish({
+          kind: 'connection',
+          message: 'The live progress connection closed before a completion event was received.',
+          missingInputs: [],
+          suggestedActions: [],
+        });
+      }
     })
-    .catch((err) => {
-      onDone(err.name === 'AbortError' ? 'Cancelled' : err.message);
+    .catch((err: unknown) => {
+      const isAbort = err instanceof DOMException
+        ? err.name === 'AbortError'
+        : asRecord(err)?.name === 'AbortError';
+      finish({
+        kind: isAbort ? 'cancelled' : 'connection',
+        message: isAbort ? 'Cancelled' : err instanceof Error ? err.message : 'The live progress connection failed.',
+        missingInputs: [],
+        suggestedActions: [],
+      });
     });
   return controller;
 }

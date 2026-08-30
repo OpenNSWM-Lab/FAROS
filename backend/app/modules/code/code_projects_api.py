@@ -13,6 +13,7 @@ from typing import Any, Dict, Optional, List
 from fastapi import APIRouter, HTTPException, status, Depends, Query, BackgroundTasks
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
+from app.core.paths import get_data_dir
 from app.core.settings import get_settings
 from app.core.user_context import call_with_current_context
 from app.modules.code.projects import code_project_service as cps, generate_project_from_plan, get_generation_status
@@ -896,9 +897,11 @@ def _get_project_repo_dir(project) -> str | None:
     """Get the repo directory from a project record."""
     if project.root_storage_path and os.path.isdir(project.root_storage_path):
         return project.root_storage_path
-    base = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    repo_dir = os.path.join(base, "data", "code_projects", project.id, "repo")
-    return repo_dir if os.path.isdir(repo_dir) else None
+    project_dir = get_data_dir() / "code_projects" / project.id
+    repo_dir = project_dir / "repo"
+    if repo_dir.is_dir():
+        return str(repo_dir)
+    return str(project_dir) if project_dir.is_dir() else None
 
 
 def _build_pipeline_steps(repo_dir: str, language: str) -> List[PipelineStep]:
@@ -936,29 +939,11 @@ def _build_pipeline_steps(repo_dir: str, language: str) -> List[PipelineStep]:
                 timeoutSec=120,
             ))
 
-        # Step 3: Syntax check — use a temp script to avoid inline for-loop issues
-        syntax_script = os.path.join(repo_dir, "_faros_syntax_check.py")
-        with open(syntax_script, "w", encoding="utf-8") as sf:
-            sf.write(
-                "import py_compile, os\n"
-                "ok = fail = 0\n"
-                "for root, dirs, files in os.walk('.'):\n"
-                "  for f in files:\n"
-                "    if f.endswith('.py') and '_faros_' not in f:\n"
-                "      fp = os.path.join(root, f)\n"
-                "      try:\n"
-                "        py_compile.compile(fp, doraise=True)\n"
-                "        ok += 1\n"
-                "        print('OK', fp)\n"
-                "      except py_compile.PyCompileError as e:\n"
-                "        fail += 1\n"
-                "        print('FAIL', fp, str(e))\n"
-                "print(f'\\nSyntax check done: {ok} OK, {fail} FAIL')\n"
-            )
+        # Step 3: Syntax check. Building a pipeline definition must stay read-only.
         steps.append(PipelineStep(
             name="Syntax Check",
             purpose="Compile-check all Python source files for syntax errors",
-            command=f"python _faros_syntax_check.py 2>&1",
+            command="python -m compileall -q . 2>&1",
             critical=False,
             timeoutSec=60,
         ))
@@ -993,46 +978,13 @@ def _build_pipeline_steps(repo_dir: str, language: str) -> List[PipelineStep]:
                 timeoutSec=600,
             ))
 
-        # Step 7: Main execution — write a runner that validates the app without hanging
+        # Step 7: Main execution
         if has_main:
             target = "src/main.py" if os.path.isfile(os.path.join(repo_dir, "src", "main.py")) else "main.py"
-            runner_script = os.path.join(repo_dir, "_faros_runner.py")
-            with open(runner_script, "w", encoding="utf-8") as rf:
-                rf.write(
-                    "import sys, os, importlib.util\n"
-                    "# Add src/ and project root to path\n"
-                    "sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))\n"
-                    "if os.path.isdir('src'):\n"
-                    "    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'src'))\n"
-                    "# Import the module to verify it loads without errors\n"
-                    f"target_path = '{target}'\n"
-                    "spec = importlib.util.spec_from_file_location('_faros_target', target_path)\n"
-                    "if spec and spec.loader:\n"
-                    "    mod = importlib.util.module_from_spec(spec)\n"
-                    "    try:\n"
-                    "        spec.loader.exec_module(mod)\n"
-                    "        print('Module loaded successfully')\n"
-                    "        # If the module has an 'app' object, validate it's a FastAPI/Flask app\n"
-                    "        if hasattr(mod, 'app'):\n"
-                    "            print(f'App object found: {type(mod.app).__name__}')\n"
-                    "        # List all callable endpoints\n"
-                    "        for name in dir(mod):\n"
-                    "            obj = getattr(mod, name)\n"
-                    "            if callable(obj) and not name.startswith('_'):\n"
-                    "                print(f'  callable: {name}')\n"
-                    "    except Exception as e:\n"
-                    "        print(f'Module execution error: {e}')\n"
-                    "        import traceback\n"
-                    "        traceback.print_exc()\n"
-                    "        sys.exit(1)\n"
-                    "else:\n"
-                    "    print(f'Could not load module: {target_path}')\n"
-                    "    sys.exit(1)\n"
-                )
             steps.append(PipelineStep(
                 name="Main Execution",
-                purpose="Validate the project module loads correctly and all endpoints are importable",
-                command=f"python _faros_runner.py 2>&1",
+                purpose="Run the generated project entry point and verify it completes",
+                command=f"python {target} 2>&1",
                 critical=True,
                 timeoutSec=60,
             ))
@@ -1088,7 +1040,7 @@ def _build_pipeline_steps(repo_dir: str, language: str) -> List[PipelineStep]:
     # Always add cleanup as the final step
     steps.append(PipelineStep(
         name="Cleanup",
-        purpose="Remove temporary FAROS helper scripts generated during pipeline execution",
+        purpose="Remove helper scripts left by older FAROS pipeline versions",
         command="import os; "
                 "for f in ['_faros_syntax_check.py', '_faros_runner.py']: "
                 "  try: os.remove(f) "
