@@ -7,6 +7,7 @@ Inspired by RepoExec's execution framework.
 
 import os
 import subprocess
+import shlex
 import logging
 import tempfile
 import shutil
@@ -21,6 +22,10 @@ logger = logging.getLogger(__name__)
 
 # Default timeout for command execution (seconds)
 DEFAULT_TIMEOUT = 60
+
+# Shell metacharacters that could enable command injection
+SHELL_METACHAR_DENYLIST = [";", "|", "&&", "||", "`", "$(", "\n", "\r"]
+
 
 
 class ExecutionStatus(str, Enum):
@@ -123,10 +128,27 @@ class DynamicEvaluator:
         if env:
             run_env.update(env)
         
+        # Convert command to list if it is a string
+        if isinstance(command, str):
+            # Check for dangerous shell metacharacters
+            if any(char in command for char in SHELL_METACHAR_DENYLIST):
+                return CommandResult(
+                    command=command,
+                    status=ExecutionStatus.ERROR,
+                    exit_code=None,
+                    stdout="",
+                    stderr="Command contains potentially dangerous shell metacharacters",
+                    duration_ms=0,
+                )
+            # Split string command into list
+            cmd_args = shlex.split(command)
+        else:
+            # Command is already a list
+            cmd_args = command
+
         try:
             result = subprocess.run(
-                command,
-                shell=True,
+                cmd_args,
                 cwd=cwd,
                 capture_output=True,
                 text=True,
