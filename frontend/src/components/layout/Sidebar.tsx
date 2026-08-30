@@ -37,7 +37,10 @@ export function Sidebar() {
         <AppLogo size="sm" variant="icon" className="sm:hidden" />
         <AppLogo size="sm" variant="full" className="hidden sm:flex" />
       </div>
-      <nav className="flex flex-col gap-1 p-2 sm:p-4">
+      <nav
+        aria-label={isChinese ? '主导航' : 'Main navigation'}
+        className="flex flex-col gap-1 p-2 sm:p-4"
+      >
         {navigation.map((item) => (
           <NavLink
             key={item.href}
