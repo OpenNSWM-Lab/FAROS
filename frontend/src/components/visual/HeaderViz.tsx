@@ -14,6 +14,7 @@ export function HeaderViz({ variant, data = [], className = '' }: HeaderVizProps
 
   const renderSparkline = () => {
     const points = defaultData
+    if (points.length < 2) return null
     const max = Math.max(...points)
     const min = Math.min(...points)
     const range = max - min || 1
