@@ -1,8 +1,10 @@
+import json
+
 from fastapi.testclient import TestClient
 
 from app.contracts import ExecutionClass, ExecutionStatus
 from app.main import app
-from app.modules.code.execution_assessment import assess_candidate_execution
+from app.modules.code.execution_assessment import assess_candidate_execution, assess_plan_package
 
 
 def _candidate(*, datasets=None, metrics=None, text="Evaluate an algorithm"):
@@ -42,6 +44,65 @@ def test_missing_named_dataset_blocks_execution():
     assert result.executionClass == ExecutionClass.DATA_REQUIRED
     assert result.status == ExecutionStatus.NOT_APPLICABLE
     assert "PrivateReviewBench" in result.missingInputs[0]
+
+
+def test_versioned_code_project_data_manifest_satisfies_execution_gate(tmp_path):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    (data_dir / "manifest.json").write_text(json.dumps({
+        "dataset": "SciFact official release",
+        "source_uri": "https://example.org/scifact.tar.gz",
+        "archive_sha256": "a" * 64,
+    }), encoding="utf-8")
+    package = {
+        "packageId": "ppkg_manifest",
+        "idea": {
+            "id": "candidate_manifest",
+            "title": "Benchmark a Python claim verification pipeline on a dataset",
+        },
+        "stages": [{
+            "id": "stage-1",
+            "steps": [{
+                "id": "step-1",
+                "title": "Run the benchmark",
+                "method": "Execute the Python evaluation pipeline on the dataset",
+                "expected": [{"metric": "macro F1", "target": ">= baseline"}],
+            }],
+        }],
+    }
+
+    result = assess_plan_package(package, base_dir=str(tmp_path))
+
+    assert result.executionClass == ExecutionClass.COMPUTATIONAL_READY
+    assert result.status == ExecutionStatus.READY
+    assert result.missingInputs == []
+    assert any("SciFact official release" in item for item in result.availableInputs)
+
+
+def test_unversioned_remote_manifest_does_not_bypass_execution_gate(tmp_path):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    (data_dir / "manifest.json").write_text(json.dumps({
+        "dataset": "Unverified corpus",
+        "source_uri": "https://example.org/corpus.tar.gz",
+    }), encoding="utf-8")
+    package = {
+        "packageId": "ppkg_unverified",
+        "idea": {"id": "candidate_unverified", "title": "Evaluate a Python model on a dataset"},
+        "stages": [{
+            "id": "stage-1",
+            "steps": [{
+                "id": "step-1",
+                "title": "Run evaluation",
+                "expected": [{"metric": "F1", "target": "> 0"}],
+            }],
+        }],
+    }
+
+    result = assess_plan_package(package, base_dir=str(tmp_path))
+
+    assert result.executionClass == ExecutionClass.DATA_REQUIRED
+    assert result.status == ExecutionStatus.NOT_APPLICABLE
 
 
 def test_local_synthetic_constraint_overrides_candidate_external_dataset_suggestion():

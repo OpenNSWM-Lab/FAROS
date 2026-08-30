@@ -7,6 +7,7 @@ developed and tested independently, then converted without changing fields.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from enum import Enum
@@ -160,6 +161,11 @@ _DATA_TERMS = (
     "数据集", "语料", "数据库", "记录", "测量数据", "观测数据",
 )
 
+_DATASET_EXTENSIONS = {
+    ".arrow", ".csv", ".feather", ".jsonl", ".ndjson", ".parquet", ".tsv",
+}
+_CHECKSUM_RE = re.compile(r"^[a-fA-F0-9]{32,128}$")
+
 
 def _as_dict(source: Any) -> dict[str, Any]:
     if isinstance(source, Mapping):
@@ -217,6 +223,72 @@ def _path_is_available(raw: Any, base_dir: Optional[str]) -> bool:
     return candidate.exists()
 
 
+def _discover_repository_data_inputs(base_dir: Optional[str]) -> list[str]:
+    """Find concrete local datasets or versioned remote manifests in a code project."""
+    if not base_dir:
+        return []
+
+    try:
+        root = Path(base_dir).resolve()
+    except OSError:
+        return []
+    data_dir = root / "data"
+    if not data_dir.is_dir():
+        return []
+
+    available: list[str] = []
+    manifest_paths = sorted(data_dir.glob("*manifest*.json"))[:10]
+    for path in manifest_paths:
+        try:
+            relative = path.relative_to(root).as_posix()
+        except ValueError:
+            continue
+        if not path.is_file() or path.is_symlink():
+            continue
+        try:
+            if path.stat().st_size > 1_000_000:
+                continue
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            continue
+        if not isinstance(manifest, Mapping):
+            continue
+
+        source = str(
+            manifest.get("source_uri")
+            or manifest.get("sourceUrl")
+            or manifest.get("source_url")
+            or manifest.get("uri")
+            or ""
+        ).strip()
+        checksum = str(
+            manifest.get("archive_sha256")
+            or manifest.get("sha256")
+            or manifest.get("contentHash")
+            or ""
+        ).strip()
+        if not source or not _path_is_available(source, str(root)) or not _CHECKSUM_RE.fullmatch(checksum):
+            continue
+
+        dataset = manifest.get("dataset")
+        dataset_name = str(dataset.get("name") if isinstance(dataset, Mapping) else dataset or "dataset").strip()
+        available.append(f"{dataset_name} via {relative} -> {source} (sha256:{checksum[:12]})")
+
+    scanned = 0
+    for path in data_dir.rglob("*"):
+        scanned += 1
+        if scanned > 250 or len(available) >= 25:
+            break
+        if not path.is_file() or path.is_symlink() or path.suffix.lower() not in _DATASET_EXTENSIONS:
+            continue
+        try:
+            available.append(path.relative_to(root).as_posix())
+        except ValueError:
+            continue
+
+    return available
+
+
 def _extract_plan_steps(data: dict[str, Any]) -> list[dict[str, Any]]:
     research_plan = data.get("researchPlan") or {}
     if isinstance(research_plan, Mapping) and research_plan.get("steps"):
@@ -251,6 +323,7 @@ def _extract_available_inputs(data: dict[str, Any], base_dir: Optional[str]) -> 
     declared_available = data.get("availableInputs", [])
     if isinstance(declared_available, list):
         available.extend(str(item) for item in declared_available)
+    available.extend(_discover_repository_data_inputs(base_dir))
 
     research_plan = data.get("researchPlan") or {}
     required_data = research_plan.get("requiredData", []) if isinstance(research_plan, Mapping) else []
