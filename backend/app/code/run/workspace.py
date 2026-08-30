@@ -16,12 +16,12 @@ from typing import Optional, List, Tuple
 from pathlib import Path
 
 from app.core.user_context import sanitized_subprocess_env
+from app.core.paths import get_data_dir
 
 logger = logging.getLogger(__name__)
 
 # Base directory for workspaces
-_BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-WORKSPACES_DIR = os.path.join(_BASE_DIR, "data", "workspaces")
+WORKSPACES_DIR = str(get_data_dir() / "workspaces")
 
 # Directories to exclude when copying
 EXCLUDE_DIRS = {

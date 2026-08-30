@@ -83,6 +83,16 @@ interface CodeGenSessionData {
     fileTreePlanned: boolean
     generatedFileCount: number
     verificationCount: number
+    verificationSummary?: {
+      qualityScore?: number
+      fileCount?: number
+      errorCount?: number
+      warningCount?: number
+    }
+    executionStatus?: string
+    executionTestStatus?: string
+    executionCommand?: string
+    executionDurationMs?: number
     patchesApplied: number
   }
   config: CodeGenSessionConfig
@@ -150,6 +160,7 @@ export function CodeProjectWorkspace() {
 
   // Past sessions
   const [pastSessions, setPastSessions] = useState<CodeGenSessionData[]>([])
+  const [repairingSession, setRepairingSession] = useState(false)
 
   // Load plan context from linkId
   useEffect(() => {
@@ -229,6 +240,7 @@ export function CodeProjectWorkspace() {
       if (data.status === 'completed' || data.status === 'failed') {
         setIsPolling(false)
         setIsGenerating(false)
+        setRepairingSession(false)
         if (data.status === 'completed' && data.projectId) {
           setProjectId(data.projectId)
           loadTree(data.projectId, '')
@@ -508,6 +520,17 @@ export function CodeProjectWorkspace() {
       )
     }
     const s = codeGenSession
+    const retryQualityRepair = async () => {
+      setRepairingSession(true)
+      try {
+        const response = await fetch(`${API_BASE}/api/v1/codegen/sessions/${s.id}/repair`, { method: 'POST' })
+        if (!response.ok) throw new Error(`Error ${response.status}`)
+        setIsGenerating(true)
+        setIsPolling(true)
+      } catch {
+        setRepairingSession(false)
+      }
+    }
     return (
       <div className="space-y-4 p-4">
         <div className="flex items-center justify-between">
@@ -525,9 +548,9 @@ export function CodeProjectWorkspace() {
 
         {/* Steps */}
         <div className="space-y-1">
-          <p className="text-xs font-medium text-muted-foreground mb-2">Pipeline Steps</p>
+          <p className="text-xs font-medium text-muted-foreground mb-2">{text('执行步骤', 'Pipeline Steps')}</p>
           {s.steps.map((step, i) => (
-            <div key={i} className="flex items-center gap-2 p-2 rounded bg-slate-50 text-xs">
+            <div key={i} className="flex items-center gap-2 p-2 rounded bg-slate-50 text-xs dark:bg-slate-900/60">
               {getStepIcon(step.status)}
               <span className="font-medium flex-1">{getStepLabel(step.name)}</span>
               {step.durationMs > 0 && <span className="text-muted-foreground">{(step.durationMs / 1000).toFixed(1)}s</span>}
@@ -543,23 +566,30 @@ export function CodeProjectWorkspace() {
 
         {/* Memory Summary */}
         {s.memory && (
-          <div className="p-3 rounded bg-slate-50 border">
-            <p className="text-xs font-medium mb-2">Agent Memory</p>
-            <div className="grid grid-cols-2 gap-1 text-xs">
-              <span>References: {s.memory.referenceCount}</span>
-              <span>GitHub Repos: {s.memory.githubRepoCount}</span>
-              <span>Design Doc: {s.memory.hasDesignDoc ? '✓' : '—'}</span>
-              <span>File Tree: {s.memory.fileTreePlanned ? '✓' : '—'}</span>
-              <span>Files Generated: {s.memory.generatedFileCount}</span>
-              <span>Patches: {s.memory.patchesApplied}</span>
+          <div className="p-3 rounded bg-slate-50 border dark:bg-slate-900/60">
+            <p className="text-xs font-medium mb-2">{text('质量证据', 'Quality Evidence')}</p>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+              <div><span className="text-muted-foreground">{text('静态质量', 'Static quality')}</span><p className="font-semibold text-base">{s.memory.verificationSummary?.qualityScore ?? '—'}</p></div>
+              <div><span className="text-muted-foreground">{text('断网冒烟', 'Offline smoke')}</span><p className="font-semibold text-base">{s.memory.executionStatus || 'not_run'}</p></div>
+              <div><span className="text-muted-foreground">pytest</span><p className="font-semibold text-base">{s.memory.executionTestStatus || 'not_run'}</p></div>
+              <div><span className="text-muted-foreground">{text('生成文件', 'Generated files')}</span><p className="font-semibold text-base">{s.memory.generatedFileCount}</p></div>
+            </div>
+            <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+              <span>Qwen patches: {s.memory.patchesApplied}</span>
+              <span>{text('错误', 'Errors')}: {s.memory.verificationSummary?.errorCount ?? s.memory.verificationCount}</span>
+              {s.memory.executionDurationMs ? <span>{text('容器耗时', 'Container time')}: {s.memory.executionDurationMs}ms</span> : null}
             </div>
           </div>
         )}
 
         {/* Error */}
         {s.errorMessage && (
-          <div className="p-3 rounded bg-red-50 border border-red-200 text-xs text-red-700">
+          <div className="p-3 rounded bg-red-50 border border-red-200 text-xs text-red-700 dark:bg-red-950/30 dark:border-red-900 dark:text-red-200">
             <AlertTriangle className="h-4 w-4 inline mr-1" />{s.errorMessage}
+            <Button size="sm" variant="outline" className="mt-2 w-full" onClick={retryQualityRepair} disabled={repairingSession}>
+              {repairingSession ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <Wrench className="h-3 w-3 mr-1" />}
+              {text('重新校验并修复', 'Revalidate & Repair')}
+            </Button>
           </div>
         )}
 
@@ -567,7 +597,7 @@ export function CodeProjectWorkspace() {
         {s.status === 'completed' && s.projectId && (
           <div className="flex gap-2">
             <Button size="sm" variant="outline" onClick={() => navigate(`/code/projects/${s.projectId}`)}>
-              <Eye className="h-4 w-4 mr-1" /> Browse Project
+              <Eye className="h-4 w-4 mr-1" /> {text('浏览项目', 'Browse Project')}
             </Button>
             <Button size="sm" variant="outline" onClick={async () => {
               try {
@@ -578,7 +608,7 @@ export function CodeProjectWorkspace() {
                 }
               } catch { void 0 }
             }}>
-              <Download className="h-4 w-4 mr-1" /> Download ZIP
+              <Download className="h-4 w-4 mr-1" /> {text('下载 ZIP', 'Download ZIP')}
             </Button>
           </div>
         )}

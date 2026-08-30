@@ -11,14 +11,16 @@
  */
 
 import { useState, useEffect, useCallback } from 'react'
+import { useParams } from 'react-router-dom'
 import { AppPageLayout } from '@/components/layout/AppPageLayout'
+import { DataScopeNotice } from '@/components/data/DataScopeNotice'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import {
   BarChart3, Plus, Loader2, RefreshCw,
-  TrendingUp, Image, Download, Sparkles, AlertTriangle, Code2,
+  TrendingUp, Image, Download, Sparkles, AlertTriangle, Code2, ShieldCheck,
 } from 'lucide-react'
 import { LLM_PROVIDERS, getModelsByProvider } from '@/lib/models/providers'
 import { useReviewLocale } from '@/lib/reviewLocale'
@@ -38,6 +40,19 @@ interface Experiment {
   updatedAt: string
   metricsCount?: number
   figuresCount?: number
+  evidenceStatus?: string
+  evidenceBundleSha256?: string
+  executionEvidence?: ExecutionEvidence | null
+}
+
+interface ExecutionEvidence {
+  status: string
+  bundleSha256: string
+  predictionRows: number
+  ingestedMetrics: number
+  importedAt: string
+  checks: Record<string, boolean>
+  limitations: string[]
 }
 
 interface Metric {
@@ -158,6 +173,7 @@ function checkFigureTypeCompatibility(
 }
 
 export function ExperimentsDashboard() {
+  const { id: requestedExperimentId } = useParams()
   const { text } = useReviewLocale()
   const [experiments, setExperiments] = useState<Experiment[]>([])
   const [loading, setLoading] = useState(true)
@@ -197,6 +213,9 @@ export function ExperimentsDashboard() {
 
   // Bulk metric ingest
   const [bulkMetrics, setBulkMetrics] = useState('')
+  const [evidencePath, setEvidencePath] = useState('artifacts/')
+  const [importingEvidence, setImportingEvidence] = useState(false)
+  const [evidenceError, setEvidenceError] = useState<string | null>(null)
 
   // Figure code viewer
   const [figCodeMap, setFigCodeMap] = useState<Record<string, string>>({})
@@ -265,10 +284,16 @@ export function ExperimentsDashboard() {
     setCreating(false)
   }
 
-  const selectExperiment = async (exp: Experiment) => {
+  const selectExperiment = useCallback(async (exp: Experiment) => {
     setSelectedExp(exp)
     setFigError(null)
+    setEvidenceError(null)
     setFigDatasetId('')
+
+    try {
+      const detailResp = await fetch(`${API_BASE}/api/v1/experiments/${exp.id}`)
+      if (detailResp.ok) setSelectedExp(await detailResp.json())
+    } catch { void 0 }
 
     // Load metrics
     setLoadingMetrics(true)
@@ -300,6 +325,37 @@ export function ExperimentsDashboard() {
         setDatasets(data.datasets || [])
       }
     } catch { void 0 }
+  }, [])
+
+  useEffect(() => {
+    if (!requestedExperimentId || selectedExp?.id === requestedExperimentId) return
+    const requested = experiments.find(experiment => experiment.id === requestedExperimentId)
+    if (requested) void selectExperiment(requested)
+  }, [experiments, requestedExperimentId, selectExperiment, selectedExp?.id])
+
+  const importExecutionEvidence = async () => {
+    if (!selectedExp?.projectId || !evidencePath.trim()) return
+    setImportingEvidence(true)
+    setEvidenceError(null)
+    try {
+      const resp = await fetch(`${API_BASE}/api/v1/experiments/${selectedExp.id}/evidence/import`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          projectId: selectedExp.projectId,
+          artifactPath: evidencePath.trim(),
+        }),
+      })
+      if (!resp.ok) {
+        const body = await resp.json().catch(() => ({}))
+        throw new Error(body.detail || `Error ${resp.status}`)
+      }
+      await selectExperiment(selectedExp)
+      await loadExperiments()
+    } catch (e) {
+      setEvidenceError(e instanceof Error ? e.message : text('证据导入失败', 'Evidence import failed'))
+    }
+    setImportingEvidence(false)
   }
 
   const uploadDataset = async (file: File) => {
@@ -423,6 +479,8 @@ export function ExperimentsDashboard() {
         </Button>
       }
     >
+      <DataScopeNotice />
+
       {error && (
         <div className="p-3 rounded bg-red-50 border border-red-200 text-sm text-red-800 mb-4">
           {error}
@@ -463,13 +521,15 @@ export function ExperimentsDashboard() {
               {experiments.map(exp => (
                 <Card
                   key={exp.id}
-                  className={`cursor-pointer hover:border-indigo-300 transition-colors ${selectedExp?.id === exp.id ? 'border-indigo-400 bg-indigo-50' : ''}`}
+                  className={`cursor-pointer hover:border-indigo-300 transition-colors ${selectedExp?.id === exp.id ? 'border-indigo-400 bg-indigo-50 dark:bg-indigo-950/30' : ''}`}
                   onClick={() => selectExperiment(exp)}
                 >
                   <CardContent className="py-3 space-y-1">
                     <div className="flex items-center justify-between">
                       <p className="text-sm font-medium truncate">{exp.name}</p>
-                      <Badge variant="outline" className="text-xs">{exp.status}</Badge>
+                      {exp.evidenceStatus === 'verified' ? (
+                        <Badge className="bg-emerald-600 text-white text-xs"><ShieldCheck className="h-3 w-3 mr-1" />verified</Badge>
+                      ) : <Badge variant="outline" className="text-xs">{exp.status}</Badge>}
                     </div>
                     <div className="flex items-center gap-2 text-xs text-muted-foreground">
                       {exp.projectId && <span>Project: {exp.projectId.slice(0, 12)}</span>}
@@ -497,13 +557,76 @@ export function ExperimentsDashboard() {
                   </div>
                 </CardHeader>
                 <CardContent>
-                  <div className="flex items-center gap-4 text-xs text-muted-foreground">
-                    <span>ID: {selectedExp.id}</span>
-                    {selectedExp.projectId && <span>Project: {selectedExp.projectId}</span>}
-                    {selectedExp.planSessionId && <span>Plan: {selectedExp.planSessionId}</span>}
-                    <span>Created: {new Date(selectedExp.createdAt).toLocaleString()}</span>
+                  <div className="grid grid-cols-1 gap-x-4 gap-y-1 text-xs text-muted-foreground sm:grid-cols-2 xl:grid-cols-4">
+                    <span className="break-all">ID: {selectedExp.id}</span>
+                    {selectedExp.projectId && <span className="break-all">Project: {selectedExp.projectId}</span>}
+                    {selectedExp.planSessionId && <span className="break-all">Plan: {selectedExp.planSessionId}</span>}
+                    <span>{text('创建于', 'Created')}: {new Date(selectedExp.createdAt).toLocaleString()}</span>
                   </div>
                   {selectedExp.description && <p className="text-sm mt-2 text-muted-foreground">{selectedExp.description}</p>}
+                </CardContent>
+              </Card>
+
+              {/* Verified execution evidence */}
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-base flex items-center gap-2">
+                    <ShieldCheck className="h-4 w-4 text-emerald-600" />
+                    {text('执行证据', 'Execution Evidence')}
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  {selectedExp.executionEvidence?.status === 'verified' ? (
+                    <>
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                        <div className="p-3 rounded bg-emerald-50 border border-emerald-200 dark:bg-emerald-950/30 dark:border-emerald-900">
+                          <p className="text-xs text-muted-foreground">{text('证据状态', 'Evidence status')}</p>
+                          <p className="font-semibold text-emerald-700 dark:text-emerald-300">verified</p>
+                        </div>
+                        <div className="p-3 rounded bg-slate-50 border dark:bg-slate-900/60">
+                          <p className="text-xs text-muted-foreground">Holdout</p>
+                          <p className="font-semibold">{selectedExp.executionEvidence.predictionRows} {text('条预测', 'predictions')}</p>
+                        </div>
+                        <div className="p-3 rounded bg-slate-50 border dark:bg-slate-900/60">
+                          <p className="text-xs text-muted-foreground">{text('导入指标', 'Imported metrics')}</p>
+                          <p className="font-semibold">{selectedExp.executionEvidence.ingestedMetrics}</p>
+                        </div>
+                        <div className="p-3 rounded bg-slate-50 border dark:bg-slate-900/60">
+                          <p className="text-xs text-muted-foreground">{text('完整性检查', 'Integrity checks')}</p>
+                          <p className="font-semibold">{Object.values(selectedExp.executionEvidence.checks).filter(Boolean).length}/{Object.keys(selectedExp.executionEvidence.checks).length}</p>
+                        </div>
+                      </div>
+                      <div className="text-xs font-mono break-all rounded border bg-slate-50 p-2 dark:bg-slate-900/60">
+                        SHA-256: {selectedExp.executionEvidence.bundleSha256}
+                      </div>
+                      {selectedExp.executionEvidence.limitations.length > 0 && (
+                        <div className="rounded border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
+                          <p className="font-medium mb-1">{text('解释边界', 'Interpretation boundary')}</p>
+                          {selectedExp.executionEvidence.limitations.map(item => <p key={item}>- {item}</p>)}
+                        </div>
+                      )}
+                    </>
+                  ) : selectedExp.projectId ? (
+                    <div className="flex flex-col sm:flex-row gap-2">
+                      <Input
+                        value={evidencePath}
+                        onChange={event => setEvidencePath(event.target.value)}
+                        placeholder="artifacts/run-id"
+                        aria-label={text('项目内证据目录', 'Evidence directory inside project')}
+                      />
+                      <Button onClick={importExecutionEvidence} disabled={importingEvidence || !evidencePath.trim()}>
+                        {importingEvidence ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <ShieldCheck className="h-4 w-4 mr-2" />}
+                        {text('校验并导入', 'Verify & Import')}
+                      </Button>
+                    </div>
+                  ) : (
+                    <p className="text-sm text-muted-foreground">{text('先为实验关联 Code Project，才能导入可复现证据。', 'Link a Code Project before importing reproducible evidence.')}</p>
+                  )}
+                  {evidenceError && (
+                    <div role="alert" className="rounded border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                      {evidenceError}
+                    </div>
+                  )}
                 </CardContent>
               </Card>
 
@@ -520,8 +643,8 @@ export function ExperimentsDashboard() {
                   {Object.keys(metricSummary).length > 0 && (
                     <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                       {Object.entries(metricSummary).map(([key, s]) => (
-                        <div key={key} className="p-3 rounded bg-slate-50 border">
-                          <p className="text-xs font-medium text-muted-foreground">{key}</p>
+                        <div key={key} className="p-3 rounded bg-slate-50 border dark:bg-slate-900/60">
+                          <p className="break-all text-xs font-medium text-muted-foreground">{key}</p>
                           <p className="text-lg font-semibold">{(s.sum / s.count).toFixed(3)}</p>
                           <p className="text-xs text-muted-foreground">n={s.count} min={s.min.toFixed(3)} max={s.max.toFixed(3)}</p>
                         </div>
@@ -530,19 +653,19 @@ export function ExperimentsDashboard() {
                   )}
 
                   {/* Ingest single */}
-                  <div className="flex gap-2 items-end">
-                    <div className="flex-1"><label className="text-xs font-medium">Key</label><Input value={metricKey} onChange={e => setMetricKey(e.target.value)} placeholder="accuracy" className="h-8 text-sm" /></div>
-                    <div className="w-24"><label className="text-xs font-medium">Value</label><Input value={metricValue} onChange={e => setMetricValue(e.target.value)} placeholder="0.95" className="h-8 text-sm" /></div>
-                    <div className="w-20"><label className="text-xs font-medium">Step</label><Input value={metricStep} onChange={e => setMetricStep(e.target.value)} placeholder="1" className="h-8 text-sm" /></div>
-                    <Button size="sm" onClick={ingestMetric} disabled={!metricKey.trim() || !metricValue.trim()} className="h-8"><Plus className="h-3 w-3 mr-1" /> Add</Button>
+                  <div className="grid grid-cols-2 gap-2 md:grid-cols-[minmax(0,1fr)_6rem_5rem_auto] md:items-end">
+                    <div className="col-span-2 md:col-span-1"><label className="text-xs font-medium">{text('指标 Key', 'Metric key')}</label><Input value={metricKey} onChange={e => setMetricKey(e.target.value)} placeholder="accuracy" className="h-8 text-sm" /></div>
+                    <div><label className="text-xs font-medium">{text('数值', 'Value')}</label><Input value={metricValue} onChange={e => setMetricValue(e.target.value)} placeholder="0.95" className="h-8 text-sm" /></div>
+                    <div><label className="text-xs font-medium">Step</label><Input value={metricStep} onChange={e => setMetricStep(e.target.value)} placeholder="1" className="h-8 text-sm" /></div>
+                    <Button size="sm" onClick={ingestMetric} disabled={!metricKey.trim() || !metricValue.trim()} className="col-span-2 h-8 md:col-span-1"><Plus className="h-3 w-3 mr-1" /> {text('添加', 'Add')}</Button>
                   </div>
 
                   {/* Bulk ingest */}
                   <div>
-                    <label className="text-xs font-medium">Bulk JSON (array of {'{key, value, step?}'})</label>
+                    <label className="text-xs font-medium">{text('批量 JSON', 'Bulk JSON')} ({'{key, value, step?}'})</label>
                     <div className="flex gap-2 mt-1">
                       <textarea value={bulkMetrics} onChange={e => setBulkMetrics(e.target.value)} placeholder='[{"key":"accuracy","value":0.95},{"key":"loss","value":0.1}]' className="flex-1 rounded border px-2 py-1 text-xs font-mono min-h-[60px]" />
-                      <Button size="sm" variant="outline" onClick={ingestBulkMetrics} disabled={!bulkMetrics.trim()} className="self-end">Ingest</Button>
+                      <Button size="sm" variant="outline" onClick={ingestBulkMetrics} disabled={!bulkMetrics.trim()} className="self-end">{text('导入', 'Ingest')}</Button>
                     </div>
                   </div>
 
@@ -559,7 +682,7 @@ export function ExperimentsDashboard() {
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-3">
-                  <div className="flex gap-2 items-end">
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
                     <div className="flex-1">
                       <label className="text-xs font-medium">Dataset Name</label>
                       <Input value={dsName} onChange={e => setDsName(e.target.value)} placeholder="my_results" className="h-8 text-sm" />
@@ -579,7 +702,7 @@ export function ExperimentsDashboard() {
                   {datasets.length > 0 && (
                     <div className="space-y-1">
                       {datasets.map(ds => (
-                        <div key={ds.id} className="flex items-center justify-between p-2 rounded bg-slate-50 border text-xs">
+                          <div key={ds.id} className="flex items-center justify-between p-2 rounded bg-slate-50 border text-xs dark:bg-slate-900/60">
                           <div className="flex items-center gap-2">
                             <Badge variant="outline">{ds.format}</Badge>
                             <span className="font-medium">{ds.name}</span>
@@ -603,7 +726,7 @@ export function ExperimentsDashboard() {
                 </CardHeader>
                 <CardContent className="space-y-4">
                   {/* Generate button */}
-                  <div className="p-3 rounded bg-gradient-to-r from-indigo-50 to-purple-50 border space-y-3">
+                  <div className="p-3 rounded bg-indigo-50 border space-y-3 dark:bg-indigo-950/30 dark:border-indigo-900">
                     <p className="text-sm font-medium">{text('生成论文级图表', 'Generate Paper-Ready Figure')}</p>
                     <div className="grid grid-cols-2 gap-2">
                       <div>
@@ -643,10 +766,10 @@ export function ExperimentsDashboard() {
                                 disabled={!check.enabled}
                                 onClick={() => setPreferredFigType(ft.value)}
                                 className={`w-full px-2 py-1.5 rounded text-xs border transition-all ${!check.enabled
-                                    ? 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed opacity-60'
+                                    ? 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed opacity-60 dark:bg-gray-900 dark:border-gray-800'
                                     : isSelected
-                                      ? 'bg-indigo-100 text-indigo-700 border-indigo-400 ring-1 ring-indigo-300 font-semibold'
-                                      : 'bg-white text-gray-700 border-gray-300 hover:border-indigo-300 hover:bg-indigo-50 cursor-pointer'
+                                      ? 'bg-indigo-100 text-indigo-700 border-indigo-400 ring-1 ring-indigo-300 font-semibold dark:bg-indigo-950 dark:text-indigo-200'
+                                      : 'bg-white text-gray-700 border-gray-300 hover:border-indigo-300 hover:bg-indigo-50 cursor-pointer dark:bg-slate-950 dark:text-gray-200 dark:border-gray-700 dark:hover:bg-indigo-950/40'
                                   }`}
                               >
                                 {ft.label}
@@ -720,7 +843,7 @@ export function ExperimentsDashboard() {
                               <pre className="text-xs font-mono text-green-300 whitespace-pre-wrap">{figCodeMap[fig.id]}</pre>
                             </div>
                           ) : (
-                            <div className="p-4 bg-white flex justify-center">
+                            <div className="p-4 bg-white flex justify-center dark:bg-slate-950">
                               <img
                                 src={`${API_BASE}/api/v1/experiments/figures/${fig.id}/png`}
                                 alt={typeof fig.spec.title === 'string' ? fig.spec.title : 'Figure'}

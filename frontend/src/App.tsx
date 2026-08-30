@@ -11,7 +11,6 @@ const ResearchPipeline = lazy(() => import('@/pages/Research/Pipeline').then(m =
 const RunsList = lazy(() => import('@/pages/Runs/RunsList').then(m => ({ default: m.RunsList })))
 const RunDetail = lazy(() => import('@/pages/Runs/RunDetail').then(m => ({ default: m.RunDetail })))
 const ExperimentsDashboard = lazy(() => import('@/pages/Experiments/ExperimentsDashboard').then(m => ({ default: m.ExperimentsDashboard })))
-const ExperimentDetail = lazy(() => import('@/pages/Experiments/ExperimentDetail').then(m => ({ default: m.ExperimentDetail })))
 const PapersList = lazy(() => import('@/pages/Papers/PapersList').then(m => ({ default: m.PapersList })))
 const PaperWritingWorkspace = lazy(() => import('@/pages/Papers/PaperWritingWorkspace').then(m => ({ default: m.PaperWritingWorkspace })))
 const ConsistencyChecker = lazy(() => import('@/pages/Review/ConsistencyChecker').then(m => ({ default: m.ConsistencyChecker })))
@@ -63,7 +62,7 @@ function App() {
 
               {/* Experiments */}
               <Route path="/experiments" element={<ExperimentsDashboard />} />
-              <Route path="/experiments/:id" element={<ExperimentDetail />} />
+              <Route path="/experiments/:id" element={<ExperimentsDashboard />} />
 
               {/* Papers */}
               <Route path="/papers" element={<PapersList />} />

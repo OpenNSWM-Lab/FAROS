@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from app.contracts import ExecutionStatus
+from app.core.paths import get_data_dir
 from app.core.user_context import call_with_current_context, sanitized_subprocess_env
 from app.faros.capabilities.base import BaseCapability
 from app.faros.models.artifact import ArtifactRecord
@@ -31,9 +32,8 @@ from app.services.experiment_benchmark_service import (
 
 logger = logging.getLogger(__name__)
 
-# Absolute path to data directory for resolving project paths
-_BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
-_DATA_DIR = os.path.join(_BASE_DIR, "data")
+# Absolute path to the configured data directory for resolving project paths.
+_DATA_DIR = str(get_data_dir())
 
 
 def _run_async_from_sync(factory):

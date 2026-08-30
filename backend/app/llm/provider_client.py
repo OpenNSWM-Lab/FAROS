@@ -164,6 +164,7 @@ class ProviderClient:
         max_tokens: int = 1024,
         **kwargs,
     ) -> ChatResponse:
+        request_max_retries = kwargs.pop("request_max_retries", None)
         structured_output = bool(kwargs.pop("structured_output", False)) or requests_json_object(
             kwargs.get("response_format")
         )
@@ -194,7 +195,7 @@ class ProviderClient:
         # Provider latency is a duration, so it must not use the adjustable wall clock.
         start_time = time.perf_counter()
         retries = 0
-        max_retries = (
+        max_retries = max(0, int(request_max_retries)) if request_max_retries is not None else (
             max(0, int(os.getenv("FAROS_STRUCTURED_LLM_MAX_RETRIES", "1")))
             if structured_output
             else self.settings.MAX_RETRIES
@@ -275,6 +276,7 @@ class ProviderClient:
                 api_key=api_config["api_key"],
                 base_url=api_config["api_base"],
                 timeout=api_config["timeout"],
+                max_retries=0,
                 http_client=http_client,
             ) as client:
                 # Merge extra arguments while respecting the SDK's parameter names

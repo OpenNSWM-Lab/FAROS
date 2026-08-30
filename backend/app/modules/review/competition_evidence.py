@@ -356,6 +356,17 @@ def build_competition_evidence_dashboard(
         stage: str((signoffs.get(stage) or {}).get("status") or "pending")
         for stage in ("plan", "repair", "conclusion")
     }
+    reviewer_separation_required = bool(
+        (feedback_record or {}).get("enforceReviewerSeparation")
+    )
+    reviewer_policy = str(
+        (feedback_record or {}).get("reviewerPolicy")
+        or (
+            "separated_reviewers"
+            if reviewer_separation_required
+            else "single_accountable_reviewer"
+        )
+    )
     publication_ready = bool((feedback_record or {}).get("publicationReady"))
     if feedback_record is not None and "publicationReady" not in feedback_record:
         try:
@@ -532,7 +543,7 @@ def build_competition_evidence_dashboard(
             "id": "track-1b",
             "name": "科学实验任务规划与反馈迭代",
             "officialFocus": "真实实验结果必须改变下一轮计划，并逐轮复验成效。",
-            "reportPageLimit": 20,
+            "reportPageLimit": 30,
         },
         "status": {
             "technicalReady": technical_ready,
@@ -611,8 +622,10 @@ def build_competition_evidence_dashboard(
             "feedbackId": (feedback_record or {}).get("id") or job.get("feedbackId"),
             "signoffs": human_status,
             "publicationReady": publication_ready,
-            "reviewerSeparationRequired": bool((feedback_record or {}).get("enforceReviewerSeparation")),
-            "note": "Pending means no human approval is inferred from automated execution.",
+            "reviewerSeparationRequired": reviewer_separation_required,
+            "reviewerPolicy": reviewer_policy,
+            "responsibleReviewerCount": 2 if reviewer_separation_required else 1,
+            "note": "One identified reviewer may approve all required stages; each decision remains separately hash-bound.",
         },
         "evidenceManifest": manifest,
         "limitations": limitations,

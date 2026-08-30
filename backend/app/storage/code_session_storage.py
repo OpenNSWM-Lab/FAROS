@@ -9,9 +9,11 @@ import tempfile
 import shutil
 from typing import List, Optional, Dict, Any
 
+from app.core.paths import get_data_dir
+
 logger = logging.getLogger(__name__)
 
-DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data", "code_sessions")
+DATA_DIR = str(get_data_dir() / "code_sessions")
 
 
 class CodeSessionStorage:

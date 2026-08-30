@@ -1,7 +1,7 @@
 {
   "name": "llm-scientist-platform",
   "private": true,
-  "version": "1.0.0",
+  "version": "5.15.2",
   "type": "module",
   "scripts": {
     "dev": "bash ./scripts/run_frontend.sh",

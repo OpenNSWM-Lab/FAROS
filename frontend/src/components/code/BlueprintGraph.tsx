@@ -1,6 +1,6 @@
 import { useEffect, useRef, useCallback, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Graph } from '@antv/g6'
+import { Graph, type IElementEvent } from '@antv/g6'
 import type { ExperimentBlueprint } from '@/pages/Code/blueprintMockData'
 
 const STATUS_COLORS: Record<string, { fill: string; stroke: string; badge: string; text: string }> = {
@@ -25,7 +25,7 @@ function InfoPanel({ data }: { data: Record<string, unknown> }) {
   const metrics = result?.metrics as Record<string, string | number> | undefined
 
   return (
-    <div className="bg-white/95 backdrop-blur rounded-xl border shadow-lg p-4 text-sm" style={{ minWidth: 280, maxWidth: 360 }}>
+    <div className="rounded-md border bg-white/95 p-4 text-sm shadow-lg backdrop-blur" style={{ minWidth: 280, maxWidth: 360 }}>
       <div className="flex items-center gap-2 mb-2">
         <span className="inline-block w-2.5 h-2.5 rounded-full shrink-0" style={{ background: c.badge }} />
         <span className="font-semibold text-slate-800 truncate">{data.label as string ?? ''}</span>
@@ -174,7 +174,7 @@ export function BlueprintGraph({ blueprint, height = '100%', onNodeClick, packag
       behaviors: ['drag-canvas', 'zoom-canvas'],
     })
 
-    graph.on('node:click', (evt: any) => {
+    graph.on('node:click', (evt: IElementEvent) => {
       const nodeId = evt?.target?.id
       if (nodeId) {
         if (onNodeClick) {
@@ -185,7 +185,7 @@ export function BlueprintGraph({ blueprint, height = '100%', onNodeClick, packag
       }
     })
 
-    graph.on('node:pointerenter', (evt: any) => {
+    graph.on('node:pointerenter', (evt: IElementEvent) => {
       const nodeId = evt?.target?.id
       if (nodeId) {
         const node = blueprint.nodes.find(n => n.id === nodeId)
@@ -207,7 +207,7 @@ export function BlueprintGraph({ blueprint, height = '100%', onNodeClick, packag
 
     graph.render()
     graphRef.current = graph
-  }, [navigate, onNodeClick])
+  }, [blueprint.edges, blueprint.id, blueprint.nodes, navigate, onNodeClick, packageId])
 
   useEffect(() => {
     const timer = setTimeout(initGraph, 50)

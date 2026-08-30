@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from app.models.plan_package import PlanPackage
+from app.core.paths import get_data_dir
 
 
 def generate_plan_package_id() -> str:
@@ -88,8 +89,7 @@ _storage_instance: Optional[PlanPackageStorage] = None
 
 
 def _get_data_dir() -> str:
-    base = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    return os.path.join(base, "data")
+    return str(get_data_dir())
 
 
 def get_plan_package_storage() -> PlanPackageStorage:

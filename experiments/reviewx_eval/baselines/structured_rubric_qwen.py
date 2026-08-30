@@ -126,6 +126,7 @@ def run(args: argparse.Namespace) -> tuple[int, int, str]:
     backend_data = Path(args.backend_data).resolve()
     config = {
         "schemaVersion": "reviewx_structured_rubric_baseline_v1",
+        "methodId": args.method_id,
         "providerName": args.provider_name,
         "model": args.model,
         "temperature": args.temperature,
@@ -237,7 +238,7 @@ def run(args: argparse.Namespace) -> tuple[int, int, str]:
                         "sourcePaperId": sample.get("sourcePaperId"),
                         "sampleType": sample.get("sampleType"),
                         "paperTitle": sample.get("title"),
-                        "method": METHOD_ID,
+                        "method": args.method_id,
                         "runnerRepetition": repetition,
                         "runnerElapsedMs": int((time.time() - started) * 1000),
                         "status": status,
@@ -311,6 +312,7 @@ def main() -> int:
     parser.add_argument("--output", required=True)
     parser.add_argument("--provider-name", default="qwen")
     parser.add_argument("--model", default="qwen-max")
+    parser.add_argument("--method-id", default=METHOD_ID)
     parser.add_argument("--temperature", type=float, default=0.2)
     parser.add_argument("--max-input-chars", type=int, default=8000)
     parser.add_argument("--max-output-tokens", type=int, default=1800)

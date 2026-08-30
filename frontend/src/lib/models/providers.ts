@@ -231,6 +231,13 @@ export const LLM_PROVIDERS: ProviderInfo[] = [
     name: 'Qwen (通义千问)',
     models: [
       {
+        id: 'qwen3.8-max',
+        name: 'Qwen3.8 Max',
+        provider: 'qwen',
+        contextWindow: 1000000,
+        description: 'Qwen3.8 旗舰推理模型，支持 1M 上下文'
+      },
+      {
         id: 'qwen-max',
         name: 'Qwen Max',
         provider: 'qwen',
@@ -257,6 +264,8 @@ export const LLM_PROVIDERS: ProviderInfo[] = [
     id: 'bailian',
     name: 'Bailian (阿里云百炼)',
     models: [
+      // Qwen3.8
+      { id: 'qwen3.8-max', name: 'Qwen3.8 Max', provider: 'bailian', contextWindow: 1000000, description: 'Qwen3.8 旗舰推理模型，支持 1M 上下文' },
       // Qwen3.7 (最新旗舰)
       { id: 'qwen3.7-max', name: 'Qwen3.7 Max', provider: 'bailian', contextWindow: 262144, description: 'Qwen3.7 旗舰，最强推理与创作' },
       { id: 'qwen3.7-plus', name: 'Qwen3.7 Plus', provider: 'bailian', contextWindow: 262144, description: 'Qwen3.7 高性能版' },

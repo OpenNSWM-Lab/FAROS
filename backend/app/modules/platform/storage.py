@@ -6,12 +6,15 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, Optional
 
+from app.core.paths import get_data_dir
+
 from app.storage.artifact_storage import get_storage as get_artifact_storage
 from app.storage.experiment_storage import (
     create_experiment,
     get_dataset,
     get_dataset_preview,
     get_experiment,
+    get_execution_evidence,
     get_figure,
     get_metrics,
     ingest_metrics,
@@ -19,6 +22,7 @@ from app.storage.experiment_storage import (
     list_experiments,
     list_figures,
     save_dataset,
+    save_execution_evidence,
     save_figure_artifact,
     update_experiment,
 )
@@ -29,8 +33,7 @@ from app.storage.plan_session_storage import (
 from app.storage.plan_package_storage import get_plan_package_storage
 from app.storage.run_storage import get_storage as get_run_storage
 
-_BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-_PLAN_LINKS_DIR = os.path.join(_BASE_DIR, "data", "plan_links")
+_PLAN_LINKS_DIR = str(get_data_dir() / "plan_links")
 os.makedirs(_PLAN_LINKS_DIR, exist_ok=True)
 
 
@@ -107,6 +110,7 @@ __all__ = [
     "get_dataset",
     "get_dataset_preview",
     "get_experiment",
+    "get_execution_evidence",
     "get_figure",
     "get_metrics",
     "get_plan_link",
@@ -120,6 +124,7 @@ __all__ = [
     "list_experiments",
     "list_figures",
     "save_dataset",
+    "save_execution_evidence",
     "save_figure_artifact",
     "update_experiment",
 ]

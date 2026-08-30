@@ -282,6 +282,8 @@ interface DashboardPayload {
     signoffs: Record<'plan' | 'repair' | 'conclusion', string>
     publicationReady: boolean
     reviewerSeparationRequired: boolean
+    reviewerPolicy: 'single_accountable_reviewer' | 'separated_reviewers' | string
+    responsibleReviewerCount: number
     note: string
   }
   evidenceManifest: EvidenceArtifact[]
@@ -1329,7 +1331,7 @@ export function CompetitionEvidence() {
             <TabsContent value="governance" className="min-w-0 space-y-5">
               <section id="reviewx-governance" className="scroll-mt-28 grid min-w-0 gap-5 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
                 <div className="min-w-0 rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-                  <SectionHeading icon={UserCheck} title={text('三阶段人工责任门', 'Three-stage human responsibility gates')} detail={text('批准与当前证据哈希绑定，证据变化后自动失效', 'Approvals are hash-bound and become stale when evidence changes')} />
+                  <SectionHeading icon={UserCheck} title={text('单负责人分阶段签核', 'Single-reviewer staged signoff')} detail={text('一名负责人可完成全部必需签核；每次批准与当前证据哈希绑定', 'One accountable reviewer can complete all required gates; each approval is hash-bound')} />
                   <div className="grid gap-3 sm:grid-cols-3">
                     {(['plan', 'repair', 'conclusion'] as const).map((stage, index) => {
                       const status = dashboard.humanGovernance.signoffs[stage]
@@ -1352,8 +1354,12 @@ export function CompetitionEvidence() {
                   </div>
                   <div className="mt-4 grid gap-3 sm:grid-cols-2">
                     <div className="rounded-md border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
-                      <div className="text-xs font-semibold uppercase text-slate-500">{text('审核人分离', 'Reviewer separation')}</div>
-                      <div className="mt-1 font-medium">{dashboard.humanGovernance.reviewerSeparationRequired ? text('正式结论强制启用', 'Required for official conclusions') : text('未启用', 'Not enabled')}</div>
+                      <div className="text-xs font-semibold uppercase text-slate-500">{text('责任模式', 'Accountability model')}</div>
+                      <div className="mt-1 font-medium">
+                        {dashboard.humanGovernance.reviewerSeparationRequired
+                          ? text('多人分离审核', 'Separated reviewers')
+                          : text(`${dashboard.humanGovernance.responsibleReviewerCount} 名负责人`, `${dashboard.humanGovernance.responsibleReviewerCount} accountable reviewer`)}
+                      </div>
                     </div>
                     <div className="rounded-md border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
                       <div className="text-xs font-semibold uppercase text-slate-500">{text('正式证据包', 'Official evidence bundle')}</div>

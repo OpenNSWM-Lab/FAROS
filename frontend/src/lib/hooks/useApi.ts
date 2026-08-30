@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { api } from '@/lib/api'
+import { api, API_BASE_URL } from '@/lib/api'
 import type { Run, PaperDraft, SystemConfig } from '@/lib/types'
 
 // Query keys
@@ -19,6 +19,73 @@ export const queryKeys = {
   systemLogs: (filters?: { level?: string; limit?: number }) => ['system', 'logs', filters] as const,
   systemMetrics: (timeRange?: string) => ['system', 'metrics', timeRange] as const,
   systemConfig: ['system', 'config'] as const,
+  competitionSnapshot: ['competition', 'snapshot'] as const,
+  competitionWorkspace: ['competition', 'workspace'] as const,
+}
+
+export interface CompetitionSnapshot {
+  status: {
+    technicalReady: boolean
+    publicationReady: boolean
+    qualityGate: string
+    qwenVerified: boolean
+  }
+  case: { runId: string; selectedCandidateId: string }
+  feedbackMetrics: Array<{ name: string; delta: number }>
+  qwen: { model: string; latencyMs: number }
+  humanGovernance: { responsibleReviewerCount: number }
+}
+
+export function useCompetitionSnapshot() {
+  return useQuery({
+    queryKey: queryKeys.competitionSnapshot,
+    queryFn: async (): Promise<CompetitionSnapshot> => {
+      const response = await fetch(`${API_BASE_URL}/api/v1/reviews/reviewx/competition/dashboard`)
+      if (!response.ok) throw new Error(`Competition evidence unavailable (${response.status})`)
+      return response.json()
+    },
+    retry: false,
+    staleTime: 30_000,
+  })
+}
+
+export interface CompetitionWorkspaceStage {
+  id: 'idea' | 'plan' | 'code' | 'experiment' | 'paper' | 'reviewx'
+  status: 'passed' | 'blocked'
+  entityId: string
+  facts: Record<string, string | number | boolean | null | string[] | number[]>
+}
+
+export interface CompetitionWorkspace {
+  schemaVersion: string
+  status: {
+    ready: boolean
+    passedStages: number
+    totalStages: number
+    blockers: string[]
+    integrity: 'verified' | 'incomplete'
+  }
+  stages: CompetitionWorkspaceStage[]
+  governance: {
+    reviewerPolicy: string
+    responsibleReviewerCount: number
+    signoffMode: string
+    publicationReady: boolean
+  }
+  integrity: { chainSha256: string }
+}
+
+export function useCompetitionWorkspace() {
+  return useQuery({
+    queryKey: queryKeys.competitionWorkspace,
+    queryFn: async (): Promise<CompetitionWorkspace> => {
+      const response = await fetch(`${API_BASE_URL}/api/v1/reviews/reviewx/competition/workspace`)
+      if (!response.ok) throw new Error(`Competition workspace unavailable (${response.status})`)
+      return response.json()
+    },
+    retry: false,
+    staleTime: 30_000,
+  })
 }
 
 // Runs

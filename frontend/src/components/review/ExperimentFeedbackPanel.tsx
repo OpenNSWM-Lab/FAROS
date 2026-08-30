@@ -348,7 +348,7 @@ export function ExperimentFeedbackPanel({ initialFeedbackId }: { initialFeedback
   const [metricGuardrails, setMetricGuardrails] = useState<MetricGuardrail[]>([])
   const [selectedSignoffStage, setSelectedSignoffStage] = useState<HumanSignoffStage>('plan')
   const [reviewerRole, setReviewerRole] = useState('team_lead')
-  const [reviewerId, setReviewerId] = useState('')
+  const [reviewerId, setReviewerId] = useState(() => localStorage.getItem('faros-reviewer-id') || '')
   const [signoffRationale, setSignoffRationale] = useState('')
   const [signoffConditions, setSignoffConditions] = useState('')
   const [signoffTargetSections, setSignoffTargetSections] = useState('')
@@ -359,6 +359,12 @@ export function ExperimentFeedbackPanel({ initialFeedbackId }: { initialFeedback
   const [conditionEvidenceId, setConditionEvidenceId] = useState('')
   const [conditionLoading, setConditionLoading] = useState(false)
   const [reviewAuthToken, setReviewAuthToken] = useState('')
+
+  useEffect(() => {
+    const normalized = reviewerId.trim()
+    if (normalized) localStorage.setItem('faros-reviewer-id', normalized)
+    else localStorage.removeItem('faros-reviewer-id')
+  }, [reviewerId])
 
   const loadRuns = useCallback(async () => {
     setRunsLoading(true)
@@ -771,6 +777,47 @@ export function ExperimentFeedbackPanel({ initialFeedbackId }: { initialFeedback
       void loadHistory(result.runId, result.researchSeriesId)
     } catch (signoffError) {
       setActionMessage(signoffError instanceof Error ? signoffError.message : 'Human signoff failed.')
+    } finally {
+      setSignoffLoading(false)
+    }
+  }
+
+  const approveRequiredSignoffs = async () => {
+    if (!result?.feedbackId || !reviewerId.trim() || !signoffRationale.trim()) return
+    setSignoffLoading(true)
+    setActionMessage('')
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/api/v1/reviews/reviewx/experiment-feedback/${result.feedbackId}/signoffs`,
+        {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(reviewAuthToken ? { Authorization: `Bearer ${reviewAuthToken}` } : {}),
+          },
+          body: JSON.stringify({
+            reviewerRole,
+            reviewerId: reviewerId.trim(),
+            rationale: signoffRationale.trim(),
+          }),
+        },
+      )
+      const data = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(formatError(data.detail))
+      setResult((current) => current ? {
+        ...current,
+        humanSignoffs: data.humanSignoffs,
+        humanFeedback: data.humanFeedback,
+        humanConditionVerifications: data.humanConditionVerifications,
+      } : current)
+      setSignoffRationale('')
+      setActionMessage(text(
+        data.publicationReady ? '负责人签核完成，正式证据包已解锁。' : '负责人已批准当前所有必需阶段。',
+        data.publicationReady ? 'Reviewer signoff complete; the official bundle is unlocked.' : 'The reviewer approved every currently required stage.',
+      ))
+      void loadHistory(result.runId, result.researchSeriesId)
+    } catch (signoffError) {
+      setActionMessage(signoffError instanceof Error ? signoffError.message : text('负责人签核失败。', 'Reviewer signoff failed.'))
     } finally {
       setSignoffLoading(false)
     }
@@ -1262,7 +1309,7 @@ export function ExperimentFeedbackPanel({ initialFeedbackId }: { initialFeedback
                   <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                     <div className="flex items-center gap-2 text-xs font-semibold uppercase text-slate-600">
                       <ShieldCheck className="h-4 w-4" />
-                      {text('人工审核', 'Human oversight')}
+                      {text('单负责人审核', 'Single-reviewer oversight')}
                     </div>
                     <div className="flex flex-wrap gap-2">
                       <a
@@ -1295,7 +1342,7 @@ export function ExperimentFeedbackPanel({ initialFeedbackId }: { initialFeedback
 
                   {!publicationReady && (
                     <div className="mb-3 text-xs text-amber-700">
-                      {text('正式证据包尚被阻断：需方案、必要修复和结论签核全部通过，且所有验收条件已解决。', 'Official bundle blocked: plan, required repair, and conclusion signoffs must pass, and all acceptance conditions must be resolved.')}
+                      {text('正式证据包尚被阻断：一名负责人需核对并批准所有必需阶段，且所有验收条件已解决。', 'Official bundle blocked: one accountable reviewer must approve every required stage and resolve all acceptance conditions.')}
                     </div>
                   )}
 
@@ -1531,6 +1578,18 @@ export function ExperimentFeedbackPanel({ initialFeedbackId }: { initialFeedback
                         rows={2}
                         className="min-w-0 resize-y rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
                       />
+                      <Button
+                        size="sm"
+                        onClick={() => void approveRequiredSignoffs()}
+                        disabled={signoffLoading || feedbackApplying || !signoffFormReady}
+                        className="w-full sm:w-fit"
+                      >
+                        {signoffLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ShieldCheck className="mr-2 h-4 w-4" />}
+                        {text('批准全部必需阶段', 'Approve all required stages')}
+                      </Button>
+                      <div className="text-xs leading-relaxed text-slate-500">
+                        {text('同一负责人完成方案、必要修复和结论签核；每个阶段仍分别绑定当前证据 SHA-256。', 'The same reviewer signs the plan, required repair, and conclusion; every stage remains bound to its current evidence SHA-256.')}
+                      </div>
                       <div className="flex flex-wrap gap-2">
                         <Button
                           size="sm"

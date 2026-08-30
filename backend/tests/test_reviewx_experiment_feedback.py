@@ -1154,6 +1154,8 @@ def test_stored_feedback_response_restores_loop_policy_and_progress():
     assert response.loopPolicy.primaryMetric == "method:Expected Calibration Error (ECE)"
     assert response.loopProgress is not None
     assert response.loopProgress.bestFeasibleValue == pytest.approx(0.30)
+    assert response.reviewerPolicy == "single_accountable_reviewer"
+    assert response.publicationReady is False
 
 
 def test_scifact_competition_endpoint_queues_one_controlled_job(monkeypatch, tmp_path):
@@ -1258,6 +1260,8 @@ def test_completed_scifact_case_registers_idempotent_common_human_review(monkeyp
     response = asyncio.run(get_experiment_feedback_endpoint(first["id"]))
     assert response.feedbackId == first["id"]
     assert response.humanSignoffs["conclusion"]["status"] == "pending"
+    assert response.reviewerPolicy == "single_accountable_reviewer"
+    assert response.publicationReady is False
 
 
 def test_scifact_public_artifact_endpoint_uses_allowlist(monkeypatch, tmp_path):

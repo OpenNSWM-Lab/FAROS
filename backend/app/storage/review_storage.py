@@ -9,11 +9,13 @@ import logging
 from datetime import UTC, datetime
 from typing import Optional, Dict, Any, List
 
+from app.core.paths import get_data_dir
+
 logger = logging.getLogger(__name__)
 
-_BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-REVIEWS_DIR = os.path.join(_BASE_DIR, "data", "reviews")
-IMPROVEMENT_REQUESTS_DIR = os.path.join(_BASE_DIR, "data", "improvement_requests")
+_DATA_DIR = get_data_dir()
+REVIEWS_DIR = str(_DATA_DIR / "reviews")
+IMPROVEMENT_REQUESTS_DIR = str(_DATA_DIR / "improvement_requests")
 os.makedirs(REVIEWS_DIR, exist_ok=True)
 os.makedirs(IMPROVEMENT_REQUESTS_DIR, exist_ok=True)
 

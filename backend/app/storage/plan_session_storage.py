@@ -17,6 +17,7 @@ from app.models.plan_session import (
     PlanSessionStatus,
     CandidatePlan,
 )
+from app.core.paths import get_data_dir
 
 
 def generate_plan_session_id() -> str:
@@ -166,8 +167,7 @@ _candidate_storage: Optional[CandidatePlanStorage] = None
 
 
 def _get_data_dir() -> str:
-    base = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    return os.path.join(base, "data")
+    return str(get_data_dir())
 
 
 def get_session_storage() -> PlanSessionStorage:

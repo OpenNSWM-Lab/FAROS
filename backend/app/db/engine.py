@@ -13,11 +13,12 @@ from sqlmodel import SQLModel, Session, create_engine
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
+from app.core.paths import get_data_dir
+
 logger = logging.getLogger(__name__)
 
 # Database path
-_BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-_DATA_DIR = os.path.join(_BASE_DIR, "data")
+_DATA_DIR = str(get_data_dir())
 _DB_PATH = os.path.join(_DATA_DIR, "app.db")
 
 # Database URL (SQLite for now, easily swappable to PostgreSQL)

@@ -2,12 +2,20 @@
 Shared test fixtures for FAROS backend tests.
 """
 
+import atexit
 import os
+import shutil
 import sys
 import tempfile
 from pathlib import Path
 
 import pytest
+
+
+_TEST_DATA_ROOT = Path(tempfile.mkdtemp(prefix="faros_pytest_data_"))
+os.environ["DATA_DIR"] = str(_TEST_DATA_ROOT)
+os.environ["DATABASE_URL"] = f"sqlite:///{_TEST_DATA_ROOT / 'app.db'}"
+atexit.register(shutil.rmtree, _TEST_DATA_ROOT, ignore_errors=True)
 
 from tests.plan_package_test_data import make_plan_package
 
