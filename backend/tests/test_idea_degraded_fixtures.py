@@ -203,6 +203,20 @@ class TestDegradedFixtures:
             assert 0 <= hyp.confidence <= 1
             assert hyp.falsificationCriteria is not None
 
+    def test_dossier_accepts_session_without_optional_constraints(self):
+        """The normal omitted-constraints case must not fail contract validation."""
+        session = _make_mock_session()
+
+        dossier = build_research_dossier(
+            session=session,
+            candidates=_make_mock_candidates(2),
+            literature=_make_mock_literature(3),
+            mode=RunMode.COVERAGE,
+        )
+
+        assert dossier.problemFrame.originalQuestion == session.config.seedQuery
+        assert isinstance(dossier, ResearchDossier)
+
     def test_coverage_mode_budget(self):
         """Coverage mode should have reduced budget settings."""
         budget = BudgetConfig.from_mode(RunMode.COVERAGE)
