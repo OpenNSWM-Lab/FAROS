@@ -51,8 +51,8 @@ class EvalScorer:
         scores["syntax"] = 100.0 if result.syntax_valid else 0.0
         
         # Risk score: Deduct for each risk found
-        risk_penalty = min(len(result.risks) * 10, 50)
-        scores["risks"] = max(100.0 - risk_penalty, 50.0)
+        risk_penalty = min(len(result.risks) * 10, 100)
+        scores["risks"] = max(100.0 - risk_penalty, 0.0)
         
         # Lint score: Deduct for warnings
         warning_penalty = min(result.warning_count * 5, 30)
