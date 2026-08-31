@@ -20,6 +20,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { API_BASE_URL } from '@/lib/api'
 import { useReviewLocale, type ReviewLocale } from '@/lib/reviewLocale'
 import type { QualityAssessment } from '@/lib/types/scientificResearch'
+import { ReviewIterationLoop, type ReviewLoopTrace } from './ReviewIterationLoop'
 
 interface RunArtifact {
   id: string
@@ -193,6 +194,8 @@ interface ExperimentFeedbackResponse {
   humanSignoffs: Record<HumanSignoffStage, HumanSignoff>
   humanFeedback?: HumanFeedbackState
   humanConditionVerifications?: HumanConditionVerificationState
+  sourceArtifactUrls?: Record<string, string>
+  closedLoop?: ReviewLoopTrace
 }
 
 interface ExperimentFeedbackHistory extends Omit<ExperimentFeedbackResponse, 'feedbackId'> {
@@ -211,10 +214,19 @@ const requiredArtifacts = [
   { filename: 'experiment_evidence.json', label: 'Experiment evidence', required: true },
 ]
 
+const closedLoopArtifacts = [
+  { filename: 'preregistration.json', label: 'Preregistration', required: true },
+  { filename: 'execution_timing.json', label: 'Execution evidence', required: true },
+  { filename: 'experiment_series.json', label: 'Iteration series', required: true },
+]
+
 const artifactChineseLabels: Record<string, string> = {
   'research_dossier.json': '研究档案',
   'execution_assessment.json': '执行评估',
   'experiment_evidence.json': '实验证据',
+  'preregistration.json': '预注册方案',
+  'execution_timing.json': '执行证据',
+  'experiment_series.json': '迭代序列',
 }
 
 const decisionLabel: Record<ExperimentFeedbackResponse['iterationDecision']['decision'], Record<ReviewLocale, string>> = {
@@ -321,11 +333,35 @@ function restoreLoopControls(
   }
 }
 
-export function ExperimentFeedbackPanel({ initialFeedbackId }: { initialFeedbackId?: string }) {
+export function ExperimentFeedbackPanel({
+  initialFeedbackId,
+  initialFocus = 'loop',
+}: {
+  initialFeedbackId?: string
+  initialFocus?: 'loop' | 'signoff'
+}) {
   const { locale, text } = useReviewLocale()
   const statusText = (status?: string) => status
     ? uiStatusLabels[status]?.[locale] || status
     : '--'
+  const messageText = (message?: string) => {
+    if (!message || locale === 'en-US') return message || ''
+    const knownMessages: Array<[string, string]> = [
+      [
+        'The experiment is reproducible, aligned with the plan, and ready for scientific interpretation.',
+        '本轮实验可复现、与计划一致，可以进入科学解释与结论审核。',
+      ],
+      [
+        'Record the result and decide whether the research stop conditions have been met.',
+        '记录本轮结果，并依据停止条件决定结束或继续迭代。',
+      ],
+      [
+        'Competition case uses its preregistered round-two plan; no PlanPackage write is required.',
+        '该代表案例使用已预注册的第二轮计划，无需再次写入 PlanPackage。',
+      ],
+    ]
+    return knownMessages.find(([source]) => source === message)?.[1] || message
+  }
   const [runs, setRuns] = useState<CompletedRun[]>([])
   const [runsLoading, setRunsLoading] = useState(true)
   const [selectedRunId, setSelectedRunId] = useState('')
@@ -454,6 +490,23 @@ export function ExperimentFeedbackPanel({ initialFeedbackId }: { initialFeedback
         const controls = restoreLoopControls(feedback)
         setResult(feedback)
         setSelectedRunId(feedback.runId)
+        setRuns((current) => current.some((run) => run.id === feedback.runId) ? current : [
+          {
+            id: feedback.runId,
+            status: 'completed',
+            runKind: feedback.runKind,
+            createdAt: feedback.createdAt,
+            parentRunId: feedback.parentRunId,
+            researchSeriesId: feedback.researchSeriesId,
+            iterationNumber: feedback.iterationNumber,
+            artifacts: Object.entries(feedback.sourceArtifacts || {}).map(([filename, id]) => ({ id, filename })),
+            config: {
+              workplaceName: text(`ReviewX 受控闭环 · V${feedback.iterationNumber || 1}`, `ReviewX controlled loop · V${feedback.iterationNumber || 1}`),
+              model: 'ReviewX',
+            },
+          },
+          ...current,
+        ])
         setPrimaryMetric(controls.primaryMetric)
         setMetricDirection(controls.direction)
         setMaxIterations(controls.maxIterations)
@@ -462,10 +515,11 @@ export function ExperimentFeedbackPanel({ initialFeedbackId }: { initialFeedback
         setLoopProgress(controls.progress)
         setPlanRevised(false)
         setNextRunId('')
-        setActionMessage(text('已打开指定证据记录，可直接进行人工签核。', 'Requested evidence record loaded for human signoff.'))
+        setActionMessage(text('已打开指定证据记录。', 'Requested evidence record loaded.'))
         void loadHistory(feedback.runId, feedback.researchSeriesId)
         window.setTimeout(() => {
-          document.getElementById('reviewx-human-oversight')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+          const targetId = initialFocus === 'signoff' ? 'reviewx-human-oversight' : 'reviewx-closed-loop'
+          document.getElementById(targetId)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
         }, 80)
       } catch (loadError) {
         if (!cancelled) {
@@ -481,17 +535,24 @@ export function ExperimentFeedbackPanel({ initialFeedbackId }: { initialFeedback
     return () => {
       cancelled = true
     }
-  }, [initialFeedbackId, text])
+  }, [initialFeedbackId, initialFocus, text])
 
   const selectedRun = useMemo(
     () => runs.find((run) => run.id === selectedRunId),
     [runs, selectedRunId],
   )
   const availableFilenames = useMemo(
-    () => new Set((selectedRun?.artifacts || []).map((artifact) => artifactBasename(artifact.filename))),
-    [selectedRun],
+    () => new Set([
+      ...(selectedRun?.artifacts || []).map((artifact) => artifactBasename(artifact.filename)),
+      ...(selectedRunId === result?.runId ? Object.keys(result.sourceArtifacts || {}).map(artifactBasename) : []),
+    ]),
+    [result, selectedRun, selectedRunId],
   )
-  const requiredReady = requiredArtifacts
+  const isClosedLoopEvidenceRecord = Boolean(
+    selectedRunId === result?.runId && result?.sourceArtifactUrls?.['plan_delta_contract.json'],
+  )
+  const displayedArtifacts = isClosedLoopEvidenceRecord ? closedLoopArtifacts : requiredArtifacts
+  const requiredReady = displayedArtifacts
     .filter((artifact) => artifact.required)
     .every((artifact) => availableFilenames.has(artifact.filename))
 
@@ -526,14 +587,16 @@ export function ExperimentFeedbackPanel({ initialFeedbackId }: { initialFeedback
     }
   }
 
-  const runAudit = async () => {
-    if (!selectedRunId) return
+  const runAudit = async (requestedRunId = selectedRunId) => {
+    if (!requestedRunId) return
+    const requestedRun = runs.find((run) => run.id === requestedRunId)
+    setSelectedRunId(requestedRunId)
     setAuditing(true)
     setError('')
     setResult(null)
     try {
       const response = await fetch(
-        `${API_BASE_URL}/api/v1/reviews/reviewx/runs/${selectedRunId}/experiment-feedback`,
+        `${API_BASE_URL}/api/v1/reviews/reviewx/runs/${requestedRunId}/experiment-feedback`,
         {
           method: 'POST',
           headers: {
@@ -541,8 +604,8 @@ export function ExperimentFeedbackPanel({ initialFeedbackId }: { initialFeedback
             ...(reviewAuthToken ? { Authorization: `Bearer ${reviewAuthToken}` } : {}),
           },
           body: JSON.stringify({
-            planPackageId: selectedRun?.runKind === 'platform' ? planPackageId || undefined : undefined,
-            applyToPlanPackage: selectedRun?.runKind === 'platform' ? applyToPlan : false,
+            planPackageId: requestedRun?.runKind === 'platform' ? planPackageId || undefined : undefined,
+            applyToPlanPackage: requestedRun?.runKind === 'platform' ? applyToPlan : false,
           }),
         },
       )
@@ -563,7 +626,7 @@ export function ExperimentFeedbackPanel({ initialFeedbackId }: { initialFeedback
       setPlanRevised(false)
       setNextRunId('')
       setActionMessage('')
-      void loadHistory(selectedRunId, data.researchSeriesId)
+      void loadHistory(requestedRunId, data.researchSeriesId)
     } catch (auditError) {
       setError(auditError instanceof Error ? auditError.message : 'Experiment feedback audit failed.')
     } finally {
@@ -590,6 +653,8 @@ export function ExperimentFeedbackPanel({ initialFeedbackId }: { initialFeedback
       humanSignoffs: record.humanSignoffs,
       humanFeedback: record.humanFeedback,
       humanConditionVerifications: record.humanConditionVerifications,
+      sourceArtifactUrls: record.sourceArtifactUrls,
+      closedLoop: record.closedLoop,
     })
     setPlanRevised(Boolean(record.planRevision))
     setNextRunId(record.nextRunId || '')
@@ -919,6 +984,24 @@ export function ExperimentFeedbackPanel({ initialFeedbackId }: { initialFeedback
     && !result?.qualityAssessment.findings.some((finding) => finding.severity === 'blocker'),
   )
   const signoffFormReady = Boolean(reviewerId.trim() && signoffRationale.trim())
+  const nextRun = useMemo(
+    () => runs.find((run) => run.id === nextRunId),
+    [nextRunId, runs],
+  )
+  const reviewLoopTrace: ReviewLoopTrace | null = result ? result.closedLoop || {
+    status: nextRunId ? 'iteration_created' : result.iterationDecision.decision === 'accept_results' ? 'accepted' : 'needs_iteration',
+    fromRunId: result.runId,
+    toRunId: nextRunId || null,
+    researchSeriesId: result.researchSeriesId,
+    fromIteration: result.iterationNumber || 1,
+    toIteration: nextRunId ? (result.iterationNumber || 1) + 1 : null,
+    scientificDecision: result.iterationDecision.decision,
+    targetModules: Array.from(new Set(result.qualityAssessment.findings.map((finding) => finding.targetModule).filter(Boolean))) as string[],
+    targetSections: result.iterationDecision.targetSections,
+    changes: [],
+    rounds: [],
+    primaryMetric: result.loopProgress?.primaryMetric,
+  } : null
 
   return (
     <Card className="mb-6 border-emerald-200 shadow-md">
@@ -942,26 +1025,29 @@ export function ExperimentFeedbackPanel({ initialFeedbackId }: { initialFeedback
         </div>
       </CardHeader>
       <CardContent className="pt-5">
-        <section className="mb-5 flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 pb-5">
-          <div className="flex items-start gap-3">
-            <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-emerald-700" />
-            <div>
-              <div className="text-sm font-semibold text-slate-900">
-                {text('验证成果', 'Validation results')}
-              </div>
-              <p className="mt-1 text-xs leading-5 text-slate-600">
-                {text('查看团队基准实验与复验证据；本页只处理所选 Run 的审核、反馈和人工签核。', 'Inspect team benchmarks and replication evidence; this page only audits the selected run and records feedback and human sign-off.')}
-              </p>
-            </div>
+        {result && reviewLoopTrace && (
+          <div className="mb-5">
+            <ReviewIterationLoop
+              trace={reviewLoopTrace}
+              gateStatus={result.qualityAssessment.gateStatus}
+              findingCount={result.qualityAssessment.findings.length}
+              metricDeltas={result.iterationDecision.metricDeltas}
+              sourceArtifactUrls={result.sourceArtifactUrls}
+              nextRunId={nextRunId}
+              nextRunStatus={nextRun?.status}
+              iterationHumanReady={iterationHumanReady}
+              actionLoading={actionLoading}
+              showActions={result.runKind === 'faros'}
+              onCreateIteration={() => {
+                if (result.runKind === 'faros') void advanceControlledLoop()
+                else void createNextRun()
+              }}
+              onStartIteration={() => void startNextFarosRun()}
+              onAuditIteration={() => nextRunId && void runAudit(nextRunId)}
+              onOpenSignoff={() => document.getElementById('reviewx-human-oversight')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+            />
           </div>
-          <Link
-            to="/review/competition"
-            className={`${buttonVariants({ variant: 'outline', size: 'sm' })} whitespace-nowrap`}
-          >
-            {text('查看验证成果', 'Open validation results')}
-            <ArrowRight className="ml-2 h-4 w-4" />
-          </Link>
-        </section>
+        )}
         <div className="grid gap-5 xl:grid-cols-[minmax(280px,0.9fr)_minmax(0,1.4fr)]">
           <div className="space-y-4">
             <div className="flex gap-2">
@@ -986,7 +1072,7 @@ export function ExperimentFeedbackPanel({ initialFeedbackId }: { initialFeedback
             </div>
 
             <div className="grid gap-2 sm:grid-cols-3 xl:grid-cols-1 2xl:grid-cols-3">
-              {requiredArtifacts.map((artifact) => {
+              {displayedArtifacts.map((artifact) => {
                 const present = availableFilenames.has(artifact.filename)
                 return (
                   <div key={artifact.filename} className="flex min-h-12 items-center gap-2 rounded-md border border-slate-200 px-3 py-2">
@@ -1109,7 +1195,7 @@ export function ExperimentFeedbackPanel({ initialFeedbackId }: { initialFeedback
                   )}
                   <div className="min-w-0">
                     <div className="text-sm font-semibold text-slate-900">{decisionLabel[result.iterationDecision.decision][locale]}</div>
-                    <div className="mt-1 text-sm leading-5 text-slate-600">{result.iterationDecision.rationale}</div>
+                    <div className="mt-1 text-sm leading-5 text-slate-600">{messageText(result.iterationDecision.rationale)}</div>
                     {result.iterationDecision.targetSections.length > 0 && (
                       <div className="mt-2 flex flex-wrap gap-1">
                         {result.iterationDecision.targetSections.map((section) => (
@@ -1121,8 +1207,12 @@ export function ExperimentFeedbackPanel({ initialFeedbackId }: { initialFeedback
                 </div>
 
                 {result.iterationDecision.metricDeltas.length > 0 && (
-                  <div className="overflow-x-auto rounded-md border border-slate-200">
-                    <table className="w-full text-sm">
+                  <details className="rounded-md border border-slate-200">
+                    <summary className="cursor-pointer px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50">
+                      {text('完整指标变化', 'Full metric deltas')} ({result.iterationDecision.metricDeltas.length})
+                    </summary>
+                    <div className="overflow-x-auto border-t border-slate-200">
+                      <table className="w-full text-sm">
                       <thead className="bg-slate-50 text-left text-xs text-slate-600">
                         <tr>
                           <th className="px-3 py-2">Metric</th>
@@ -1141,8 +1231,9 @@ export function ExperimentFeedbackPanel({ initialFeedbackId }: { initialFeedback
                           </tr>
                         ))}
                       </tbody>
-                    </table>
-                  </div>
+                      </table>
+                    </div>
+                  </details>
                 )}
 
                 {result.runKind === 'faros' && result.metricSnapshot.length > 0 && (
@@ -1281,7 +1372,7 @@ export function ExperimentFeedbackPanel({ initialFeedbackId }: { initialFeedback
                       {result.iterationDecision.nextActions.slice(0, 4).map((action, index) => (
                         <div key={`${index}-${action}`} className="flex gap-2 text-sm text-slate-700">
                           <span className="font-semibold text-emerald-700">{index + 1}.</span>
-                          <span>{action}</span>
+                          <span>{messageText(action)}</span>
                         </div>
                       ))}
                     </div>
@@ -1294,7 +1385,7 @@ export function ExperimentFeedbackPanel({ initialFeedbackId }: { initialFeedback
                       <div className={result.planFeedback.applied ? 'text-emerald-700' : 'text-slate-500'}>
                         {result.planFeedback.applied
                           ? text('PlanPackage 修正已附加', 'PlanPackage correction attached')
-                          : result.planFeedback.reason || text('未请求写入 PlanPackage', 'No PlanPackage write requested')}
+                          : messageText(result.planFeedback.reason) || text('未请求写入 PlanPackage', 'No PlanPackage write requested')}
                       </div>
                       {result.humanFeedback?.requiresApplication && (
                         <div className={result.humanFeedback.applied ? 'text-emerald-700' : 'font-medium text-amber-700'}>
@@ -1627,9 +1718,9 @@ export function ExperimentFeedbackPanel({ initialFeedbackId }: { initialFeedback
                   </div>
                 </section>
 
-                {(result.planFeedback.packageId || result.runKind === 'faros') && (
+                {result.runKind === 'platform' && result.planFeedback.packageId && (
                   <div className="flex flex-wrap items-center gap-2 border-t border-slate-200 pt-4">
-                    {result.runKind === 'platform' && result.iterationDecision.decision !== 'accept_results' && (
+                    {result.iterationDecision.decision !== 'accept_results' && (
                       <Button
                         variant="outline"
                         onClick={() => void revisePlan()}
@@ -1648,63 +1739,25 @@ export function ExperimentFeedbackPanel({ initialFeedbackId }: { initialFeedback
                         {planRevised ? text('计划已修订', 'Plan revised') : text('修订计划', 'Revise Plan')}
                       </Button>
                     )}
-                    {result.runKind === 'faros' && nextRunId ? (
-                      <Button onClick={() => void startNextFarosRun()} disabled={Boolean(actionLoading)}>
-                        {actionLoading === 'start' ? (
-                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                        ) : (
-                          <PlayCircle className="mr-2 h-4 w-4" />
-                        )}
-                        {text('启动下一轮', 'Start Next Run')}
-                      </Button>
-                    ) : result.runKind === 'faros' ? (
-                      <Button
-                        onClick={() => void advanceControlledLoop()}
-                        disabled={Boolean(actionLoading) || !primaryMetric || !iterationHumanReady}
-                      >
-                        {actionLoading === 'next' ? (
-                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                        ) : (
-                          <RotateCcw className="mr-2 h-4 w-4" />
-                        )}
-                        {text('推进受控闭环', 'Advance Controlled Loop')}
-                      </Button>
-                    ) : (
-                      <Button
-                        onClick={() => void createNextRun()}
-                        disabled={
-                          Boolean(actionLoading)
-                          || (
-                            result.runKind === 'platform'
-                            && result.iterationDecision.decision === 'revise_plan'
-                            && !planRevised
-                          )
-                          || !iterationHumanReady
-                        }
-                      >
-                        {actionLoading === 'next' ? (
-                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                        ) : (
-                          <PlayCircle className="mr-2 h-4 w-4" />
-                        )}
-                        {nextRunId ? text('打开下一轮', 'Open Next Run') : text('创建下一轮', 'Create Next Run')}
-                      </Button>
-                    )}
-                    {nextRunId && (
-                      result.runKind === 'faros' ? (
-                        <a
-                          href={`${API_BASE_URL}/api/faros/runs/${encodeURIComponent(nextRunId)}/detail`}
-                          target="_blank"
-                          rel="noreferrer"
-                          className={buttonVariants({ variant: 'ghost' })}
-                        >
-                          {text('检查', 'Inspect')} {nextRunId}
-                        </a>
+                    <Button
+                      onClick={() => void createNextRun()}
+                      disabled={
+                        Boolean(actionLoading)
+                        || (result.iterationDecision.decision === 'revise_plan' && !planRevised)
+                        || !iterationHumanReady
+                      }
+                    >
+                      {actionLoading === 'next' ? (
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                       ) : (
-                        <Link to={`/runs/${nextRunId}`} className={buttonVariants({ variant: 'ghost' })}>
-                          {text('查看', 'View')} {nextRunId}
-                        </Link>
-                      )
+                        <PlayCircle className="mr-2 h-4 w-4" />
+                      )}
+                      {nextRunId ? text('打开下一轮', 'Open Next Run') : text('创建下一轮', 'Create Next Run')}
+                    </Button>
+                    {nextRunId && (
+                      <Link to={`/runs/${nextRunId}`} className={buttonVariants({ variant: 'ghost' })}>
+                        {text('查看', 'View')} {nextRunId}
+                      </Link>
                     )}
                     {actionMessage && <div className="w-full text-xs text-slate-600">{actionMessage}</div>}
                     {!iterationHumanReady && (
@@ -1714,7 +1767,7 @@ export function ExperimentFeedbackPanel({ initialFeedbackId }: { initialFeedback
                           : text('下一轮前需完成方案签核。', 'Plan approval is required before the next iteration.')}
                       </div>
                     )}
-                    {result.runKind === 'platform' && !result.planFeedback.applied && result.iterationDecision.decision !== 'accept_results' && (
+                    {!result.planFeedback.applied && result.iterationDecision.decision !== 'accept_results' && (
                       <div className="w-full text-xs text-amber-700">
                         {text('修订计划前，请启用“写入修正”后重新运行审计。', 'Run the audit with Write correction enabled before revising the plan.')}
                       </div>

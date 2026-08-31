@@ -329,6 +329,7 @@ export function ConsistencyChecker() {
   const { text } = useReviewLocale()
   const [searchParams] = useSearchParams()
   const requestedFeedbackId = searchParams.get('feedbackId') || undefined
+  const requestedFeedbackFocus = searchParams.get('focus') === 'signoff' ? 'signoff' : 'loop'
   const { data: papers, isLoading: papersLoading } = usePapers()
   const [selectedPaperId, setSelectedPaperId] = useState<string>('')
   const [budgetMode, setBudgetMode] = useState<string>('balanced')
@@ -705,7 +706,7 @@ export function ConsistencyChecker() {
         </Badge>
       </div>
 
-      <ExperimentFeedbackPanel initialFeedbackId={requestedFeedbackId} />
+      <ExperimentFeedbackPanel initialFeedbackId={requestedFeedbackId} initialFocus={requestedFeedbackFocus} />
       <div className="grid grid-cols-1 xl:grid-cols-[420px_minmax(0,1fr)] gap-6 items-start">
         <div className="space-y-6">
           <Card className="shadow-md">

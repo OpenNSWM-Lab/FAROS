@@ -1247,6 +1247,27 @@ def test_completed_scifact_case_registers_idempotent_common_human_review(monkeyp
     (output / "experiment_series.json").write_text(
         progress.model_dump_json(indent=2), encoding="utf-8",
     )
+    (output / "plan_delta_contract.json").write_text(json.dumps({
+        "fromRunId": f"{run_id}_r1",
+        "toRunId": f"{run_id}_r2",
+        "scientificDecision": "revise_plan",
+        "selectedCandidateId": "lower_threshold",
+        "contentHash": "sha256:delta-contract",
+        "changes": [{
+            "fieldPath": "decisionThreshold",
+            "before": 0.5,
+            "after": 0.375,
+            "rationale": "Improve recall under frozen guardrails.",
+            "evidenceIds": ["ev-round-one"],
+        }],
+        "qwenContribution": {"finalHoldoutExposed": False},
+    }), encoding="utf-8")
+    (output / "timeline.json").write_text(json.dumps({
+        "events": [
+            {"event": "reviewx_round_one_feedback_created", "decision": "revise_plan"},
+            {"event": "round_two_executed_and_audited", "gateStatus": "pass"},
+        ],
+    }), encoding="utf-8")
 
     first = _register_scifact_human_review(job)
     second = _register_scifact_human_review(job)
@@ -1262,6 +1283,14 @@ def test_completed_scifact_case_registers_idempotent_common_human_review(monkeyp
     assert response.humanSignoffs["conclusion"]["status"] == "pending"
     assert response.reviewerPolicy == "single_accountable_reviewer"
     assert response.publicationReady is False
+    assert response.closedLoop["status"] == "completed"
+    assert response.closedLoop["scientificDecision"] == "revise_plan"
+    assert response.closedLoop["targetModules"] == ["experiments"]
+    assert response.closedLoop["changes"][0]["fieldPath"] == "decisionThreshold"
+    assert response.closedLoop["fromIteration"] == 1
+    assert response.closedLoop["toIteration"] == 2
+    assert response.closedLoop["finalHoldoutProtected"] is True
+    assert "plan_delta_contract.json" in response.sourceArtifactUrls
 
 
 def test_scifact_public_artifact_endpoint_uses_allowlist(monkeypatch, tmp_path):
