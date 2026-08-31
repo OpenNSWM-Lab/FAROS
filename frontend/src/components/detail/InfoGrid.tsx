@@ -20,8 +20,8 @@ export function InfoGrid({ items, columns = 3 }: InfoGridProps) {
 
   return (
     <div className={`grid gap-6 ${gridCols[columns]}`}>
-      {items.map((item, index) => (
-        <div key={index} className="space-y-2">
+      {items.map((item) => (
+        <div key={item.label} className="space-y-2">
           <div className="text-sm font-medium text-slate-600">{item.label}</div>
           <div className="text-sm font-semibold text-slate-900">{item.value}</div>
         </div>
