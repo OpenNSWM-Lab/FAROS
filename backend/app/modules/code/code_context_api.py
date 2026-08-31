@@ -30,7 +30,7 @@ router = APIRouter(prefix="/code/context", tags=["code_context"])
 
 class BuildContextRequest(BaseModel):
     """Request to build repository context."""
-    repoPath: str = Field(..., description="Absolute path to repository")
+    repoPath: str = Field(..., max_length=1024, description="Absolute path to repository")
     includeGlobs: List[str] = Field(default=["*"], description="Glob patterns to include")
     excludeGlobs: List[str] = Field(default=[], description="Additional glob patterns to exclude")
     maxFileSize: int = Field(default=1024*1024, description="Maximum file size in bytes")
