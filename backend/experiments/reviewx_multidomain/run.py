@@ -18,6 +18,10 @@ from typing import Any
 
 import numpy as np
 
+from app.modules.review.effect_statistics import (
+    interval_effect_status,
+    paired_transition_audit,
+)
 from experiments.reviewx_scifact.run import (
     ENTITY_FEATURES,
     FEATURE_NAMES,
@@ -50,9 +54,14 @@ PUBHEALTH_PAPER = "https://aclanthology.org/2020.emnlp-main.623/"
 PUBHEALTH_LABELS = {"true", "false", "mixture", "unproven"}
 
 SPLIT_SEED = 20260825
-SCHEMA_VERSION = "reviewx-multidomain-benchmark/v1"
+SCHEMA_VERSION = "reviewx-multidomain-benchmark/v3"
 MULTIDOMAIN_BOOTSTRAP_SEED = 20260829
+VALIDATION_GATE_BOOTSTRAP_SEED = 20260901
+VALIDATION_SPLIT_SEED = 20260901
 THRESHOLD_CANDIDATES = tuple(round(0.1 + index * 0.025, 3) for index in range(33))
+MIN_VALIDATION_MACRO_F1_GAIN = 0.005
+MAX_UNSUPPORTED_F1_REGRESSION = 0.08
+MAX_SUPPORT_F1_REGRESSION = 0.01
 
 
 @dataclass(frozen=True)
@@ -247,6 +256,8 @@ def load_pubhealth(dataset_root: Path, archive: Path) -> LoadedDataset:
 
 def _fit_probabilities(
     dataset: LoadedDataset,
+    *,
+    validation_bootstrap_samples: int,
 ) -> tuple[dict[str, np.ndarray], np.ndarray, dict[str, float], dict[str, Any]]:
     extractor = FactorizedFeatureExtractor().fit(dataset.train)
     train_features = extractor.transform(dataset.train)
@@ -271,20 +282,16 @@ def _fit_probabilities(
         model = NumpyLogisticRegression().fit(train_features[:, indices], train_labels)
         probabilities[name] = model.predict_proba(test_features[:, indices])
         validation_probabilities[name] = model.predict_proba(validation_features[:, indices])
-    calibrated_threshold, validation_metrics = select_threshold(
+    calibrated_threshold, validation_selection = select_threshold_with_gate(
+        dataset.validation,
         validation_labels,
         validation_probabilities["within_domain"],
+        bootstrap_samples=validation_bootstrap_samples,
     )
     probabilities["within_domain_calibrated"] = probabilities["within_domain"]
     thresholds = {name: 0.5 for name in probabilities}
     thresholds["within_domain_calibrated"] = calibrated_threshold
-    return probabilities, test_features, thresholds, {
-        "selectionSplit": "validation",
-        "candidateThresholds": list(THRESHOLD_CANDIDATES),
-        "selectedThreshold": calibrated_threshold,
-        "selectedValidationMetrics": validation_metrics,
-        "testLabelsUsedForSelection": False,
-    }
+    return probabilities, test_features, thresholds, validation_selection
 
 
 def extended_metrics(
@@ -347,6 +354,197 @@ def select_threshold(labels: np.ndarray, probabilities: np.ndarray) -> tuple[flo
     return threshold, metrics
 
 
+def _validation_partition_indices(
+    examples: list[Example],
+) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
+    """Split claim groups before selection so the gate audits unseen validation groups."""
+
+    proposal_groups = {
+        item.claim_id
+        for item in examples
+        if int(
+            hashlib.sha256(
+                f"{VALIDATION_SPLIT_SEED}:{item.claim_id}".encode("utf-8")
+            ).hexdigest()[:8],
+            16,
+        )
+        % 2
+        == 0
+    }
+    all_groups = {item.claim_id for item in examples}
+    gate_groups = all_groups - proposal_groups
+    if not proposal_groups or not gate_groups:
+        raise ValueError("Validation proposal/gate split produced an empty partition.")
+
+    proposal_indices = np.asarray(
+        [index for index, item in enumerate(examples) if item.claim_id in proposal_groups],
+        dtype=int,
+    )
+    gate_indices = np.asarray(
+        [index for index, item in enumerate(examples) if item.claim_id in gate_groups],
+        dtype=int,
+    )
+    return proposal_indices, gate_indices, {
+        "splitUnit": "claim_id",
+        "splitRule": "sha256(seed:claim_id) modulo 2",
+        "seed": VALIDATION_SPLIT_SEED,
+        "proposalBucket": 0,
+        "proposalClaimGroups": len(proposal_groups),
+        "gateClaimGroups": len(gate_groups),
+        "proposalPairs": int(len(proposal_indices)),
+        "gatePairs": int(len(gate_indices)),
+        "groupIntersection": len(proposal_groups & gate_groups),
+    }
+
+
+def _select_threshold_under_guardrails(
+    labels: np.ndarray,
+    probabilities: np.ndarray,
+) -> tuple[float, dict[str, float]]:
+    fixed = extended_metrics(labels, probabilities, threshold=0.5)
+    feasible = []
+    for threshold in THRESHOLD_CANDIDATES:
+        metrics = extended_metrics(labels, probabilities, threshold=threshold)
+        if (
+            metrics["Balanced Accuracy"] >= fixed["Balanced Accuracy"]
+            and metrics["F1-Score"]
+            >= fixed["F1-Score"] - MAX_UNSUPPORTED_F1_REGRESSION
+            and metrics["Support F1"]
+            >= fixed["Support F1"] - MAX_SUPPORT_F1_REGRESSION
+        ):
+            feasible.append((threshold, metrics))
+    if not feasible:
+        return 0.5, fixed
+    return max(
+        feasible,
+        key=lambda item: (
+            item[1]["Macro F1"],
+            item[1]["Balanced Accuracy"],
+            -abs(item[0] - 0.5),
+            -item[0],
+        ),
+    )
+
+
+def _cluster_bootstrap_threshold_delta(
+    examples: list[Example],
+    labels: np.ndarray,
+    probabilities: np.ndarray,
+    *,
+    proposed_threshold: float,
+    samples: int,
+) -> dict[str, Any]:
+    groups = np.asarray([item.claim_id for item in examples])
+    unique_groups = np.unique(groups)
+    group_indices = {
+        group: np.flatnonzero(groups == group)
+        for group in unique_groups
+    }
+    rng = np.random.default_rng(VALIDATION_GATE_BOOTSTRAP_SEED)
+    improvements: list[float] = []
+    for _ in range(samples):
+        sampled_groups = rng.choice(unique_groups, size=len(unique_groups), replace=True)
+        indices = np.concatenate([group_indices[group] for group in sampled_groups])
+        fixed = extended_metrics(labels[indices], probabilities[indices], threshold=0.5)
+        proposed = extended_metrics(
+            labels[indices], probabilities[indices], threshold=proposed_threshold,
+        )
+        improvements.append(proposed["Macro F1"] - fixed["Macro F1"])
+    ci_low = float(np.percentile(improvements, 2.5))
+    ci_high = float(np.percentile(improvements, 97.5))
+    return {
+        "improvementMean": float(np.mean(improvements)),
+        "ci95Low": ci_low,
+        "ci95High": ci_high,
+        "probabilityOfImprovement": float(np.mean(np.asarray(improvements) > 0)),
+        "effectStatus": interval_effect_status(ci_low, ci_high),
+        "resamplingUnit": "claim_id",
+        "claimGroups": int(len(unique_groups)),
+        "samples": samples,
+        "seed": VALIDATION_GATE_BOOTSTRAP_SEED,
+    }
+
+
+def select_threshold_with_gate(
+    examples: list[Example],
+    labels: np.ndarray,
+    probabilities: np.ndarray,
+    *,
+    bootstrap_samples: int,
+) -> tuple[float, dict[str, Any]]:
+    """Select on proposal groups and admit only revisions that pass an unseen gate."""
+
+    proposal_indices, gate_indices, split_audit = _validation_partition_indices(examples)
+    proposed_threshold, proposal_metrics = _select_threshold_under_guardrails(
+        labels[proposal_indices],
+        probabilities[proposal_indices],
+    )
+    proposal_fixed_metrics = extended_metrics(
+        labels[proposal_indices],
+        probabilities[proposal_indices],
+        threshold=0.5,
+    )
+    gate_examples = [examples[index] for index in gate_indices]
+    gate_labels = labels[gate_indices]
+    gate_probabilities = probabilities[gate_indices]
+    fixed_metrics = extended_metrics(
+        gate_labels,
+        gate_probabilities,
+        threshold=0.5,
+    )
+    proposed_metrics = extended_metrics(
+        gate_labels,
+        gate_probabilities,
+        threshold=proposed_threshold,
+    )
+    uncertainty = _cluster_bootstrap_threshold_delta(
+        gate_examples,
+        gate_labels,
+        gate_probabilities,
+        proposed_threshold=proposed_threshold,
+        samples=bootstrap_samples,
+    )
+    checks = {
+        "proposalChangesThreshold": proposed_threshold != 0.5,
+        "macroF1GainAtLeast005": (
+            proposed_metrics["Macro F1"]
+            >= fixed_metrics["Macro F1"] + MIN_VALIDATION_MACRO_F1_GAIN
+        ),
+        "macroF1ClusterCIExcludesZero": uncertainty["ci95Low"] > 0,
+        "balancedAccuracyDoesNotRegress": (
+            proposed_metrics["Balanced Accuracy"]
+            >= fixed_metrics["Balanced Accuracy"]
+        ),
+        "unsupportedF1WithinTolerance": (
+            proposed_metrics["F1-Score"]
+            >= fixed_metrics["F1-Score"] - MAX_UNSUPPORTED_F1_REGRESSION
+        ),
+        "supportF1WithinTolerance": (
+            proposed_metrics["Support F1"]
+            >= fixed_metrics["Support F1"] - MAX_SUPPORT_F1_REGRESSION
+        ),
+    }
+    apply_revision = all(checks.values())
+    applied_threshold = proposed_threshold if apply_revision else 0.5
+    return applied_threshold, {
+        "selectionSplit": "validation",
+        "selectionProtocol": "disjoint_claim_group_proposal_and_gate",
+        "splitAudit": split_audit,
+        "candidateThresholds": list(THRESHOLD_CANDIDATES),
+        "proposedThreshold": proposed_threshold,
+        "appliedThreshold": applied_threshold,
+        "gateDecision": "apply_revision" if apply_revision else "keep_round_one",
+        "roundOneProposalMetrics": proposal_fixed_metrics,
+        "proposedProposalMetrics": proposal_metrics,
+        "roundOneGateMetrics": fixed_metrics,
+        "proposedGateMetrics": proposed_metrics,
+        "selectedValidationMetrics": proposed_metrics if apply_revision else fixed_metrics,
+        "pairedClusterBootstrap": uncertainty,
+        "gateChecks": checks,
+        "testLabelsUsedForSelection": False,
+    }
+
+
 def paired_bootstrap_extended(
     labels: np.ndarray,
     baseline: np.ndarray,
@@ -355,13 +553,24 @@ def paired_bootstrap_extended(
     samples: int,
     baseline_threshold: float = 0.5,
     method_threshold: float = 0.5,
+    groups: np.ndarray | None = None,
 ) -> dict[str, dict[str, float]]:
     rng = np.random.default_rng(MULTIDOMAIN_BOOTSTRAP_SEED)
     metric_names = ("Macro F1", "Balanced Accuracy", "Brier Score", "AUROC")
     directions = {"Macro F1": 1, "Balanced Accuracy": 1, "Brier Score": -1, "AUROC": 1}
     improvements: dict[str, list[float]] = {name: [] for name in metric_names}
+    unique_groups = np.unique(groups) if groups is not None else None
+    group_indices = (
+        {group: np.flatnonzero(groups == group) for group in unique_groups}
+        if unique_groups is not None
+        else None
+    )
     for _ in range(samples):
-        indices = rng.integers(0, len(labels), size=len(labels))
+        if unique_groups is None or group_indices is None:
+            indices = rng.integers(0, len(labels), size=len(labels))
+        else:
+            sampled_groups = rng.choice(unique_groups, size=len(unique_groups), replace=True)
+            indices = np.concatenate([group_indices[group] for group in sampled_groups])
         sampled_labels = labels[indices]
         if len(set(sampled_labels.tolist())) < 2:
             continue
@@ -432,10 +641,14 @@ def _evaluate_dataset(
     *,
     bootstrap_samples: int,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    probabilities, test_features, thresholds, validation_selection = _fit_probabilities(dataset)
+    probabilities, test_features, thresholds, validation_selection = _fit_probabilities(
+        dataset,
+        validation_bootstrap_samples=bootstrap_samples,
+    )
     probabilities["scifact_transfer"] = _transfer_probabilities(scifact_train, dataset.test)
     thresholds["scifact_transfer"] = 0.5
     labels = np.asarray([item.label for item in dataset.test], dtype=float)
+    claim_groups = np.asarray([item.claim_id for item in dataset.test])
     metrics = {
         name: extended_metrics(labels, values, threshold=thresholds[name])
         for name, values in probabilities.items()
@@ -446,6 +659,7 @@ def _evaluate_dataset(
             probabilities["lexical_baseline"],
             probabilities["within_domain"],
             samples=bootstrap_samples,
+            groups=claim_groups,
         ),
         "calibratedWithinDomainVsLexical": paired_bootstrap_extended(
             labels,
@@ -453,6 +667,7 @@ def _evaluate_dataset(
             probabilities["within_domain_calibrated"],
             samples=bootstrap_samples,
             method_threshold=thresholds["within_domain_calibrated"],
+            groups=claim_groups,
         ),
         "calibratedVsFixedWithinDomain": paired_bootstrap_extended(
             labels,
@@ -460,14 +675,31 @@ def _evaluate_dataset(
             probabilities["within_domain_calibrated"],
             samples=bootstrap_samples,
             method_threshold=thresholds["within_domain_calibrated"],
+            groups=claim_groups,
         ),
         "SciFactTransferVsLexical": paired_bootstrap_extended(
             labels,
             probabilities["lexical_baseline"],
             probabilities["scifact_transfer"],
             samples=bootstrap_samples,
+            groups=claim_groups,
         ),
     }
+    round_one_predictions = probabilities["within_domain"] >= thresholds["within_domain"]
+    round_two_predictions = (
+        probabilities["within_domain_calibrated"]
+        >= thresholds["within_domain_calibrated"]
+    )
+    intervention_audit = paired_transition_audit(
+        labels.astype(int).tolist(),
+        round_one_predictions.astype(int).tolist(),
+        round_two_predictions.astype(int).tolist(),
+    )
+    macro_f1_inference = bootstrap["calibratedVsFixedWithinDomain"]["Macro F1"]
+    macro_f1_inference["effectStatus"] = interval_effect_status(
+        macro_f1_inference["ci95Low"], macro_f1_inference["ci95High"],
+    )
+    macro_f1_inference["resamplingUnit"] = "claim_id"
     audit = _partition_audit(dataset)
     sample_ids = [item.sample_id for item in dataset.test]
     quality_checks = {
@@ -479,8 +711,16 @@ def _evaluate_dataset(
         "featuresFinite": bool(np.isfinite(test_features).all()),
         "predictionsFinite": all(bool(np.isfinite(values).all()) for values in probabilities.values()),
         "thresholdSelectedWithoutTestLabels": (
-            validation_selection["selectedThreshold"] in THRESHOLD_CANDIDATES
+            validation_selection["appliedThreshold"] in THRESHOLD_CANDIDATES
             and validation_selection["testLabelsUsedForSelection"] is False
+        ),
+        "validationGateUsesClaimClusterBootstrap": (
+            validation_selection["pairedClusterBootstrap"]["resamplingUnit"] == "claim_id"
+        ),
+        "validationSelectionAndGateAreGroupDisjoint": (
+            validation_selection["selectionProtocol"]
+            == "disjoint_claim_group_proposal_and_gate"
+            and validation_selection["splitAudit"]["groupIntersection"] == 0
         ),
         "metricsFinite": all(
             math.isfinite(value)
@@ -503,6 +743,8 @@ def _evaluate_dataset(
         "decisionThresholds": thresholds,
         "validationThresholdSelection": validation_selection,
         "pairedBootstrap": bootstrap,
+        "interventionAudit": intervention_audit,
+        "effectInference": {"Macro F1": macro_f1_inference},
         "qualityGate": {
             "status": "passed" if all(quality_checks.values()) else "failed",
             "checks": quality_checks,
@@ -525,7 +767,7 @@ def _evaluate_dataset(
         },
     }
     records = {
-        "schemaVersion": "reviewx-multidomain-evaluation/v1",
+        "schemaVersion": "reviewx-multidomain-evaluation/v2",
         "dataset": dataset.name,
         "positiveClass": "unsupported",
         "decisionThresholds": thresholds,
@@ -590,7 +832,7 @@ def _report(summary: dict[str, Any]) -> str:
     names = {
         "lexical_baseline": "词法基线",
         "within_domain": "目标域训练第一轮",
-        "within_domain_calibrated": "反馈校准第二轮",
+        "within_domain_calibrated": "ReviewX保守门控第二轮",
         "scifact_transfer": "SciFact零样本迁移",
     }
     for dataset_name, result in summary["results"].items():
@@ -608,30 +850,32 @@ def _report(summary: dict[str, Any]) -> str:
             )
     lines.extend([
         "",
-        "## 验证反馈增益",
+        "## 保守门控与最终测试",
         "",
-        "| 数据集 | 验证集选择阈值 | 第一轮Macro-F1 | 第二轮Macro-F1 | 增益 | 95% CI | 改善概率 |",
-        "| --- | ---: | ---: | ---: | ---: | --- | ---: |",
+        "| 数据集 | 验证集提议 | Gate决定 | 最终阈值 | 测试集Macro-F1增益 | claim聚类95% CI | 结论 |",
+        "| --- | ---: | --- | ---: | ---: | --- | --- |",
     ])
     for dataset_name, result in summary["results"].items():
         fixed = result["results"]["within_domain"]["Macro F1"]
         calibrated = result["results"]["within_domain_calibrated"]["Macro F1"]
-        bootstrap = result["pairedBootstrap"]["calibratedVsFixedWithinDomain"]["Macro F1"]
+        selection = result["validationThresholdSelection"]
+        bootstrap = result["effectInference"]["Macro F1"]
         lines.append(
-            f"| {dataset_name} | {result['decisionThresholds']['within_domain_calibrated']:.3f} | "
-            f"{fixed:.4f} | {calibrated:.4f} | {calibrated - fixed:+.4f} | "
+            f"| {dataset_name} | {selection['proposedThreshold']:.3f} | "
+            f"{selection['gateDecision']} | {selection['appliedThreshold']:.3f} | "
+            f"{calibrated - fixed:+.4f} | "
             f"[{bootstrap['ci95Low']:.4f}, {bootstrap['ci95High']:.4f}] | "
-            f"{bootstrap['probabilityOfImprovement']:.3f} |"
+            f"{bootstrap['effectStatus']} |"
         )
     lines.extend([
         "",
-        "Climate-FEVER上的阈值反馈增益显著且稳定；PubHealth仅有小幅改善，置信区间跨越0，不能宣称稳定提升。两个数据集上的SciFact零样本迁移均弱于目标域训练，说明当前特征可以复用，但模型参数尚不具备直接跨领域泛化能力。",
+        "Climate-FEVER的验证集聚类区间通过保守门控，修订冻结后再进入测试集；PubHealth的验证集区间跨越0，因此系统保持第一轮方案，不把不确定趋势包装成改进。两个数据集上的SciFact零样本迁移均弱于目标域训练，说明当前特征可以复用，但模型参数尚不具备直接跨领域泛化能力。",
         "",
         "## 解释边界",
         "",
         "完整性质量门只证明数据拆分、哈希、样本对齐和指标计算可信，不代表性能达标。跨数据集主指标采用Macro-F1，避免unsupported类别占比过高抬高正类F1。",
         "目标域训练用于检验当前特征是否能在不同领域重新拟合；SciFact零样本迁移用于检验不重新训练时的跨领域稳健性。",
-        "反馈校准第二轮只在validation的预注册阈值网格中选择Macro-F1最优阈值，冻结后评估test；test标签从未参与阈值选择。",
+        "第二轮先在validation的提议组中按预注册阈值网格和类别护栏选择方案，再在完全不重叠的门控组中按claim_id聚类bootstrap；只有95%区间下界大于0且门控护栏通过才应用，否则保持第一轮。test标签从未参与提议或门控。",
         "Climate-FEVER没有明确数据许可证，PubHealth包含上游事实核查文本；本项目只在忽略目录运行，不重新分发原始数据。",
         "QASPER和NLPeer属于科学问答/同行评审任务，应使用Evidence F1、review helpfulness等独立协议，不能与本表二分类F1混为一谈。",
         "",
@@ -679,6 +923,18 @@ def run_multidomain(
         "scifactTransferTrainPairs": len(scifact_train),
         "bootstrapSamples": bootstrap_samples,
         "bootstrapSeed": MULTIDOMAIN_BOOTSTRAP_SEED,
+        "validationGateBootstrapSeed": VALIDATION_GATE_BOOTSTRAP_SEED,
+        "validationSplitSeed": VALIDATION_SPLIT_SEED,
+        "bootstrapResamplingUnit": "claim_id",
+        "validationGate": {
+            "minimumMacroF1Gain": MIN_VALIDATION_MACRO_F1_GAIN,
+            "maximumUnsupportedF1Regression": MAX_UNSUPPORTED_F1_REGRESSION,
+            "maximumSupportF1Regression": MAX_SUPPORT_F1_REGRESSION,
+            "requireClusterCIAboveZero": True,
+            "selectionProtocol": (
+                "select on one claim-group partition; gate on the disjoint partition"
+            ),
+        },
         "thresholdCandidates": list(THRESHOLD_CANDIDATES),
         "datasets": dataset_cards,
     }

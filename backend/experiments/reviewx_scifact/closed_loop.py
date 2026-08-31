@@ -19,6 +19,10 @@ import numpy as np
 
 from app.contracts import ExecutionAssessment, ResearchDossier
 from app.llm.provider_client import ChatMessage, get_provider_client
+from app.modules.review.effect_statistics import (
+    interval_effect_status,
+    paired_transition_audit,
+)
 from app.modules.review.experiment_feedback import (
     experiment_metric_snapshot,
     review_experiment_feedback,
@@ -674,6 +678,8 @@ def _report(summary: dict[str, Any]) -> str:
     holdout_first = summary["finalHoldout"]["roundOne"]
     holdout_second = summary["finalHoldout"]["roundTwo"]
     f1_bootstrap = summary["finalHoldout"]["pairedBootstrap"]["F1-Score"]
+    feedback_audit = summary["interventionAudit"]["feedback"]
+    holdout_audit = summary["interventionAudit"]["finalHoldout"]
     usage = summary["qwenTrace"]["usage"]
     timing = summary["executionTiming"]
     durations = timing["durationsSeconds"]
@@ -709,6 +715,8 @@ def _report(summary: dict[str, Any]) -> str:
         f"| 第一轮 | {first['Precision']:.4f} | {first['Recall']:.4f} | {first['F1-Score']:.4f} | {first['Brier Score']:.4f} | {first['Expected Calibration Error (ECE)']:.4f} | {first['AUROC']:.4f} |",
         f"| 第二轮 | {second['Precision']:.4f} | {second['Recall']:.4f} | {second['F1-Score']:.4f} | {second['Brier Score']:.4f} | {second['Expected Calibration Error (ECE)']:.4f} | {second['AUROC']:.4f} |",
         "",
+        f"反馈集决策变化：修正{feedback_audit['wrongToRight']}条、误伤{feedback_audit['rightToWrong']}条、净正确{feedback_audit['netCorrect']:+d}条。",
+        "",
         "## 未见数据最终测试",
         "",
         "| 轮次 | Precision | Recall | F1 | Brier | ECE | AUROC |",
@@ -717,7 +725,8 @@ def _report(summary: dict[str, Any]) -> str:
         f"| 第二轮 | {holdout_second['Precision']:.4f} | {holdout_second['Recall']:.4f} | {holdout_second['F1-Score']:.4f} | {holdout_second['Brier Score']:.4f} | {holdout_second['Expected Calibration Error (ECE)']:.4f} | {holdout_second['AUROC']:.4f} |",
         "",
         f"最终F1绝对变化：{holdout_second['F1-Score'] - holdout_first['F1-Score']:+.4f}；配对bootstrap平均改善{f1_bootstrap['improvementMean']:+.4f}，95% CI [{f1_bootstrap['ci95Low']:+.4f}, {f1_bootstrap['ci95High']:+.4f}]，改善概率{f1_bootstrap['probabilityOfImprovement']:.3f}。",
-        "第二轮通过删除不稳定数值对齐因子并降低阈值提高召回率，代价是精确率下降。置信区间跨越0，因此本组只能证明闭环可运行、反馈集改进能迁移为未见集非退化，不能宣称统计显著或跨领域泛化。",
+        f"最终集决策变化：修正{holdout_audit['wrongToRight']}条、误伤{holdout_audit['rightToWrong']}条、净正确{holdout_audit['netCorrect']:+d}条；精确率下降而召回率上升。",
+        "配对区间跨越0，因此未检测到最终F1的显著变化。本组证明闭环可运行且留出集未参与调参，但不能据此宣称显著提升、非劣效或跨领域泛化。",
         "",
         "## 审计结论",
         "",
@@ -1061,6 +1070,15 @@ def run_closed_loop(
 
     feedback_round_one = results_one["method"]
     feedback_round_two = results_two["method"]
+    feedback_intervention_audit = paired_transition_audit(
+        feedback_labels.astype(int).tolist(),
+        (
+            round_one_probabilities["method"] >= round_one_thresholds["method"]
+        ).astype(int).tolist(),
+        (
+            round_two_probabilities["method"] >= round_two_thresholds["method"]
+        ).astype(int).tolist(),
+    )
 
     holdout_started = perf_counter()
     final_holdout = load_examples(dataset_root, "dev")
@@ -1085,6 +1103,31 @@ def run_closed_loop(
     )
     holdout_round_two = metrics_at_threshold(
         holdout_labels, candidate_holdout_probabilities[selected_id], selected.threshold,
+    )
+    holdout_intervention_audit = paired_transition_audit(
+        holdout_labels.astype(int).tolist(),
+        (
+            candidate_holdout_probabilities["retain_full_0500"]
+            >= ROUND_ONE_THRESHOLD
+        ).astype(int).tolist(),
+        (
+            candidate_holdout_probabilities[selected_id] >= selected.threshold
+        ).astype(int).tolist(),
+    )
+    _write_json(
+        output_dir / "final_holdout_evaluation_records.json",
+        _prediction_payload(
+            final_holdout,
+            {
+                "round_one": candidate_holdout_probabilities["retain_full_0500"],
+                "round_two": candidate_holdout_probabilities[selected_id],
+            },
+            {
+                "round_one": ROUND_ONE_THRESHOLD,
+                "round_two": selected.threshold,
+            },
+            "scifact_official_dev_final_holdout",
+        ),
     )
     bootstrap = _paired_bootstrap(
         holdout_labels,
@@ -1162,7 +1205,7 @@ def run_closed_loop(
         "sameFrozenBenchmark": evidence_one.dataHashes.get("frozen_benchmark") == evidence_two.dataHashes.get("frozen_benchmark"),
         "feedbackF1ImprovedByAtLeastOnePoint": feedback_round_two["F1-Score"] >= feedback_round_one["F1-Score"] + 0.01,
         "feedbackGuardrailsPassed": progress.guardrailsSatisfied,
-        "finalHoldoutF1DidNotRegress": holdout_round_two["F1-Score"] >= holdout_round_one["F1-Score"],
+        "finalHoldoutF1PointEstimateNotLower": holdout_round_two["F1-Score"] >= holdout_round_one["F1-Score"],
         "finalHoldoutBrierWithinTolerance": holdout_round_two["Brier Score"] <= holdout_round_one["Brier Score"] + 0.001,
         "finalHoldoutECEWithinTolerance": holdout_round_two["Expected Calibration Error (ECE)"] <= holdout_round_one["Expected Calibration Error (ECE)"] + 0.005,
         "finalHoldoutAUROCWithinTolerance": holdout_round_two["AUROC"] >= holdout_round_one["AUROC"] - 0.002,
@@ -1225,6 +1268,14 @@ def run_closed_loop(
         "finalHoldout": {
             "roundOne": holdout_round_one, "roundTwo": holdout_round_two,
             "pairedBootstrap": bootstrap,
+            "effectStatus": interval_effect_status(
+                bootstrap["F1-Score"]["ci95Low"],
+                bootstrap["F1-Score"]["ci95High"],
+            ),
+        },
+        "interventionAudit": {
+            "feedback": feedback_intervention_audit,
+            "finalHoldout": holdout_intervention_audit,
         },
         "seriesProgress": progress.model_dump(mode="json"),
         "executionTiming": execution_timing,

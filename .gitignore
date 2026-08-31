@@ -28,6 +28,7 @@ backend/tests/*
 !backend/tests/test_reviewx_human_signoff.py
 !backend/tests/test_reviewx_plan_delta.py
 !backend/tests/test_reviewx_competition_evidence.py
+!backend/tests/test_reviewx_effect_statistics.py
 !backend/tests/test_scientific_research_contracts.py
 !backend/tests/test_research_dossier_schema.py
 !backend/tests/test_idea_problem_framing.py
