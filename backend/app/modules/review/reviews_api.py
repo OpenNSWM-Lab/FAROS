@@ -149,6 +149,8 @@ class RunStoredExperimentFeedbackResponse(RunExperimentFeedbackResponse):
     humanSignoffs: Dict[str, Any] = Field(default_factory=dict)
     humanFeedback: Dict[str, Any] = Field(default_factory=dict)
     humanConditionVerifications: Dict[str, Any] = Field(default_factory=dict)
+    sourceArtifactUrls: Dict[str, str] = Field(default_factory=dict)
+    closedLoop: Dict[str, Any] = Field(default_factory=dict)
     reviewerPolicy: str = "single_accountable_reviewer"
     publicationReady: bool = False
 
@@ -304,6 +306,156 @@ _RELIABILITY_RESULT_ROOT = _DATA_ROOT / "experiments" / "reviewx_reliability"
 _PLANNING_RESULT_PATH = _DATA_ROOT / "experiments" / "reviewx_planning" / "stability_summary.json"
 _MULTIDOMAIN_RESULT_PATH = _DATA_ROOT / "experiments" / "reviewx_multidomain" / "summary.json"
 _PEERQA_RESULT_ROOT = _DATA_ROOT / "experiments" / "reviewx_peerqa"
+
+
+def _read_json_object(path: Path) -> Dict[str, Any]:
+    if not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _review_loop_target_modules(
+    record: Dict[str, Any], changes: List[Dict[str, Any]],
+) -> List[str]:
+    modules = {
+        str(finding.get("targetModule") or "").strip()
+        for finding in (record.get("qualityAssessment") or {}).get("findings") or []
+        if isinstance(finding, dict) and finding.get("targetModule")
+    }
+    for change in changes:
+        field_path = str(change.get("fieldPath") or "").lower()
+        if field_path.startswith(("model.", "code.", "implementation.")):
+            modules.add("code")
+        elif field_path:
+            modules.add("experiments")
+    return sorted(modules)
+
+
+def _build_review_loop_trace(record: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a compact, presentation-safe trace of one evidence-driven iteration."""
+
+    decision = dict(record.get("iterationDecision") or {})
+    progress = dict(record.get("loopProgress") or {})
+    changes: List[Dict[str, Any]] = []
+    events: List[Dict[str, Any]] = []
+    from_run_id = str(record.get("runId") or "") or None
+    to_run_id = str(record.get("nextRunId") or "") or None
+    scientific_decision = str(decision.get("decision") or "needs_human")
+    selected_candidate_id: Optional[str] = None
+    final_holdout_protected = False
+    contract_hash: Optional[str] = None
+
+    job_id = str(record.get("competitionCaseJobId") or "").strip()
+    if job_id:
+        output_dir = _SCIFACT_CASE_ROOT / "runs" / job_id
+        delta_contract = _read_json_object(output_dir / "plan_delta_contract.json")
+        timeline = _read_json_object(output_dir / "timeline.json")
+        if delta_contract:
+            from_run_id = str(delta_contract.get("fromRunId") or from_run_id or "") or None
+            to_run_id = str(delta_contract.get("toRunId") or to_run_id or "") or None
+            scientific_decision = str(
+                delta_contract.get("scientificDecision") or scientific_decision
+            )
+            selected_candidate_id = str(
+                delta_contract.get("selectedCandidateId") or ""
+            ) or None
+            contract_hash = str(delta_contract.get("contentHash") or "") or None
+            changes = [
+                {
+                    "fieldPath": str(item.get("fieldPath") or ""),
+                    "before": item.get("before"),
+                    "after": item.get("after"),
+                    "rationale": str(item.get("rationale") or ""),
+                    "evidenceIds": [str(value) for value in item.get("evidenceIds") or []],
+                }
+                for item in delta_contract.get("changes") or []
+                if isinstance(item, dict) and item.get("fieldPath")
+            ]
+            qwen_contribution = dict(delta_contract.get("qwenContribution") or {})
+            final_holdout_protected = qwen_contribution.get("finalHoldoutExposed") is False
+        events = [
+            {
+                key: value
+                for key, value in event.items()
+                if key in {
+                    "event", "timestamp", "gateStatus", "decision", "changedFields",
+                    "selectedCandidateId", "finalHoldoutLoaded", "status",
+                }
+            }
+            for event in timeline.get("events") or []
+            if isinstance(event, dict) and event.get("event")
+        ]
+
+    if not changes:
+        revision = dict(record.get("planRevision") or {})
+        changes = [
+            {
+                "fieldPath": str(section),
+                "before": None,
+                "after": None,
+                "rationale": "ReviewX feedback applied to the next iteration contract.",
+                "evidenceIds": [],
+            }
+            for section in revision.get("changedSections") or []
+        ]
+
+    rounds = [
+        {
+            "runId": str(item.get("runId") or ""),
+            "iterationNumber": int(item.get("iterationNumber") or index + 1),
+            "value": item.get("value"),
+            "delta": item.get("delta"),
+            "improved": item.get("improved"),
+            "gateStatus": item.get("gateStatus"),
+            "decision": item.get("decision"),
+            "guardrailsSatisfied": bool(item.get("guardrailsSatisfied", True)),
+        }
+        for index, item in enumerate(progress.get("rounds") or [])
+        if isinstance(item, dict)
+    ]
+    if len(rounds) >= 2 and progress.get("status") == "completed":
+        status_value = "completed"
+    elif to_run_id:
+        status_value = "iteration_created"
+    elif scientific_decision == "accept_results":
+        status_value = "accepted"
+    else:
+        status_value = "needs_iteration"
+
+    iteration_number = int(record.get("iterationNumber") or 1)
+    if job_id and to_run_id:
+        from_iteration = max(1, iteration_number - 1)
+        to_iteration = iteration_number
+    elif to_run_id:
+        from_iteration = iteration_number
+        to_iteration = iteration_number + 1
+    else:
+        from_iteration = iteration_number
+        to_iteration = None
+
+    return {
+        "status": status_value,
+        "fromRunId": from_run_id,
+        "toRunId": to_run_id,
+        "researchSeriesId": record.get("researchSeriesId"),
+        "fromIteration": from_iteration,
+        "toIteration": to_iteration,
+        "scientificDecision": scientific_decision,
+        "targetModules": _review_loop_target_modules(record, changes),
+        "targetSections": [str(value) for value in decision.get("targetSections") or []],
+        "changes": changes,
+        "rounds": rounds,
+        "events": events,
+        "primaryMetric": progress.get("primaryMetric"),
+        "selectedCandidateId": selected_candidate_id,
+        "benchmarkFingerprint": record.get("benchmarkFingerprint"),
+        "contractHash": contract_hash,
+        "finalHoldoutProtected": final_holdout_protected,
+    }
 
 
 def _scifact_job_path(job_id: str) -> Path:
@@ -539,6 +691,8 @@ def _stored_feedback_response(record: Dict[str, Any]) -> RunStoredExperimentFeed
         humanSignoffs=human_signoff_state(record),
         humanFeedback=human_feedback_state(record),
         humanConditionVerifications=human_condition_verification_state(record),
+        sourceArtifactUrls=dict(record.get("sourceArtifactUrls") or {}),
+        closedLoop=_build_review_loop_trace(record),
         reviewerPolicy=_reviewer_policy(record),
         publicationReady=publication_ready(record),
     )
@@ -1583,6 +1737,8 @@ async def run_stored_experiment_feedback_endpoint(
         humanSignoffs=human_signoff_state(stored),
         humanFeedback=human_feedback_state(stored),
         humanConditionVerifications=human_condition_verification_state(stored),
+        sourceArtifactUrls=dict(stored.get("sourceArtifactUrls") or {}),
+        closedLoop=_build_review_loop_trace(stored),
         reviewerPolicy=_reviewer_policy(stored),
         publicationReady=publication_ready(stored),
     )
@@ -1610,6 +1766,8 @@ async def list_experiment_feedback_endpoint(
             "humanSignoffs": human_signoff_state(record),
             "humanFeedback": human_feedback_state(record),
             "humanConditionVerifications": human_condition_verification_state(record),
+            "sourceArtifactUrls": dict(record.get("sourceArtifactUrls") or {}),
+            "closedLoop": _build_review_loop_trace(record),
             "reviewerPolicy": _reviewer_policy(record),
             "publicationReady": publication_ready(record),
         }
