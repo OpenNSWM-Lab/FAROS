@@ -1,10 +1,12 @@
 """Platform-owned experiments API implementation."""
 
+import asyncio
 import csv
 import hashlib
 import io
 import json
 import logging
+import math
 import os
 import re
 from datetime import UTC, datetime
@@ -67,7 +69,7 @@ class IngestMetricsRequest(BaseModel):
 
 class ImportProjectEvidenceRequest(BaseModel):
     projectId: str = Field(..., pattern=r"^cproj_[A-Za-z0-9_-]+$")
-    artifactPath: str = Field(..., min_length=1, max_length=500)
+    artifactPath: str = Field(default="artifacts/evidence", min_length=1, max_length=500)
     metricsFile: str = "metrics.json"
     manifestFile: str = "run_manifest.json"
     predictionsFile: str = "predictions.jsonl"
@@ -176,9 +178,189 @@ def _sha256_file(path: Path) -> str:
 def _resolve_project_artifact(project_id: str, artifact_path: str) -> Path:
     repo = (get_data_dir() / 'code_projects' / project_id / 'repo').resolve()
     target = (repo / artifact_path).resolve()
-    if repo not in target.parents or not target.is_dir():
+    if repo not in target.parents:
+        raise HTTPException(status_code=400, detail='Artifact path must be an existing directory inside the linked project')
+    if not repo.is_dir():
+        raise HTTPException(status_code=404, detail=f"Code project workspace '{project_id}' is unavailable")
+    if not target.is_dir():
         raise HTTPException(status_code=400, detail='Artifact path must be an existing directory inside the linked project')
     return target
+
+
+def _resolve_project_repo(project_id: str) -> Path:
+    repo = (get_data_dir() / 'code_projects' / project_id / 'repo').resolve()
+    if not repo.is_dir():
+        raise HTTPException(status_code=404, detail=f"Code project workspace '{project_id}' is unavailable")
+    return repo
+
+
+def _safe_repo_file(repo: Path, relative_path: str) -> Path:
+    target = (repo / relative_path).resolve()
+    if repo not in target.parents or not target.is_file():
+        raise ValueError(f"Evidence artifact is missing or outside the project: {relative_path}")
+    return target
+
+
+def _native_metric_records(payload: Any) -> List[Dict[str, Any]]:
+    records = payload if isinstance(payload, list) else payload.get('metrics', []) if isinstance(payload, dict) else []
+    if not records:
+        raise ValueError('metrics.json contains no scientific metric records')
+    validated: List[Dict[str, Any]] = []
+    for index, item in enumerate(records):
+        if not isinstance(item, dict):
+            raise ValueError(f'metrics.json record {index} must be an object')
+        name = str(item.get('name') or '').strip()
+        definition = str(item.get('definition') or '').strip()
+        split = str(item.get('split') or '').strip()
+        value = item.get('value')
+        if not name or not definition or not split:
+            raise ValueError(f'metrics.json record {index} requires name, definition, and split')
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+            raise ValueError(f'metrics.json record {index} requires a numeric value')
+        validated.append({**item, 'name': name, 'definition': definition, 'split': split, 'value': float(value)})
+    return validated
+
+
+def _import_native_project_evidence(
+    experiment_id: str,
+    project_id: str,
+    repo: Path,
+    evidence_dir: Path,
+) -> Dict[str, Any]:
+    evidence_path = evidence_dir / 'experiment_evidence.json'
+    manifest_path = evidence_dir / 'run_manifest.json'
+    hashes_path = evidence_dir / 'artifact_hashes.json'
+    if not all(path.is_file() for path in (evidence_path, manifest_path, hashes_path)):
+        raise ValueError(
+            'Native FAROS evidence requires experiment_evidence.json, run_manifest.json, and artifact_hashes.json'
+        )
+
+    evidence_payload = json.loads(evidence_path.read_text(encoding='utf-8'))
+    manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+    declared_hashes = json.loads(hashes_path.read_text(encoding='utf-8'))
+    if not isinstance(evidence_payload, dict) or evidence_payload.get('status') != 'executed':
+        raise ValueError("experiment_evidence.json must have status='executed'")
+    if not isinstance(manifest, dict) or manifest.get('status') != 'executed' or manifest.get('exitCode') != 0:
+        raise ValueError('run_manifest.json must record a successful executed run')
+    if not isinstance(declared_hashes, dict) or not declared_hashes:
+        raise ValueError('artifact_hashes.json must contain the sealed evidence file hashes')
+
+    verified_hashes: Dict[str, str] = {}
+    for relative_path, expected_hash in declared_hashes.items():
+        normalized_hash = str(expected_hash)
+        if normalized_hash.startswith('sha256:'):
+            normalized_hash = normalized_hash[7:]
+        if not re.fullmatch(r'[0-9a-f]{64}', normalized_hash):
+            raise ValueError(f'Invalid SHA-256 for {relative_path}')
+        artifact = _safe_repo_file(repo, str(relative_path))
+        actual_hash = _sha256_file(artifact)
+        if actual_hash != normalized_hash:
+            raise ValueError(f'Artifact hash mismatch: {relative_path}')
+        verified_hashes[str(relative_path)] = actual_hash
+
+    metric_ref = next(
+        (
+            str(item.get('uri')) for item in evidence_payload.get('artifactRefs', [])
+            if isinstance(item, dict) and str(item.get('uri') or '').endswith('metrics.json')
+        ),
+        'metrics.json',
+    )
+    metrics_path = _safe_repo_file(repo, metric_ref)
+    metrics = _native_metric_records(json.loads(metrics_path.read_text(encoding='utf-8')))
+    metric_entries = [
+        {'key': item['name'], 'value': item['value']}
+        for item in metrics
+    ]
+
+    bundle_sha256 = hashlib.sha256(
+        ''.join(f'{name}:{verified_hashes[name]}\n' for name in sorted(verified_hashes)).encode('utf-8')
+    ).hexdigest()
+    previous = get_execution_evidence(experiment_id)
+    if previous and previous.get('bundleSha256') == bundle_sha256:
+        return {**previous, 'duplicate': True}
+
+    evaluation_ref = next(
+        (
+            str(item.get('uri')) for item in evidence_payload.get('artifactRefs', [])
+            if isinstance(item, dict) and str(item.get('uri') or '').endswith('evaluation_records.json')
+        ),
+        None,
+    )
+    prediction_rows = 0
+    dataset_id = None
+    if evaluation_ref:
+        evaluation_path = _safe_repo_file(repo, evaluation_ref)
+        evaluation_payload = json.loads(evaluation_path.read_text(encoding='utf-8'))
+        rows = evaluation_payload.get('records', []) if isinstance(evaluation_payload, dict) else []
+        if not isinstance(rows, list) or not rows:
+            raise ValueError('evaluation_records.json must contain a non-empty records list')
+        if any(not isinstance(row, dict) or not row.get('sample_id') for row in rows):
+            raise ValueError('Every evaluation record must contain sample_id audit provenance')
+        dataset = save_dataset(
+            experiment_id,
+            'FAROS evaluation records',
+            'json',
+            evaluation_path.read_bytes(),
+            rows,
+        )
+        dataset_id = dataset['id']
+        prediction_rows = len(rows)
+
+    ingested = ingest_metrics(experiment_id, metric_entries)
+    environment: Dict[str, Any] = {}
+    environment_ref = 'artifacts/evidence/environment.json'
+    if environment_ref in verified_hashes:
+        loaded_environment = json.loads(
+            _safe_repo_file(repo, environment_ref).read_text(encoding='utf-8')
+        )
+        if isinstance(loaded_environment, dict):
+            environment = loaded_environment
+    evidence = {
+        'schemaVersion': 'faros-native-execution-evidence/v1',
+        'sourceSchema': 'ExperimentEvidence',
+        'experimentId': experiment_id,
+        'projectId': project_id,
+        'runId': evidence_payload.get('runId'),
+        'codeRunId': evidence_payload.get('codeRunId'),
+        'status': 'verified',
+        'artifactPath': evidence_dir.relative_to(repo).as_posix(),
+        'importedAt': datetime.now(UTC).isoformat(),
+        'bundleSha256': bundle_sha256,
+        'artifactSha256': verified_hashes,
+        'inputSha256': dict(evidence_payload.get('dataHashes') or {}),
+        'predictionRows': prediction_rows,
+        'ingestedMetrics': ingested,
+        'datasetId': dataset_id,
+        'execution': {
+            'command': manifest.get('command'),
+            'durationSeconds': manifest.get('durationSeconds'),
+            'environmentHash': evidence_payload.get('environmentHash'),
+            'codeHash': evidence_payload.get('codeHash'),
+            'backend': environment.get('executionBackend'),
+            'nodeName': environment.get('executionNode'),
+            'profile': environment.get('executionProfile'),
+            'containerImage': environment.get('containerImage'),
+            'resourceLimits': environment.get('resourceLimits') or {},
+        },
+        'checks': {
+            'projectBoundary': True,
+            'executedStatus': True,
+            'artifactHashesVerified': True,
+            'scientificMetricsValidated': True,
+            **({'evaluationAuditPresent': True} if evaluation_ref else {}),
+        },
+        'limitations': [
+            str(item) for item in evidence_payload.get('unsupportedClaims', []) if str(item).strip()
+        ],
+    }
+    save_execution_evidence(experiment_id, evidence)
+    update_experiment(experiment_id, {
+        'projectId': project_id,
+        'status': 'completed',
+        'evidenceStatus': 'verified',
+        'evidenceBundleSha256': bundle_sha256,
+    })
+    return evidence
 
 
 def _flatten_numeric_metrics(payload: Dict[str, Any], prefix: str = '') -> List[Dict[str, Any]]:
@@ -219,6 +401,19 @@ async def import_project_evidence(experiment_id: str, req: ImportProjectEvidence
         raise HTTPException(status_code=409, detail='Evidence project does not match the experiment project')
 
     artifact_dir = _resolve_project_artifact(req.projectId, req.artifactPath)
+    if (artifact_dir / 'experiment_evidence.json').is_file():
+        try:
+            return await asyncio.to_thread(
+                _import_native_project_evidence,
+                experiment_id,
+                req.projectId,
+                _resolve_project_repo(req.projectId),
+                artifact_dir,
+            )
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=f'Invalid native FAROS evidence: {exc}') from exc
+
+    # Compatibility importer for the earlier SciFact-specific bundle format.
     files = {
         'metrics': artifact_dir / req.metricsFile,
         'manifest': artifact_dir / req.manifestFile,
@@ -310,6 +505,15 @@ async def ingest_metrics_endpoint(experiment_id: str, req: IngestMetricsRequest)
     record = get_experiment(experiment_id)
     if not record:
         raise HTTPException(status_code=404, detail=f"Experiment '{experiment_id}' not found")
+    evidence = get_execution_evidence(experiment_id)
+    if evidence and evidence.get('status') == 'verified':
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                'Verified metrics are immutable. Create a separate exploratory experiment '
+                'for manual values instead of mixing them with sealed execution evidence.'
+            ),
+        )
     count = ingest_metrics(experiment_id, [metric.model_dump() for metric in req.metrics])
     return {"ingested": count, "experimentId": experiment_id}
 

@@ -586,6 +586,7 @@ def test_experiment_executor_keeps_sandbox_inside_running_event_loop(tmp_path: P
 
     result = asyncio.run(invoke())
     assert result["stdout"].strip() == "sandbox"
+    assert result["command"] == "python -m src.main"
 
 
 def test_code_repair_maps_sandbox_traceback_and_repairs_numpy_trapz(tmp_path: Path):

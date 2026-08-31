@@ -289,12 +289,35 @@ export interface PipelineRunResponse {
   steps: PipelineStepResult[];
   totalDurationMs: number;
   summary: string;
+  execution?: {
+    nodeName: string;
+    role: string;
+    location: string;
+    backend: string;
+    isolated: boolean;
+    experimentId?: string;
+    evidenceStatus?: string;
+    evidenceBundleSha256?: string;
+    profile: {
+      name: string;
+      cpuLimit: number;
+      memoryLimit: string;
+      timeoutSeconds: number;
+      gpuCount: number;
+      image: string;
+      reason: string;
+    };
+  };
 }
 
-export async function runProjectPipeline(projectId: string): Promise<PipelineRunResponse> {
+export async function runProjectPipeline(
+  projectId: string,
+  profile: 'auto' | 'light' | 'standard' | 'gpu' = 'auto',
+): Promise<PipelineRunResponse> {
   return fetchJSON(`${API_BASE}/api/v1/code/projects/${projectId}/pipeline-run`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ profile }),
   });
 }
 

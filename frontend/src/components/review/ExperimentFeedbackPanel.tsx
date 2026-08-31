@@ -947,10 +947,10 @@ export function ExperimentFeedbackPanel({ initialFeedbackId }: { initialFeedback
             <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-emerald-700" />
             <div>
               <div className="text-sm font-semibold text-slate-900">
-                {text('比赛 benchmark 与复验证据', 'Competition benchmarks and replication evidence')}
+                {text('验证成果', 'Validation results')}
               </div>
               <p className="mt-1 text-xs leading-5 text-slate-600">
-                {text('集中在 Track 1B 展示；本页只处理所选 Run 的审核、反馈和人工签核。', 'Centralized in Track 1B. This page only audits the selected run and records feedback and human sign-off.')}
+                {text('查看团队基准实验与复验证据；本页只处理所选 Run 的审核、反馈和人工签核。', 'Inspect team benchmarks and replication evidence; this page only audits the selected run and records feedback and human sign-off.')}
               </p>
             </div>
           </div>
@@ -958,7 +958,7 @@ export function ExperimentFeedbackPanel({ initialFeedbackId }: { initialFeedback
             to="/review/competition"
             className={`${buttonVariants({ variant: 'outline', size: 'sm' })} whitespace-nowrap`}
           >
-            {text('查看 Track 1B 证据', 'Open Track 1B evidence')}
+            {text('查看验证成果', 'Open validation results')}
             <ArrowRight className="ml-2 h-4 w-4" />
           </Link>
         </section>

@@ -89,7 +89,9 @@ class SandboxPool:
                 f"Backend '{bt}' not registered. Available: {available}"
             )
         if not backend.is_available():
-            logger.warning("Backend '%s' reports it is not available", bt)
+            raise BackendNotAvailable(
+                f"Backend '{bt}' is registered but unavailable on this execution node"
+            )
         return backend
 
     @property
@@ -111,7 +113,7 @@ class SandboxPool:
             return "subprocess"
         if self.available_backends:
             return self.available_backends[0]
-        return "subprocess"
+        raise BackendNotAvailable("No isolated execution backend is available")
 
     # ---- lifecycle ----
 
@@ -138,7 +140,7 @@ class SandboxPool:
             sandbox_id to use with execute() and release().
         """
         async with self._lock:
-            self._reap_stale()
+            await self._reap_stale()
 
             if len(self._active) >= self._max_active:
                 raise SandboxPoolExhausted(
@@ -146,7 +148,8 @@ class SandboxPool:
                     "Wait for active sandboxes to complete or increase SANDBOX_MAX_CONCURRENT."
                 )
 
-            backend = self.get_backend(backend_type)
+            selected_backend = backend_type or self.default_backend
+            backend = self.get_backend(selected_backend)
             sandbox_id = await backend.setup(workspace_path, image=image, env=env)
 
             now = time.time()
@@ -156,6 +159,7 @@ class SandboxPool:
                 workspace_path=workspace_path,
                 created_at=now,
                 last_used=now,
+                profile=str((env or {}).get("FAROS_EXECUTION_PROFILE") or "auto"),
             )
 
             logger.info(
@@ -191,11 +195,14 @@ class SandboxPool:
 
         backend = self._backends[entry.backend]
         entry.last_used = time.time()
-
-        result = await backend.execute(
-            sandbox_id, command, timeout=timeout, env=env
-        )
-        return result
+        entry.busy = True
+        try:
+            return await backend.execute(
+                sandbox_id, command, timeout=timeout, env=env
+            )
+        finally:
+            entry.busy = False
+            entry.last_used = time.time()
 
     async def release(self, sandbox_id: str) -> bool:
         """Release a sandbox, tearing it down and removing from tracking.
@@ -252,6 +259,8 @@ class SandboxPool:
                     "backend": e.backend,
                     "age_sec": round(e.age_sec(time.time()), 1),
                     "idle_sec": round(e.idle_sec(time.time()), 1),
+                    "profile": e.profile,
+                    "busy": e.busy,
                 }
                 for e in self._active.values()
             ],
@@ -259,17 +268,25 @@ class SandboxPool:
 
     # ---- internals ----
 
-    def _reap_stale(self) -> int:
-        """Remove sandboxes that have exceeded their TTL. Called under lock."""
+    async def _reap_stale(self) -> int:
+        """Tear down sandboxes that exceeded their TTL. Called under lock."""
         now = time.time()
         stale_ids = [
             sid
             for sid, entry in self._active.items()
-            if entry.age_sec(now) > self._ttl
+            if not entry.busy and entry.idle_sec(now) > self._ttl
         ]
         for sid in stale_ids:
             logger.warning("Reaping stale sandbox: %s (age > %ds)", sid, self._ttl)
-            self._active.pop(sid, None)
+            entry = self._active.pop(sid, None)
+            if entry is None:
+                continue
+            backend = self._backends.get(entry.backend)
+            if backend:
+                try:
+                    await backend.teardown(sid)
+                except Exception as exc:
+                    logger.warning("Failed to tear down stale sandbox %s: %s", sid, exc)
         return len(stale_ids)
 
 

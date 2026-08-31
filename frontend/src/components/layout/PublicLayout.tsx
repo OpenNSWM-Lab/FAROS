@@ -1,5 +1,5 @@
 import { Link, Outlet } from 'react-router-dom'
-import { Activity, FlaskConical, ShieldCheck } from 'lucide-react'
+import { Activity, FlaskConical } from 'lucide-react'
 
 import { AppLogo } from '@/components/branding/AppLogo'
 import { buttonVariants } from '@/components/ui/button'
@@ -23,10 +23,6 @@ export function PublicLayout() {
             <Link to="/research/pipeline" className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-teal-600 dark:hover:text-teal-400">
               <FlaskConical className="h-4 w-4" />
               {text('科研流程', 'Pipeline')}
-            </Link>
-            <Link to="/review/competition" className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-teal-600 dark:hover:text-teal-400">
-              <ShieldCheck className="h-4 w-4" />
-              Track 1B
             </Link>
             <Link to="/system/health" className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-teal-600 dark:hover:text-teal-400">
               <Activity className="h-4 w-4" />

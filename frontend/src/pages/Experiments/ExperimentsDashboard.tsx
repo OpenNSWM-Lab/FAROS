@@ -21,9 +21,11 @@ import { Input } from '@/components/ui/input'
 import {
   BarChart3, Plus, Loader2, RefreshCw,
   TrendingUp, Image, Download, Sparkles, AlertTriangle, Code2, ShieldCheck,
+  Server, Cpu,
 } from 'lucide-react'
 import { LLM_PROVIDERS, getModelsByProvider } from '@/lib/models/providers'
 import { useReviewLocale } from '@/lib/reviewLocale'
+import { ComputeStatus, getComputeStatus } from '@/lib/api/compute'
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || ''
 
@@ -178,6 +180,7 @@ export function ExperimentsDashboard() {
   const [experiments, setExperiments] = useState<Experiment[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [computeStatus, setComputeStatus] = useState<ComputeStatus | null>(null)
 
   // Create form
   const [showCreate, setShowCreate] = useState(false)
@@ -213,7 +216,7 @@ export function ExperimentsDashboard() {
 
   // Bulk metric ingest
   const [bulkMetrics, setBulkMetrics] = useState('')
-  const [evidencePath, setEvidencePath] = useState('artifacts/')
+  const [evidencePath, setEvidencePath] = useState('artifacts/evidence')
   const [importingEvidence, setImportingEvidence] = useState(false)
   const [evidenceError, setEvidenceError] = useState<string | null>(null)
 
@@ -236,6 +239,9 @@ export function ExperimentsDashboard() {
   }, [text])
 
   useEffect(() => { void loadExperiments() }, [loadExperiments])
+  useEffect(() => {
+    getComputeStatus().then(setComputeStatus).catch(() => setComputeStatus(null))
+  }, [])
   useEffect(() => {
     let cancelled = false
     ;(async () => {
@@ -469,7 +475,7 @@ export function ExperimentsDashboard() {
   return (
     <AppPageLayout
       title={text('实验', 'Experiments')}
-      subtitle={text('记录实验指标、上传数据并生成论文级图表', 'Record metrics, upload datasets, and generate paper-ready figures')}
+      subtitle={text('汇总 Code 的真实运行证据、指标、数据与论文级图表', 'Curate measured Code evidence, metrics, datasets, and paper-ready figures')}
       icon={BarChart3}
       iconColor="indigo"
       accentColor="indigo"
@@ -480,6 +486,17 @@ export function ExperimentsDashboard() {
       }
     >
       <DataScopeNotice />
+
+      {computeStatus && (
+        <div className="mb-4 flex flex-wrap items-center gap-x-5 gap-y-2 border-l-4 border-cyan-600 bg-cyan-50 px-4 py-3 text-sm text-cyan-950 dark:bg-cyan-950/30 dark:text-cyan-100">
+          <span className="flex items-center gap-2 font-semibold"><Server className="h-4 w-4" />{computeStatus.nodeName}</span>
+          <span className="flex items-center gap-1.5"><Cpu className="h-4 w-4" />{computeStatus.cpu.logicalCores} CPU</span>
+          <span>{computeStatus.gpus.length} GPU</span>
+          <Badge variant="outline" className="bg-background/80">
+            {text('实验在 Code 页执行；本页校验与管理产物', 'Runs execute in Code; this page verifies and manages artifacts')}
+          </Badge>
+        </div>
+      )}
 
       {error && (
         <div className="p-3 rounded bg-red-50 border border-red-200 text-sm text-red-800 mb-4">
@@ -584,8 +601,8 @@ export function ExperimentsDashboard() {
                           <p className="font-semibold text-emerald-700 dark:text-emerald-300">verified</p>
                         </div>
                         <div className="p-3 rounded bg-slate-50 border dark:bg-slate-900/60">
-                          <p className="text-xs text-muted-foreground">Holdout</p>
-                          <p className="font-semibold">{selectedExp.executionEvidence.predictionRows} {text('条预测', 'predictions')}</p>
+                          <p className="text-xs text-muted-foreground">{text('评估记录', 'Evaluation records')}</p>
+                          <p className="font-semibold">{selectedExp.executionEvidence.predictionRows} {text('条', 'rows')}</p>
                         </div>
                         <div className="p-3 rounded bg-slate-50 border dark:bg-slate-900/60">
                           <p className="text-xs text-muted-foreground">{text('导入指标', 'Imported metrics')}</p>
@@ -616,7 +633,7 @@ export function ExperimentsDashboard() {
                       />
                       <Button onClick={importExecutionEvidence} disabled={importingEvidence || !evidencePath.trim()}>
                         {importingEvidence ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <ShieldCheck className="h-4 w-4 mr-2" />}
-                        {text('校验并导入', 'Verify & Import')}
+                        {text('同步并校验证据', 'Sync & Verify')}
                       </Button>
                     </div>
                   ) : (
@@ -652,22 +669,28 @@ export function ExperimentsDashboard() {
                     </div>
                   )}
 
-                  {/* Ingest single */}
-                  <div className="grid grid-cols-2 gap-2 md:grid-cols-[minmax(0,1fr)_6rem_5rem_auto] md:items-end">
-                    <div className="col-span-2 md:col-span-1"><label className="text-xs font-medium">{text('指标 Key', 'Metric key')}</label><Input value={metricKey} onChange={e => setMetricKey(e.target.value)} placeholder="accuracy" className="h-8 text-sm" /></div>
-                    <div><label className="text-xs font-medium">{text('数值', 'Value')}</label><Input value={metricValue} onChange={e => setMetricValue(e.target.value)} placeholder="0.95" className="h-8 text-sm" /></div>
-                    <div><label className="text-xs font-medium">Step</label><Input value={metricStep} onChange={e => setMetricStep(e.target.value)} placeholder="1" className="h-8 text-sm" /></div>
-                    <Button size="sm" onClick={ingestMetric} disabled={!metricKey.trim() || !metricValue.trim()} className="col-span-2 h-8 md:col-span-1"><Plus className="h-3 w-3 mr-1" /> {text('添加', 'Add')}</Button>
-                  </div>
-
-                  {/* Bulk ingest */}
-                  <div>
-                    <label className="text-xs font-medium">{text('批量 JSON', 'Bulk JSON')} ({'{key, value, step?}'})</label>
-                    <div className="flex gap-2 mt-1">
-                      <textarea value={bulkMetrics} onChange={e => setBulkMetrics(e.target.value)} placeholder='[{"key":"accuracy","value":0.95},{"key":"loss","value":0.1}]' className="flex-1 rounded border px-2 py-1 text-xs font-mono min-h-[60px]" />
-                      <Button size="sm" variant="outline" onClick={ingestBulkMetrics} disabled={!bulkMetrics.trim()} className="self-end">{text('导入', 'Ingest')}</Button>
-                    </div>
-                  </div>
+                  {selectedExp.executionEvidence?.status !== 'verified' && (
+                    <details className="border-t pt-3">
+                      <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
+                        {text('手动录入探索性指标（不作为已核验证据）', 'Manual exploratory metrics (not verified evidence)')}
+                      </summary>
+                      <div className="mt-3 space-y-3">
+                        <div className="grid grid-cols-2 gap-2 md:grid-cols-[minmax(0,1fr)_6rem_5rem_auto] md:items-end">
+                          <div className="col-span-2 md:col-span-1"><label className="text-xs font-medium">{text('指标 Key', 'Metric key')}</label><Input value={metricKey} onChange={e => setMetricKey(e.target.value)} placeholder="accuracy" className="h-8 text-sm" /></div>
+                          <div><label className="text-xs font-medium">{text('数值', 'Value')}</label><Input value={metricValue} onChange={e => setMetricValue(e.target.value)} placeholder="0.95" className="h-8 text-sm" /></div>
+                          <div><label className="text-xs font-medium">Step</label><Input value={metricStep} onChange={e => setMetricStep(e.target.value)} placeholder="1" className="h-8 text-sm" /></div>
+                          <Button size="sm" onClick={ingestMetric} disabled={!metricKey.trim() || !metricValue.trim()} className="col-span-2 h-8 md:col-span-1"><Plus className="h-3 w-3 mr-1" /> {text('添加', 'Add')}</Button>
+                        </div>
+                        <div>
+                          <label className="text-xs font-medium">{text('批量 JSON', 'Bulk JSON')} ({'{key, value, step?}'})</label>
+                          <div className="flex gap-2 mt-1">
+                            <textarea value={bulkMetrics} onChange={e => setBulkMetrics(e.target.value)} placeholder='[{"key":"accuracy","value":0.95},{"key":"loss","value":0.1}]' className="flex-1 rounded border px-2 py-1 text-xs font-mono min-h-[60px]" />
+                            <Button size="sm" variant="outline" onClick={ingestBulkMetrics} disabled={!bulkMetrics.trim()} className="self-end">{text('导入', 'Ingest')}</Button>
+                          </div>
+                        </div>
+                      </div>
+                    </details>
+                  )}
 
                   {loadingMetrics && <div className="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="h-3 w-3 animate-spin" /> Loading metrics...</div>}
                 </CardContent>

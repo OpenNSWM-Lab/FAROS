@@ -12,14 +12,13 @@ Features:
 import os
 import asyncio
 import logging
-import signal
-import json
+import shlex
 from datetime import datetime
 from typing import Optional, Dict, Any, List, Callable
 from pathlib import Path
 
-from app.core.user_context import sanitized_subprocess_env
 from app.core.paths import get_data_dir
+from app.code.execution import execution_is_allowed, resolve_execution_profile
 
 from .workspace import WorkspaceManager
 
@@ -60,6 +59,7 @@ class JobRunner:
         
         # Track running processes
         self._processes: Dict[str, asyncio.subprocess.Process] = {}
+        self._sandboxes: Dict[str, str] = {}
     
     def is_command_safe(self, command: str) -> tuple[bool, str]:
         """
@@ -124,7 +124,17 @@ class JobRunner:
             "ended_at": None,
             "duration_sec": None,
             "error": None,
+            "execution": None,
         }
+
+        if not execution_is_allowed():
+            result["error"] = (
+                "This server is a control node. Restore the private compute node "
+                "before starting Code execution."
+            )
+            if on_status:
+                on_status("blocked", {"reason": result["error"]})
+            return result
         
         # Check command safety
         is_safe, reason = self.is_command_safe(command)
@@ -135,16 +145,27 @@ class JobRunner:
             return result
         
         # Determine working directory
-        cwd = workspace_path
+        workspace_root = Path(workspace_path).resolve()
+        cwd = workspace_root
         if cwd_rel:
-            cwd = os.path.join(workspace_path, cwd_rel)
-            if not os.path.exists(cwd):
-                os.makedirs(cwd, exist_ok=True)
+            cwd = (workspace_root / cwd_rel).resolve()
+            try:
+                relative_cwd = cwd.relative_to(workspace_root).as_posix()
+            except ValueError:
+                result["error"] = "Working directory must stay inside the job workspace"
+                return result
+            cwd.mkdir(parents=True, exist_ok=True)
+        else:
+            relative_cwd = ""
         
-        # Setup environment
-        env = sanitized_subprocess_env()
-        if env_vars:
-            env.update(env_vars)
+        safe_env = {"PYTHONUNBUFFERED": "1"}
+        for name, value in (env_vars or {}).items():
+            upper_name = str(name).upper()
+            if not str(name).replace("_", "a").isalnum():
+                continue
+            if any(marker in upper_name for marker in ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL")):
+                continue
+            safe_env[str(name)] = str(value)
         
         # Setup artifact paths
         artifact_dir = self.get_artifact_dir(job_id)
@@ -154,54 +175,61 @@ class JobRunner:
         result["stdout_path"] = stdout_path
         result["stderr_path"] = stderr_path
         
-        # Open log files
-        stdout_file = open(stdout_path, 'w', encoding='utf-8')
-        stderr_file = open(stderr_path, 'w', encoding='utf-8')
-        
+        sandbox_id: Optional[str] = None
         try:
             if on_status:
-                on_status("starting", {"command": command, "cwd": cwd})
+                on_status("starting", {"command": command, "cwd": str(cwd)})
             
             result["started_at"] = datetime.utcnow().isoformat()
             start_time = datetime.utcnow()
             
-            # Start process
-            process = await asyncio.create_subprocess_shell(
-                command,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=cwd,
-                env=env,
+            from app.code.sandbox import get_sandbox_pool
+
+            profile = await asyncio.to_thread(
+                resolve_execution_profile,
+                workspace_root,
+                str((env_vars or {}).get("FAROS_EXECUTION_PROFILE") or "auto"),
             )
-            
-            self._processes[job_id] = process
-            
+            pool = await get_sandbox_pool()
+            sandbox_id = await pool.acquire(
+                str(workspace_root),
+                env={"FAROS_EXECUTION_PROFILE": profile.name},
+            )
+            self._sandboxes[job_id] = sandbox_id
+            run_command = command
+            if relative_cwd:
+                run_command = f"cd {shlex.quote(relative_cwd)} && {command}"
             if on_status:
-                on_status("running", {"pid": process.pid})
-            
-            # Read output with timeout
-            try:
-                stdout_data, stderr_data = await asyncio.wait_for(
-                    self._read_output(process, stdout_file, stderr_file, on_stdout, on_stderr),
-                    timeout=timeout_sec
-                )
-                
-                result["exit_code"] = process.returncode
-                result["success"] = process.returncode == 0
-                
-            except asyncio.TimeoutError:
-                # Kill process on timeout
-                try:
-                    process.kill()
-                    await process.wait()
-                except ProcessLookupError:
-                    pass
-                
-                result["error"] = f"Timeout after {timeout_sec} seconds"
-                result["exit_code"] = -1
-                
+                on_status("running", {
+                    "sandboxId": sandbox_id,
+                    "profile": profile.name,
+                })
+            sandbox_result = await pool.execute(
+                sandbox_id,
+                run_command,
+                timeout=min(timeout_sec, profile.timeout_seconds),
+                env=safe_env,
+            )
+            Path(stdout_path).write_text(sandbox_result.stdout, encoding="utf-8")
+            Path(stderr_path).write_text(sandbox_result.stderr, encoding="utf-8")
+            if on_stdout:
+                for line in sandbox_result.stdout.splitlines():
+                    on_stdout(line)
+            if on_stderr:
+                for line in sandbox_result.stderr.splitlines():
+                    on_stderr(line)
+            result["exit_code"] = sandbox_result.exit_code
+            result["success"] = sandbox_result.success
+            result["execution"] = {
+                "backend": sandbox_result.backend,
+                "nodeName": sandbox_result.execution_node,
+                "profile": sandbox_result.profile,
+                "resourceLimits": sandbox_result.resource_limits,
+            }
+            if sandbox_result.timed_out:
+                result["error"] = f"Timeout after {min(timeout_sec, profile.timeout_seconds)} seconds"
                 if on_status:
-                    on_status("timeout", {"timeout_sec": timeout_sec})
+                    on_status("timeout", {"timeout_sec": min(timeout_sec, profile.timeout_seconds)})
             
             end_time = datetime.utcnow()
             result["ended_at"] = end_time.isoformat()
@@ -219,11 +247,13 @@ class JobRunner:
                 on_status("error", {"error": str(e)})
                 
         finally:
-            stdout_file.close()
-            stderr_file.close()
-            
-            # Remove from tracking
+            if sandbox_id:
+                try:
+                    await pool.release(sandbox_id)
+                except Exception:
+                    logger.exception("Failed to release sandbox for job %s", job_id)
             self._processes.pop(job_id, None)
+            self._sandboxes.pop(job_id, None)
         
         return result
     
@@ -266,10 +296,22 @@ class JobRunner:
         Returns:
             True if job was stopped
         """
+        sandbox_id = self._sandboxes.get(job_id)
+        if sandbox_id:
+            try:
+                from app.code.sandbox import get_sandbox_pool
+
+                pool = await get_sandbox_pool()
+                stopped = await pool.release(sandbox_id)
+                self._sandboxes.pop(job_id, None)
+                return stopped
+            except Exception as exc:
+                logger.error("Error stopping sandbox job %s: %s", job_id, exc)
+                return False
+
         process = self._processes.get(job_id)
         if not process:
             return False
-        
         try:
             # Try graceful termination first
             process.terminate()

@@ -1,6 +1,6 @@
-FROM python:3.12-slim
+FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
 
-LABEL org.opencontainers.image.title="FAROS reproducible CPU experiment runtime"
+LABEL org.opencontainers.image.title="FAROS reproducible GPU experiment runtime"
 
 RUN python -m pip install --no-cache-dir \
     pytest==9.1.1 \
@@ -12,8 +12,9 @@ RUN python -m pip install --no-cache-dir \
     scipy==1.16.1 \
     matplotlib==3.10.5 \
     seaborn==0.13.2 \
-    statsmodels==0.14.5 \
     psutil==7.0.0 \
-    pyyaml==6.0.2
+    pyyaml==6.0.2 \
+    transformers==4.55.2 \
+    accelerate==1.10.0
 
 WORKDIR /workspace

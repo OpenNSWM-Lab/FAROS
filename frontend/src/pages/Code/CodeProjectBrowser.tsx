@@ -14,14 +14,17 @@ import {
   Search, ExternalLink, Copy, Loader2, AlertTriangle,
   ChevronRight, FolderClosed, Archive, Play, Square, Terminal,
   CheckCircle2, XCircle, Clock, RefreshCw, ChevronDown, ChevronUp,
-  SkipForward, Circle, Trash2, Brain, GitBranch, ShieldCheck
+  SkipForward, Circle, Trash2, Brain, GitBranch, ShieldCheck,
+  Server, Cpu, Gauge,
 } from 'lucide-react'
 import {
   getProject, getTree, getFileContent, searchProject,
   exportProject, getVSCodeLink, getFileDownloadUrl, getExportDownloadUrl,
   runProjectPipeline, getPipelineResults, deleteJob,
   CodeProjectV2, TreeEntry, SearchResult, PipelineStepResult,
+  PipelineRunResponse,
 } from '@/lib/api/codeProjects'
+import { ComputeStatus, getComputeStatus } from '@/lib/api/compute'
 import {
   streamClaudeAgent, streamCartRun, getCartStatus,
   ClaudeStreamEvent, CartProgressEvent, CartStreamIssue,
@@ -41,6 +44,20 @@ const LANG_COLORS: Record<string, string> = {
   css: 'text-pink-600',
   bash: 'text-green-700',
   dockerfile: 'text-cyan-600',
+}
+
+const PIPELINE_STEP_ZH: Record<string, string> = {
+  'Environment Check': '环境检查',
+  'Dependency Check': '依赖检查',
+  'Syntax Check': '语法检查',
+  'Lint Check': '代码规范检查',
+  'Unit Tests': '单元测试',
+  'Model Training': '模型训练',
+  'Main Execution': '主程序执行',
+  'Evidence Contract': '证据契约校验',
+  'Evidence Seal': '证据封存与登记',
+  Cleanup: '运行清理',
+  'Isolated Runtime': '隔离运行环境',
 }
 
 function formatBytes(bytes: number): string {
@@ -86,7 +103,15 @@ export function CodeProjectBrowser() {
   const [pipelineSteps, setPipelineSteps] = useState<PipelineStepResult[]>([])
   const [pipelineSummary, setPipelineSummary] = useState('')
   const [expandedSteps, setExpandedSteps] = useState<Record<number, boolean>>({})
-  const [lastRun, setLastRun] = useState<{ status: string; totalDurationMs: number; steps: PipelineStepResult[] } | null>(null)
+  const [lastRun, setLastRun] = useState<{
+    status: string
+    totalDurationMs: number
+    steps: PipelineStepResult[]
+    execution?: PipelineRunResponse['execution']
+  } | null>(null)
+  const [executionProfile, setExecutionProfile] = useState<'auto' | 'standard' | 'gpu'>('auto')
+  const [computeStatus, setComputeStatus] = useState<ComputeStatus | null>(null)
+  const [computeError, setComputeError] = useState<string | null>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   // ---- Claude Agent state ----
@@ -117,6 +142,34 @@ export function CodeProjectBrowser() {
     if (cartPollRef.current) { clearInterval(cartPollRef.current); cartPollRef.current = null }
   }, [])
 
+  const startPipelinePolling = useCallback((jobId: string) => {
+    const activeProjectId = projectId
+    if (!activeProjectId) return
+    stopPolling()
+    const poll = async () => {
+      try {
+        const results = await getPipelineResults(activeProjectId, jobId)
+        setPipelineSteps(results.steps)
+        setPipelineSummary(results.summary)
+
+        if (results.status === 'succeeded' || results.status === 'failed' || results.status === 'partial') {
+          setPipelineStatus(results.status)
+          setLastRun({
+            status: results.status,
+            totalDurationMs: results.totalDurationMs,
+            steps: results.steps,
+            execution: results.execution,
+          })
+          stopPolling()
+        }
+      } catch {
+        // A transient tunnel interruption should not discard a running job.
+      }
+    }
+    void poll()
+    pollRef.current = setInterval(poll, 1500)
+  }, [projectId, stopPolling])
+
   useEffect(() => { return () => { stopPolling(); stopCartPolling() } }, [stopPolling, stopCartPolling])
 
   // Load last pipeline results on mount
@@ -124,13 +177,33 @@ export function CodeProjectBrowser() {
     if (!projectId) return
     getPipelineResults(projectId).then(resp => {
       if (resp.status !== 'idle' && resp.steps.length > 0) {
-        setLastRun({ status: resp.status, totalDurationMs: resp.totalDurationMs, steps: resp.steps })
+        setLastRun({ status: resp.status, totalDurationMs: resp.totalDurationMs, steps: resp.steps, execution: resp.execution })
         setPipelineSteps(resp.steps)
         if (resp.jobId) setPipelineRunId(resp.jobId)
-        if (resp.status === 'running') setPipelineStatus('running')
+        if (resp.status === 'running' && resp.jobId) {
+          setPipelineStatus('running')
+          startPipelinePolling(resp.jobId)
+        }
       }
     }).catch(() => {})
-  }, [projectId])
+  }, [projectId, startPipelinePolling])
+
+  useEffect(() => {
+    const refresh = () => {
+      getComputeStatus()
+        .then(status => {
+          setComputeStatus(status)
+          setComputeError(null)
+        })
+        .catch(err => {
+          setComputeStatus(null)
+          setComputeError(err instanceof Error ? err.message : 'Compute status unavailable')
+        })
+    }
+    refresh()
+    const timer = setInterval(refresh, 15_000)
+    return () => clearInterval(timer)
+  }, [])
 
   // Handle delete of current pipeline run
   const handleDeleteRun = async () => {
@@ -156,36 +229,12 @@ export function CodeProjectBrowser() {
       setPipelineSummary('')
       setLastRun(null)
 
-      const resp = await runProjectPipeline(projectId)
+      const resp = await runProjectPipeline(projectId, executionProfile)
       setPipelineRunId(resp.jobId)
       setPipelineSteps(resp.steps)
       setPipelineSummary(resp.summary)
 
-      // Poll for results
-      stopPolling()
-      pollRef.current = setInterval(async () => {
-        try {
-          const results = await getPipelineResults(projectId, resp.jobId)
-          setPipelineSteps(results.steps)
-          setPipelineSummary(results.summary)
-
-          if (results.status === 'succeeded') {
-            setPipelineStatus('succeeded')
-            setLastRun({ status: 'succeeded', totalDurationMs: results.totalDurationMs, steps: results.steps })
-            stopPolling()
-          } else if (results.status === 'failed') {
-            setPipelineStatus('failed')
-            setLastRun({ status: 'failed', totalDurationMs: results.totalDurationMs, steps: results.steps })
-            stopPolling()
-          } else if (results.status === 'partial') {
-            setPipelineStatus('partial')
-            setLastRun({ status: 'partial', totalDurationMs: results.totalDurationMs, steps: results.steps })
-            stopPolling()
-          }
-        } catch {
-          // keep polling
-        }
-      }, 1500)
+      startPipelinePolling(resp.jobId)
     } catch (err) {
       setPipelineStatus('failed')
       setPipelineSummary(err instanceof Error ? err.message : 'Pipeline start failed')
@@ -619,32 +668,56 @@ export function CodeProjectBrowser() {
               size="sm"
               onClick={handleCartRun}
               className="border-emerald-400 text-emerald-700 hover:bg-emerald-50"
-              title={text('按照已批准的 PlanPackage 运行完整实验流程', 'Run the full experiment pipeline from the approved PlanPackage')}
+              title={text('依据 PlanPackage 生成各步骤所需的计划产物；不会替代真实实验运行', 'Materialize PlanPackage artifacts; this does not replace measured experiment execution')}
             >
-              <Play className="h-4 w-4 mr-1" /> {cartEvents.length > 0 ? text('重新运行计划', 'Re-run plan') : text('运行计划', 'Run plan')}
+              <Play className="h-4 w-4 mr-1" /> {cartEvents.length > 0 ? text('重新生成计划产物', 'Rebuild plan artifacts') : text('生成计划产物', 'Build plan artifacts')}
             </Button>
           ) : (
             <Button variant="outline" size="sm" onClick={handleCartStop} className="border-emerald-400 bg-emerald-50 text-emerald-700">
-              <Loader2 className="h-4 w-4 mr-1 animate-spin" /> Stop Cart
+              <Loader2 className="h-4 w-4 mr-1 animate-spin" /> {text('停止生成', 'Stop')}
             </Button>
           )}
 
+          <div className="inline-flex h-9 shrink-0 overflow-hidden rounded-md border bg-background" role="group" aria-label={text('实验资源模式', 'Experiment resource mode')}>
+            {([
+              { value: 'auto', label: text('自动', 'Auto') },
+              { value: 'standard', label: 'CPU' },
+              { value: 'gpu', label: 'GPU' },
+            ] as const).map(option => {
+              const disabled = option.value === 'gpu' && !computeStatus?.gpus.length
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  disabled={disabled || pipelineStatus === 'running'}
+                  onClick={() => setExecutionProfile(option.value)}
+                  title={disabled ? text('当前计算节点没有可用 GPU', 'No GPU is available on the compute node') : option.label}
+                  className={`min-w-12 border-r px-2 text-xs font-medium last:border-r-0 ${
+                    executionProfile === option.value ? 'bg-violet-600 text-white' : 'text-muted-foreground hover:bg-muted'
+                  } disabled:cursor-not-allowed disabled:opacity-40`}
+                >
+                  {option.label}
+                </button>
+              )
+            })}
+          </div>
+
           {/* Run Pipeline Button */}
           {pipelineStatus === 'idle' ? (
-            <Button variant="outline" size="sm" onClick={handleRun} className="border-emerald-300 text-emerald-700 hover:bg-emerald-50">
+            <Button variant="outline" size="sm" onClick={handleRun} disabled={!computeStatus?.acceptingJobs} className="border-emerald-300 text-emerald-700 hover:bg-emerald-50">
               <Play className="h-4 w-4 mr-1" /> {lastRun ? text('重新运行实验', 'Re-run experiment') : text('运行实验', 'Run experiment')}
             </Button>
           ) : pipelineStatus === 'running' ? (
             <Button variant="outline" size="sm" disabled className="border-yellow-300 text-yellow-700">
-              <RefreshCw className="h-4 w-4 mr-1 animate-spin" /> Pipeline Running...
+              <RefreshCw className="h-4 w-4 mr-1 animate-spin" /> {text('实验运行中', 'Running experiment')}
             </Button>
           ) : pipelineStatus === 'succeeded' ? (
             <Button variant="outline" size="sm" onClick={handleRun} className="border-emerald-300 text-emerald-700 hover:bg-emerald-50">
-              <Play className="h-4 w-4 mr-1" /> Re-run Pipeline
+              <Play className="h-4 w-4 mr-1" /> {text('重新运行实验', 'Re-run experiment')}
             </Button>
           ) : pipelineStatus === 'failed' || pipelineStatus === 'partial' ? (
             <Button variant="outline" size="sm" onClick={handleRun} className="border-red-300 text-red-700 hover:bg-red-50">
-              <Play className="h-4 w-4 mr-1" /> Retry Pipeline
+              <Play className="h-4 w-4 mr-1" /> {text('重试实验', 'Retry experiment')}
             </Button>
           ) : null}
           <Button variant="outline" size="sm" onClick={() => navigate(`/code/blueprint?projectId=${projectId}`)}>
@@ -657,17 +730,50 @@ export function CodeProjectBrowser() {
             {exporting ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Archive className="h-4 w-4 mr-1" />}
             {text('下载 ZIP', 'Download ZIP')}
           </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={claudeRunning ? handleClaudeStop : openClaudeModal}
-            title={claudeRunning ? text('停止外部代码 Agent', 'Stop external code agent') : text('外部代码 Agent（高级）', 'External code agent (advanced)')}
-            aria-label={claudeRunning ? text('停止外部代码 Agent', 'Stop external code agent') : text('打开外部代码 Agent', 'Open external code agent')}
-          >
-            {claudeRunning ? <Loader2 className="h-4 w-4 animate-spin" /> : <Brain className="h-4 w-4" />}
-          </Button>
+          {import.meta.env.DEV && (
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={claudeRunning ? handleClaudeStop : openClaudeModal}
+              title={claudeRunning ? text('停止外部代码 Agent', 'Stop external code agent') : text('外部代码 Agent（仅开发环境）', 'External code agent (development only)')}
+              aria-label={claudeRunning ? text('停止外部代码 Agent', 'Stop external code agent') : text('打开外部代码 Agent', 'Open external code agent')}
+            >
+              {claudeRunning ? <Loader2 className="h-4 w-4 animate-spin" /> : <Brain className="h-4 w-4" />}
+            </Button>
+          )}
         </div>
       </div>
+
+      {computeStatus ? (
+        <div className={`mb-4 flex flex-wrap items-center gap-x-5 gap-y-2 border-l-4 px-4 py-3 text-sm ${
+          computeStatus.acceptingJobs
+            ? 'border-cyan-600 bg-cyan-50 text-cyan-950 dark:bg-cyan-950/30 dark:text-cyan-100'
+            : 'border-red-600 bg-red-50 text-red-950 dark:bg-red-950/30 dark:text-red-100'
+        }`}>
+          <span className="flex items-center gap-2 font-semibold">
+            <Server className="h-4 w-4" />
+            {computeStatus.nodeName}
+          </span>
+          <span className="flex items-center gap-1.5"><Cpu className="h-4 w-4" />{computeStatus.cpu.logicalCores} CPU</span>
+          <span>{computeStatus.memory.availableGiB}/{computeStatus.memory.totalGiB} GiB RAM</span>
+          <span>{computeStatus.gpus.length > 0
+            ? `${computeStatus.gpus.length} × ${computeStatus.gpus[0].name}`
+            : text('无 GPU', 'No GPU')}</span>
+          <span className="flex items-center gap-1.5"><Gauge className="h-4 w-4" />
+            {computeStatus.scheduler?.active_count || 0}/{computeStatus.scheduler?.max_active || computeStatus.runtime.maxConcurrent}
+          </span>
+          <Badge variant="outline" className="bg-background/80">
+            {computeStatus.acceptingJobs ? text('内网计算节点在线', 'Private compute online') : text('仅控制，不执行', 'Control only')}
+          </Badge>
+          {computeStatus.warnings.length > 0 && (
+            <span className="basis-full text-xs opacity-80">{computeStatus.warnings[0]}</span>
+          )}
+        </div>
+      ) : computeError ? (
+        <div className="mb-4 border-l-4 border-red-600 bg-red-50 px-4 py-3 text-sm text-red-900 dark:bg-red-950/30 dark:text-red-100">
+          {text('无法确认实验计算节点，暂不建议启动实验：', 'Cannot verify the compute node; do not start an experiment yet: ')} {computeError}
+        </div>
+      ) : null}
 
       {codeEvidence && (
         <div className="mb-4 flex flex-wrap items-center gap-x-5 gap-y-2 rounded-md border border-emerald-300 bg-emerald-50 px-4 py-3 text-sm text-emerald-900 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-200">
@@ -810,7 +916,7 @@ export function CodeProjectBrowser() {
           <CardHeader className="py-2 px-4 flex-row items-center justify-between">
             <div className="flex items-center gap-2 flex-wrap">
               <Play className={`h-4 w-4 ${cartRunning ? 'text-emerald-500' : 'text-emerald-600'}`} />
-              <span className="font-medium text-sm">Cart Pipeline</span>
+              <span className="font-medium text-sm">{text('计划产物生成', 'Plan Artifact Builder')}</span>
               <Badge variant="outline" className={`text-xs ${cartRunning ? 'border-emerald-300 text-emerald-700' : ''}`}>
                 {cartRunning ? <Loader2 className="h-3 w-3 mr-1 inline animate-spin" /> :
                  <CheckCircle2 className="h-3 w-3 mr-1 inline text-emerald-500" />}
@@ -823,7 +929,7 @@ export function CodeProjectBrowser() {
               )}
             </div>
             <Button variant="ghost" size="sm" onClick={() => { setCartEvents([]); setCartRunning(false); stopCartPolling() }}>
-              <Square className="h-3 w-3 mr-1" /> Clear
+              <Square className="h-3 w-3 mr-1" /> {text('清除', 'Clear')}
             </Button>
           </CardHeader>
           {/* Progress bar */}
@@ -920,7 +1026,7 @@ export function CodeProjectBrowser() {
           <CardHeader className="py-2 px-4 flex-row items-center justify-between">
             <div className="flex items-center gap-2">
               <Terminal className="h-4 w-4" />
-              <span className="font-medium text-sm">Pipeline Execution</span>
+              <span className="font-medium text-sm">{text('实验执行', 'Experiment Execution')}</span>
               {(pipelineStatus !== 'idle' || lastRun) && (
                 <Badge variant={
                   pipelineStatus === 'succeeded' || (lastRun?.status === 'succeeded' && pipelineStatus === 'idle') ? 'default' :
@@ -931,18 +1037,33 @@ export function CodeProjectBrowser() {
                    pipelineStatus === 'succeeded' || lastRun?.status === 'succeeded' ? <CheckCircle2 className="h-3 w-3 mr-1 inline" /> :
                    pipelineStatus === 'failed' || pipelineStatus === 'partial' ? <XCircle className="h-3 w-3 mr-1 inline" /> :
                    <Clock className="h-3 w-3 mr-1 inline" />}
-                  {pipelineStatus === 'running' ? 'Running' :
-                   pipelineStatus === 'succeeded' ? 'All Passed' :
-                   pipelineStatus === 'failed' ? 'Failed' :
-                   pipelineStatus === 'partial' ? 'Partial' :
-                   lastRun?.status === 'succeeded' ? 'Last: All Passed' :
-                   lastRun?.status === 'failed' ? 'Last: Failed' : 'Idle'}
+                  {pipelineStatus === 'running' ? text('运行中', 'Running') :
+                   pipelineStatus === 'succeeded' ? text('全部通过', 'All passed') :
+                   pipelineStatus === 'failed' ? text('失败', 'Failed') :
+                   pipelineStatus === 'partial' ? text('部分通过', 'Partial') :
+                   lastRun?.status === 'succeeded' ? text('上次全部通过', 'Last: all passed') :
+                   lastRun?.status === 'failed' ? text('上次失败', 'Last: failed') : text('空闲', 'Idle')}
                 </Badge>
               )}
               {lastRun && pipelineStatus === 'idle' && (
                 <span className="text-xs text-muted-foreground">
                   {(lastRun.totalDurationMs / 1000).toFixed(1)}s · {lastRun.steps.length} steps
                 </span>
+              )}
+              {lastRun?.execution && (
+                <span className="text-xs text-muted-foreground">
+                  {lastRun.execution.nodeName} · {lastRun.execution.backend} · {lastRun.execution.profile.name.toUpperCase()}
+                </span>
+              )}
+              {lastRun?.execution?.experimentId && (
+                <Button
+                  variant="link"
+                  size="sm"
+                  className="h-auto p-0 text-xs"
+                  onClick={() => navigate(`/experiments/${lastRun.execution?.experimentId}`)}
+                >
+                  {text('查看已核验证据', 'Open verified evidence')}
+                </Button>
               )}
               {pipelineStatus === 'running' && (
                 <span className="text-xs text-muted-foreground">{pipelineSummary}</span>
@@ -951,7 +1072,7 @@ export function CodeProjectBrowser() {
             <div className="flex items-center gap-1 ml-auto">
               {(lastRun || pipelineSteps.length > 0) && (
                 <Button variant="ghost" size="sm" className="text-red-500 hover:text-red-700 hover:bg-red-50" onClick={handleDeleteRun}>
-                  <Trash2 className="h-3 w-3 mr-1" /> Delete
+                  <Trash2 className="h-3 w-3 mr-1" /> {text('删除记录', 'Delete')}
                 </Button>
               )}
               {pipelineStatus !== 'idle' && (
@@ -959,7 +1080,7 @@ export function CodeProjectBrowser() {
                   setPipelineStatus('idle')
                   setPipelineSteps([])
                 }}>
-                  <Square className="h-3 w-3 mr-1" /> Clear
+                  <Square className="h-3 w-3 mr-1" /> {text('收起', 'Clear')}
                 </Button>
               )}
             </div>
@@ -984,7 +1105,7 @@ export function CodeProjectBrowser() {
                           step.status === 'skipped' ? 'text-slate-400' : 'text-muted-foreground'
                         }`}>
                           <span className="text-xs text-muted-foreground mr-1">{(idx + 1).toString().padStart(2, '0')}</span>
-                          {step.name}
+                          {text(PIPELINE_STEP_ZH[step.name] || step.name, step.name)}
                         </span>
                         {step.durationMs > 0 && (
                           <span className="text-xs text-muted-foreground">{(step.durationMs / 1000).toFixed(1)}s</span>
@@ -1031,10 +1152,10 @@ export function CodeProjectBrowser() {
             {/* Summary footer */}
             {lastRun && pipelineStatus === 'idle' && (
               <div className="px-4 py-2 border-t bg-muted/30 text-xs text-muted-foreground flex items-center gap-4 flex-wrap">
-                <span>Steps: {lastRun.steps.filter(s => s.status === 'succeeded').length}/{lastRun.steps.length} passed</span>
-                <span>Total: {(lastRun.totalDurationMs / 1000).toFixed(1)}s</span>
+                <span>{text('步骤', 'Steps')}: {lastRun.steps.filter(s => s.status === 'succeeded').length}/{lastRun.steps.length} {text('通过', 'passed')}</span>
+                <span>{text('总耗时', 'Total')}: {(lastRun.totalDurationMs / 1000).toFixed(1)}s</span>
                 {lastRun.steps.filter(s => s.status === 'failed').length > 0 && (
-                  <span className="text-red-600">Failed: {lastRun.steps.filter(s => s.status === 'failed').map(s => s.name).join(', ')}</span>
+                  <span className="text-red-600">{text('失败', 'Failed')}: {lastRun.steps.filter(s => s.status === 'failed').map(s => text(PIPELINE_STEP_ZH[s.name] || s.name, s.name)).join(', ')}</span>
                 )}
               </div>
             )}
