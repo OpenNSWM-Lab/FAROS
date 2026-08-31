@@ -84,7 +84,7 @@ class PlanSessionStorage:
 
     def create(self, session: PlanSession) -> PlanSession:
         path = self._path(session.id)
-        with open(path, 'w') as f:
+        with open(path, 'w', encoding='utf-8') as f:
             json.dump(self._serialize(session), f, indent=2, default=str)
         return session
 
@@ -92,7 +92,7 @@ class PlanSessionStorage:
         path = self._path(session_id)
         if not path.exists():
             return None
-        with open(path, 'r') as f:
+        with open(path, 'r', encoding='utf-8') as f:
             return self._deserialize(json.load(f))
 
     def update(self, session: PlanSession) -> PlanSession:
@@ -102,7 +102,7 @@ class PlanSessionStorage:
         sessions = []
         for p in sorted(self.base_path.glob("psess_*.json"), reverse=True):
             try:
-                with open(p, 'r') as f:
+                with open(p, 'r', encoding='utf-8') as f:
                     s = self._deserialize(json.load(f))
                 if status is None or s.status == status:
                     sessions.append(s)
@@ -136,7 +136,7 @@ class CandidatePlanStorage:
 
     def create(self, candidate: CandidatePlan) -> CandidatePlan:
         path = self._path(candidate.id)
-        with open(path, 'w') as f:
+        with open(path, 'w', encoding='utf-8') as f:
             json.dump(self._serialize(candidate), f, indent=2, default=str)
         return candidate
 
@@ -144,14 +144,14 @@ class CandidatePlanStorage:
         path = self._path(candidate_id)
         if not path.exists():
             return None
-        with open(path, 'r') as f:
+        with open(path, 'r', encoding='utf-8') as f:
             return self._deserialize(json.load(f))
 
     def list_by_session(self, session_id: str) -> List[CandidatePlan]:
         candidates = []
         for p in sorted(self.base_path.glob("cplan_*.json")):
             try:
-                with open(p, 'r') as f:
+                with open(p, 'r', encoding='utf-8') as f:
                     c = self._deserialize(json.load(f))
                 if c.sessionId == session_id:
                     candidates.append(c)
