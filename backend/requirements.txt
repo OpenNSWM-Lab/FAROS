@@ -2,11 +2,13 @@ fastapi==0.109.0
 uvicorn[standard]==0.27.0
 pydantic==2.5.3
 python-multipart==0.0.6
+python-dotenv>=1.0.0,<2
 sqlmodel>=0.0.14
 alembic>=1.13.0
 aiofiles>=23.0.0
 litellm==1.82.0
 matplotlib
+numpy>=1.26,<3
 fpdf
 httpx<0.28
 docker>=7.0.0

@@ -6,16 +6,14 @@ Inspired by RepoExec's execution framework.
 """
 
 import os
-import subprocess
+import asyncio
 import logging
-import tempfile
-import shutil
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 
-from app.core.user_context import sanitized_subprocess_env
+from app.code.execution import execution_is_allowed, resolve_execution_profile
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +76,7 @@ class DynamicEvalResult:
 
 class DynamicEvaluator:
     """
-    Dynamic code evaluator using subprocess execution.
+    Dynamic code evaluator using the shared isolated runtime.
     
     Features:
     - Test discovery and execution
@@ -96,10 +94,11 @@ class DynamicEvaluator:
         """
         self.timeout = timeout
     
-    def _run_command(
+    async def _run_command(
         self,
         command: str,
-        cwd: str,
+        pool,
+        sandbox_id: str,
         timeout: Optional[int] = None,
         env: Optional[Dict[str, str]] = None,
     ) -> CommandResult:
@@ -118,47 +117,32 @@ class DynamicEvaluator:
         timeout = timeout or self.timeout
         start_time = datetime.utcnow()
         
-        # Prepare environment
-        run_env = sanitized_subprocess_env()
-        if env:
-            run_env.update(env)
-        
         try:
-            result = subprocess.run(
+            sandbox_result = await pool.execute(
+                sandbox_id,
                 command,
-                shell=True,
-                cwd=cwd,
-                capture_output=True,
-                text=True,
                 timeout=timeout,
-                env=run_env,
+                env={"PYTHONUNBUFFERED": "1", **(env or {})},
             )
             
             end_time = datetime.utcnow()
             duration_ms = int((end_time - start_time).total_seconds() * 1000)
             
-            status = ExecutionStatus.SUCCESS if result.returncode == 0 else ExecutionStatus.FAILED
+            status = (
+                ExecutionStatus.TIMEOUT
+                if sandbox_result.timed_out
+                else ExecutionStatus.SUCCESS
+                if sandbox_result.success
+                else ExecutionStatus.FAILED
+            )
             
             return CommandResult(
                 command=command,
                 status=status,
-                exit_code=result.returncode,
-                stdout=result.stdout,
-                stderr=result.stderr,
-                duration_ms=duration_ms,
-            )
-            
-        except subprocess.TimeoutExpired as e:
-            end_time = datetime.utcnow()
-            duration_ms = int((end_time - start_time).total_seconds() * 1000)
-            
-            return CommandResult(
-                command=command,
-                status=ExecutionStatus.TIMEOUT,
-                exit_code=None,
-                stdout=e.stdout or "" if hasattr(e, 'stdout') else "",
-                stderr=f"Command timed out after {timeout} seconds",
-                duration_ms=duration_ms,
+                exit_code=sandbox_result.exit_code,
+                stdout=sandbox_result.stdout,
+                stderr=sandbox_result.stderr,
+                duration_ms=sandbox_result.duration_ms,
             )
             
         except Exception as e:
@@ -182,13 +166,9 @@ class DynamicEvaluator:
             Test command or None if no tests found
         """
         # Check for Python tests
-        if os.path.exists(os.path.join(repo_path, "pytest.ini")) or \
-           os.path.exists(os.path.join(repo_path, "pyproject.toml")) or \
-           os.path.exists(os.path.join(repo_path, "setup.py")):
-            # Check if pytest is available
-            if os.path.exists(os.path.join(repo_path, "tests")) or \
-               os.path.exists(os.path.join(repo_path, "test")):
-                return "python -m pytest --tb=short -q"
+        if os.path.exists(os.path.join(repo_path, "tests")) or \
+           os.path.exists(os.path.join(repo_path, "test")):
+            return "python -m pytest --tb=short -q"
         
         # Check for Node.js tests
         package_json = os.path.join(repo_path, "package.json")
@@ -234,7 +214,7 @@ class DynamicEvaluator:
         
         return {"passed": passed, "failed": failed, "skipped": skipped}
     
-    def evaluate(
+    async def evaluate(
         self,
         repo_path: str,
         commands: Optional[List[str]] = None,
@@ -262,6 +242,15 @@ class DynamicEvaluator:
                 tests_skipped=0,
                 summary=f"Repository path does not exist: {repo_path}",
             )
+        if not execution_is_allowed():
+            return DynamicEvalResult(
+                status=ExecutionStatus.SKIPPED,
+                tests_found=False,
+                tests_passed=0,
+                tests_failed=0,
+                tests_skipped=0,
+                summary="Dynamic evaluation requires the private compute node.",
+            )
         
         command_results = []
         tests_found = False
@@ -269,29 +258,35 @@ class DynamicEvaluator:
         tests_failed = 0
         tests_skipped = 0
         
-        # Run custom commands first
-        if commands:
-            for cmd in commands:
-                result = self._run_command(cmd, repo_path, timeout)
-                command_results.append(result)
-        
-        # Auto-detect and run tests
-        if run_tests:
-            test_cmd = self._detect_test_framework(repo_path)
-            
-            if test_cmd:
-                tests_found = True
-                result = self._run_command(test_cmd, repo_path, timeout)
-                command_results.append(result)
-                
-                # Parse test results
-                if "pytest" in test_cmd:
-                    counts = self._parse_pytest_output(result.stdout, result.stderr)
-                    tests_passed = counts["passed"]
-                    tests_failed = counts["failed"]
-                    tests_skipped = counts["skipped"]
-                elif result.status == ExecutionStatus.SUCCESS:
-                    tests_passed = 1  # At least one test passed
+        from app.code.sandbox import get_sandbox_pool
+
+        profile = await asyncio.to_thread(resolve_execution_profile, repo_path, "auto")
+        pool = await get_sandbox_pool()
+        sandbox_id = await pool.acquire(
+            repo_path,
+            env={"FAROS_EXECUTION_PROFILE": profile.name},
+        )
+        try:
+            if commands:
+                for cmd in commands:
+                    result = await self._run_command(cmd, pool, sandbox_id, timeout)
+                    command_results.append(result)
+
+            if run_tests:
+                test_cmd = self._detect_test_framework(repo_path)
+                if test_cmd:
+                    tests_found = True
+                    result = await self._run_command(test_cmd, pool, sandbox_id, timeout)
+                    command_results.append(result)
+                    if "pytest" in test_cmd:
+                        counts = self._parse_pytest_output(result.stdout, result.stderr)
+                        tests_passed = counts["passed"]
+                        tests_failed = counts["failed"]
+                        tests_skipped = counts["skipped"]
+                    elif result.status == ExecutionStatus.SUCCESS:
+                        tests_passed = 1
+        finally:
+            await pool.release(sandbox_id)
         
         # Determine overall status
         if not command_results:
@@ -321,7 +316,7 @@ class DynamicEvaluator:
             summary=summary,
         )
     
-    def evaluate_in_sandbox(
+    async def evaluate_in_sandbox(
         self,
         code: str,
         language: str = "python",
@@ -355,16 +350,16 @@ class DynamicEvaluator:
                 commands = []
                 
                 # Syntax check
-                commands.append(f"python -m py_compile {main_file}")
+                commands.append("python -m py_compile main.py")
                 
                 # Run if test code provided
                 if test_code:
                     test_file = os.path.join(temp_dir, "test_main.py")
                     with open(test_file, 'w') as f:
                         f.write(test_code)
-                    commands.append(f"python -m pytest {test_file} -v")
+                    commands.append("python -m pytest test_main.py -v")
                 
-                return self.evaluate(temp_dir, commands=commands, run_tests=False, timeout=timeout)
+                return await self.evaluate(temp_dir, commands=commands, run_tests=False, timeout=timeout)
             
             else:
                 return DynamicEvalResult(

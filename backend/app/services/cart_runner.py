@@ -21,8 +21,8 @@ import csv
 import json
 import logging
 import os
+import shlex
 import shutil
-import sys
 import time
 import uuid
 from datetime import datetime, timezone
@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import AsyncIterator, Optional
 
-from app.core.user_context import call_with_current_context, sanitized_subprocess_env
+from app.core.user_context import call_with_current_context
 
 logger = logging.getLogger(__name__)
 
@@ -565,7 +565,13 @@ class CartRunner:
 
         # ---- Primary: Claude Code agent, when the server has the CLI ----
         npm_claude = os.path.expandvars(r"%APPDATA%\npm\claude.cmd")
-        claude_available = os.path.isfile(npm_claude) or bool(shutil.which("claude"))
+        from app.code.execution.resources import host_execution_is_allowed
+
+        claude_available = (
+            os.getenv("FAROS_ENABLE_HOST_CLAUDE_AGENT", "false").lower() in {"1", "true", "yes"}
+            and host_execution_is_allowed()
+            and (os.path.isfile(npm_claude) or bool(shutil.which("claude")))
+        )
         if claude_available:
             if progress_callback:
                 await progress_callback(CartProgressEvent(
@@ -665,7 +671,7 @@ class CartRunner:
                     message="Agents did not complete the task; trying the deterministic runner...",
                     timestamp=time.strftime("%H:%M:%S"),
                 ))
-            direct_ok = self._execute_direct(
+            direct_ok = await self._execute_direct(
                 node,
                 run_dir,
                 result,
@@ -1266,8 +1272,6 @@ class CartRunner:
         This is the primary fallback when Claude Code CLI is unavailable.
         Uses the same API configuration as the rest of the system (Settings page).
         """
-        import subprocess as _sp
-
         node_id = node["id"]
         title = node.get("title", "")
         desc = node.get("desc", "")
@@ -1361,17 +1365,15 @@ Generate ONLY the Python code, no explanations. Start with `#!/usr/bin/env pytho
                 f.write(code)
 
             # Execute the generated code
-            proc = _sp.run(
-                [sys.executable, script_path],
-                capture_output=True, text=True,
-                timeout=timeout_sec, cwd=run_dir,
-                env=sanitized_subprocess_env({"PYTHONUNBUFFERED": "1"}),
+            sandbox_result = await self._run_generated_script(
+                run_dir,
+                script_name,
+                timeout_sec,
             )
+            stdout_preview = sandbox_result.stdout[-500:]
+            stderr_preview = sandbox_result.stderr[-300:]
 
-            stdout_preview = proc.stdout[-500:] if proc.stdout else ""
-            stderr_preview = proc.stderr[-300:] if proc.stderr else ""
-
-            if proc.returncode == 0:
+            if sandbox_result.success:
                 artifacts = self._scan_outputs(run_dir, outputs)
                 missing_outputs = self._missing_expected_outputs(node, artifacts)
                 if missing_outputs:
@@ -1386,7 +1388,10 @@ Generate ONLY the Python code, no explanations. Start with `#!/usr/bin/env pytho
                             timestamp=time.strftime("%H:%M:%S"),
                         ))
                     return False
-                result.message = f"LLM-generated code completed (stdout: {len(proc.stdout)}B)"
+                result.message = (
+                    f"LLM-generated code completed in {sandbox_result.backend} "
+                    f"on {sandbox_result.execution_node} (stdout: {len(sandbox_result.stdout)}B)"
+                )
                 if progress_callback:
                     await progress_callback(CartProgressEvent(
                         event_type="node_progress", node_id=node_id, status="running",
@@ -1395,7 +1400,7 @@ Generate ONLY the Python code, no explanations. Start with `#!/usr/bin/env pytho
                     ))
                 return True
             else:
-                result.message = f"LLM 代码执行失败 (exit={proc.returncode}): {stderr_preview[:200]}"
+                result.message = f"LLM 代码执行失败 (exit={sandbox_result.exit_code}): {stderr_preview[:200]}"
                 if progress_callback:
                     await progress_callback(CartProgressEvent(
                         event_type="node_progress", node_id=node_id, status="running",
@@ -1410,14 +1415,37 @@ Generate ONLY the Python code, no explanations. Start with `#!/usr/bin/env pytho
             return False
 
     @staticmethod
-    def _execute_direct(node: dict, run_dir: str, result: CartNodeResult, timeout_sec: int = 180) -> bool:
-        """Auto-generate Python code for this node and run it directly via subprocess.
+    async def _run_generated_script(run_dir: str, script_name: str, timeout_sec: int):
+        """Run generated code in the shared isolated execution layer."""
+
+        from app.code.execution import execution_is_allowed, resolve_execution_profile
+        from app.code.sandbox import get_sandbox_pool
+
+        if not execution_is_allowed():
+            raise RuntimeError("Generated-code execution requires the private compute node")
+        profile = await asyncio.to_thread(resolve_execution_profile, run_dir, "auto")
+        pool = await get_sandbox_pool()
+        sandbox_id = await pool.acquire(
+            run_dir,
+            env={"FAROS_EXECUTION_PROFILE": profile.name},
+        )
+        try:
+            return await pool.execute(
+                sandbox_id,
+                f"python {shlex.quote(script_name)}",
+                timeout=min(timeout_sec, profile.timeout_seconds),
+                env={"PYTHONUNBUFFERED": "1"},
+            )
+        finally:
+            await pool.release(sandbox_id)
+
+    @staticmethod
+    async def _execute_direct(node: dict, run_dir: str, result: CartNodeResult, timeout_sec: int = 180) -> bool:
+        """Auto-generate Python code for this node and run it in a sandbox.
 
         This is the fallback when Claude Code CLI is unavailable or unreliable.
         Uses node metadata to generate simple task-specific scripts.
         """
-        import subprocess as _sp
-
         node_id = node["id"]
         title = node.get("title", "")
         desc = node.get("desc", "")
@@ -1441,23 +1469,23 @@ Generate ONLY the Python code, no explanations. Start with `#!/usr/bin/env pytho
 
         # Execute
         try:
-            proc = _sp.run(
-                [sys.executable, script_path],
-                capture_output=True, text=True,
-                timeout=timeout_sec, cwd=run_dir,
-                env=sanitized_subprocess_env({"PYTHONUNBUFFERED": "1"}),
+            sandbox_result = await CartRunner._run_generated_script(
+                run_dir,
+                script_name,
+                timeout_sec,
             )
-            result.message += f"\n[Direct exec: exit={proc.returncode}, stdout={len(proc.stdout)}B, stderr={len(proc.stderr)}B]"
-            if proc.stdout:
-                result.message += f"\nstdout: {proc.stdout[-500:]}"
-            if proc.stderr and proc.returncode != 0:
-                result.message += f"\nstderr: {proc.stderr[-300:]}"
-            return proc.returncode == 0
-        except _sp.TimeoutExpired:
-            result.error = "Direct execution timed out"
-            return False
+            result.message += (
+                f"\n[Sandbox exec: backend={sandbox_result.backend}, "
+                f"exit={sandbox_result.exit_code}, stdout={len(sandbox_result.stdout)}B, "
+                f"stderr={len(sandbox_result.stderr)}B]"
+            )
+            if sandbox_result.stdout:
+                result.message += f"\nstdout: {sandbox_result.stdout[-500:]}"
+            if sandbox_result.stderr and not sandbox_result.success:
+                result.message += f"\nstderr: {sandbox_result.stderr[-300:]}"
+            return sandbox_result.success
         except Exception as exc:
-            result.error = f"Direct execution error: {exc}"
+            result.error = f"Sandbox execution error: {exc}"
             return False
 
     @staticmethod

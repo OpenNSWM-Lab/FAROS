@@ -263,6 +263,7 @@ class SciFactCompetitionCaseJob(BaseModel):
         Literal["queued", "preparing", "executing", "registering", "completed", "failed"]
     ] = None
     progressPercent: Optional[int] = Field(default=None, ge=0, le=100)
+    execution: Dict[str, Any] = Field(default_factory=dict)
 
 
 class ReliabilityBenchmarkSummary(BaseModel):
@@ -483,13 +484,16 @@ def _run_scifact_case(job_id: str, model: str, bootstrap_samples: int) -> None:
         if registered is not None:
             job["feedbackId"] = registered["id"]
         _write_scifact_job(job)
-    except Exception:
+    except Exception as exc:
         logger.exception("SciFact competition case %s failed", job_id)
         job.update({
             "status": "failed",
             "stage": "failed",
             "progressPercent": 100,
-            "error": "Execution failed. Inspect the server log; credentials are not returned by this API.",
+            "error": (
+                f"{type(exc).__name__}: {str(exc)[:260]}. "
+                "Check the Qwen account configuration, dataset connectivity, and compute-node status."
+            ),
         })
         _write_scifact_job(job)
 
@@ -963,6 +967,17 @@ async def get_reviewx_eval_record_endpoint(
 async def start_scifact_competition_case_endpoint(
     req: RunSciFactCompetitionCaseRequest,
 ) -> SciFactCompetitionCaseJob:
+    from app.code.execution import execution_is_allowed, get_compute_snapshot
+
+    if not execution_is_allowed():
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Track 1B verification cannot run on the public control server. "
+                "Restore the private compute-node tunnel and retry."
+            ),
+        )
+    compute = get_compute_snapshot()
     with _SCIFACT_JOB_LOCK:
         jobs = _list_scifact_jobs()
         if req.reuseLatest:
@@ -1008,6 +1023,13 @@ async def start_scifact_competition_case_endpoint(
             "summaryUrl": None,
             "reportUrl": None,
             "error": None,
+            "execution": {
+                "nodeName": compute["nodeName"],
+                "location": compute["location"],
+                "workload": "trusted_builtin_cpu",
+                "gpuCount": 0,
+                "isolated": False,
+            },
         })
         worker = threading.Thread(
             target=call_with_current_context(_run_scifact_case),

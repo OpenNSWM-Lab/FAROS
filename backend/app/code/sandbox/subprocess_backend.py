@@ -15,12 +15,18 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import sys
 import time
 from pathlib import Path
 from typing import Optional
 
 from app.core.user_context import sanitized_subprocess_env
+from app.code.execution.resources import (
+    get_compute_snapshot,
+    host_execution_is_allowed,
+    resolve_execution_profile,
+)
 
 from .base import SandboxBackend
 from .models import SandboxResult, ResourceUsage
@@ -61,6 +67,8 @@ class SubprocessSandbox(SandboxBackend):
         self._log_output_limit = log_output_limit
         self._workspaces: dict[str, str] = {}  # sandbox_id -> workspace_path
         self._source_workspaces: dict[str, str] = {}
+        self._profiles: dict[str, object] = {}
+        self._processes: dict[str, asyncio.subprocess.Process] = {}
 
     # ---- SandboxBackend interface ----
 
@@ -82,10 +90,10 @@ class SubprocessSandbox(SandboxBackend):
             os.path.dirname(workspace_path), f".sandbox_{sandbox_id}"
         )
         if os.path.exists(sandbox_dir):
-            shutil.rmtree(sandbox_dir, ignore_errors=True)
+            await asyncio.to_thread(shutil.rmtree, sandbox_dir, ignore_errors=True)
 
         try:
-            self._copy_workspace(workspace_path, sandbox_dir)
+            await asyncio.to_thread(self._copy_workspace, workspace_path, sandbox_dir)
         except Exception:
             # If copy fails, use original path directly
             logger.warning(
@@ -95,6 +103,11 @@ class SubprocessSandbox(SandboxBackend):
 
         self._workspaces[sandbox_id] = sandbox_dir
         self._source_workspaces[sandbox_id] = workspace_path
+        self._profiles[sandbox_id] = await asyncio.to_thread(
+            resolve_execution_profile,
+            workspace_path,
+            str((env or {}).get("FAROS_EXECUTION_PROFILE") or "auto"),
+        )
         logger.info("SubprocessSandbox created: %s -> %s", sandbox_id, sandbox_dir)
         return sandbox_id
 
@@ -128,6 +141,7 @@ class SubprocessSandbox(SandboxBackend):
         timeout = min(timeout, self._max_timeout)
         start = time.monotonic()
         execution_command = self._resolve_python_command(command)
+        profile = self._profiles[sandbox_id]
 
         # Build environment
         proc_env = sanitized_subprocess_env({"PYTHONUNBUFFERED": "1"})
@@ -141,7 +155,9 @@ class SubprocessSandbox(SandboxBackend):
                 stderr=asyncio.subprocess.PIPE,
                 cwd=workspace,
                 env=proc_env,
+                start_new_session=True,
             )
+            self._processes[sandbox_id] = proc
 
             try:
                 stdout_bytes, stderr_bytes = await asyncio.wait_for(
@@ -150,7 +166,7 @@ class SubprocessSandbox(SandboxBackend):
             except asyncio.TimeoutError:
                 logger.warning("Sandbox command timed out after %ds: %s", timeout, command[:120])
                 try:
-                    proc.kill()
+                    os.killpg(proc.pid, signal.SIGKILL)
                     await asyncio.wait_for(proc.wait(), timeout=5)
                 except Exception:
                     pass
@@ -162,6 +178,13 @@ class SubprocessSandbox(SandboxBackend):
                     duration_ms=duration_ms,
                     timed_out=True,
                     command=execution_command,
+                    backend=self.backend_type,
+                    execution_node=get_compute_snapshot()["nodeName"],
+                    profile=profile.name,
+                    resource_limits={
+                        **profile.to_public_dict(),
+                        "enforced": False,
+                    },
                 )
 
             duration_ms = int((time.monotonic() - start) * 1000)
@@ -177,6 +200,13 @@ class SubprocessSandbox(SandboxBackend):
                 duration_ms=duration_ms,
                 timed_out=False,
                 command=execution_command,
+                backend=self.backend_type,
+                execution_node=get_compute_snapshot()["nodeName"],
+                profile=profile.name,
+                resource_limits={
+                    **profile.to_public_dict(),
+                    "enforced": False,
+                },
             )
 
         except FileNotFoundError:
@@ -187,6 +217,10 @@ class SubprocessSandbox(SandboxBackend):
                 stderr=f"Command not found or executable missing: {command[:120]}",
                 duration_ms=duration_ms,
                 command=execution_command,
+                backend=self.backend_type,
+                execution_node=get_compute_snapshot()["nodeName"],
+                profile=profile.name,
+                resource_limits={**profile.to_public_dict(), "enforced": False},
             )
         except Exception as exc:
             duration_ms = int((time.monotonic() - start) * 1000)
@@ -197,7 +231,13 @@ class SubprocessSandbox(SandboxBackend):
                 stderr=f"Execution error: {exc}",
                 duration_ms=duration_ms,
                 command=execution_command,
+                backend=self.backend_type,
+                execution_node=get_compute_snapshot()["nodeName"],
+                profile=profile.name,
+                resource_limits={**profile.to_public_dict(), "enforced": False},
             )
+        finally:
+            self._processes.pop(sandbox_id, None)
 
     async def read_file(self, sandbox_id: str, path: str) -> str:
         workspace = self._workspaces.get(sandbox_id)
@@ -220,8 +260,19 @@ class SubprocessSandbox(SandboxBackend):
         Path(full_path).write_text(content, encoding="utf-8")
 
     async def teardown(self, sandbox_id: str) -> None:
+        process = self._processes.pop(sandbox_id, None)
+        if process and process.returncode is None:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+                await asyncio.wait_for(process.wait(), timeout=5)
+            except (ProcessLookupError, asyncio.TimeoutError):
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
         workspace = self._workspaces.pop(sandbox_id, None)
         self._source_workspaces.pop(sandbox_id, None)
+        self._profiles.pop(sandbox_id, None)
         if workspace and workspace.endswith(sandbox_id):
             try:
                 shutil.rmtree(workspace, ignore_errors=True)
@@ -232,6 +283,9 @@ class SubprocessSandbox(SandboxBackend):
     async def get_resource_usage(self, sandbox_id: str) -> ResourceUsage:
         # subprocess backend can't reliably measure resource usage
         return ResourceUsage()
+
+    def is_available(self) -> bool:
+        return host_execution_is_allowed()
 
     # ---- safety ----
 

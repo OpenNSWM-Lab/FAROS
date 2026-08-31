@@ -8,14 +8,20 @@ import os
 import json
 import asyncio
 import logging
+import shlex
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, Optional, List
 from fastapi import APIRouter, HTTPException, status, Depends, Query, BackgroundTasks
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from app.core.paths import get_data_dir
 from app.core.settings import get_settings
-from app.core.user_context import call_with_current_context
+from app.code.execution import (
+    execution_is_allowed,
+    get_compute_snapshot,
+    resolve_execution_profile,
+)
 from app.modules.code.projects import code_project_service as cps, generate_project_from_plan, get_generation_status
 from app.modules.code.storage import Session, crud, get_session, get_session_context
 from app.db.models import JobStatus, CodeJobCreate
@@ -891,6 +897,13 @@ class PipelineRunResponse(BaseModel):
     steps: List[PipelineStepResult] = Field(default_factory=list)
     totalDurationMs: int = 0
     summary: str = ""
+    execution: Optional[Dict[str, Any]] = None
+
+
+class PipelineRunRequest(BaseModel):
+    """Optional resource profile for a reproducible project run."""
+
+    profile: str = Field(default="auto", pattern=r"^(auto|light|standard|gpu)$")
 
 
 def _get_project_repo_dir(project) -> str | None:
@@ -929,14 +942,14 @@ def _build_pipeline_steps(repo_dir: str, language: str) -> List[PipelineStep]:
             timeoutSec=30,
         ))
 
-        # Step 2: Install dependencies
+        # Step 2: Validate dependencies from the prebuilt, frozen runtime image.
         if has_reqs:
             steps.append(PipelineStep(
-                name="Install Dependencies",
-                purpose="Install Python packages declared in requirements.txt",
-                command="pip install -r requirements.txt --quiet 2>&1",
+                name="Dependency Check",
+                purpose="Verify declared packages without mutating the frozen runtime",
+                command="python -m pip install --dry-run --no-index -r requirements.txt 2>&1",
                 critical=True,
-                timeoutSec=120,
+                timeoutSec=90,
             ))
 
         # Step 3: Syntax check. Building a pipeline definition must stay read-only.
@@ -952,7 +965,11 @@ def _build_pipeline_steps(repo_dir: str, language: str) -> List[PipelineStep]:
         steps.append(PipelineStep(
             name="Lint Check",
             purpose="Check code style and potential issues (flake8 if installed)",
-            command="flake8 . --count --max-line-length=120 --statistics 2>&1 || echo 'flake8 not installed, skip'",
+            command=(
+                "if command -v flake8 >/dev/null 2>&1; then "
+                "flake8 . --count --max-line-length=120 --statistics 2>&1; "
+                "else echo 'flake8 not installed, skip'; fi"
+            ),
             critical=False,
             timeoutSec=60,
         ))
@@ -962,9 +979,9 @@ def _build_pipeline_steps(repo_dir: str, language: str) -> List[PipelineStep]:
             steps.append(PipelineStep(
                 name="Unit Tests",
                 purpose="Run project unit tests to verify core functionality",
-                command="python -m pytest tests/ -v --tb=short 2>&1 || echo '(tests completed with some failures)'",
-                critical=False,
-                timeoutSec=180,
+                command="python -m pytest tests/ -v --tb=short 2>&1",
+                critical=True,
+                timeoutSec=600,
             ))
 
         # Step 6: Training
@@ -975,7 +992,7 @@ def _build_pipeline_steps(repo_dir: str, language: str) -> List[PipelineStep]:
                 purpose="Execute training script, produce model weights and training logs",
                 command=f"python {target} 2>&1",
                 critical=True,
-                timeoutSec=600,
+                timeoutSec=1800,
             ))
 
         # Step 7: Main execution
@@ -986,45 +1003,23 @@ def _build_pipeline_steps(repo_dir: str, language: str) -> List[PipelineStep]:
                 purpose="Run the generated project entry point and verify it completes",
                 command=f"python {target} 2>&1",
                 critical=True,
-                timeoutSec=60,
+                timeoutSec=1800,
             ))
 
-        # Step 8: Collect metrics
+        # Step 8: Validate measured metrics. Never synthesize or overwrite them.
         steps.append(PipelineStep(
-            name="Metrics Collection",
-            purpose="Scan project outputs, extract quantitative metrics, generate metrics.json",
-            command="import json, os; "
-                    "py_files = []; "
-                    "for root, dirs, files in os.walk('.'): "
-                    "  py_files += [os.path.join(root, f) for f in files if f.endswith('.py')]; "
-                    "metrics = ["
-                    "{'name': 'python_files', 'value': len(py_files)}]; "
-                    "with open('metrics.json', 'w') as f: json.dump(metrics, f, indent=2, ensure_ascii=False); "
-                    "print('metrics.json written:', len(py_files), 'Python files')",
-            critical=False,
-            timeoutSec=30,
-        ))
-
-        # Step 9: Generate report
-        steps.append(PipelineStep(
-            name="Generate Report",
-            purpose="Aggregate all step results, generate experiment_report.md for paper writing",
-            command="import json, os; "
-                    "from datetime import datetime; "
-                    "report = ['# Experiment Pipeline Report', '', f'Generated: {datetime.now()}', '']; "
-                    "if os.path.exists('metrics.json'): "
-                    "  report.append('## Metrics'); "
-                    "  m = json.load(open('metrics.json')); "
-                    "  for item in m: report.append(f'- **{item.get(\"name\", \"?\")}**: {item.get(\"value\", \"?\")}'); "
-                    "report.append(''); "
-                    "report.append('## Project Files'); "
-                    "for root, dirs, files in os.walk('.'): "
-                    "  for f in sorted(files): "
-                    "    fp = os.path.join(root, f); "
-                    "    report.append(f'- `{fp}` ({os.path.getsize(fp)} bytes)'); "
-                    "with open('experiment_report.md', 'w', encoding='utf-8') as f: f.write('\\n'.join(report)); "
-                    "print('experiment_report.md generated')",
-            critical=False,
+            name="Evidence Contract",
+            purpose="Validate that execution produced finite, defined scientific metrics",
+            command="import json, math, pathlib; "
+                    "paths=[pathlib.Path('metrics.json'),pathlib.Path('outputs/metrics.json'),pathlib.Path('results/metrics.json'),pathlib.Path('artifacts/metrics.json')]; "
+                    "p=next((x for x in paths if x.is_file()),None); "
+                    "assert p is not None, 'No metrics.json was produced by the experiment'; "
+                    "raw=json.loads(p.read_text(encoding='utf-8')); "
+                    "items=raw if isinstance(raw,list) else raw.get('metrics',[]) if isinstance(raw,dict) else []; "
+                    "assert items, 'metrics.json contains no metric records'; "
+                    "assert all(isinstance(x,dict) and str(x.get('name','')).strip() and isinstance(x.get('value'),(int,float)) and not isinstance(x.get('value'),bool) and math.isfinite(float(x['value'])) and str(x.get('definition','')).strip() and str(x.get('split','')).strip() for x in items), 'Every metric requires name, finite numeric value, definition, and split'; "
+                    "print(f'validated {len(items)} scientific metrics from {p}')",
+            critical=True,
             timeoutSec=30,
         ))
 
@@ -1041,24 +1036,37 @@ def _build_pipeline_steps(repo_dir: str, language: str) -> List[PipelineStep]:
     steps.append(PipelineStep(
         name="Cleanup",
         purpose="Remove helper scripts left by older FAROS pipeline versions",
-        command="import os; "
-                "for f in ['_faros_syntax_check.py', '_faros_runner.py']: "
-                "  try: os.remove(f) "
-                "  except OSError: pass; "
-                "print('Cleanup done')",
+        command=(
+            "import os\n"
+            "for filename in ['_faros_syntax_check.py', '_faros_runner.py']:\n"
+            "    try:\n"
+            "        os.remove(filename)\n"
+            "    except OSError:\n"
+            "        pass\n"
+            "print('Cleanup done')\n"
+        ),
         critical=False,
         timeoutSec=10,
     ))
+    if language == "python":
+        steps.append(PipelineStep(
+            name="Evidence Seal",
+            purpose="Hash code, environment, inputs, logs, and measured metrics into a reproducible evidence bundle",
+            command="__FAROS_EVIDENCE_SEAL__",
+            critical=True,
+            timeoutSec=60,
+        ))
 
     return steps
 
 
-async def _execute_pipeline_step(step: PipelineStep, repo_dir: str, python_exe: str) -> PipelineStepResult:
-    """Execute a single pipeline step using subprocess in a thread pool (avoids Windows asyncio issues)."""
-    import time as _time
-    import subprocess as _subprocess
-    from app.core.user_context import sanitized_subprocess_env
-    start = _time.time()
+async def _execute_pipeline_step(
+    step: PipelineStep,
+    pool,
+    sandbox_id: str,
+    profile_timeout: int,
+) -> PipelineStepResult:
+    """Execute one step in the already-acquired isolated workspace."""
 
     result = PipelineStepResult(name=step.name, purpose=step.purpose, status="running")
     command = step.command
@@ -1070,122 +1078,337 @@ async def _execute_pipeline_step(step: PipelineStep, repo_dir: str, python_exe: 
         ("py_compile" in command and "compile(" not in command)
     )
 
-    if command.startswith("python "):
-        shell_cmd = command.replace("python ", f'"{python_exe}" ', 1)
-    elif is_inline_python:
-        # Inline Python → wrap with python -c
-        # On Windows, escape internal double quotes for cmd.exe
-        safe = command.replace('"', '\\"')
-        shell_cmd = f'"{python_exe}" -c "{safe}"'
-    else:
-        shell_cmd = command
-
-    # Run in thread pool to avoid Windows ProactorEventLoop issues
-    def _run():
-        return _subprocess.run(
-            shell_cmd,
-            shell=True,
-            capture_output=True,
-            text=True,
-            timeout=step.timeoutSec,
-            cwd=repo_dir,
-            env=sanitized_subprocess_env({"PYTHONUNBUFFERED": "1"}),
-            encoding="utf-8",
-            errors="replace",
-        )
+    shell_cmd = f"python -c {shlex.quote(command)}" if is_inline_python else command
 
     try:
-        loop = asyncio.get_event_loop()
-        proc = await loop.run_in_executor(None, call_with_current_context(_run))
-
-        result.exitCode = proc.returncode
-        result.stdout = (proc.stdout[:8000] if proc.stdout else "")
-        result.stderr = (proc.stderr[:4000] if proc.stderr else "")
-
-        if proc.returncode == 0:
+        sandbox_result = await pool.execute(
+            sandbox_id,
+            shell_cmd,
+            timeout=min(step.timeoutSec, profile_timeout),
+            env={"PYTHONUNBUFFERED": "1"},
+        )
+        result.exitCode = sandbox_result.exit_code
+        result.stdout = sandbox_result.stdout[-8000:]
+        result.stderr = sandbox_result.stderr[-4000:]
+        result.durationMs = sandbox_result.duration_ms
+        if sandbox_result.success:
             result.status = "succeeded"
         else:
             result.status = "failed"
-            result.error = f"Exit code: {proc.returncode}"
-
-    except _subprocess.TimeoutExpired:
-        result.status = "failed"
-        result.error = f"Step timed out after {step.timeoutSec}s"
-    except FileNotFoundError as e:
-        result.status = "failed"
-        result.error = f"Command not found: {e}"
+            result.error = (
+                f"Step timed out after {min(step.timeoutSec, profile_timeout)}s"
+                if sandbox_result.timed_out
+                else f"Exit code: {sandbox_result.exit_code}"
+            )
     except Exception as e:
         result.status = "failed"
         result.error = f"{type(e).__name__}: {e}"
-
-    result.durationMs = int((_time.time() - start) * 1000)
     return result
 
 
-async def _run_pipeline_background(job_id: str, project_id: str, repo_dir: str, language: str):
-    """Execute pipeline steps in background, updating DB after each step."""
-    import sys as _sys
-    python_exe = _sys.executable
+def _write_pipeline_state(
+    repo_dir: str,
+    *,
+    job_id: str,
+    project_id: str,
+    status_value: str,
+    step_results: List[PipelineStepResult],
+    execution: Dict[str, Any],
+) -> None:
+    payload = {
+        "jobId": job_id,
+        "projectId": project_id,
+        "status": status_value,
+        "steps": [step.model_dump() for step in step_results],
+        "totalDurationMs": sum(step.durationMs for step in step_results),
+        "summary": (
+            f"{sum(step.status == 'succeeded' for step in step_results)}/"
+            f"{len(step_results)} steps passed on {execution.get('nodeName', 'execution node')}"
+        ),
+        "execution": execution,
+    }
+    Path(repo_dir, "pipeline_results.json").write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+
+def _write_pipeline_report(
+    repo_dir: str,
+    status_value: str,
+    step_results: List[PipelineStepResult],
+    execution: Dict[str, Any],
+) -> None:
+    profile = execution.get("profile") or {}
+    lines = [
+        "# FAROS Isolated Experiment Pipeline",
+        "",
+        f"- Status: `{status_value}`",
+        f"- Execution node: `{execution.get('nodeName', 'unknown')}`",
+        f"- Sandbox backend: `{execution.get('backend', 'unknown')}`",
+        f"- Resource profile: `{profile.get('name', 'unknown')}`",
+        f"- CPU limit: `{profile.get('cpuLimit', 'unknown')}`",
+        f"- Memory limit: `{profile.get('memoryLimit', 'unknown')}`",
+        f"- GPU count: `{profile.get('gpuCount', 0)}`",
+        "",
+        "## Steps",
+        "",
+        "| Step | Status | Duration (s) |",
+        "|---|---:|---:|",
+    ]
+    for step in step_results:
+        lines.append(f"| {step.name} | {step.status} | {step.durationMs / 1000:.2f} |")
+    lines.extend([
+        "",
+        "This runtime report records execution mechanics only. Scientific claims must use the "
+        "validated metrics and evidence bundle produced by the experiment.",
+        "",
+    ])
+    Path(repo_dir, "pipeline_report.md").write_text("\n".join(lines), encoding="utf-8")
+
+
+def _seal_pipeline_evidence(
+    repo_dir: str,
+    *,
+    job_id: str,
+    project_id: str,
+    previous_steps: List[PipelineStepResult],
+    execution: Dict[str, Any],
+) -> PipelineStepResult:
+    """Create and independently verify the native Code-to-Experiment bundle."""
+
+    import time as _time
+
+    started = _time.monotonic()
+    result = PipelineStepResult(
+        name="Evidence Seal",
+        purpose="Hash code, environment, inputs, logs, and measured metrics into a reproducible evidence bundle",
+        status="running",
+    )
+    try:
+        metric_path = next(
+            (
+                Path(repo_dir, relative)
+                for relative in (
+                    "metrics.json",
+                    "outputs/metrics.json",
+                    "results/metrics.json",
+                    "artifacts/metrics.json",
+                )
+                if Path(repo_dir, relative).is_file()
+            ),
+            None,
+        )
+        if metric_path is None:
+            raise ValueError("No measured metrics file is available to seal")
+        raw_metrics = json.loads(metric_path.read_text(encoding="utf-8"))
+        metrics = raw_metrics if isinstance(raw_metrics, list) else raw_metrics.get("metrics", [])
+        config_path = Path(repo_dir, "configs", "experiment.json")
+        config = json.loads(config_path.read_text(encoding="utf-8")) if config_path.is_file() else {}
+        baseline_metrics = [
+            str(item.get("name"))
+            for item in metrics
+            if isinstance(item, dict) and str(item.get("name") or "").lower().startswith("baseline")
+        ]
+        baseline = str(config.get("baseline") or "").strip()
+        if not baseline and baseline_metrics:
+            baseline = "Control declared by metrics: " + ", ".join(baseline_metrics)
+        method = str(config.get("methodology") or config.get("method") or "").strip()
+        question_id = str(
+            config.get("seedQuery")
+            or config.get("objective")
+            or f"{project_id}:research-question"
+        )
+        stdout = "\n".join(step.stdout for step in previous_steps if step.stdout)[-20000:]
+        stderr = "\n".join(step.stderr for step in previous_steps if step.stderr)[-10000:]
+
+        from app.services.experiment_evidence_service import build_experiment_evidence
+
+        evidence = build_experiment_evidence(
+            repo_dir=repo_dir,
+            run_id=job_id,
+            question_id=question_id,
+            code_run_id=job_id,
+            method=method,
+            baseline=baseline,
+            metrics=metrics,
+            execution_result={
+                "command": "FAROS isolated project pipeline",
+                "exit_code": 0,
+                "stdout": stdout,
+                "stderr": stderr,
+                "duration_seconds": sum(step.durationMs for step in previous_steps) / 1000,
+                "execution_backend": execution.get("backend"),
+                "execution_node": execution.get("nodeName"),
+                "execution_profile": (execution.get("profile") or {}).get("name"),
+                "resource_limits": execution.get("profile") or {},
+            },
+            require_ablation=Path(repo_dir, "data", "frozen_benchmark.json").is_file(),
+        )
+        execution["evidenceStatus"] = evidence.status.value
+        if evidence.status.value != "executed":
+            raise ValueError("; ".join(evidence.failures) or "Scientific evidence validation failed")
+
+        from app.modules.platform.experiments_api import _import_native_project_evidence
+        from app.modules.platform.storage import create_experiment
+
+        experiment = create_experiment({
+            "name": f"{config.get('title') or project_id} · {job_id[-8:]}",
+            "projectId": project_id,
+            "description": str(config.get("objective") or config.get("hypothesis") or ""),
+            "tags": ["code-pipeline", "isolated", str((execution.get("profile") or {}).get("name") or "auto")],
+            "status": "validating",
+        })
+        imported = _import_native_project_evidence(
+            experiment["id"],
+            project_id,
+            Path(repo_dir).resolve(),
+            Path(repo_dir, "artifacts", "evidence").resolve(),
+        )
+        execution["experimentId"] = experiment["id"]
+        execution["evidenceBundleSha256"] = imported["bundleSha256"]
+        result.status = "succeeded"
+        result.exitCode = 0
+        result.stdout = (
+            f"sealed native evidence bundle {imported['bundleSha256']} "
+            f"and registered experiment {experiment['id']}"
+        )
+    except Exception as exc:
+        result.status = "failed"
+        result.exitCode = 1
+        result.error = f"{type(exc).__name__}: {exc}"
+    result.durationMs = int((_time.monotonic() - started) * 1000)
+    return result
+
+
+async def _run_pipeline_background(
+    job_id: str,
+    project_id: str,
+    repo_dir: str,
+    language: str,
+    profile_name: str = "auto",
+):
+    """Execute all project steps in one resource-limited sandbox."""
 
     steps = _build_pipeline_steps(repo_dir, language)
     step_results: List[PipelineStepResult] = []
     overall_status = "running"
     critical_failed = False
-
-    for i, step in enumerate(steps):
-        if critical_failed:
-            # Skip remaining steps if a critical step failed
-            skipped = PipelineStepResult(
-                name=step.name, purpose=step.purpose, status="skipped",
-                error="Skipped: previous critical step failed"
-            )
-            step_results.append(skipped)
-            continue
-
-        logger.info("Pipeline [%s] step %d/%d: %s", project_id, i + 1, len(steps), step.name)
-
-        # Mark as running
-        step_results.append(PipelineStepResult(
-            name=step.name, purpose=step.purpose, status="running"
-        ))
-
-        result = await _execute_pipeline_step(step, repo_dir, python_exe)
-        # Replace placeholder in step_results
-        step_results[i] = result
-
-        logger.info("Pipeline [%s] step '%s': %s (%dms)",
-                    project_id, step.name, result.status, result.durationMs)
-
-        if result.status == "failed" and step.critical:
-            critical_failed = True
-            overall_status = "failed"
-
-        # Store intermediate results to project dir
-        try:
-            import json as _json
-            interim_path = os.path.join(repo_dir, f"pipeline_step_{i + 1}_{step.name.replace(' ', '_')}.json")
-            with open(interim_path, "w", encoding="utf-8") as f:
-                _json.dump(result.model_dump(), f, indent=2, ensure_ascii=False)
-        except Exception:
-            pass
-
-    if overall_status != "failed":
-        overall_status = "succeeded" if not critical_failed else "partial"
-
-    # Write final pipeline results
+    profile = await asyncio.to_thread(resolve_execution_profile, repo_dir, profile_name)
+    node = await asyncio.to_thread(get_compute_snapshot)
+    execution: Dict[str, Any] = {
+        "nodeName": node["nodeName"],
+        "role": node["role"],
+        "location": node["location"],
+        "backend": "pending",
+        "isolated": True,
+        "profile": profile.to_public_dict(),
+    }
+    sandbox_id: Optional[str] = None
     try:
-        import json as _json
-        results_path = os.path.join(repo_dir, "pipeline_results.json")
-        with open(results_path, "w", encoding="utf-8") as f:
-            _json.dump({
-                "jobId": job_id,
-                "projectId": project_id,
-                "status": overall_status,
-                "steps": [s.model_dump() for s in step_results],
-                "totalDurationMs": sum(s.durationMs for s in step_results),
-            }, f, indent=2, ensure_ascii=False)
-    except Exception:
-        pass
+        from app.code.sandbox import get_sandbox_pool
+
+        pool = await get_sandbox_pool()
+        sandbox_id = await pool.acquire(
+            repo_dir,
+            env={"FAROS_EXECUTION_PROFILE": profile.name},
+        )
+        active = next(
+            (item for item in pool.pool_info["active_sandboxes"] if item["id"] == sandbox_id),
+            {},
+        )
+        execution["backend"] = active.get("backend", pool.default_backend)
+
+        for index, step in enumerate(steps):
+            if critical_failed:
+                step_results.append(PipelineStepResult(
+                    name=step.name,
+                    purpose=step.purpose,
+                    status="skipped",
+                    error="Skipped because a required earlier step failed",
+                ))
+                continue
+
+            logger.info(
+                "Pipeline [%s] step %d/%d: %s",
+                project_id,
+                index + 1,
+                len(steps),
+                step.name,
+            )
+            step_results.append(PipelineStepResult(
+                name=step.name,
+                purpose=step.purpose,
+                status="running",
+            ))
+            _write_pipeline_state(
+                repo_dir,
+                job_id=job_id,
+                project_id=project_id,
+                status_value="running",
+                step_results=step_results,
+                execution=execution,
+            )
+            if step.command == "__FAROS_EVIDENCE_SEAL__":
+                result = await asyncio.to_thread(
+                    _seal_pipeline_evidence,
+                    repo_dir,
+                    job_id=job_id,
+                    project_id=project_id,
+                    previous_steps=step_results[:index],
+                    execution=execution,
+                )
+            else:
+                result = await _execute_pipeline_step(
+                    step,
+                    pool,
+                    sandbox_id,
+                    profile.timeout_seconds,
+                )
+            step_results[index] = result
+            if result.status == "failed" and step.critical:
+                critical_failed = True
+                overall_status = "failed"
+            Path(
+                repo_dir,
+                f"pipeline_step_{index + 1}_{step.name.replace(' ', '_')}.json",
+            ).write_text(
+                json.dumps(result.model_dump(), indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+
+        if overall_status != "failed":
+            overall_status = (
+                "partial"
+                if any(step.status == "failed" for step in step_results)
+                else "succeeded"
+            )
+    except Exception as exc:
+        logger.exception("Pipeline [%s] isolated execution failed", project_id)
+        overall_status = "failed"
+        if not step_results:
+            step_results.append(PipelineStepResult(
+                name="Isolated Runtime",
+                purpose="Acquire the configured compute sandbox",
+                status="failed",
+                error=f"{type(exc).__name__}: {exc}",
+            ))
+    finally:
+        if sandbox_id:
+            try:
+                await pool.release(sandbox_id)
+            except Exception:
+                logger.exception("Failed to release pipeline sandbox %s", sandbox_id)
+
+    _write_pipeline_state(
+        repo_dir,
+        job_id=job_id,
+        project_id=project_id,
+        status_value=overall_status,
+        step_results=step_results,
+        execution=execution,
+    )
+    _write_pipeline_report(repo_dir, overall_status, step_results, execution)
 
     # Update job in DB
     with get_session_context() as db:
@@ -1206,6 +1429,7 @@ async def _run_pipeline_background(job_id: str, project_id: str, repo_dir: str, 
 )
 async def run_project_pipeline(
     projectId: str,
+    request: Optional[PipelineRunRequest] = None,
     background_tasks: BackgroundTasks = BackgroundTasks(),
     db: Session = Depends(get_session),
 ) -> PipelineRunResponse:
@@ -1213,16 +1437,9 @@ async def run_project_pipeline(
     Execute a code project as a multi-step pipeline.
 
     Each step has a clear **name** and **purpose** visible to the user.
-    Steps execute sequentially:
-    1. 环境检查 — verify Python & project files
-    2. 安装依赖 — pip install
-    3. 语法检查 — compile all .py files
-    4. 代码风格检查 — flake8 lint
-    5. 单元测试 — pytest (if tests/ exists)
-    6. 模型训练 — train.py (if exists)
-    7. 主程序执行 — run main entrypoint
-    8. 指标收集 — extract metrics → metrics.json
-    9. 生成实验报告 — summary → experiment_report.md
+    The runtime selects a bounded CPU/GPU profile, executes all steps in one
+    isolated workspace, and validates measured metrics without inventing or
+    overwriting scientific results.
 
     If a **critical** step fails, subsequent steps are skipped.
     Returns immediately; poll GET /code/projects/{id}/pipeline-results for progress.
@@ -1235,7 +1452,57 @@ async def run_project_pipeline(
     if not repo_dir:
         raise HTTPException(status_code=500, detail="Project directory not found on disk")
 
-    language = project.language or "python"
+    if not execution_is_allowed():
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "This server is configured as a control node and cannot run experiments. "
+                "Restore the private compute-node tunnel or select an available compute node."
+            ),
+        )
+
+    running_job = next(
+        (
+            item for item in crud.list_jobs(db, project_id=projectId)
+            if item.mode == "pipeline"
+            and (item.status.value if isinstance(item.status, JobStatus) else str(item.status))
+            == JobStatus.RUNNING.value
+        ),
+        None,
+    )
+    if running_job:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Project already has a running experiment pipeline: {running_job.id}",
+        )
+
+    requested_profile = request.profile if request else "auto"
+    try:
+        profile = await asyncio.to_thread(
+            resolve_execution_profile,
+            repo_dir,
+            requested_profile,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    node = await asyncio.to_thread(get_compute_snapshot)
+    if node["isolationRequired"] and not node["runtime"]["dockerAvailable"]:
+        raise HTTPException(
+            status_code=503,
+            detail="The compute node is online, but its required Docker isolation runtime is unavailable.",
+        )
+
+    language = (project.language or "python").strip().lower()
+    if language not in {"python", "py"}:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"The isolated scientific runtime does not execute '{language}' projects yet. "
+                "Regenerate this project as Python or run it in a separately reviewed language image; "
+                "FAROS will not mark a placeholder command as experimental evidence."
+            ),
+        )
+    language = "python"
     steps = _build_pipeline_steps(repo_dir, language)
 
     # Create lightweight job record
@@ -1251,6 +1518,27 @@ async def run_project_pipeline(
         "started_at": datetime.now(timezone.utc),
     })
 
+    pending_steps = [
+        PipelineStepResult(name=step.name, purpose=step.purpose, status="pending")
+        for step in steps
+    ]
+    execution_metadata = {
+        "nodeName": node["nodeName"],
+        "role": node["role"],
+        "location": node["location"],
+        "backend": node["runtime"]["defaultBackend"],
+        "isolated": True,
+        "profile": profile.to_public_dict(),
+    }
+    _write_pipeline_state(
+        repo_dir,
+        job_id=job.id,
+        project_id=projectId,
+        status_value="running",
+        step_results=pending_steps,
+        execution=execution_metadata,
+    )
+
     # Launch background pipeline
     background_tasks.add_task(
         _run_pipeline_background,
@@ -1258,17 +1546,16 @@ async def run_project_pipeline(
         project_id=projectId,
         repo_dir=repo_dir,
         language=language,
+        profile_name=profile.name,
     )
 
     return PipelineRunResponse(
         jobId=job.id,
         projectId=projectId,
         status="running",
-        steps=[
-            PipelineStepResult(name=s.name, purpose=s.purpose, status="pending")
-            for s in steps
-        ],
-        summary=f"Pipeline started: {len(steps)} steps",
+        steps=pending_steps,
+        summary=f"Pipeline started on {node['nodeName']}: {len(steps)} steps",
+        execution=execution_metadata,
     )
 
 
@@ -1297,7 +1584,8 @@ async def get_pipeline_results(
         if os.path.exists(results_path):
             try:
                 data = json.loads(open(results_path, encoding="utf-8").read())
-                return PipelineRunResponse(**data)
+                if not jobId or data.get("jobId") == jobId:
+                    return PipelineRunResponse(**data)
             except (json.JSONDecodeError, TypeError):
                 pass
 
@@ -1357,6 +1645,11 @@ async def auto_fix_pipeline(
     4. Re-runs the pipeline to verify fixes
     5. Iterates up to 3 times if failures persist
     """
+    if not execution_is_allowed():
+        raise HTTPException(
+            status_code=503,
+            detail="Auto-fix verification requires the private compute node, which is not currently active.",
+        )
     project = crud.get_project_v2(db, projectId)
     if not project:
         raise HTTPException(status_code=404, detail=f"Project not found: {projectId}")

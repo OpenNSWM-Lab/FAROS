@@ -207,17 +207,17 @@ class ExperimentCapability(BaseCapability):
         package_init_path = os.path.join(repo_dir, "src", "__init__.py")
         if os.path.exists(package_main_path) and os.path.exists(package_init_path):
             main_path = package_main_path
-            entry_args = [sys.executable, "-m", "src.main"]
+            entry_args = ["-m", "src.main"]
         else:
             main_path = package_main_path
             if not os.path.exists(main_path):
                 main_path = os.path.join(repo_dir, "main.py")
-            entry_args = [sys.executable, os.path.relpath(main_path, repo_dir)]
+            entry_args = [os.path.relpath(main_path, repo_dir)]
         if not os.path.exists(main_path):
             logger.warning("No main.py found for project %s — cannot execute", project_id)
             return result
 
-        command = " ".join(shlex.quote(item) for item in entry_args)
+        command = " ".join(shlex.quote(item) for item in ["python", *entry_args])
         result["command"] = command
 
         # Try sandbox execution first
@@ -227,13 +227,32 @@ class ExperimentCapability(BaseCapability):
                     lambda: self._execute_in_sandbox(project_id, repo_dir, command)
                 )
             except Exception as exc:
+                from app.code.execution.resources import host_execution_is_allowed
+
+                if not host_execution_is_allowed():
+                    result["stderr"] = (
+                        "Isolated experiment execution is unavailable and host fallback is disabled: "
+                        f"{exc}"
+                    )
+                    logger.error("Sandbox execution failed for project %s: %s", project_id, exc)
+                    return result
                 logger.warning(
-                    "Sandbox execution failed for project %s (%s), falling back to direct execution",
-                    project_id, exc,
+                    "Sandbox execution failed for project %s (%s); development host fallback is enabled",
+                    project_id,
+                    exc,
                 )
 
-        # Legacy fallback: direct subprocess.run
-        return self._execute_direct(entry_args, repo_dir, command, result)
+        from app.code.execution.resources import host_execution_is_allowed
+
+        if not host_execution_is_allowed():
+            result["stderr"] = "Host execution is disabled; use the isolated compute runtime."
+            return result
+
+        # Development-only fallback: direct subprocess.run.
+        direct_args = [sys.executable, *entry_args]
+        direct_command = " ".join(shlex.quote(item) for item in direct_args)
+        result["command"] = direct_command
+        return self._execute_direct(direct_args, repo_dir, direct_command, result)
 
     async def _execute_in_sandbox(
         self, project_id: str, repo_dir: str, command: str
@@ -252,15 +271,27 @@ class ExperimentCapability(BaseCapability):
         pool = await get_sandbox_pool()
         sandbox_id = None
         try:
-            sandbox_id = await pool.acquire(repo_dir)
+            from app.code.execution import resolve_execution_profile
+
+            profile = await asyncio.to_thread(resolve_execution_profile, repo_dir, "auto")
+            sandbox_id = await pool.acquire(
+                repo_dir,
+                env={"FAROS_EXECUTION_PROFILE": profile.name},
+            )
             sandbox_result = await pool.execute(
-                sandbox_id, command, timeout=600,
+                sandbox_id,
+                command,
+                timeout=profile.timeout_seconds,
                 env={"PYTHONUNBUFFERED": "1"},
             )
             result["exit_code"] = sandbox_result.exit_code
             result["stdout"] = sandbox_result.stdout[-5000:] if len(sandbox_result.stdout) > 5000 else sandbox_result.stdout
             result["stderr"] = sandbox_result.stderr[-5000:] if len(sandbox_result.stderr) > 5000 else sandbox_result.stderr
             result["duration_seconds"] = round(sandbox_result.duration_ms / 1000, 2)
+            result["execution_backend"] = sandbox_result.backend
+            result["execution_node"] = sandbox_result.execution_node
+            result["execution_profile"] = sandbox_result.profile
+            result["resource_limits"] = sandbox_result.resource_limits
             logger.info(
                 "Project %s executed in sandbox: exit=%d duration=%.1fs",
                 project_id, result["exit_code"], result["duration_seconds"],
@@ -308,6 +339,10 @@ class ExperimentCapability(BaseCapability):
             "durationSeconds": result.get("duration_seconds"),
             "command": result.get("command"),
             "stderrTail": str(result.get("stderr") or "")[-1000:],
+            "executionBackend": result.get("execution_backend"),
+            "executionNode": result.get("execution_node"),
+            "executionProfile": result.get("execution_profile"),
+            "resourceLimits": result.get("resource_limits") or {},
         }
 
     def _repair_failed_execution(

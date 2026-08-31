@@ -1,10 +1,14 @@
 import asyncio
 import csv
 import json
-import subprocess
-import sys
 from types import SimpleNamespace
 
+import pytest
+
+from app.code.sandbox.docker_backend import DockerSandbox
+from app.code.sandbox.pool import SandboxPool
+from app.code.sandbox.models import SandboxResult
+from app.code.execution.resources import execution_is_allowed, resolve_execution_profile
 from app.modules.code.code_projects_api import _build_pipeline_steps, _get_project_repo_dir
 from app.services.cart_runner import CartNodeResult, CartRunner
 
@@ -22,6 +26,66 @@ def test_pipeline_definition_does_not_write_helper_files(tmp_path):
     assert after == before
     assert any(step.command == "python -m compileall -q . 2>&1" for step in steps)
     assert all("_faros_syntax_check.py" not in step.command for step in steps if step.name != "Cleanup")
+    evidence_step = next(step for step in steps if step.name == "Evidence Contract")
+    assert evidence_step.critical is True
+    assert "python_files" not in evidence_step.command
+    assert "write" not in evidence_step.purpose.lower()
+    lint_step = next(step for step in steps if step.name == "Lint Check")
+    assert "command -v flake8" in lint_step.command
+    assert "flake8 ." in lint_step.command
+
+
+def test_docker_sandbox_file_access_rejects_same_prefix_escape(tmp_path):
+    workspace = tmp_path / "workspace"
+    sibling = tmp_path / "workspace-secret"
+    workspace.mkdir()
+    sibling.mkdir()
+    (sibling / "secret.txt").write_text("secret", encoding="utf-8")
+    backend = DockerSandbox()
+    backend._containers = {
+        "sandbox-test": {
+            "name": "sandbox-test",
+            "workspace": str(workspace),
+            "profile": SimpleNamespace(name="light", to_public_dict=lambda: {}),
+        }
+    }
+
+    with pytest.raises(ValueError, match="Path traversal"):
+        asyncio.run(backend.read_file("sandbox-test", "../workspace-secret/secret.txt"))
+    with pytest.raises(ValueError, match="Path traversal"):
+        asyncio.run(backend.write_file("sandbox-test", "../workspace-secret/new.txt", "blocked"))
+
+
+def test_sandbox_pool_reaps_stale_runtime_before_reuse(tmp_path):
+    class FakeBackend:
+        backend_type = "fake"
+
+        def __init__(self):
+            self.created = 0
+            self.torn_down = []
+
+        def is_available(self):
+            return True
+
+        async def setup(self, workspace_path, image=None, env=None):
+            self.created += 1
+            return f"fake-{self.created}"
+
+        async def teardown(self, sandbox_id):
+            self.torn_down.append(sandbox_id)
+
+    async def scenario():
+        backend = FakeBackend()
+        pool = SandboxPool(max_active=1, default_backend="fake", ttl_sec=1)
+        pool.register_backend(backend)
+        first = await pool.acquire(str(tmp_path))
+        pool._active[first].last_used -= 2
+        second = await pool.acquire(str(tmp_path))
+        assert second != first
+        assert backend.torn_down == [first]
+        await pool.release(second)
+
+    asyncio.run(scenario())
 
 
 def test_project_repo_fallback_uses_configured_data_directory(tmp_path, monkeypatch):
@@ -33,15 +97,37 @@ def test_project_repo_fallback_uses_configured_data_directory(tmp_path, monkeypa
     assert _get_project_repo_dir(project) == str(repo)
 
 
+def test_execution_profiles_are_explicit_and_control_nodes_reject_work(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setenv("FAROS_EXECUTION_ROLE", "control")
+    assert execution_is_allowed() is False
+
+    monkeypatch.setenv("FAROS_EXECUTION_ROLE", "development")
+    light = resolve_execution_profile(repo, "light")
+    standard = resolve_execution_profile(repo, "standard")
+    assert light.name == "light"
+    assert standard.name == "standard"
+    assert standard.cpu_limit >= light.cpu_limit
+    assert standard.timeout_seconds > light.timeout_seconds
+
+
 def test_cart_generated_scripts_use_active_interpreter_without_provider_secrets(tmp_path, monkeypatch):
     calls = []
     llm_calls = []
 
-    def fake_run(command, **kwargs):
-        calls.append((command, kwargs))
-        return SimpleNamespace(returncode=0, stdout='{"status":"ok"}', stderr="")
+    async def fake_run(run_dir, script_name, timeout_sec):
+        calls.append((run_dir, script_name, timeout_sec))
+        return SandboxResult(
+            exit_code=0,
+            stdout='{"status":"ok"}',
+            stderr="",
+            backend="docker",
+            execution_node="test-compute",
+            profile="light",
+        )
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(CartRunner, "_run_generated_script", staticmethod(fake_run))
     monkeypatch.setenv("DASHSCOPE_API_KEY", "must-not-reach-generated-code")
     node = {
         "id": "step-1",
@@ -52,7 +138,7 @@ def test_cart_generated_scripts_use_active_interpreter_without_provider_secrets(
     }
     direct_result = CartNodeResult(node_id="step-1", success=False)
 
-    assert CartRunner._execute_direct(node, str(tmp_path), direct_result)
+    assert asyncio.run(CartRunner._execute_direct(node, str(tmp_path), direct_result))
 
     class FakeProvider:
         def chat(self, **kwargs):
@@ -71,16 +157,15 @@ def test_cart_generated_scripts_use_active_interpreter_without_provider_secrets(
     ))
 
     assert len(calls) == 2
-    assert all(command[0] == sys.executable for command, _kwargs in calls)
-    assert all("DASHSCOPE_API_KEY" not in kwargs["env"] for _command, kwargs in calls)
+    assert all(call[1].startswith(("_fallback_", "_llm_")) for call in calls)
     assert llm_calls[0]["max_tokens"] == 3200
     assert "ppkg-test" in llm_calls[0]["messages"][0].content
     assert "planned_not_executed" in llm_calls[0]["messages"][0].content
 
 
 def test_llm_execution_requires_exact_declared_outputs(tmp_path, monkeypatch):
-    def fake_run(_command, **_kwargs):
-        return SimpleNamespace(returncode=0, stdout='{"status":"ok"}', stderr="")
+    async def fake_run(_run_dir, _script_name, _timeout_sec):
+        return SandboxResult(exit_code=0, stdout='{"status":"ok"}', stderr="")
 
     class FakeProvider:
         def chat(self, **_kwargs):
@@ -88,7 +173,7 @@ def test_llm_execution_requires_exact_declared_outputs(tmp_path, monkeypatch):
 
     from app.llm import provider_client
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(CartRunner, "_run_generated_script", staticmethod(fake_run))
     monkeypatch.setattr(provider_client, "get_provider_client", lambda: FakeProvider())
     node = {
         "id": "step-missing",

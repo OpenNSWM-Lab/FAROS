@@ -480,12 +480,27 @@ def build_experiment_evidence(
     _write_text(stderr_path, str(execution_result.get("stderr") or ""))
     _write_json(metrics_path, list(metrics))
 
+    execution_backend = str(execution_result.get("execution_backend") or "direct")
+    resource_limits = dict(execution_result.get("resource_limits") or {})
     environment = {
-        "python": sys.version,
-        "executable": sys.executable,
+        "python": (
+            "sandbox-managed runtime"
+            if execution_backend == "docker"
+            else sys.version
+        ),
+        "executable": (
+            "python inside isolated image"
+            if execution_backend == "docker"
+            else sys.executable
+        ),
         "platform": platform.platform(),
         "machine": platform.machine(),
         "processor": platform.processor(),
+        "executionBackend": execution_backend,
+        "executionNode": execution_result.get("execution_node"),
+        "executionProfile": execution_result.get("execution_profile"),
+        "resourceLimits": resource_limits,
+        "containerImage": resource_limits.get("image"),
         "requirementsHash": _sha256_file(root / "requirements.txt") if (root / "requirements.txt").is_file() else "",
     }
     _write_json(environment_path, environment)

@@ -11,6 +11,7 @@ from dotenv import load_dotenv as _load_dotenv
 _load_dotenv()
 
 import os as _os
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -118,6 +119,25 @@ async def health_check():
     }
 
 
+@app.get("/api/system/compute")
+async def compute_status():
+    """Expose the active execution node and safe capacity information."""
+
+    from app.code.execution import get_compute_snapshot
+    from app.code.sandbox import get_sandbox_pool
+
+    snapshot = await asyncio.to_thread(get_compute_snapshot)
+    try:
+        pool = await get_sandbox_pool()
+        snapshot["scheduler"] = pool.pool_info
+    except Exception as exc:
+        snapshot["scheduler"] = {
+            "status": "unavailable",
+            "error": str(exc)[:240],
+        }
+    return snapshot
+
+
 @app.get("/api/system/session")
 async def session_info():
     return {
@@ -152,8 +172,10 @@ async def version_info():
 async def system_config():
     import os
 
+    from app.core.paths import get_data_dir
+
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    data_dir = os.path.join(base_dir, "data")
+    data_dir = str(get_data_dir())
     db_path = os.path.join(data_dir, "app.db")
 
     db_exists = os.path.exists(db_path)
@@ -196,10 +218,9 @@ async def system_config():
 
 @app.get("/api/system/db-status")
 async def db_status():
-    import os
+    from app.core.paths import get_data_dir
 
-    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    db_path = os.path.join(base_dir, "data", "app.db")
+    db_path = str(get_data_dir() / "app.db")
 
     result = {
         "ok": False,

@@ -1,0 +1,28 @@
+[Unit]
+Description=FAROS private compute backend
+After=network-online.target docker.service
+Wants=network-online.target docker.service
+
+[Service]
+Type=simple
+User=zhouxueyang
+Group=zhouxueyang
+SupplementaryGroups=docker
+WorkingDirectory=/data/zxy/faros/current/backend
+EnvironmentFile=/data/zxy/faros/runtime/backend.env
+EnvironmentFile=/data/zxy/faros/runtime/credentials.env
+ExecStartPre=/data/zxy/faros/current/scripts/cleanup_stale_sandboxes.sh
+ExecStart=/data/zxy/faros/venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 18005 --workers 1 --proxy-headers --forwarded-allow-ips 127.0.0.1
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+KillSignal=SIGINT
+LimitNOFILE=65535
+TasksMax=4096
+MemoryHigh=8G
+MemoryMax=12G
+CPUQuota=800%
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

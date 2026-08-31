@@ -5,7 +5,7 @@ Sandbox data models — Result structures shared across all backends.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
 
 
 @dataclass
@@ -18,6 +18,10 @@ class SandboxResult:
     duration_ms: int = 0
     timed_out: bool = False
     command: str = ""
+    backend: str = ""
+    execution_node: str = ""
+    profile: str = ""
+    resource_limits: dict[str, Any] = field(default_factory=dict)
 
     @property
     def success(self) -> bool:
@@ -32,6 +36,10 @@ class SandboxResult:
             "timed_out": self.timed_out,
             "command": self.command,
             "success": self.success,
+            "backend": self.backend,
+            "execution_node": self.execution_node,
+            "profile": self.profile,
+            "resource_limits": self.resource_limits,
         }
 
 
@@ -62,6 +70,8 @@ class ActiveSandbox:
     workspace_path: str
     created_at: float  # time.time()
     last_used: float  # time.time()
+    profile: str = "auto"
+    busy: bool = False
 
     def age_sec(self, now: float) -> float:
         return now - self.created_at

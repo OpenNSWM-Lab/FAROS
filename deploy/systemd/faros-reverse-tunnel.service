@@ -1,0 +1,15 @@
+[Unit]
+Description=FAROS reverse tunnel to the public gateway
+After=network-online.target faros-compute.service
+Wants=network-online.target faros-compute.service
+
+[Service]
+Type=simple
+User=zhouxueyang
+Group=zhouxueyang
+ExecStart=/usr/bin/ssh -NT -i /data/zxy/faros/runtime/tunnel_ed25519 -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/data/zxy/faros/runtime/known_hosts -R 127.0.0.1:18005:127.0.0.1:18005 faros-tunnel@47.115.175.11
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

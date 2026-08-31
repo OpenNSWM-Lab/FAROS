@@ -7,10 +7,14 @@ from fastapi import HTTPException
 
 from app.core.paths import get_data_dir
 from app.modules.platform.experiments_api import (
+    IngestMetricsRequest,
     ImportProjectEvidenceRequest,
+    MetricEntry,
     _parse_uploaded_dataset,
     import_project_evidence,
+    ingest_metrics_endpoint,
 )
+from app.services.experiment_evidence_service import build_experiment_evidence
 from app.storage.experiment_storage import (
     create_experiment,
     get_execution_evidence,
@@ -105,3 +109,67 @@ def test_import_project_evidence_rejects_path_traversal():
 
     with pytest.raises(HTTPException, match="inside the linked project"):
         asyncio.run(import_project_evidence(experiment["id"], request))
+
+
+def test_imports_native_faros_evidence_and_seals_verified_metrics():
+    project_id = "cproj_native_evidence_test"
+    repo = get_data_dir() / "code_projects" / project_id / "repo"
+    (repo / "src").mkdir(parents=True, exist_ok=True)
+    (repo / "src" / "main.py").write_text("print('ok')\n", encoding="utf-8")
+    build_experiment_evidence(
+        repo_dir=repo,
+        run_id="run_native_import",
+        question_id="question_native_import",
+        code_run_id="code_native_import",
+        method="Measured method",
+        baseline="Measured baseline",
+        metrics=[{
+            "name": "method_accuracy",
+            "value": 0.82,
+            "unit": "ratio",
+            "definition": "Correct predictions divided by evaluated predictions.",
+            "split": "frozen_test",
+        }],
+        execution_result={
+            "command": "python -m src.main",
+            "exit_code": 0,
+            "stdout": "ok\n",
+            "stderr": "",
+            "duration_seconds": 0.1,
+            "execution_backend": "docker",
+            "execution_node": "test-compute-01",
+            "execution_profile": "gpu",
+            "resource_limits": {
+                "cpuLimit": 8,
+                "memoryLimit": "24g",
+                "gpuCount": 1,
+                "image": "faros/codegen-gpu:test",
+            },
+        },
+    )
+    experiment = create_experiment({
+        "name": "Native FAROS evidence",
+        "projectId": project_id,
+        "status": "created",
+    })
+
+    imported = asyncio.run(import_project_evidence(
+        experiment["id"],
+        ImportProjectEvidenceRequest(projectId=project_id),
+    ))
+
+    assert imported["status"] == "verified"
+    assert imported["sourceSchema"] == "ExperimentEvidence"
+    assert imported["checks"]["artifactHashesVerified"] is True
+    assert imported["checks"]["scientificMetricsValidated"] is True
+    assert imported["execution"]["backend"] == "docker"
+    assert imported["execution"]["nodeName"] == "test-compute-01"
+    assert imported["execution"]["profile"] == "gpu"
+    assert imported["execution"]["containerImage"] == "faros/codegen-gpu:test"
+    assert get_metrics(experiment["id"])[0]["key"] == "method_accuracy"
+
+    with pytest.raises(HTTPException, match="immutable"):
+        asyncio.run(ingest_metrics_endpoint(
+            experiment["id"],
+            IngestMetricsRequest(metrics=[MetricEntry(key="manual", value=1.0)]),
+        ))

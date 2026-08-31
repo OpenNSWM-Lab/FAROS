@@ -9,6 +9,7 @@ Provides endpoints for:
 
 import uuid
 import logging
+from pathlib import Path
 from typing import List, Optional
 from datetime import datetime
 from fastapi import APIRouter, HTTPException, status
@@ -18,10 +19,35 @@ from app.code.eval.static_eval import StaticEvaluator, StaticEvalResult
 from app.code.eval.dynamic_eval import DynamicEvaluator, DynamicEvalResult, ExecutionStatus
 from app.code.eval.scoring import EvalScorer, EvalScore
 from app.storage.code_eval_storage import get_storage
+from app.core.paths import get_data_dir
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/code/eval", tags=["code_eval"])
+
+
+def _managed_repo_path(value: str) -> str:
+    """Keep public evaluation requests inside FAROS-owned workspaces."""
+
+    candidate = Path(value).expanduser().resolve()
+    data_root = get_data_dir().resolve()
+    allowed_roots = [
+        data_root / "code_projects",
+        data_root / "workspaces",
+        data_root / "code_sessions",
+        data_root / "code_imports",
+    ]
+    if not any(root == candidate or root in candidate.parents for root in allowed_roots):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Repository must be a FAROS-managed Code workspace; arbitrary server paths are not executable.",
+        )
+    if not candidate.is_dir():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Repository path does not exist: {value}",
+        )
+    return str(candidate)
 
 
 # Request/Response Models
@@ -150,18 +176,11 @@ async def evaluate_static(request: EvalCodeRequest) -> StaticEvalResponse:
 )
 async def evaluate_dynamic(request: EvalRepoRequest) -> DynamicEvalResponse:
     """Evaluate code dynamically."""
-    import os
-    
-    if not os.path.isdir(request.repoPath):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Repository path does not exist: {request.repoPath}"
-        )
-    
+    repo_path = _managed_repo_path(request.repoPath)
     evaluator = DynamicEvaluator(timeout=request.timeout)
     
-    result = evaluator.evaluate(
-        repo_path=request.repoPath,
+    result = await evaluator.evaluate(
+        repo_path=repo_path,
         commands=request.commands if request.commands else None,
         run_tests=request.runTests,
         timeout=request.timeout,
@@ -222,11 +241,7 @@ async def evaluate_full(
         static_result = static_evaluator.evaluate(code, language)
     elif repoPath:
         # Evaluate main files in repo
-        if not os.path.isdir(repoPath):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Repository path does not exist: {repoPath}"
-            )
+        repoPath = _managed_repo_path(repoPath)
         
         # Find and evaluate Python files
         all_diagnostics = []
@@ -267,7 +282,7 @@ async def evaluate_full(
     
     if repoPath and runTests:
         dynamic_evaluator = DynamicEvaluator(timeout=timeout)
-        dynamic_result = dynamic_evaluator.evaluate(repoPath, run_tests=True, timeout=timeout)
+        dynamic_result = await dynamic_evaluator.evaluate(repoPath, run_tests=True, timeout=timeout)
         
         dynamic_response = DynamicEvalResponse(
             status=dynamic_result.status.value,

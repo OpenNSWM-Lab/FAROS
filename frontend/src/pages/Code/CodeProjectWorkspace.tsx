@@ -486,7 +486,6 @@ export function CodeProjectWorkspace() {
                 <label className="text-xs font-medium">Language</label>
                 <select value={language} onChange={e => setLanguage(e.target.value)} className="w-full rounded border px-2 py-1 text-xs">
                   <option value="python">Python</option>
-                  <option value="typescript">TypeScript</option>
                 </select>
               </div>
               <div>

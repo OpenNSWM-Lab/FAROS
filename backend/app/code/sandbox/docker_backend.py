@@ -19,7 +19,9 @@ import asyncio
 import logging
 import os
 import re
+import shlex
 import shutil
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -27,6 +29,7 @@ from typing import Optional
 
 from .base import SandboxBackend
 from .models import SandboxResult, ResourceUsage
+from app.code.execution.resources import get_compute_snapshot, resolve_execution_profile
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +85,13 @@ class DockerSandbox(SandboxBackend):
         - Network disabled, resource limits enforced
         - Container name: faros-sandbox-{uuid_hex[:12]}
         """
-        image = image or self._image
+        requested_profile = str((env or {}).get("FAROS_EXECUTION_PROFILE") or "auto")
+        profile = await asyncio.to_thread(
+            resolve_execution_profile,
+            workspace_path,
+            requested_profile,
+        )
+        image = image or profile.image or self._image
         sandbox_id = f"faros-sandbox-{uuid.uuid4().hex[:12]}"
 
         # Ensure workspace path is absolute and exists
@@ -90,24 +99,38 @@ class DockerSandbox(SandboxBackend):
         if not os.path.isdir(workspace_path):
             os.makedirs(workspace_path, exist_ok=True)
 
+        await self._ensure_image(image)
+
+        gpu_index: Optional[int] = None
+        if profile.gpu_count:
+            gpu_index = self._acquire_gpu()
+            if gpu_index is None:
+                raise RuntimeError("No GPU is currently available for the requested execution profile")
+
         # Build docker run command
         cmd = [
             "docker", "run",
             "--detach",
             "--name", sandbox_id,
+            "--label", "faros.sandbox=true",
+            "--label", f"faros.profile={profile.name}",
             "--workdir", "/workspace",
+            "--user", f"{os.getuid()}:{os.getgid()}",
+            "--env", "HOME=/tmp",
             "--volume", f"{workspace_path}:/workspace:rw",
             "--network", "none",
-            "--memory", self._mem_limit,
-            "--cpus", str(self._cpu_quota / 100000),
-            "--pids-limit", str(self._pids_limit),
+            "--memory", profile.memory_limit,
+            "--cpus", str(profile.cpu_limit),
+            "--pids-limit", str(profile.pids_limit),
+            "--shm-size", "2g" if profile.name == "gpu" else "512m",
             "--security-opt", "no-new-privileges",
             "--cap-drop", "ALL",
             "--read-only",
             "--tmpfs", "/tmp:rw,noexec,nosuid,size=256m",
-            image,
-            "sleep", "infinity",
         ]
+        if gpu_index is not None:
+            cmd.extend(["--gpus", f"device={gpu_index}"])
+        cmd.extend([image, "sleep", "infinity"])
 
         logger.info("Creating Docker sandbox: %s (image=%s)", sandbox_id, image)
 
@@ -139,6 +162,8 @@ class DockerSandbox(SandboxBackend):
                 "name": sandbox_id,
                 "id": container_id,
                 "workspace": workspace_path,
+                "profile": profile,
+                "gpu_index": gpu_index,
             }
 
             return sandbox_id
@@ -146,10 +171,14 @@ class DockerSandbox(SandboxBackend):
         except asyncio.TimeoutError:
             # Container creation timed out — try to clean up
             await self._force_remove_container(sandbox_id)
+            if gpu_index is not None:
+                self._release_gpu(gpu_index)
             raise RuntimeError(f"Docker container creation timed out for {sandbox_id}")
 
         except Exception:
             await self._force_remove_container(sandbox_id)
+            if gpu_index is not None:
+                self._release_gpu(gpu_index)
             raise
 
     async def execute(
@@ -170,6 +199,18 @@ class DockerSandbox(SandboxBackend):
             )
 
         container_name = container_info["name"]
+        profile = container_info["profile"]
+        if container_info.get("terminated"):
+            return SandboxResult(
+                exit_code=-1,
+                stdout="",
+                stderr="Sandbox was terminated after a previous command exceeded its time limit",
+                command=command,
+                backend=self.backend_type,
+                execution_node=get_compute_snapshot()["nodeName"],
+                profile=profile.name,
+                resource_limits=profile.to_public_dict(),
+            )
         start = time.monotonic()
 
         # Build docker exec command
@@ -183,7 +224,11 @@ class DockerSandbox(SandboxBackend):
             exec_cmd.extend(["-e", f"{key}={val}"])
 
         # Target container and shell
-        exec_cmd.extend([container_name, "sh", "-c", command])
+        bounded_command = (
+            f"timeout --signal=TERM --kill-after={DEFAULT_TIMEOUT_GRACE}s "
+            f"{max(1, timeout)}s sh -c {shlex.quote(command)}"
+        )
+        exec_cmd.extend([container_name, "sh", "-c", bounded_command])
 
         logger.debug("Docker exec: %s", " ".join(exec_cmd[:6]) + " ...")
 
@@ -196,7 +241,7 @@ class DockerSandbox(SandboxBackend):
 
             try:
                 stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                    proc.communicate(), timeout=timeout
+                    proc.communicate(), timeout=timeout + DEFAULT_TIMEOUT_GRACE + 5
                 )
             except asyncio.TimeoutError:
                 logger.warning(
@@ -208,6 +253,11 @@ class DockerSandbox(SandboxBackend):
                     await asyncio.wait_for(proc.wait(), timeout=DEFAULT_TIMEOUT_GRACE)
                 except Exception:
                     pass
+                # Killing docker exec only terminates the client. Remove the
+                # container to guarantee that the experiment process cannot
+                # survive in the background and consume CPU/GPU resources.
+                await self._force_remove_container(container_name)
+                container_info["terminated"] = True
                 duration_ms = int((time.monotonic() - start) * 1000)
                 return SandboxResult(
                     exit_code=-1,
@@ -216,17 +266,26 @@ class DockerSandbox(SandboxBackend):
                     duration_ms=duration_ms,
                     timed_out=True,
                     command=command,
+                    backend=self.backend_type,
+                    execution_node=get_compute_snapshot()["nodeName"],
+                    profile=profile.name,
+                    resource_limits=profile.to_public_dict(),
                 )
 
             duration_ms = int((time.monotonic() - start) * 1000)
+            command_timed_out = proc.returncode == 124
 
             return SandboxResult(
                 exit_code=proc.returncode or 0,
                 stdout=self._safe_decode(stdout_bytes),
                 stderr=self._safe_decode(stderr_bytes),
                 duration_ms=duration_ms,
-                timed_out=False,
+                timed_out=command_timed_out,
                 command=command,
+                backend=self.backend_type,
+                execution_node=get_compute_snapshot()["nodeName"],
+                profile=profile.name,
+                resource_limits=profile.to_public_dict(),
             )
 
         except FileNotFoundError:
@@ -237,6 +296,10 @@ class DockerSandbox(SandboxBackend):
                 stderr="Docker CLI not found. Is Docker Desktop installed and running?",
                 duration_ms=duration_ms,
                 command=command,
+                backend=self.backend_type,
+                execution_node=get_compute_snapshot()["nodeName"],
+                profile=profile.name,
+                resource_limits=profile.to_public_dict(),
             )
         except Exception as exc:
             duration_ms = int((time.monotonic() - start) * 1000)
@@ -247,6 +310,10 @@ class DockerSandbox(SandboxBackend):
                 stderr=f"Docker execution error: {exc}",
                 duration_ms=duration_ms,
                 command=command,
+                backend=self.backend_type,
+                execution_node=get_compute_snapshot()["nodeName"],
+                profile=profile.name,
+                resource_limits=profile.to_public_dict(),
             )
 
     async def read_file(self, sandbox_id: str, path: str) -> str:
@@ -260,7 +327,7 @@ class DockerSandbox(SandboxBackend):
         full_path = os.path.normpath(os.path.join(workspace, path))
 
         # Security: ensure path is within workspace
-        if not full_path.startswith(os.path.normpath(workspace)):
+        if os.path.commonpath((os.path.realpath(workspace), os.path.realpath(full_path))) != os.path.realpath(workspace):
             raise ValueError(f"Path traversal detected: {path}")
 
         if not os.path.isfile(full_path):
@@ -278,7 +345,7 @@ class DockerSandbox(SandboxBackend):
         full_path = os.path.normpath(os.path.join(workspace, path))
 
         # Security: ensure path is within workspace
-        if not full_path.startswith(os.path.normpath(workspace)):
+        if os.path.commonpath((os.path.realpath(workspace), os.path.realpath(full_path))) != os.path.realpath(workspace):
             raise ValueError(f"Path traversal detected: {path}")
 
         os.makedirs(os.path.dirname(full_path), exist_ok=True)
@@ -293,6 +360,9 @@ class DockerSandbox(SandboxBackend):
 
         container_name = container_info["name"]
         await self._force_remove_container(container_name)
+        gpu_index = container_info.get("gpu_index")
+        if gpu_index is not None:
+            self._release_gpu(int(gpu_index))
         logger.info("Docker sandbox torn down: %s", sandbox_id)
 
     async def get_resource_usage(self, sandbox_id: str) -> ResourceUsage:
@@ -358,35 +428,72 @@ class DockerSandbox(SandboxBackend):
 
         return self._docker_available
 
-    async def _ensure_image(self) -> None:
+    async def _ensure_image(self, image: Optional[str] = None) -> None:
         """Pull the base image if not already present."""
-        if not self._image:
+        image = image or self._image
+        if not image:
             return
         try:
             proc = await asyncio.create_subprocess_exec(
-                "docker", "image", "inspect", self._image,
+                "docker", "image", "inspect", image,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
             )
             await asyncio.wait_for(proc.communicate(), timeout=5)
             if proc.returncode != 0:
-                logger.info("Pulling Docker image: %s ...", self._image)
+                logger.info("Pulling Docker image: %s ...", image)
                 pull_proc = await asyncio.create_subprocess_exec(
-                    "docker", "pull", self._image,
+                    "docker", "pull", image,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )
                 await asyncio.wait_for(pull_proc.communicate(), timeout=300)
                 if pull_proc.returncode != 0:
-                    logger.warning("Failed to pull image %s", self._image)
+                    raise RuntimeError(f"Failed to pull sandbox image {image}")
                 else:
-                    logger.info("Docker image pulled: %s", self._image)
+                    logger.info("Docker image pulled: %s", image)
         except Exception as exc:
-            logger.warning("Image check/pull error: %s", exc)
+            raise RuntimeError(f"Sandbox image is unavailable: {image}: {exc}") from exc
 
     # ---- internals ----
 
     _containers: dict[str, dict] = {}  # sandbox_id -> {name, id, workspace}
+    _gpu_lock = threading.Lock()
+    _allocated_gpus: set[int] = set()
+
+    @classmethod
+    def _acquire_gpu(cls) -> Optional[int]:
+        with cls._gpu_lock:
+            try:
+                min_free_mib = max(1, int(os.getenv("FAROS_GPU_MIN_FREE_MIB", "8192")))
+            except ValueError:
+                min_free_mib = 8192
+            try:
+                max_utilization = max(
+                    1,
+                    min(100, int(os.getenv("FAROS_GPU_MAX_UTILIZATION", "80"))),
+                )
+            except ValueError:
+                max_utilization = 80
+            inventory = sorted(
+                get_compute_snapshot(refresh=True).get("gpus", []),
+                key=lambda item: (-int(item.get("memoryFreeMiB") or 0), int(item.get("index") or 0)),
+            )
+            for gpu in inventory:
+                index = int(gpu["index"])
+                if (
+                    index not in cls._allocated_gpus
+                    and int(gpu.get("memoryFreeMiB") or 0) >= min_free_mib
+                    and int(gpu.get("utilizationPercent") or 0) <= max_utilization
+                ):
+                    cls._allocated_gpus.add(index)
+                    return index
+        return None
+
+    @classmethod
+    def _release_gpu(cls, index: int) -> None:
+        with cls._gpu_lock:
+            cls._allocated_gpus.discard(index)
 
     @staticmethod
     async def _force_remove_container(name: str) -> None:

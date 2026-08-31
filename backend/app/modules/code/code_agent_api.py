@@ -226,6 +226,19 @@ async def claude_stream(request: ClaudeStreamRequest):
     Returns text/event-stream with structured JSON events:
     - event_type: "thinking" | "tool_use" | "tool_result" | "error" | "done"
     """
+    from app.code.execution.resources import host_execution_is_allowed
+
+    if (
+        os.getenv("FAROS_ENABLE_HOST_CLAUDE_AGENT", "false").lower() not in {"1", "true", "yes"}
+        or not host_execution_is_allowed()
+    ):
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "The host-level Claude CLI agent is disabled in this deployment. "
+                "Use the isolated Qwen plan-artifact builder or experiment runner instead."
+            ),
+        )
     repo_dir = _resolve_repo_dir_by_id(request.projectId)
     if not repo_dir:
         raise HTTPException(status_code=400, detail=f"No repo found for project {request.projectId}")
