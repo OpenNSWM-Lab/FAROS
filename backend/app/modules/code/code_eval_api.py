@@ -65,7 +65,7 @@ class EvalRepoRequest(BaseModel):
     """Request to evaluate a repository."""
     repoPath: str = Field(..., description="Path to repository")
     runTests: bool = Field(default=True, description="Run tests if found")
-    commands: List[str] = Field(default=[], description="Custom commands to run")
+    commands: List[str] = Field(default=[], max_length=20, description="Custom commands to run")
     timeout: int = Field(default=60, ge=5, le=300, description="Timeout per command")
 
 
