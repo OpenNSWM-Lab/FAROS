@@ -110,7 +110,7 @@ def job_to_response(job: CodeJob) -> JobResponse:
     if job.env_vars:
         try:
             env_vars = json.loads(job.env_vars)
-        except:
+        except (json.JSONDecodeError, TypeError):
             pass
 
     return JobResponse(
@@ -194,7 +194,7 @@ async def run_job_background(
                     filename="stdout.log",
                     size_bytes=size,
                 ))
-            except:
+            except OSError:
                 pass
         
         if result.get("stderr_path"):
@@ -208,7 +208,7 @@ async def run_job_background(
                     filename="stderr.log",
                     size_bytes=size,
                 ))
-            except:
+            except OSError:
                 pass
 
 
@@ -353,7 +353,7 @@ async def start_job(
     if job.env_vars:
         try:
             env_vars = json.loads(job.env_vars)
-        except:
+        except (json.JSONDecodeError, TypeError):
             pass
     
     # Start background execution
@@ -618,7 +618,7 @@ async def get_job_evaluation(
     if eval_report.scores:
         try:
             scores = json.loads(eval_report.scores)
-        except:
+        except (json.JSONDecodeError, TypeError):
             pass
     
     return EvalResponse(
