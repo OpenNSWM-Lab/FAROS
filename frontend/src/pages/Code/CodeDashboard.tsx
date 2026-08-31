@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { AppPageLayout } from '@/components/layout/AppPageLayout'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -29,7 +29,7 @@ export function CodeDashboard() {
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
-  const loadSessions = async () => {
+  const loadSessions = useCallback(async () => {
     setIsLoading(true)
     setError(null)
     try {
@@ -40,13 +40,13 @@ export function CodeDashboard() {
     } finally {
       setIsLoading(false)
     }
-  }
+  }, [])
 
   useEffect(() => {
     loadSessions()
     const interval = setInterval(loadSessions, 10000)
     return () => clearInterval(interval)
-  }, [])
+  }, [loadSessions])
 
   return (
     <AppPageLayout
