@@ -8,6 +8,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 
+from app.modules.review.effect_statistics import (
+    exact_mcnemar_p_value,
+    interval_effect_status,
+)
 from app.modules.review.plan_delta import verify_plan_delta_contract
 
 
@@ -82,6 +86,167 @@ def _candidate_rows(
             -float((item["metrics"] or {}).get("F1-Score") or 0),
         ),
     )
+
+
+def _multidomain_effect_rows(summary: Dict[str, Any]) -> list[Dict[str, Any]]:
+    rows = []
+    for dataset_name, result in (summary.get("results") or {}).items():
+        metrics = result.get("results") or {}
+        first = metrics.get("within_domain") or {}
+        second = metrics.get("within_domain_calibrated") or {}
+        inference = (
+            (result.get("effectInference") or {}).get("Macro F1")
+            or (((result.get("pairedBootstrap") or {}).get(
+                "calibratedVsFixedWithinDomain"
+            ) or {}).get("Macro F1"))
+            or {}
+        )
+        selection = result.get("validationThresholdSelection") or {}
+        ci_low = float(inference.get("ci95Low") or 0)
+        ci_high = float(inference.get("ci95High") or 0)
+        round_one = float(first.get("Macro F1") or 0)
+        round_two = float(second.get("Macro F1") or 0)
+        rows.append({
+            "dataset": dataset_name,
+            "roundOneMacroF1": round_one,
+            "roundTwoMacroF1": round_two,
+            "delta": round_two - round_one,
+            "roundOneAccuracy": first.get("Accuracy"),
+            "roundTwoAccuracy": second.get("Accuracy"),
+            "roundOneBalancedAccuracy": first.get("Balanced Accuracy"),
+            "roundTwoBalancedAccuracy": second.get("Balanced Accuracy"),
+            "roundOneMcc": first.get("Matthews Correlation Coefficient"),
+            "roundTwoMcc": second.get("Matthews Correlation Coefficient"),
+            "ci95": [ci_low, ci_high],
+            "probabilityOfImprovement": inference.get("probabilityOfImprovement"),
+            "effectStatus": inference.get("effectStatus")
+            or interval_effect_status(ci_low, ci_high),
+            "resamplingUnit": inference.get("resamplingUnit") or "claim_id",
+            "proposedThreshold": selection.get(
+                "proposedThreshold", selection.get("selectedThreshold")
+            ),
+            "appliedThreshold": selection.get(
+                "appliedThreshold", selection.get("selectedThreshold")
+            ),
+            "gateDecision": selection.get("gateDecision") or "legacy_apply_revision",
+            "interventionAudit": result.get("interventionAudit") or {},
+        })
+    return sorted(rows, key=lambda item: item["dataset"])
+
+
+def _reliability_paired_effects(
+    reliability: Dict[str, Any],
+    records: Dict[str, Any],
+) -> Dict[str, Any]:
+    scores = reliability.get("scores") or {}
+    qwen = scores.get("qwen_only") or {}
+    full = scores.get("faros_full") or {}
+    faulty_cases = int(
+        qwen.get("faultyCases")
+        or (reliability.get("caseAudit") or {}).get("faulty")
+        or 0
+    )
+    qwen_detection = int(
+        (qwen.get("confusionMatrix") or {}).get("tp")
+        or round(float(qwen.get("faultDetectionRate") or 0) * faulty_cases)
+    )
+    full_detection = int(
+        (full.get("confusionMatrix") or {}).get("tp")
+        or round(float(full.get("faultDetectionRate") or 0) * faulty_cases)
+    )
+    qwen_localization = int(round(float(qwen.get("issueLocalizationRate") or 0) * faulty_cases))
+    full_localization = int(round(float(full.get("issueLocalizationRate") or 0) * faulty_cases))
+
+    cases = [
+        item for item in records.get("cases") or []
+        if isinstance(item, dict) and item.get("isFaulty") is True
+    ]
+    predictions = records.get("predictions") or {}
+    qwen_predictions = predictions.get("qwen_only") or {}
+    full_predictions = predictions.get("faros_full") or {}
+    paired_records_available = bool(
+        cases
+        and len(cases) == faulty_cases
+        and all(
+            item.get("caseId") in qwen_predictions
+            and item.get("caseId") in full_predictions
+            for item in cases
+        )
+    )
+
+    def paired_correctness(endpoint: str) -> tuple[list[bool], list[bool]]:
+        before: list[bool] = []
+        after: list[bool] = []
+        for item in cases:
+            case_id = str(item["caseId"])
+            qwen_prediction = qwen_predictions[case_id]
+            full_prediction = full_predictions[case_id]
+            if endpoint == "detection":
+                before.append(qwen_prediction.get("decision") == "reject")
+                after.append(full_prediction.get("decision") == "reject")
+            else:
+                expected = str(item.get("expectedIssueCode") or "")
+                before.append(expected in (qwen_prediction.get("issues") or []))
+                after.append(expected in (full_prediction.get("issues") or []))
+        return before, after
+
+    def effect(
+        before_count: int,
+        after_count: int,
+        endpoint: str,
+    ) -> Dict[str, Any]:
+        if paired_records_available:
+            before, after = paired_correctness(endpoint)
+            corrected = sum(not first and second for first, second in zip(before, after))
+            regressed = sum(first and not second for first, second in zip(before, after))
+            before_count = sum(before)
+            after_count = sum(after)
+            evidence_source = "evaluation_records.json"
+            paired_inference_available = True
+        elif after_count == faulty_cases and before_count <= after_count:
+            corrected = after_count - before_count
+            regressed = 0
+            evidence_source = "aggregate endpoint uniquely determines discordance"
+            paired_inference_available = True
+        else:
+            corrected = 0
+            regressed = 0
+            evidence_source = "paired records unavailable"
+            paired_inference_available = False
+        p_value = exact_mcnemar_p_value(corrected, regressed)
+        effect_status = "inconclusive"
+        if paired_inference_available and p_value < 0.05:
+            if corrected > regressed:
+                effect_status = "significant_improvement"
+            elif regressed > corrected:
+                effect_status = "significant_regression"
+        return {
+            "beforeCorrect": before_count,
+            "afterCorrect": after_count,
+            "total": faulty_cases,
+            "corrected": corrected,
+            "regressed": regressed,
+            "exactMcNemarPValue": p_value,
+            "pairedInferenceAvailable": paired_inference_available,
+            "evidenceSource": evidence_source,
+            "effectStatus": effect_status,
+        }
+
+    return {
+        "comparison": "FAROS full minus Qwen only",
+        "faultDetection": effect(qwen_detection, full_detection, "detection"),
+        "issueLocalization": effect(qwen_localization, full_localization, "localization"),
+        "pairedCaseCount": len(cases) if paired_records_available else faulty_cases,
+        "pairedCaseIdsHash": (
+            "sha256:"
+            + hashlib.sha256(
+                "\n".join(sorted(str(item["caseId"]) for item in cases)).encode("utf-8")
+            ).hexdigest()
+            if paired_records_available
+            else None
+        ),
+        "scope": "Two-sided exact paired McNemar test on controlled faulty cases.",
+    }
 
 
 _PEERQA_METHOD_LABELS = {
@@ -285,6 +450,10 @@ def build_competition_evidence_dashboard(
         }
     )
     reliability = _read_json(reliability_summary_path)
+    reliability_records = _read_json(
+        reliability_summary_path.with_name("evaluation_records.json"),
+        required=False,
+    )
     planning = _read_json(planning_summary_path)
     multidomain = (
         _read_json(multidomain_summary_path, required=False)
@@ -301,11 +470,43 @@ def build_competition_evidence_dashboard(
         if peerqa_full_audit_summary_path is not None
         else {}
     )
+    multidomain_effects = _multidomain_effect_rows(multidomain)
+    significant_multidomain = [
+        item for item in multidomain_effects
+        if item["effectStatus"] == "significant_improvement"
+    ]
+    multidomain_headline = max(
+        significant_multidomain or multidomain_effects,
+        key=lambda item: (item["ci95"][0], item["delta"]),
+        default=None,
+    )
+    reliability_paired_effects = _reliability_paired_effects(
+        reliability,
+        reliability_records,
+    )
 
     feedback_first = summary["feedbackResults"]["roundOne"]
     feedback_second = summary["feedbackResults"]["roundTwo"]
     holdout_first = summary["finalHoldout"]["roundOne"]
     holdout_second = summary["finalHoldout"]["roundTwo"]
+    holdout_f1_inference = (
+        (summary.get("finalHoldout") or {}).get("pairedBootstrap") or {}
+    ).get("F1-Score") or {}
+    holdout_effect_status = (summary.get("finalHoldout") or {}).get("effectStatus")
+    if not holdout_effect_status:
+        holdout_effect_status = interval_effect_status(
+            float(holdout_f1_inference.get("ci95Low") or 0),
+            float(holdout_f1_inference.get("ci95High") or 0),
+        )
+    holdout_f1_effect = {
+        **holdout_f1_inference,
+        "effectStatus": holdout_effect_status,
+        "claim": {
+            "significant_improvement": "A statistically significant final-holdout F1 improvement was detected.",
+            "significant_regression": "A statistically significant final-holdout F1 regression was detected.",
+            "inconclusive": "No statistically significant final-holdout F1 change was detected.",
+        }.get(holdout_effect_status, "Final-holdout F1 effect status is unavailable."),
+    }
     metric_names = [
         "Precision",
         "Recall",
@@ -409,7 +610,7 @@ def build_competition_evidence_dashboard(
         },
         {
             "id": "measured_improvement",
-            "label": "第二轮成效获得复验",
+            "label": "第二轮结果完成独立复验",
             "status": "passed" if quality_passed else "failed",
             "evidence": "summary.json + paired bootstrap",
         },
@@ -434,10 +635,14 @@ def build_competition_evidence_dashboard(
 
     limitations = [
         "The representative case is a public-data computational experiment, not a wet-lab or instrument deployment.",
-        "The final-holdout F1 gain is non-degrading but its paired-bootstrap 95% interval crosses zero.",
         "The 90-case reliability benchmark uses controlled injected faults and cannot estimate natural-error prevalence.",
         "Public scientific conclusions remain blocked until real, independent human signoffs are current.",
     ]
+    if holdout_effect_status == "inconclusive":
+        limitations.insert(
+            1,
+            "The final-holdout F1 interval crosses zero, so no significant improvement or non-inferiority is claimed.",
+        )
     if peerqa:
         limitations.extend([
             "PeerQA lexical alignment is a candidate-generation proxy, not expert review recall or correctness.",
@@ -571,6 +776,8 @@ def build_competition_evidence_dashboard(
         "feedbackMetrics": _metric_rows(feedback_first, feedback_second, metric_names),
         "holdoutMetrics": _metric_rows(holdout_first, holdout_second, metric_names),
         "holdoutInference": summary.get("finalHoldout", {}).get("pairedBootstrap"),
+        "holdoutEffect": holdout_f1_effect,
+        "interventionAudit": summary.get("interventionAudit") or {},
         "planDelta": {
             "available": bool(delta_contract),
             "audit": delta_audit,
@@ -602,6 +809,7 @@ def build_competition_evidence_dashboard(
             "repairEvaluation": reliability.get("repairEvaluation") or {},
             "qwenMissCount": len(reliability.get("qwenMisses") or []),
             "qualityGate": reliability.get("qualityGate"),
+            "pairedEffects": reliability_paired_effects,
             "scope": "Paired controlled faults derived from real datasets; not a prevalence estimate for natural research errors.",
         },
         "planning": {
@@ -615,6 +823,8 @@ def build_competition_evidence_dashboard(
         "multidomain": {
             "datasets": [item.get("name") for item in multidomain.get("datasets") or []],
             "qualityGate": multidomain.get("qualityGate"),
+            "effects": multidomain_effects,
+            "headline": multidomain_headline,
             "scope": "Cross-domain stress evidence; it does not establish zero-shot universal transfer.",
         },
         "externalReview": _peerqa_evidence_view(peerqa, peerqa_full_audit),

@@ -184,6 +184,33 @@ def _fixture(tmp_path: Path):
         "qwenMisses": [{"caseId": "miss"}],
         "qualityGate": {"status": "passed"},
     })
+    reliability_cases = [
+        {
+            "caseId": f"fault-{index}",
+            "isFaulty": True,
+            "expectedIssueCode": "EXPECTED_FAULT",
+        }
+        for index in range(45)
+    ]
+    _write(tmp_path / "evaluation_records.json", {
+        "cases": reliability_cases,
+        "predictions": {
+            "qwen_only": {
+                item["caseId"]: {
+                    "decision": "reject" if index < 39 else "accept",
+                    "issues": ["EXPECTED_FAULT"] if index < 34 else [],
+                }
+                for index, item in enumerate(reliability_cases)
+            },
+            "faros_full": {
+                item["caseId"]: {
+                    "decision": "reject",
+                    "issues": ["EXPECTED_FAULT"],
+                }
+                for item in reliability_cases
+            },
+        },
+    })
     planning_path = tmp_path / "planning.json"
     _write(planning_path, {
         "runCount": 3,
@@ -281,12 +308,60 @@ def _peerqa_fixture(tmp_path: Path) -> tuple[Path, Path]:
 def test_competition_dashboard_exposes_one_verified_evidence_story(tmp_path: Path):
     case, reliability, planning, artifacts = _fixture(tmp_path)
     peerqa, peerqa_full = _peerqa_fixture(tmp_path)
+    multidomain = tmp_path / "multidomain.json"
+    _write(multidomain, {
+        "datasets": [{"name": "Climate-FEVER"}, {"name": "PubHealth"}],
+        "results": {
+            "Climate-FEVER": {
+                "results": {
+                    "within_domain": {"Macro F1": 0.4640},
+                    "within_domain_calibrated": {"Macro F1": 0.5781},
+                },
+                "effectInference": {
+                    "Macro F1": {
+                        "ci95Low": 0.075,
+                        "ci95High": 0.151,
+                        "probabilityOfImprovement": 1.0,
+                        "effectStatus": "significant_improvement",
+                        "resamplingUnit": "claim_id",
+                    },
+                },
+                "validationThresholdSelection": {
+                    "proposedThreshold": 0.675,
+                    "appliedThreshold": 0.675,
+                    "gateDecision": "apply_revision",
+                },
+                "interventionAudit": {"wrongToRight": 74, "rightToWrong": 109},
+            },
+            "PubHealth": {
+                "results": {
+                    "within_domain": {"Macro F1": 0.6944},
+                    "within_domain_calibrated": {"Macro F1": 0.6944},
+                },
+                "effectInference": {
+                    "Macro F1": {
+                        "ci95Low": 0.0,
+                        "ci95High": 0.0,
+                        "probabilityOfImprovement": 0.0,
+                        "effectStatus": "inconclusive",
+                    },
+                },
+                "validationThresholdSelection": {
+                    "proposedThreshold": 0.475,
+                    "appliedThreshold": 0.5,
+                    "gateDecision": "keep_round_one",
+                },
+            },
+        },
+        "qualityGate": {"status": "passed"},
+    })
 
     payload = build_competition_evidence_dashboard(
         job={"jobId": "case-1", "model": "qwen3.7-plus-2026-05-26", "feedbackId": "feedback-1"},
         case_dir=case,
         reliability_summary_path=reliability,
         planning_summary_path=planning,
+        multidomain_summary_path=multidomain,
         peerqa_summary_path=peerqa,
         peerqa_full_audit_summary_path=peerqa_full,
         feedback_record={
@@ -315,6 +390,14 @@ def test_competition_dashboard_exposes_one_verified_evidence_story(tmp_path: Pat
     assert payload["externalReview"]["fullAudit"]["fairMethodComparison"] is False
     assert payload["humanGovernance"]["responsibleReviewerCount"] == 1
     assert payload["humanGovernance"]["reviewerPolicy"] == "single_accountable_reviewer"
+    assert payload["holdoutEffect"]["effectStatus"] == "inconclusive"
+    assert payload["reliability"]["pairedEffects"]["faultDetection"]["exactMcNemarPValue"] == 0.03125
+    assert payload["reliability"]["pairedEffects"]["faultDetection"]["evidenceSource"] == "evaluation_records.json"
+    assert payload["reliability"]["pairedEffects"]["pairedCaseCount"] == 45
+    assert payload["reliability"]["pairedEffects"]["issueLocalization"]["effectStatus"] == "significant_improvement"
+    assert payload["multidomain"]["headline"]["dataset"] == "Climate-FEVER"
+    assert payload["multidomain"]["headline"]["effectStatus"] == "significant_improvement"
+    assert payload["multidomain"]["effects"][1]["gateDecision"] == "keep_round_one"
 
 
 def test_competition_dashboard_marks_tampered_contract_not_ready(tmp_path: Path):

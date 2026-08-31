@@ -101,6 +101,41 @@ interface ReliabilityMethod {
   f1: number
 }
 
+interface PairedEffect {
+  beforeCorrect: number
+  afterCorrect: number
+  total: number
+  corrected: number
+  regressed: number
+  exactMcNemarPValue: number
+  effectStatus: 'significant_improvement' | 'significant_regression' | 'inconclusive'
+}
+
+interface MultidomainEffect {
+  dataset: string
+  roundOneMacroF1: number
+  roundTwoMacroF1: number
+  delta: number
+  roundOneAccuracy?: number
+  roundTwoAccuracy?: number
+  roundOneBalancedAccuracy?: number
+  roundTwoBalancedAccuracy?: number
+  roundOneMcc?: number
+  roundTwoMcc?: number
+  ci95: [number, number]
+  probabilityOfImprovement?: number
+  effectStatus: 'significant_improvement' | 'significant_regression' | 'inconclusive'
+  resamplingUnit: string
+  proposedThreshold?: number
+  appliedThreshold?: number
+  gateDecision: 'apply_revision' | 'keep_round_one' | 'legacy_apply_revision'
+  interventionAudit: {
+    wrongToRight?: number
+    rightToWrong?: number
+    netCorrect?: number
+  }
+}
+
 interface PlanningMethod {
   methodId: string
   label: string
@@ -218,6 +253,14 @@ interface DashboardPayload {
     ci95High: number
     probabilityOfImprovement: number
   }>
+  holdoutEffect: {
+    improvementMean: number
+    ci95Low: number
+    ci95High: number
+    probabilityOfImprovement: number
+    effectStatus: 'significant_improvement' | 'significant_regression' | 'inconclusive'
+    claim: string
+  }
   planDelta: {
     available: boolean
     audit: { status: string }
@@ -258,6 +301,12 @@ interface DashboardPayload {
     methods: ReliabilityMethod[]
     repairEvaluation: { attempted: number; passed: number; successRate?: number }
     qwenMissCount: number
+    pairedEffects: {
+      comparison: string
+      faultDetection: PairedEffect
+      issueLocalization: PairedEffect
+      scope: string
+    }
     scope: string
   }
   planning: {
@@ -274,6 +323,8 @@ interface DashboardPayload {
   }
   multidomain: {
     datasets: string[]
+    effects: MultidomainEffect[]
+    headline?: MultidomainEffect
     scope: string
   }
   externalReview: ExternalReviewEvidence
@@ -321,12 +372,12 @@ const evaluationLabels: Record<string, Record<ReviewLocale, string>> = {
   evidence_grounding: { 'zh-CN': '假设与判断有证据', 'en-US': 'Evidence-grounded decisions' },
   feedback_changes_plan: { 'zh-CN': '真实结果改变下一轮计划', 'en-US': 'Results change the next plan' },
   iteration_visible: { 'zh-CN': '迭代过程清楚可追溯', 'en-US': 'Traceable iteration history' },
-  measured_improvement: { 'zh-CN': '第二轮成效获得复验', 'en-US': 'Round 2 effect re-evaluated' },
+  measured_improvement: { 'zh-CN': '第二轮结果完成独立复验', 'en-US': 'Round 2 independently evaluated' },
 }
 
 const limitationTranslations: Record<string, string> = {
   'The representative case is a public-data computational experiment, not a wet-lab or instrument deployment.': '代表案例是基于公开数据的计算实验，不是湿实验或仪器部署。',
-  'The final-holdout F1 gain is non-degrading but its paired-bootstrap 95% interval crosses zero.': '最终未见集 F1 通过非退化门，但配对 bootstrap 95% CI 跨 0。',
+  'The final-holdout F1 interval crosses zero, so no significant improvement or non-inferiority is claimed.': '最终未见集 F1 区间跨 0，因此不宣称显著提升或非劣效。',
   'The 90-case reliability benchmark uses controlled injected faults and cannot estimate natural-error prevalence.': '90 例可靠性基准使用受控注入故障，不能估计自然错误的发生率。',
   'Public scientific conclusions remain blocked until real, independent human signoffs are current.': '在真实、独立的人工签核生效前，公开科学结论仍被阻断。',
   'PeerQA lexical alignment is a candidate-generation proxy, not expert review recall or correctness.': 'PeerQA 词汇对齐是候选生成代理指标，不代表专家审稿召回率或正确性。',
@@ -393,6 +444,10 @@ const formatSignedPercent = (value: number | undefined, digits = 1) => (
   typeof value === 'number' && Number.isFinite(value)
     ? `${value >= 0 ? '+' : ''}${(value * 100).toFixed(digits)}%`
     : '--'
+)
+
+const numericDelta = (after: number | undefined, before: number | undefined) => (
+  typeof after === 'number' && typeof before === 'number' ? after - before : undefined
 )
 
 const formatValue = (value: unknown) => {
@@ -582,10 +637,15 @@ export function CompetitionEvidence() {
   const headline = useMemo(() => {
     if (!dashboard) return null
     const feedbackF1 = dashboard.feedbackMetrics.find((item) => item.name === 'F1-Score')
-    const feedbackRecall = dashboard.feedbackMetrics.find((item) => item.name === 'Recall')
     const holdoutF1 = dashboard.holdoutMetrics.find((item) => item.name === 'F1-Score')
     const full = dashboard.reliability.methods.find((item) => item.methodId === 'faros_full')
-    return { feedbackF1, feedbackRecall, holdoutF1, full }
+    return {
+      feedbackF1,
+      holdoutF1,
+      full,
+      reliabilityEffects: dashboard.reliability.pairedEffects,
+      multidomain: dashboard.multidomain.headline,
+    }
   }, [dashboard])
 
   const jobActive = startingFresh || ['queued', 'running'].includes(freshJob?.status || '')
@@ -846,35 +906,51 @@ export function CompetitionEvidence() {
               <div className="p-4">
                 <div className="flex flex-wrap items-center gap-2 text-xs font-medium text-slate-500">
                   <span>{text('反馈集 F1', 'Feedback F1')}</span>
-                  <span className="rounded-sm bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-800">{text('已验证改善', 'Verified gain')}</span>
+                  <span className="rounded-sm bg-sky-100 px-1.5 py-0.5 text-[10px] font-semibold text-sky-800">{text('开发集', 'Development')}</span>
                 </div>
                 <div className="mt-1 text-2xl font-semibold text-slate-950">+{formatNumber(headline.feedbackF1?.delta, 4)}</div>
-                <div className="mt-1 text-xs text-emerald-700">{formatNumber(headline.feedbackF1?.roundOne, 4)} → {formatNumber(headline.feedbackF1?.roundTwo, 4)}</div>
-              </div>
-              <div className="p-4">
-                <div className="flex flex-wrap items-center gap-2 text-xs font-medium text-slate-500">
-                  <span>{text('反馈集 Recall', 'Feedback Recall')}</span>
-                  <span className="rounded-sm bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-800">{text('已验证改善', 'Verified gain')}</span>
-                </div>
-                <div className="mt-1 text-2xl font-semibold text-slate-950">+{formatNumber(headline.feedbackRecall?.delta, 4)}</div>
-                <div className="mt-1 text-xs text-emerald-700">{formatPercent(headline.feedbackRecall?.roundOne)} → {formatPercent(headline.feedbackRecall?.roundTwo)}</div>
-              </div>
-              <div className="p-4">
-                <div className="flex flex-wrap items-center gap-2 text-xs font-medium text-slate-500">
-                  <span>{text('未见集 F1', 'Holdout F1')}</span>
-                  <span className="rounded-sm bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800">{text('非退化', 'Non-degradation')}</span>
-                </div>
-                <div className="mt-1 text-2xl font-semibold text-slate-950">{text('通过', 'Passed')}</div>
-                <div className="mt-1 text-xs text-amber-700">Δ +{formatNumber(headline.holdoutF1?.delta, 4)} · {text('95% CI 跨 0', '95% CI crosses 0')}</div>
+                <div className="mt-1 text-xs text-sky-700">{formatNumber(headline.feedbackF1?.roundOne, 4)} → {formatNumber(headline.feedbackF1?.roundTwo, 4)}</div>
               </div>
               <div className="p-4">
                 <div className="flex flex-wrap items-center gap-2 text-xs font-medium text-slate-500">
                   <span>{text('受控故障检出', 'Controlled fault detection')}</span>
-                  <span className="rounded-sm bg-sky-100 px-1.5 py-0.5 text-[10px] font-semibold text-sky-800">{text('压力测试', 'Stress-tested')}</span>
+                  <span className={`rounded-sm px-1.5 py-0.5 text-[10px] font-semibold ${headline.reliabilityEffects.faultDetection.effectStatus === 'significant_improvement' ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-100 text-slate-700'}`}>
+                    {headline.reliabilityEffects.faultDetection.effectStatus === 'significant_improvement' ? text('配对 p < .05', 'Paired p < .05') : text('结论未定', 'Inconclusive')}
+                  </span>
                 </div>
                 <div className="mt-1 text-2xl font-semibold text-slate-950">{formatPercent(headline.full?.faultDetectionRate, 0)}</div>
-                <div className="mt-1 text-xs text-sky-700">45/45 · {text('正常误拒', 'clean false rejects')} 0/45</div>
+                <div className="mt-1 text-xs text-emerald-700">{headline.reliabilityEffects.faultDetection.beforeCorrect}/{headline.reliabilityEffects.faultDetection.total} → {headline.reliabilityEffects.faultDetection.afterCorrect}/{headline.reliabilityEffects.faultDetection.total} · p={formatNumber(headline.reliabilityEffects.faultDetection.exactMcNemarPValue, 3)}</div>
               </div>
+              <div className="p-4">
+                <div className="flex flex-wrap items-center gap-2 text-xs font-medium text-slate-500">
+                  <span>{text('问题定位', 'Issue localization')}</span>
+                  <span className={`rounded-sm px-1.5 py-0.5 text-[10px] font-semibold ${headline.reliabilityEffects.issueLocalization.effectStatus === 'significant_improvement' ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-100 text-slate-700'}`}>
+                    {headline.reliabilityEffects.issueLocalization.effectStatus === 'significant_improvement' ? text('配对 p < .05', 'Paired p < .05') : text('结论未定', 'Inconclusive')}
+                  </span>
+                </div>
+                <div className="mt-1 text-2xl font-semibold text-slate-950">{formatPercent(headline.full?.issueLocalizationRate, 0)}</div>
+                <div className="mt-1 text-xs text-emerald-700">{headline.reliabilityEffects.issueLocalization.beforeCorrect}/{headline.reliabilityEffects.issueLocalization.total} → {headline.reliabilityEffects.issueLocalization.afterCorrect}/{headline.reliabilityEffects.issueLocalization.total} · p={formatNumber(headline.reliabilityEffects.issueLocalization.exactMcNemarPValue, 3)}</div>
+              </div>
+              <div className="p-4">
+                <div className="flex flex-wrap items-center gap-2 text-xs font-medium text-slate-500">
+                  <span>{headline.multidomain?.dataset || text('跨域测试', 'Cross-domain test')} Macro-F1</span>
+                  <span className={`rounded-sm px-1.5 py-0.5 text-[10px] font-semibold ${headline.multidomain?.effectStatus === 'significant_improvement' ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-100 text-slate-700'}`}>
+                    {headline.multidomain?.effectStatus === 'significant_improvement' ? '95% CI > 0' : text('无显著结果', 'No significant result')}
+                  </span>
+                </div>
+                <div className="mt-1 text-2xl font-semibold text-slate-950">{formatSignedPercent(headline.multidomain?.delta, 1)}</div>
+                <div className={`mt-1 text-xs ${headline.multidomain?.effectStatus === 'significant_improvement' ? 'text-emerald-700' : 'text-slate-600'}`}>CI [{formatSignedPercent(headline.multidomain?.ci95[0], 1)}, {formatSignedPercent(headline.multidomain?.ci95[1], 1)}]</div>
+              </div>
+            </div>
+            <div className={`flex flex-col gap-1 border-t border-slate-200 px-4 py-3 text-xs sm:flex-row sm:items-center sm:justify-between ${dashboard.holdoutEffect.effectStatus === 'significant_improvement' ? 'bg-emerald-50/60 text-emerald-950' : dashboard.holdoutEffect.effectStatus === 'significant_regression' ? 'bg-red-50/60 text-red-950' : 'bg-amber-50/60 text-amber-950'}`}>
+              <span className="font-semibold">
+                {dashboard.holdoutEffect.effectStatus === 'significant_improvement'
+                  ? text('SciFact 最终未见集检测到显著 F1 提升', 'Significant SciFact final-holdout F1 improvement detected')
+                  : dashboard.holdoutEffect.effectStatus === 'significant_regression'
+                    ? text('科学警报：SciFact 最终未见集 F1 显著回归', 'Scientific alert: significant SciFact final-holdout F1 regression')
+                    : text('科学边界：SciFact 最终未见集未检测到显著 F1 变化', 'Scientific boundary: no significant SciFact final-holdout F1 change detected')}
+              </span>
+              <span>Δ {formatSignedPercent(headline.holdoutF1?.delta, 2)} · 95% CI [{formatSignedPercent(dashboard.holdoutEffect.ci95Low, 2)}, {formatSignedPercent(dashboard.holdoutEffect.ci95High, 2)}]</span>
             </div>
           </section>
 
@@ -1115,7 +1191,17 @@ export function CompetitionEvidence() {
                       </BarChart>
                     </ResponsiveContainer>
                   </div>
-                  <p className="mt-2 text-xs leading-relaxed text-slate-500">{text('基于真实数据集的配对受控故障；不用于估计自然科研错误发生率。', dashboard.reliability.scope)}</p>
+                  <div className="grid grid-cols-2 border-y border-slate-200 py-3 text-xs">
+                    <div className="border-r border-slate-200 pr-3">
+                      <div className="font-semibold text-slate-900">{text('检出净增益', 'Detection gain')}</div>
+                      <div className="mt-1 text-emerald-700">+{dashboard.reliability.pairedEffects.faultDetection.corrected} · p={formatNumber(dashboard.reliability.pairedEffects.faultDetection.exactMcNemarPValue, 4)}</div>
+                    </div>
+                    <div className="pl-3">
+                      <div className="font-semibold text-slate-900">{text('定位净增益', 'Localization gain')}</div>
+                      <div className="mt-1 text-emerald-700">+{dashboard.reliability.pairedEffects.issueLocalization.corrected} · p={formatNumber(dashboard.reliability.pairedEffects.issueLocalization.exactMcNemarPValue, 4)}</div>
+                    </div>
+                  </div>
+                  <p className="mt-3 text-xs leading-relaxed text-slate-500">{text('基于真实数据集的配对受控故障；p 值来自双侧精确 McNemar 检验，不用于估计自然科研错误发生率。', `${dashboard.reliability.pairedEffects.scope} ${dashboard.reliability.scope}`)}</p>
                 </div>
 
                 <div className="min-w-0 rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
@@ -1141,6 +1227,96 @@ export function CompetitionEvidence() {
                   <p className="mt-3 text-xs leading-relaxed text-slate-500">{text('每个 seed 包含 6 个来自真实 SciFact 候选竞技场的受控决策场景。', dashboard.planning.scope)}</p>
                 </div>
               </section>
+
+              {dashboard.multidomain.effects.length > 0 && (
+                <section className="min-w-0 rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+                  <SectionHeading
+                    icon={Gauge}
+                    title={text('跨域保守门控', 'Conservative cross-domain gate')}
+                    detail={text('验证集聚类区间不越过 0 才允许修改进入测试集', 'A revision reaches the test set only when its validation cluster interval clears zero')}
+                  />
+                  <div className="divide-y divide-slate-200 md:hidden">
+                    {dashboard.multidomain.effects.map((effect) => (
+                      <div key={effect.dataset} className="py-4 first:pt-1 last:pb-1">
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="font-semibold text-slate-900">{effect.dataset}</div>
+                          <Badge variant={effect.gateDecision === 'keep_round_one' ? 'outline' : 'secondary'}>
+                            {effect.gateDecision === 'keep_round_one' ? text('保持第一轮', 'Keep round 1') : text('应用修订', 'Apply revision')}
+                          </Badge>
+                        </div>
+                        <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-3 text-xs">
+                          <div>
+                            <dt className="text-slate-500">Macro-F1</dt>
+                            <dd className="mt-0.5 font-mono text-slate-900">{formatNumber(effect.roundOneMacroF1, 4)} → {formatNumber(effect.roundTwoMacroF1, 4)}</dd>
+                          </div>
+                          <div>
+                            <dt className="text-slate-500">Δ Macro-F1</dt>
+                            <dd className={`mt-0.5 font-semibold ${effect.delta > 0 ? 'text-emerald-700' : 'text-slate-600'}`}>{formatSignedPercent(effect.delta, 1)}</dd>
+                          </div>
+                          <div>
+                            <dt className="text-slate-500">Δ Bal. Acc.</dt>
+                            <dd className="mt-0.5 font-semibold text-emerald-700">{formatSignedPercent(numericDelta(effect.roundTwoBalancedAccuracy, effect.roundOneBalancedAccuracy), 1)}</dd>
+                          </div>
+                          <div>
+                            <dt className="text-slate-500">Δ Accuracy</dt>
+                            <dd className={`mt-0.5 font-semibold ${(numericDelta(effect.roundTwoAccuracy, effect.roundOneAccuracy) ?? 0) < 0 ? 'text-amber-700' : 'text-slate-600'}`}>{formatSignedPercent(numericDelta(effect.roundTwoAccuracy, effect.roundOneAccuracy), 1)}</dd>
+                          </div>
+                          <div className="col-span-2">
+                            <dt className="text-slate-500">claim_id cluster 95% CI</dt>
+                            <dd className="mt-0.5 font-mono text-slate-900">[{formatSignedPercent(effect.ci95[0], 1)}, {formatSignedPercent(effect.ci95[1], 1)}]</dd>
+                          </div>
+                        </dl>
+                        <div className="mt-3 text-xs font-medium">
+                          {effect.effectStatus === 'significant_improvement'
+                            ? <span className="inline-flex items-center gap-1 text-emerald-700"><CheckCircle2 className="h-4 w-4" />{text('显著提升', 'Significant gain')}</span>
+                            : <span className="inline-flex items-center gap-1 text-slate-600"><ShieldCheck className="h-4 w-4" />{text('未部署不确定修改', 'Uncertain revision withheld')}</span>}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="hidden overflow-x-auto md:block">
+                    <table className="w-full min-w-[980px] text-left text-sm">
+                      <thead className="border-b border-slate-200 text-xs text-slate-500">
+                        <tr>
+                          <th className="pb-2 font-medium">{text('数据集', 'Dataset')}</th>
+                          <th className="pb-2 font-medium">Gate</th>
+                          <th className="pb-2 font-medium">{text('第一轮', 'Round 1')}</th>
+                          <th className="pb-2 font-medium">{text('第二轮', 'Round 2')}</th>
+                          <th className="pb-2 font-medium">Δ Macro-F1</th>
+                          <th className="pb-2 font-medium">Δ Bal. Acc.</th>
+                          <th className="pb-2 font-medium">Δ Accuracy</th>
+                          <th className="pb-2 font-medium">95% CI</th>
+                          <th className="pb-2 font-medium">{text('结论', 'Conclusion')}</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {dashboard.multidomain.effects.map((effect) => (
+                          <tr key={effect.dataset}>
+                            <td className="py-3 font-medium text-slate-900">{effect.dataset}</td>
+                            <td className="py-3">
+                              <Badge variant={effect.gateDecision === 'keep_round_one' ? 'outline' : 'secondary'}>
+                                {effect.gateDecision === 'keep_round_one' ? text('保持第一轮', 'Keep round 1') : text('应用修订', 'Apply revision')}
+                              </Badge>
+                            </td>
+                            <td className="py-3 font-mono text-xs">{formatNumber(effect.roundOneMacroF1, 4)}</td>
+                            <td className="py-3 font-mono text-xs">{formatNumber(effect.roundTwoMacroF1, 4)}</td>
+                            <td className={`py-3 font-semibold ${effect.delta > 0 ? 'text-emerald-700' : 'text-slate-600'}`}>{formatSignedPercent(effect.delta, 1)}</td>
+                            <td className="py-3 font-medium text-emerald-700">{formatSignedPercent(numericDelta(effect.roundTwoBalancedAccuracy, effect.roundOneBalancedAccuracy), 1)}</td>
+                            <td className={`py-3 font-medium ${(numericDelta(effect.roundTwoAccuracy, effect.roundOneAccuracy) ?? 0) < 0 ? 'text-amber-700' : 'text-slate-600'}`}>{formatSignedPercent(numericDelta(effect.roundTwoAccuracy, effect.roundOneAccuracy), 1)}</td>
+                            <td className="py-3 font-mono text-xs">[{formatSignedPercent(effect.ci95[0], 1)}, {formatSignedPercent(effect.ci95[1], 1)}]</td>
+                            <td className="py-3">
+                              {effect.effectStatus === 'significant_improvement'
+                                ? <span className="inline-flex items-center gap-1 text-emerald-700"><CheckCircle2 className="h-4 w-4" />{text('显著提升', 'Significant gain')}</span>
+                                : <span className="inline-flex items-center gap-1 text-slate-600"><ShieldCheck className="h-4 w-4" />{text('未部署不确定修改', 'Uncertain revision withheld')}</span>}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <p className="mt-3 text-xs leading-relaxed text-slate-500">{text('Macro-F1 是预设主指标，用于避免类别不均衡掩盖少数类；因此原始 Accuracy 可能与类别平衡指标反向变化。所有区间按 claim_id 聚类重采样；PubHealth 验证证据不足时自动保持第一轮，测试标签不参与 Gate。', `Macro-F1 is the prespecified primary metric so class imbalance cannot hide minority-class behavior; raw accuracy may therefore move against class-balanced metrics. ${dashboard.multidomain.scope}`)}</p>
+                </section>
+              )}
 
               {dashboard.externalReview.available && peerqaEvidence && dashboard.externalReview.fairTop5 && (
                 <section className="min-w-0 scroll-mt-28 rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
@@ -1398,7 +1574,13 @@ export function CompetitionEvidence() {
                   </div>
                   <div className="border-l-4 border-amber-500 pl-4">
                     <div className="text-sm font-semibold text-slate-900">{text('科学结论', 'Scientific conclusion')}</div>
-                    <p className="mt-1 text-sm leading-relaxed text-slate-600">{text('未见集增益只支持非退化，置信区间跨 0，因此不宣称显著普遍提升。', 'The holdout result supports non-degradation only. Its CI crosses 0, so no significant universal gain is claimed.')}</p>
+                    <p className="mt-1 text-sm leading-relaxed text-slate-600">
+                      {dashboard.holdoutEffect.effectStatus === 'significant_improvement'
+                        ? text('SciFact 最终未见集支持显著 F1 提升；结论仍受数据集、任务和预注册协议边界约束。', 'The SciFact final holdout supports a significant F1 improvement, bounded by the dataset, task, and preregistered protocol.')
+                        : dashboard.holdoutEffect.effectStatus === 'significant_regression'
+                          ? text('SciFact 最终未见集检测到显著 F1 回归，当前修订不得发布。', 'The SciFact final holdout detected a significant F1 regression, so the revision must not be released.')
+                          : text('SciFact 最终未见集区间跨 0，因此不宣称显著提升或非劣效；显著性证据来自预先门控的跨域测试与机制压力测试。', 'The SciFact final-holdout interval crosses zero, so neither significant improvement nor non-inferiority is claimed; significance evidence comes from the pre-gated cross-domain and mechanism tests.')}
+                    </p>
                   </div>
                   <div className="border-l-4 border-violet-500 pl-4">
                     <div className="text-sm font-semibold text-slate-900">{text('人工责任', 'Human accountability')}</div>
