@@ -13,8 +13,8 @@
 <p align="center">
   <a href="https://github.com/OpenNSWM-Lab/FAROS/stargazers"><img src="https://img.shields.io/github/stars/OpenNSWM-Lab/FAROS?style=for-the-badge&color=FFB300&label=Stars" alt="GitHub Stars" /></a>
   <img src="https://img.shields.io/badge/Release-1.1.0--rc1-0891B2?style=for-the-badge" alt="Release 1.1.0-rc1" />
-  <img src="https://img.shields.io/badge/Backend_Tests-608_passed-16A34A?style=for-the-badge" alt="608 backend tests passed" />
-  <img src="https://img.shields.io/badge/Frontend_Tests-30_passed-2563EB?style=for-the-badge" alt="30 frontend tests passed" />
+  <img src="https://img.shields.io/badge/Backend_Tests-644_passed-16A34A?style=for-the-badge" alt="644 backend tests passed" />
+  <img src="https://img.shields.io/badge/Frontend_Tests-35_passed-2563EB?style=for-the-badge" alt="35 frontend tests passed" />
   <img src="https://img.shields.io/badge/Qwen-Ready-FFB300?style=for-the-badge" alt="Qwen Ready" />
 </p>
 
@@ -181,9 +181,15 @@ FAROS/
 
 - Python `3.11+`
 - Node.js `18+`
-- 可选：Docker，用于更强的代码执行隔离
-- 可选：`latexmk` 与 `pdflatex`，用于原生 LaTeX 编译
+- 本地浏览与轻量开发可不安装 Docker；正式 Code/Experiment 沙箱必须使用 Docker Engine
+- 正式论文 PDF 需要 `latexmk`、XeLaTeX、`ctex` 中文宏包和一套 CJK 字体；缺失时只能生成回退 PDF
 - 至少一个兼容的 LLM Provider；推荐使用千问
+
+Ubuntu 的完整依赖、计算节点/公网网关架构和 systemd/Caddy 配置见 [部署指南](deploy/README.md)。安装后可先运行：
+
+```bash
+./scripts/check_deployment_dependencies.sh --role local
+```
 
 ### 1. 启动后端
 
@@ -193,6 +199,7 @@ cd FAROS/backend
 
 python3 -m venv .venv
 source .venv/bin/activate
+python -m pip install --upgrade pip
 pip install -r requirements.txt
 
 uvicorn app.main:app --host 127.0.0.1 --port 8005 --reload
@@ -202,7 +209,7 @@ uvicorn app.main:app --host 127.0.0.1 --port 8005 --reload
 
 ```bash
 cd FAROS/frontend
-npm install
+npm ci
 VITE_API_BASE_URL=http://127.0.0.1:8005 npm run dev
 ```
 
@@ -234,8 +241,8 @@ npm run build
 
 当前验证基线：
 
-- 后端：`608 passed`
-- 前端：`30 passed`
+- 后端：`644 passed`
+- 前端：`35 passed`
 - TypeScript 生产构建：通过
 - 真实千问选题推荐与主要页面流程：通过
 
@@ -310,9 +317,15 @@ Research interest
 
 - Python `3.11+`
 - Node.js `18+`
-- Optional: Docker for stronger execution isolation
-- Optional: `latexmk` and `pdflatex` for native LaTeX compilation
+- Docker Engine is optional for UI/lightweight local development and required for the production Code/Experiment sandbox
+- Formal paper PDFs require `latexmk`, XeLaTeX, the `ctex` Chinese package, and a CJK font; otherwise only the fallback PDF is available
 - At least one compatible LLM provider; Qwen is recommended
+
+See the [deployment guide](deploy/README.md) for the complete Ubuntu, compute-node, public-gateway, systemd, and Caddy requirements. Run the preflight check after installation:
+
+```bash
+./scripts/check_deployment_dependencies.sh --role local
+```
 
 ### 1. Backend
 
@@ -322,6 +335,7 @@ cd FAROS/backend
 
 python3 -m venv .venv
 source .venv/bin/activate
+python -m pip install --upgrade pip
 pip install -r requirements.txt
 
 uvicorn app.main:app --host 127.0.0.1 --port 8005 --reload
@@ -331,7 +345,7 @@ uvicorn app.main:app --host 127.0.0.1 --port 8005 --reload
 
 ```bash
 cd FAROS/frontend
-npm install
+npm ci
 VITE_API_BASE_URL=http://127.0.0.1:8005 npm run dev
 ```
 
@@ -363,8 +377,8 @@ npm run build
 
 Validated baseline:
 
-- Backend: `608 passed`
-- Frontend: `30 passed`
+- Backend: `644 passed`
+- Frontend: `35 passed`
 - TypeScript production build: passed
 - Live Qwen topic coaching and primary UI workflow: passed
 

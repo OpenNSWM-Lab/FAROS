@@ -41,7 +41,11 @@ from app.modules.paper.skills.utils import (
     sanitize_latex_text_specials,
 )
 from app.modules.paper.storage import create_paper, delete_paper, get_paper_latex_dir, read_paper_file, write_paper_file
-from app.services.pdf_renderer import _requires_xelatex, _strip_latex
+from app.services.pdf_renderer import (
+    _register_unicode_font,
+    _requires_xelatex,
+    _strip_latex,
+)
 
 
 class FakeChatResponse:
@@ -953,6 +957,43 @@ def test_fallback_latex_stripper_can_preserve_chinese_text():
 
     assert "中文方案" in _strip_latex(content, preserve_unicode=True)
     assert "?" in _strip_latex(content, preserve_unicode=False)
+
+
+def test_pdf_renderer_combines_dejavu_and_droid_fallback_fonts(monkeypatch):
+    available = {
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
+    }
+
+    class FakePDF:
+        def __init__(self):
+            self.fonts = []
+            self.fallback = None
+
+        def add_font(self, family, style, path):
+            self.fonts.append((family, style, path))
+
+        def set_fallback_fonts(self, families, exact_match=True):
+            self.fallback = (families, exact_match)
+
+    monkeypatch.delenv("FAROS_PDF_FONT", raising=False)
+    monkeypatch.setattr(os.path, "isfile", lambda path: path in available)
+    pdf = FakePDF()
+
+    assert _register_unicode_font(pdf) == "FarosUnicode"
+    assert pdf.fonts == [
+        (
+            "FarosUnicode",
+            "",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        ),
+        (
+            "FarosCJKFallback",
+            "",
+            "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
+        ),
+    ]
+    assert pdf.fallback == (["FarosCJKFallback"], False)
 
 
 def test_explicit_selected_figures_do_not_fallback_to_figure_ids_when_all_excluded():
