@@ -58,6 +58,7 @@ interface PaperRecord {
   evidenceStatus?: string
   compileStatus?: string
   compileErrors?: string | null
+  pdfRenderMode?: string | null
   simpleReviewPassed?: boolean
   logs?: PaperLog[]
   createdAt: string
@@ -209,6 +210,8 @@ export function PaperWritingWorkspace() {
   const [savingMetadata, setSavingMetadata] = useState(false)
   const [feedbackRounds, setFeedbackRounds] = useState<FeedbackRound[]>([])
   const [pdfTs, setPdfTs] = useState(Date.now())
+  const [renderingPdf, setRenderingPdf] = useState(false)
+  const [pdfRenderError, setPdfRenderError] = useState('')
   const [loading, setLoading] = useState(true)
   const [draftTitle, setDraftTitle] = useState('')
   const [draftPaperType, setDraftPaperType] = useState('algorithm')
@@ -467,6 +470,40 @@ export function PaperWritingWorkspace() {
     }
   }
 
+  const renderPdf = async () => {
+    if (!paper || renderingPdf) return
+    const previousUpdatedAt = paper.updatedAt
+    setRenderingPdf(true)
+    setPdfRenderError('')
+    try {
+      const resp = await fetch(`${API_BASE}/api/v1/papers/${paper.id}/render-pdf`, { method: 'POST' })
+      if (!resp.ok) {
+        const payload = await resp.json().catch(() => ({}))
+        throw new Error(payload.detail || `HTTP ${resp.status}`)
+      }
+
+      let latest: PaperRecord | null = null
+      for (let attempt = 0; attempt < 60; attempt += 1) {
+        await new Promise(resolve => setTimeout(resolve, 1000))
+        latest = await refreshPaper()
+        const renderFinished = latest?.updatedAt !== previousUpdatedAt
+        if (renderFinished && latest?.pdfAvailable) {
+          await refreshFiles()
+          setPdfTs(Date.now())
+          return
+        }
+        if (renderFinished && latest?.compileStatus === 'failed' && !latest.pdfAvailable) {
+          throw new Error(latest.compileErrors || text('PDF编译失败，请检查LaTeX源文件。', 'PDF compilation failed. Check the LaTeX sources.'))
+        }
+      }
+      throw new Error(latest?.compileErrors || text('PDF渲染超时，请稍后重试。', 'PDF rendering timed out. Please retry.'))
+    } catch (error) {
+      setPdfRenderError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setRenderingPdf(false)
+    }
+  }
+
   const renderStage = () => {
     if (!paper) {
       return (
@@ -559,8 +596,11 @@ export function PaperWritingWorkspace() {
         fileContent={fileContent}
         loadFile={loadFile}
         pdfTs={pdfTs}
+        renderingPdf={renderingPdf}
+        pdfRenderError={pdfRenderError}
+        renderPdf={renderPdf}
         refreshFiles={async () => {
-          const entries = await refreshFiles()
+          const [, entries] = await Promise.all([refreshPaper(), refreshFiles()])
           await refreshFeedback(entries)
           setPdfTs(Date.now())
         }}
@@ -933,8 +973,13 @@ function ResultStage(props: {
   fileContent: string
   loadFile: (path: string) => void
   pdfTs: number
+  renderingPdf: boolean
+  pdfRenderError: string
+  renderPdf: () => void
   refreshFiles: () => void
 }) {
+  const { text } = useReviewLocale()
+  const compileError = props.pdfRenderError || props.paper.compileErrors || ''
   return (
     <div className="grid grid-cols-1 gap-4 xl:grid-cols-12">
       <Card className="xl:col-span-3">
@@ -974,6 +1019,14 @@ function ResultStage(props: {
         </CardHeader>
         <CardContent className="space-y-3">
           <div className="flex flex-wrap gap-2">
+            <Button variant="outline" size="sm" onClick={props.renderPdf} disabled={props.renderingPdf}>
+              {props.renderingPdf
+                ? <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+                : <RefreshCw className="mr-1 h-4 w-4" />}
+              {props.paper.pdfAvailable
+                ? text('重新渲染 PDF', 'Re-render PDF')
+                : text('生成 PDF', 'Render PDF')}
+            </Button>
             {props.paper.pdfAvailable && (
               <>
                 <a href={`${API_BASE}/api/v1/papers/${props.paper.id}/pdf?t=${props.pdfTs}`} target="_blank" rel="noopener noreferrer">
@@ -989,9 +1042,31 @@ function ResultStage(props: {
             </a>
           </div>
           {props.paper.pdfAvailable ? (
-            <iframe src={`${API_BASE}/api/v1/papers/${props.paper.id}/pdf?t=${props.pdfTs}`} className="h-[62vh] w-full rounded-md border" title="PDF Preview" />
+            <>
+              {props.paper.pdfRenderMode === 'fallback' && (
+                <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                  {text('当前为兼容预览；原生LaTeX编译仍未通过，请查看下方错误后重新渲染。', 'This is a compatibility preview. Native LaTeX compilation still failed; inspect the error and re-render.')}
+                </div>
+              )}
+              <iframe src={`${API_BASE}/api/v1/papers/${props.paper.id}/pdf?t=${props.pdfTs}`} className="h-[62vh] w-full rounded-md border" title="PDF Preview" />
+            </>
           ) : (
-            <div className="flex h-[62vh] items-center justify-center rounded-md border border-dashed text-sm text-slate-500">PDF not available.</div>
+            <div className="flex h-[62vh] flex-col items-center justify-center gap-3 rounded-md border border-dashed px-6 text-center">
+              <FileText className="h-8 w-8 text-slate-400" />
+              <div className="font-medium text-slate-800">{text('PDF尚未生成', 'PDF not available')}</div>
+              <div className="max-w-xl text-sm text-slate-500">
+                {text('论文源文件已经保留。点击“生成 PDF”只会编译现有LaTeX，不会重跑Idea、Plan、Code或Experiment。', 'The paper sources are preserved. Render PDF compiles the existing LaTeX only; it does not rerun Idea, Plan, Code, or Experiment.')}
+              </div>
+              {compileError && (
+                <pre className="max-h-32 w-full max-w-xl overflow-auto whitespace-pre-wrap rounded-md bg-slate-950 p-3 text-left text-xs text-slate-100">{compileError}</pre>
+              )}
+              <Button onClick={props.renderPdf} disabled={props.renderingPdf}>
+                {props.renderingPdf
+                  ? <Loader2 className="mr-1 h-4 w-4 animate-spin" />
+                  : <RefreshCw className="mr-1 h-4 w-4" />}
+                {props.renderingPdf ? text('正在编译…', 'Rendering...') : text('生成 PDF', 'Render PDF')}
+              </Button>
+            </div>
           )}
         </CardContent>
       </Card>
