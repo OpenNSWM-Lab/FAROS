@@ -6,6 +6,6 @@ FRONTEND_DIR="$ROOT_DIR/frontend"
 
 cd "$FRONTEND_DIR"
 if [[ ! -d node_modules ]]; then
-  npm install
+  npm ci
 fi
 npm run build

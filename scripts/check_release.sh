@@ -6,6 +6,8 @@ BACKEND_DIR="$ROOT_DIR/backend"
 
 source "$ROOT_DIR/backend/scripts/python_runner.sh"
 
+bash "$ROOT_DIR/scripts/check_deployment_dependencies.sh" --role local
+
 cd "$ROOT_DIR/backend"
 if ! run_py python -c 'import pytest, pytest_asyncio' >/dev/null 2>&1; then
   printf 'Release check requires backend/requirements-dev.txt. Install it in the selected Python environment.\n' >&2

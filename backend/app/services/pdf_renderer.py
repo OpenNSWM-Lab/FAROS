@@ -219,6 +219,22 @@ def _register_unicode_font(pdf) -> Optional[str]:
             return "FarosUnicode"
         except Exception as exc:
             logger.debug("Failed to load PDF unicode font %s: %s", path, exc)
+
+    latin_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+    cjk_path = "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf"
+    if os.path.isfile(latin_path) and os.path.isfile(cjk_path):
+        try:
+            pdf.add_font("FarosUnicode", "", latin_path)
+            pdf.add_font("FarosCJKFallback", "", cjk_path)
+            pdf.set_fallback_fonts(["FarosCJKFallback"], exact_match=False)
+            return "FarosUnicode"
+        except Exception as exc:
+            logger.debug(
+                "Failed to load composite PDF fonts %s + %s: %s",
+                latin_path,
+                cjk_path,
+                exc,
+            )
     return None
 
 

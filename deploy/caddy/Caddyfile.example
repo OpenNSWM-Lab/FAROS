@@ -1,0 +1,38 @@
+# Replace the hostname and password hashes before installing this file.
+# Generate each hash with: caddy hash-password --plaintext 'a-strong-password'
+
+faros.example.com {
+	encode zstd gzip
+
+	basicauth {
+		faros-team REPLACE_WITH_CADDY_HASH
+		faros-judge REPLACE_WITH_CADDY_HASH
+	}
+
+	@api path /api/*
+	handle @api {
+		reverse_proxy 127.0.0.1:18005 {
+			header_up X-Faros-User {http.auth.user.id}
+		}
+	}
+
+	handle {
+		root * /opt/faros/frontend-current
+		try_files {path} /index.html
+		file_server
+	}
+
+	@assets path /assets/*
+	header @assets Cache-Control "public, max-age=31536000, immutable"
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	log {
+		output file /var/log/caddy/faros-access.log
+		format console
+	}
+}
