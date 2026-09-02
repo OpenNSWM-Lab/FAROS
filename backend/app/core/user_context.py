@@ -51,6 +51,14 @@ def use_user(user_id: str) -> Iterator[str]:
 
 def get_current_user_role(user_id: Optional[str] = None) -> str:
     resolved = normalize_user_id(user_id, fallback=get_current_user_id())
+    reviewer_users = {
+        item.strip()
+        for item in os.getenv(
+            "FAROS_REVIEWER_USERS",
+            os.getenv("FAROS_REVIEWX_SIGNER_USERS", ""),
+        ).split(",")
+        if item.strip()
+    }
     team_users = {
         item.strip()
         for item in os.getenv("FAROS_TEAM_USERS", "faros-team,team,local").split(",")
@@ -61,6 +69,8 @@ def get_current_user_role(user_id: Optional[str] = None) -> str:
         for item in os.getenv("FAROS_JUDGE_USERS", "faros-judge,judge").split(",")
         if item.strip()
     }
+    if resolved in reviewer_users:
+        return "reviewer"
     if resolved in team_users:
         return "team"
     if resolved in judge_users:
