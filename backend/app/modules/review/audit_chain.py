@@ -53,7 +53,42 @@ def verify_history(history: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
 def record_audit_integrity(record: Dict[str, Any]) -> Dict[str, Any]:
     streams: Dict[str, Any] = {}
     for stage, item in (record.get("humanSignoffs") or {}).items():
-        streams[f"signoff:{stage}"] = verify_history((item or {}).get("history") or [])
+        signoff = item or {}
+        history = signoff.get("history") or []
+        state = verify_history(history)
+        status = str(signoff.get("storedStatus") or signoff.get("status") or "pending")
+        if state["valid"] and status != "pending":
+            if not history:
+                state = {**state, "valid": False, "reason": "decision_missing_from_history"}
+            else:
+                head = history[-1]
+                sealed_fields = (
+                    "decisionId",
+                    "status",
+                    "artifactHash",
+                    "reviewerRole",
+                    "reviewerId",
+                    "reviewerName",
+                    "actorAccountId",
+                    "actorRole",
+                    "authAssurance",
+                    "acknowledgements",
+                    "rationale",
+                    "conditions",
+                    "targetSections",
+                    "decidedAt",
+                )
+                mismatches = [
+                    field for field in sealed_fields if signoff.get(field) != head.get(field)
+                ]
+                if mismatches:
+                    state = {
+                        **state,
+                        "valid": False,
+                        "reason": "stored_state_differs_from_history_head",
+                        "mismatchedFields": mismatches,
+                    }
+        streams[f"signoff:{stage}"] = state
     for condition_id, item in (record.get("humanFeedbackVerifications") or {}).items():
         streams[f"condition:{condition_id}"] = verify_history((item or {}).get("history") or [])
     invalid = [name for name, state in streams.items() if not state["valid"]]

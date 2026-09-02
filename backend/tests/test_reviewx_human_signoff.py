@@ -8,6 +8,7 @@ from fastapi import HTTPException
 
 from app.modules.review import experiment_feedback_storage, reviews_api
 from app.modules.review.human_signoff import (
+    SIGNOFF_ACKNOWLEDGEMENTS,
     decide_human_signoff,
     human_signoff_state,
     initialize_human_signoffs,
@@ -238,6 +239,7 @@ def test_official_bundle_requires_conclusion_signoff(monkeypatch, tmp_path: Path
         reviewerRole="domain_expert",
         reviewerId="expert@example.com",
         rationale="Evidence and conclusion boundaries were checked.",
+        acknowledgements=list(SIGNOFF_ACKNOWLEDGEMENTS["conclusion"]),
     )
     asyncio.run(reviews_api.decide_experiment_signoff_endpoint(
         stored["id"], "conclusion", decision,
@@ -258,6 +260,7 @@ def test_signoff_api_persists_identity_rationale_and_history(monkeypatch, tmp_pa
         reviewerId="safety@example.com",
         rationale="Recheck the split before execution.",
         conditions=["Use a claim-grouped split"],
+        acknowledgements=list(SIGNOFF_ACKNOWLEDGEMENTS["plan"]),
     )
 
     response = asyncio.run(reviews_api.decide_experiment_signoff_endpoint(
@@ -281,6 +284,9 @@ def test_single_accountable_reviewer_can_approve_all_required_stages(monkeypatch
         reviewerRole="team_lead",
         reviewerId="competition-reviewer",
         rationale="Checked the frozen protocol, recomputed metrics, and accepted the stated limitations.",
+        acknowledgementsByStage={
+            stage: list(items) for stage, items in SIGNOFF_ACKNOWLEDGEMENTS.items()
+        },
     )
 
     response = asyncio.run(reviews_api.approve_required_experiment_signoffs_endpoint(
@@ -330,6 +336,7 @@ def test_signoff_api_can_require_authenticated_matching_identity(monkeypatch, tm
         reviewerRole="team_lead",
         reviewerId="lead@example.com",
         rationale="Authenticated review of the frozen experiment plan.",
+        acknowledgements=list(SIGNOFF_ACKNOWLEDGEMENTS["plan"]),
     )
 
     with pytest.raises(HTTPException) as missing:
@@ -394,6 +401,7 @@ def test_far_os_human_loop_reaches_child_iteration(monkeypatch, tmp_path: Path):
         rationale="Use a claim-grouped split before rerunning.",
         conditions=["Record the leakage check as an artifact"],
         targetSections=["evaluation"],
+        acknowledgements=list(SIGNOFF_ACKNOWLEDGEMENTS["plan"]),
     )
     asyncio.run(reviews_api.decide_experiment_signoff_endpoint(
         stored["id"], "plan", request,
@@ -415,6 +423,7 @@ def test_far_os_human_loop_reaches_child_iteration(monkeypatch, tmp_path: Path):
                 reviewerRole="team_lead",
                 reviewerId="lead@example.com",
                 rationale=f"Verified applied {stage} constraints.",
+                acknowledgements=list(SIGNOFF_ACKNOWLEDGEMENTS[stage]),
             ),
         ))
 
@@ -498,13 +507,14 @@ def test_platform_human_feedback_is_written_and_revised(monkeypatch, tmp_path: P
     asyncio.run(reviews_api.decide_experiment_signoff_endpoint(
         stored["id"],
         "plan",
-        reviews_api.HumanSignoffDecisionRequest(
+            reviews_api.HumanSignoffDecisionRequest(
             status="changes_requested",
             reviewerRole="domain_expert",
             reviewerId="expert@example.com",
             rationale="Add a confidence interval.",
             conditions=["Use paired bootstrap"],
-            targetSections=["expectedMetrics"],
+                targetSections=["expectedMetrics"],
+                acknowledgements=list(SIGNOFF_ACKNOWLEDGEMENTS["plan"]),
         ),
     ))
     second = asyncio.run(reviews_api.apply_experiment_human_feedback_endpoint(

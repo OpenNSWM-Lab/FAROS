@@ -13,6 +13,23 @@ from app.modules.review.audit_chain import append_event, record_audit_integrity
 
 SIGNOFF_STAGES = ("plan", "repair", "conclusion")
 SIGNOFF_STATUSES = ("pending", "approved", "rejected", "changes_requested")
+SIGNOFF_ACKNOWLEDGEMENTS = {
+    "plan": (
+        "reviewed_scientific_question_and_hypothesis",
+        "reviewed_data_split_and_holdout",
+        "reviewed_metrics_budget_and_stop_conditions",
+    ),
+    "repair": (
+        "reviewed_reviewx_findings",
+        "confirmed_repairs_applied",
+        "reviewed_rerun_scope_and_residual_risk",
+    ),
+    "conclusion": (
+        "reviewed_baseline_current_and_interval",
+        "reviewed_side_effects_and_limitations",
+        "accepted_claim_scope",
+    ),
+}
 
 
 def _now() -> str:
@@ -98,6 +115,11 @@ def initialize_human_signoffs(record: Dict[str, Any]) -> Dict[str, Any]:
             "artifactHash": signoff_subject_hash(record, stage),
             "reviewerRole": None,
             "reviewerId": None,
+            "reviewerName": None,
+            "actorAccountId": None,
+            "actorRole": None,
+            "authAssurance": None,
+            "acknowledgements": [],
             "rationale": "",
             "conditions": [],
             "createdAt": created_at,
@@ -140,6 +162,12 @@ def decide_human_signoff(
     rationale: str,
     conditions: Iterable[str] = (),
     target_sections: Iterable[str] = (),
+    reviewer_name: str | None = None,
+    actor_account_id: str | None = None,
+    actor_role: str | None = None,
+    auth_assurance: str = "self_reported",
+    acknowledgements: Iterable[str] = (),
+    require_acknowledgements: bool = False,
 ) -> Dict[str, Any]:
     if stage not in SIGNOFF_STAGES:
         raise ValueError(f"Unknown signoff stage: {stage}")
@@ -149,6 +177,16 @@ def decide_human_signoff(
         raise ValueError("Reviewer role and reviewer identity are required")
     if len(rationale.strip()) < 3:
         raise ValueError("A concrete signoff rationale is required")
+    acknowledgement_set = {
+        str(item).strip() for item in acknowledgements if str(item).strip()
+    }
+    required_acknowledgements = set(SIGNOFF_ACKNOWLEDGEMENTS[stage])
+    missing_acknowledgements = sorted(required_acknowledgements - acknowledgement_set)
+    if require_acknowledgements and missing_acknowledgements:
+        raise ValueError(
+            "Complete all required acknowledgements before signing "
+            f"{stage}: {', '.join(missing_acknowledgements)}"
+        )
     if status == "approved":
         from app.modules.review.human_feedback import require_human_feedback_applied
 
@@ -190,6 +228,15 @@ def decide_human_signoff(
         "artifactHash": current["artifactHash"],
         "reviewerRole": reviewer_role.strip(),
         "reviewerId": reviewer_id.strip(),
+        "reviewerName": (reviewer_name or reviewer_id).strip(),
+        "actorAccountId": (actor_account_id or reviewer_id).strip(),
+        "actorRole": (actor_role or "legacy_reviewer").strip(),
+        "authAssurance": auth_assurance.strip() or "self_reported",
+        "acknowledgements": [
+            item
+            for item in SIGNOFF_ACKNOWLEDGEMENTS[stage]
+            if item in acknowledgement_set
+        ],
         "rationale": rationale.strip(),
         "conditions": [str(item).strip() for item in conditions if str(item).strip()],
         "targetSections": [
@@ -242,5 +289,23 @@ def publication_ready(record: Dict[str, Any]) -> bool:
         require_human_conditions_resolved(record)
     except ValueError:
         return False
+    from app.modules.review.reviewer_auth import reviewx_auth_mode, stored_actor_is_authorized
+
+    auth_mode = reviewx_auth_mode()
+    if auth_mode == "local":
+        return False
+    if auth_mode == "proxy":
+        state = human_signoff_state(record)
+        required_stages = [stage for stage, item in state.items() if item.get("required")]
+        for stage in required_stages:
+            item = state[stage]
+            if item.get("authAssurance") != "trusted_proxy_basic_auth":
+                return False
+            if not stored_actor_is_authorized(str(item.get("actorAccountId") or "")):
+                return False
+            if not set(SIGNOFF_ACKNOWLEDGEMENTS[stage]).issubset(
+                set(item.get("acknowledgements") or [])
+            ):
+                return False
     gate = str((record.get("qualityAssessment") or {}).get("gateStatus") or "").lower()
     return gate != "fail" and _blocker_count(record) == 0

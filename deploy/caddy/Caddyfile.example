@@ -7,6 +7,7 @@ faros.example.com {
 	basicauth {
 		faros-team REPLACE_WITH_CADDY_HASH
 		faros-judge REPLACE_WITH_CADDY_HASH
+		faros-signer-wzj REPLACE_WITH_CADDY_HASH
 	}
 
 	@api path /api/*
