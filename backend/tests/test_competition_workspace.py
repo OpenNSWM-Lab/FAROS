@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 from app.modules.review.competition_workspace import build_competition_workspace_dashboard
+from app.modules.review.human_signoff import decide_human_signoff, initialize_human_signoffs
 
 
 def _write(path: Path, payload: dict) -> None:
@@ -92,21 +93,30 @@ def _workspace(root: Path) -> None:
     _write(root / "competition_cases/reviewx_scifact/runs/job-1/summary.json", {
         "qualityGate": {"status": "passed"},
     })
-    _write(root / "reviewx_experiment_feedback/feedback-1.json", {
-        "publicationReady": True,
-        "humanSignoffs": {
-            "plan": {
-                "required": True,
-                "status": "approved",
-                "reviewerId": "demo-reviewer",
-            },
-            "conclusion": {
-                "required": True,
-                "status": "approved",
-                "reviewerId": "demo-reviewer",
-            },
-        },
-    })
+    feedback = {
+        "id": "feedback-1",
+        "runId": "run-1",
+        "createdAt": "2026-08-30T04:00:00Z",
+        "qualityAssessment": {"gateStatus": "pass", "findings": []},
+        "iterationDecision": {"decision": "accept_results"},
+        "publicationEligible": True,
+        "reviewPurpose": "scientific_review",
+    }
+    feedback["humanSignoffs"] = initialize_human_signoffs(feedback)
+    for stage in ("plan", "conclusion"):
+        feedback["humanSignoffs"] = decide_human_signoff(
+            feedback,
+            stage=stage,
+            status="approved",
+            reviewer_role="team_lead",
+            reviewer_id="demo-reviewer",
+            reviewer_name="Demo Reviewer",
+            actor_account_id="faros-signer-demo",
+            actor_role="reviewer",
+            auth_assurance="trusted_proxy_basic_auth",
+            rationale=f"Reviewed and approved the {stage} evidence.",
+        )
+    _write(root / "reviewx_experiment_feedback/feedback-1.json", feedback)
 
 
 def test_workspace_dashboard_validates_complete_single_reviewer_chain(tmp_path: Path):
@@ -124,8 +134,9 @@ def test_workspace_dashboard_validates_complete_single_reviewer_chain(tmp_path: 
     assert result["governance"] == {
         "reviewerPolicy": "single_accountable_reviewer",
         "responsibleReviewerCount": 1,
-        "signoffMode": "simulated_demo",
+        "signoffMode": "trusted_proxy_basic_auth",
         "publicationReady": True,
+        "auditIntegrityValid": True,
     }
     assert result["stages"][2]["facts"]["offlineSmoke"] == "passed"
     assert result["stages"][3]["facts"]["predictionRows"] == 300
