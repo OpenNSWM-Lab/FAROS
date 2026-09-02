@@ -2,6 +2,7 @@
 # Generated to ignore virtualenvs, build artifacts, secrets, and common OS/IDE files
 
 *.json
+!backend/experiments/reviewx_oscillator/config/frozen_protocol.json
 backend/data/
 /backend/runtime/
 backend/tests/*
@@ -26,6 +27,9 @@ backend/tests/*
 !backend/tests/test_reviewx_multidomain.py
 !backend/tests/test_reviewx_reliability.py
 !backend/tests/test_reviewx_human_signoff.py
+!backend/tests/test_reviewx_signoff_dossier.py
+!backend/tests/test_reviewx_signoff_identity.py
+!backend/tests/test_reviewx_oscillator_closed_loop.py
 !backend/tests/test_reviewx_plan_delta.py
 !backend/tests/test_reviewx_competition_evidence.py
 !backend/tests/test_reviewx_effect_statistics.py
@@ -128,6 +132,8 @@ latexmkrc
 # Node / frontend
 node_modules/
 /frontend/node_modules
+/frontend/playwright-report/
+/frontend/test-results/
 /.pnp
 .pnp.js
 dist/

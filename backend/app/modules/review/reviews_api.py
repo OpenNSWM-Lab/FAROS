@@ -18,8 +18,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, Literal, Optional, List
 
-from fastapi import APIRouter, Header, HTTPException, Query, status
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Header, HTTPException, Query, Response, status
+from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, Field
 
 from app.core.settings import get_settings
@@ -62,9 +62,22 @@ from app.modules.review.human_feedback_verification import (
     human_condition_verification_state,
 )
 from app.modules.review.audit_chain import record_audit_integrity
-from app.modules.review.competition_evidence import build_competition_evidence_dashboard
+from app.modules.review.competition_evidence import (
+    OSCILLATOR_PUBLIC_ARTIFACTS,
+    build_competition_evidence_dashboard,
+    build_oscillator_evidence_view,
+)
 from app.modules.review.competition_workspace import build_competition_workspace_dashboard
-from app.modules.review.reviewer_auth import ReviewAuthenticationError, authorize_reviewer
+from app.modules.review.reviewer_auth import (
+    ReviewAuthenticationError,
+    authorize_reviewer,
+    ensure_reviewx_write_access,
+)
+from app.modules.review.signoff_dossier import (
+    SignoffDossier,
+    build_signoff_dossier,
+    render_signoff_dossier_html,
+)
 from app.modules.review.storage import (
     create_review as _create_review, get_review as _get_review,
     list_reviews as _list_reviews, update_review as _update_review,
@@ -188,15 +201,19 @@ class HumanSignoffDecisionRequest(BaseModel):
     status: Literal["approved", "rejected", "changes_requested"]
     reviewerRole: str = Field(min_length=2, max_length=80)
     reviewerId: str = Field(min_length=2, max_length=120)
+    reviewerName: Optional[str] = Field(default=None, min_length=2, max_length=120)
     rationale: str = Field(min_length=3, max_length=2000)
     conditions: List[str] = Field(default_factory=list, max_length=20)
     targetSections: List[str] = Field(default_factory=list, max_length=20)
+    acknowledgements: List[str] = Field(default_factory=list, max_length=20)
 
 
 class HumanSignoffBatchDecisionRequest(BaseModel):
     reviewerRole: str = Field(min_length=2, max_length=80)
     reviewerId: str = Field(min_length=2, max_length=120)
+    reviewerName: Optional[str] = Field(default=None, min_length=2, max_length=120)
     rationale: str = Field(min_length=3, max_length=2000)
+    acknowledgementsByStage: Dict[str, List[str]] = Field(default_factory=dict)
 
 
 class HumanSignoffResponse(BaseModel):
@@ -306,6 +323,7 @@ _RELIABILITY_RESULT_ROOT = _DATA_ROOT / "experiments" / "reviewx_reliability"
 _PLANNING_RESULT_PATH = _DATA_ROOT / "experiments" / "reviewx_planning" / "stability_summary.json"
 _MULTIDOMAIN_RESULT_PATH = _DATA_ROOT / "experiments" / "reviewx_multidomain" / "summary.json"
 _PEERQA_RESULT_ROOT = _DATA_ROOT / "experiments" / "reviewx_peerqa"
+_OSCILLATOR_RESULT_ROOT = _DATA_ROOT / "experiments" / "reviewx_oscillator" / "latest"
 
 
 def _read_json_object(path: Path) -> Dict[str, Any]:
@@ -1244,6 +1262,41 @@ async def get_scifact_competition_artifact_endpoint(job_id: str, filename: str):
 
 
 @router.get(
+    "/reviewx/competition/oscillator",
+    summary="Get the verified adaptive-oscillator evidence summary",
+)
+async def get_oscillator_evidence_endpoint():
+    evidence = build_oscillator_evidence_view(_OSCILLATOR_RESULT_ROOT)
+    if not evidence.get("available"):
+        raise HTTPException(status_code=404, detail=evidence["blockingReasons"][0])
+    return evidence
+
+
+@router.get(
+    "/reviewx/competition/oscillator/artifacts/{artifact_path:path}",
+    summary="Download an allowlisted adaptive-oscillator artifact",
+)
+async def get_oscillator_artifact_endpoint(artifact_path: str):
+    if artifact_path not in OSCILLATOR_PUBLIC_ARTIFACTS:
+        raise HTTPException(status_code=404, detail="Artifact is not on the public evidence allowlist")
+    path = _OSCILLATOR_RESULT_ROOT / artifact_path
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail=f"Artifact '{artifact_path}' is not available")
+    media_type = (
+        "application/json" if artifact_path.endswith(".json")
+        else "text/csv" if artifact_path.endswith(".csv")
+        else "text/markdown" if artifact_path.endswith(".md")
+        else "text/plain"
+    )
+    return FileResponse(
+        path,
+        media_type=media_type,
+        filename=Path(artifact_path).name,
+        headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+    )
+
+
+@router.get(
     "/reviewx/competition/dashboard",
     summary="Get the verified track-1B evidence dashboard",
 )
@@ -1276,6 +1329,7 @@ async def get_competition_evidence_dashboard_endpoint():
             peerqa_full_audit_summary_path=_PEERQA_RESULT_ROOT / "fullaudit_summary.json",
             feedback_record=registered,
             public_artifacts=_PUBLIC_SCIFACT_ARTIFACTS,
+            oscillator_run_dir=_OSCILLATOR_RESULT_ROOT,
         )
     except (FileNotFoundError, json.JSONDecodeError, ValueError) as exc:
         logger.warning("Competition evidence dashboard is incomplete: %s", exc)
@@ -1572,6 +1626,11 @@ async def run_stored_experiment_feedback_endpoint(
 ) -> RunStoredExperimentFeedbackResponse:
     """Resolve contract artifacts produced by the integrated FAROS run."""
 
+    try:
+        ensure_reviewx_write_access()
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
     default_artifact_selection = not any((
         req.dossierArtifactId,
         req.executionAssessmentArtifactId,
@@ -1808,6 +1867,56 @@ async def get_experiment_signoffs_endpoint(feedback_id: str) -> HumanSignoffResp
     )
 
 
+@router.get(
+    "/reviewx/experiment-feedback/{feedback_id}/signoff-dossier",
+    response_model=SignoffDossier,
+    summary="Get a source-linked human-readable ReviewX signoff summary",
+)
+async def get_experiment_signoff_dossier_endpoint(
+    feedback_id: str,
+    response: Response = None,
+) -> SignoffDossier:
+    record = get_experiment_feedback(feedback_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"Experiment feedback '{feedback_id}' not found")
+    if response is not None:
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+    return build_signoff_dossier(record, release="draft")
+
+
+@router.get(
+    "/reviewx/experiment-feedback/{feedback_id}/signoff-dossier.html",
+    response_class=HTMLResponse,
+    summary="Read or print a draft or officially released ReviewX signoff dossier",
+)
+async def get_experiment_signoff_dossier_html_endpoint(
+    feedback_id: str,
+    release: Literal["draft", "official"] = "draft",
+) -> HTMLResponse:
+    record = get_experiment_feedback(feedback_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"Experiment feedback '{feedback_id}' not found")
+    try:
+        dossier = build_signoff_dossier(record, release=release)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "OFFICIAL_DOSSIER_LOCKED",
+                "message": str(exc),
+                "nextStep": "Complete all current ReviewX signoffs and resolve every blocker.",
+            },
+        ) from exc
+    return HTMLResponse(
+        render_signoff_dossier_html(dossier),
+        headers={
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
 @router.put(
     "/reviewx/experiment-feedback/{feedback_id}/signoffs/{stage}",
     response_model=HumanSignoffResponse,
@@ -1823,7 +1932,7 @@ async def decide_experiment_signoff_endpoint(
     if record is None:
         raise HTTPException(status_code=404, detail=f"Experiment feedback '{feedback_id}' not found")
     try:
-        authorize_reviewer(
+        principal = authorize_reviewer(
             stage=stage,
             reviewer_role=req.reviewerRole,
             reviewer_id=req.reviewerId,
@@ -1836,6 +1945,12 @@ async def decide_experiment_signoff_endpoint(
             status=req.status,
             reviewer_role=req.reviewerRole,
             reviewer_id=req.reviewerId,
+            reviewer_name=req.reviewerName,
+            actor_account_id=str(principal.get("actorAccountId") or ""),
+            actor_role=str(principal.get("actorRole") or ""),
+            auth_assurance=str(principal.get("authAssurance") or principal.get("assurance") or ""),
+            acknowledgements=req.acknowledgements,
+            require_acknowledgements=True,
             rationale=req.rationale,
             conditions=req.conditions,
             target_sections=req.targetSections,
@@ -1883,7 +1998,7 @@ async def approve_required_experiment_signoffs_endpoint(
 
     try:
         for stage in stages:
-            authorize_reviewer(
+            principal = authorize_reviewer(
                 stage=stage,
                 reviewer_role=req.reviewerRole,
                 reviewer_id=req.reviewerId,
@@ -1896,6 +2011,12 @@ async def approve_required_experiment_signoffs_endpoint(
                 status="approved",
                 reviewer_role=req.reviewerRole,
                 reviewer_id=req.reviewerId,
+                reviewer_name=req.reviewerName,
+                actor_account_id=str(principal.get("actorAccountId") or ""),
+                actor_role=str(principal.get("actorRole") or ""),
+                auth_assurance=str(principal.get("authAssurance") or principal.get("assurance") or ""),
+                acknowledgements=req.acknowledgementsByStage.get(stage, []),
+                require_acknowledgements=True,
                 rationale=f"{req.rationale.strip()} [{stage}]",
             )
     except ReviewAuthenticationError as exc:
@@ -1930,6 +2051,10 @@ async def apply_experiment_human_feedback_endpoint(
     feedback_id: str,
     req: ApplyHumanFeedbackRequest,
 ) -> ApplyHumanFeedbackResponse:
+    try:
+        ensure_reviewx_write_access()
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     record = get_experiment_feedback(feedback_id)
     if record is None:
         raise HTTPException(status_code=404, detail=f"Experiment feedback '{feedback_id}' not found")
@@ -2087,6 +2212,7 @@ async def decide_human_condition_verification_endpoint(
 async def get_experiment_evidence_bundle_endpoint(
     feedback_id: str,
     release: Literal["draft", "official"] = "draft",
+    response: Response = None,
 ):
     record = get_experiment_feedback(feedback_id)
     if record is None:
@@ -2095,6 +2221,12 @@ async def get_experiment_evidence_bundle_endpoint(
         raise HTTPException(
             status_code=409,
             detail="Official evidence bundles require an approved, current conclusion signoff and no ReviewX blockers",
+        )
+    if response is not None:
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Content-Disposition"] = (
+            f'attachment; filename="reviewx-{feedback_id}-{release}-evidence.json"'
         )
     signoffs = human_signoff_state(record)
     return {
@@ -2180,6 +2312,10 @@ async def evaluate_experiment_series_endpoint(
     research_series_id: str,
     policy: ExperimentLoopPolicy,
 ) -> ExperimentSeriesProgress:
+    try:
+        ensure_reviewx_write_access()
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     records = list_experiment_feedback(
         research_series_id=research_series_id,
         limit=100,
@@ -2198,6 +2334,10 @@ async def advance_experiment_loop_endpoint(
     run_id: str,
     req: AdvanceExperimentLoopRequest,
 ) -> AdvanceExperimentLoopResponse:
+    try:
+        ensure_reviewx_write_access()
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     lineage = _faros_run_lineage(run_id)
     if lineage is None:
         raise HTTPException(status_code=409, detail="Controlled loop advance currently requires a FAROS run")
@@ -2290,6 +2430,10 @@ async def revise_experiment_plan_endpoint(
     feedback_id: str,
     req: ReviseExperimentPlanRequest,
 ) -> ReviseExperimentPlanResponse:
+    try:
+        ensure_reviewx_write_access()
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     record = get_experiment_feedback(feedback_id)
     if record is None:
         raise HTTPException(status_code=404, detail=f"Experiment feedback '{feedback_id}' not found")
@@ -2354,6 +2498,10 @@ async def revise_experiment_plan_endpoint(
 async def create_next_experiment_run_endpoint(
     feedback_id: str,
 ) -> CreateNextExperimentRunResponse:
+    try:
+        ensure_reviewx_write_access()
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     record = get_experiment_feedback(feedback_id)
     if record is None:
         raise HTTPException(status_code=404, detail=f"Experiment feedback '{feedback_id}' not found")
