@@ -10,9 +10,9 @@
     "preview": "vite preview",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "typecheck": "tsc --noEmit",
-    "test": "vitest",
+    "test": "bash ./scripts/run_tests.sh",
     "test:ui": "vitest --ui",
-    "test:e2e": "playwright test"
+    "test:e2e": "bash ./scripts/run_e2e.sh"
   },
   "dependencies": {
     "@antv/g6": "^5.1.1",

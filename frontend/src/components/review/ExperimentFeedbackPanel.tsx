@@ -18,9 +18,11 @@ import { Badge } from '@/components/ui/badge'
 import { Button, buttonVariants } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { API_BASE_URL } from '@/lib/api'
+import { useSystemSession } from '@/lib/hooks/useApi'
 import { useReviewLocale, type ReviewLocale } from '@/lib/reviewLocale'
 import type { QualityAssessment } from '@/lib/types/scientificResearch'
 import { ReviewIterationLoop, type ReviewLoopTrace } from './ReviewIterationLoop'
+import { SignoffDossier } from './SignoffDossier'
 
 interface RunArtifact {
   id: string
@@ -107,6 +109,11 @@ interface HumanSignoff {
   artifactHash: string
   reviewerRole?: string | null
   reviewerId?: string | null
+  reviewerName?: string | null
+  actorAccountId?: string | null
+  actorRole?: string | null
+  authAssurance?: string | null
+  acknowledgements?: string[]
   rationale?: string
   conditions?: string[]
   decidedAt?: string | null
@@ -196,6 +203,7 @@ interface ExperimentFeedbackResponse {
   humanConditionVerifications?: HumanConditionVerificationState
   sourceArtifactUrls?: Record<string, string>
   closedLoop?: ReviewLoopTrace
+  publicationReady: boolean
 }
 
 interface ExperimentFeedbackHistory extends Omit<ExperimentFeedbackResponse, 'feedbackId'> {
@@ -247,6 +255,27 @@ const signoffStatusLabel: Record<HumanSignoffStatus, Record<ReviewLocale, string
   approved: { 'zh-CN': '已批准', 'en-US': 'Approved' },
   rejected: { 'zh-CN': '已拒绝', 'en-US': 'Rejected' },
   changes_requested: { 'zh-CN': '要求修改', 'en-US': 'Changes requested' },
+}
+
+const signoffAcknowledgements: Record<HumanSignoffStage, Array<{
+  id: string
+  label: Record<ReviewLocale, string>
+}>> = {
+  plan: [
+    { id: 'reviewed_scientific_question_and_hypothesis', label: { 'zh-CN': '已核对研究问题与假设', 'en-US': 'Reviewed the scientific question and hypothesis' } },
+    { id: 'reviewed_data_split_and_holdout', label: { 'zh-CN': '已核对数据划分及最终留出隔离', 'en-US': 'Reviewed data splits and final-holdout isolation' } },
+    { id: 'reviewed_metrics_budget_and_stop_conditions', label: { 'zh-CN': '已核对主指标、guardrail、预算与停止条件', 'en-US': 'Reviewed primary metric, guardrails, budget, and stop conditions' } },
+  ],
+  repair: [
+    { id: 'reviewed_reviewx_findings', label: { 'zh-CN': '已核对 ReviewX finding', 'en-US': 'Reviewed ReviewX findings' } },
+    { id: 'confirmed_repairs_applied', label: { 'zh-CN': '已确认修复实际应用到目标节点', 'en-US': 'Confirmed repairs were applied to target nodes' } },
+    { id: 'reviewed_rerun_scope_and_residual_risk', label: { 'zh-CN': '已核对重跑范围和剩余风险', 'en-US': 'Reviewed rerun scope and residual risk' } },
+  ],
+  conclusion: [
+    { id: 'reviewed_baseline_current_and_interval', label: { 'zh-CN': '已核对基线、当前值和统计区间', 'en-US': 'Reviewed baseline, current value, and interval' } },
+    { id: 'reviewed_side_effects_and_limitations', label: { 'zh-CN': '已核对副作用与限制', 'en-US': 'Reviewed side effects and limitations' } },
+    { id: 'accepted_claim_scope', label: { 'zh-CN': '同意只在档案定义的 claim scope 内发布', 'en-US': 'Accepted publication only within the dossier claim scope' } },
+  ],
 }
 
 const uiStatusLabels: Record<string, Record<ReviewLocale, string>> = {
@@ -341,6 +370,7 @@ export function ExperimentFeedbackPanel({
   initialFocus?: 'loop' | 'signoff'
 }) {
   const { locale, text } = useReviewLocale()
+  const session = useSystemSession()
   const statusText = (status?: string) => status
     ? uiStatusLabels[status]?.[locale] || status
     : '--'
@@ -389,6 +419,12 @@ export function ExperimentFeedbackPanel({
   const [signoffConditions, setSignoffConditions] = useState('')
   const [signoffTargetSections, setSignoffTargetSections] = useState('')
   const [signoffLoading, setSignoffLoading] = useState(false)
+  const [dossierRefreshKey, setDossierRefreshKey] = useState(0)
+  const [acknowledgements, setAcknowledgements] = useState<Record<HumanSignoffStage, string[]>>({
+    plan: [],
+    repair: [],
+    conclusion: [],
+  })
   const [feedbackApplying, setFeedbackApplying] = useState(false)
   const [selectedConditionId, setSelectedConditionId] = useState('')
   const [conditionRationale, setConditionRationale] = useState('')
@@ -655,6 +691,7 @@ export function ExperimentFeedbackPanel({
       humanConditionVerifications: record.humanConditionVerifications,
       sourceArtifactUrls: record.sourceArtifactUrls,
       closedLoop: record.closedLoop,
+      publicationReady: record.publicationReady,
     })
     setPlanRevised(Boolean(record.planRevision))
     setNextRunId(record.nextRunId || '')
@@ -703,6 +740,7 @@ export function ExperimentFeedbackPanel({
           humanSignoffs: signoffData.humanSignoffs,
           humanFeedback: signoffData.humanFeedback,
           humanConditionVerifications: signoffData.humanConditionVerifications,
+          publicationReady: signoffData.publicationReady,
         } : current)
       }
       void loadHistory(result.runId, result.researchSeriesId)
@@ -815,6 +853,8 @@ export function ExperimentFeedbackPanel({
             status,
             reviewerRole,
             reviewerId: reviewerId.trim(),
+            reviewerName: reviewerId.trim(),
+            acknowledgements: acknowledgements[selectedSignoffStage],
             rationale: signoffRationale.trim(),
             conditions: signoffConditions
               .split('\n')
@@ -834,10 +874,13 @@ export function ExperimentFeedbackPanel({
         humanSignoffs: data.humanSignoffs,
         humanFeedback: data.humanFeedback,
         humanConditionVerifications: data.humanConditionVerifications,
+        publicationReady: data.publicationReady,
       } : current)
       setSignoffRationale('')
       setSignoffConditions('')
       setSignoffTargetSections('')
+      setAcknowledgements((current) => ({ ...current, [selectedSignoffStage]: [] }))
+      setDossierRefreshKey((current) => current + 1)
       setActionMessage(`${selectedSignoffStage} signoff: ${status.replace('_', ' ')}`)
       void loadHistory(result.runId, result.researchSeriesId)
     } catch (signoffError) {
@@ -863,7 +906,9 @@ export function ExperimentFeedbackPanel({
           body: JSON.stringify({
             reviewerRole,
             reviewerId: reviewerId.trim(),
+            reviewerName: reviewerId.trim(),
             rationale: signoffRationale.trim(),
+            acknowledgementsByStage: acknowledgements,
           }),
         },
       )
@@ -874,8 +919,11 @@ export function ExperimentFeedbackPanel({
         humanSignoffs: data.humanSignoffs,
         humanFeedback: data.humanFeedback,
         humanConditionVerifications: data.humanConditionVerifications,
+        publicationReady: data.publicationReady,
       } : current)
       setSignoffRationale('')
+      setAcknowledgements({ plan: [], repair: [], conclusion: [] })
+      setDossierRefreshKey((current) => current + 1)
       setActionMessage(text(
         data.publicationReady ? '负责人签核完成，正式证据包已解锁。' : '负责人已批准当前所有必需阶段。',
         data.publicationReady ? 'Reviewer signoff complete; the official bundle is unlocked.' : 'The reviewer approved every currently required stage.',
@@ -908,8 +956,10 @@ export function ExperimentFeedbackPanel({
         humanSignoffs: data.humanSignoffs,
         humanFeedback: data.humanFeedback,
         humanConditionVerifications: data.humanConditionVerifications,
+        publicationReady: data.publicationReady ?? false,
       } : current)
       if (data.planRevision) setPlanRevised(true)
+      setDossierRefreshKey((current) => current + 1)
       setActionMessage(
         data.status === 'applied_to_plan'
           ? 'Human feedback applied to a new PlanPackage revision.'
@@ -952,9 +1002,11 @@ export function ExperimentFeedbackPanel({
         ...current,
         humanSignoffs: data.humanSignoffs,
         humanConditionVerifications: data.humanConditionVerifications,
+        publicationReady: data.publicationReady,
       } : current)
       setConditionRationale('')
       setConditionEvidenceId('')
+      setDossierRefreshKey((current) => current + 1)
       setActionMessage(`Acceptance condition marked ${status}.`)
       void loadHistory(result.runId, result.researchSeriesId)
     } catch (conditionError) {
@@ -968,22 +1020,22 @@ export function ExperimentFeedbackPanel({
   const gateTone = gate === 'pass' ? 'secondary' : gate === 'fail' ? 'destructive' : 'default'
   const planSignoff = result?.humanSignoffs?.plan
   const repairSignoff = result?.humanSignoffs?.repair
-  const conclusionSignoff = result?.humanSignoffs?.conclusion
   const iterationHumanReady = Boolean(
     (!result?.humanFeedback?.requiresApplication || result.humanFeedback.applied)
     && planSignoff?.status === 'approved'
     && (!repairSignoff?.required || repairSignoff.status === 'approved'),
   )
-  const publicationReady = Boolean(
-    (!result?.humanFeedback?.requiresApplication || result.humanFeedback.applied)
-    && planSignoff?.status === 'approved'
-    && (!repairSignoff?.required || repairSignoff.status === 'approved')
-    && conclusionSignoff?.status === 'approved'
-    && (!result?.humanConditionVerifications?.required || result.humanConditionVerifications.allResolved)
-    && gate !== 'fail'
-    && !result?.qualityAssessment.findings.some((finding) => finding.severity === 'blocker'),
+  const publicationReady = Boolean(result?.publicationReady)
+  const currentAcknowledgementsComplete = signoffAcknowledgements[selectedSignoffStage]
+    .every((item) => acknowledgements[selectedSignoffStage].includes(item.id))
+  const signoffFormReady = Boolean(
+    reviewerId.trim() && signoffRationale.trim() && currentAcknowledgementsComplete,
   )
-  const signoffFormReady = Boolean(reviewerId.trim() && signoffRationale.trim())
+  const allRequiredAcknowledgementsComplete = (Object.keys(signoffAcknowledgements) as HumanSignoffStage[])
+    .filter((stage) => result?.humanSignoffs[stage]?.required)
+    .every((stage) => signoffAcknowledgements[stage]
+      .every((item) => acknowledgements[stage].includes(item.id)))
+  const isReadOnlyJudge = session.data?.role === 'judge'
   const nextRun = useMemo(
     () => runs.find((run) => run.id === nextRunId),
     [nextRunId, runs],
@@ -1397,43 +1449,20 @@ export function ExperimentFeedbackPanel({
                 </div>
 
                 <section id="reviewx-human-oversight" className="scroll-mt-24 border-t border-slate-200 pt-4" aria-label={text('人工审核', 'Human oversight')}>
-                  <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                  <SignoffDossier feedbackId={result.feedbackId} refreshKey={dossierRefreshKey} />
+                  <div className="mb-3 mt-5 flex flex-wrap items-center justify-between gap-2">
                     <div className="flex items-center gap-2 text-xs font-semibold uppercase text-slate-600">
                       <ShieldCheck className="h-4 w-4" />
-                      {text('单负责人审核', 'Single-reviewer oversight')}
+                      {text('逐阶段责任确认', 'Stage-by-stage responsibility confirmation')}
                     </div>
-                    <div className="flex flex-wrap gap-2">
-                      <a
-                        href={`${API_BASE_URL}/api/v1/reviews/reviewx/experiment-feedback/${encodeURIComponent(result.feedbackId)}/evidence-bundle?release=draft`}
-                        target="_blank"
-                        rel="noreferrer"
-                        className={buttonVariants({ variant: 'outline', size: 'sm' })}
-                      >
-                        <FileCheck2 className="mr-2 h-4 w-4" />
-                        {text('草稿证据包', 'Draft bundle')}
-                      </a>
-                      {publicationReady ? (
-                        <a
-                          href={`${API_BASE_URL}/api/v1/reviews/reviewx/experiment-feedback/${encodeURIComponent(result.feedbackId)}/evidence-bundle?release=official`}
-                          target="_blank"
-                          rel="noreferrer"
-                          className={buttonVariants({ size: 'sm' })}
-                        >
-                          <FileCheck2 className="mr-2 h-4 w-4" />
-                          {text('正式证据包', 'Official bundle')}
-                        </a>
-                      ) : (
-                        <Button size="sm" disabled title={text('需方案、必要修复和结论签核全部通过', 'Plan, required repair, and conclusion signoffs must all pass')}>
-                          <FileCheck2 className="mr-2 h-4 w-4" />
-                          {text('正式证据包', 'Official bundle')}
-                        </Button>
-                      )}
-                    </div>
+                    <Badge variant={isReadOnlyJudge ? 'outline' : 'secondary'}>
+                      {isReadOnlyJudge ? text('评委账号 · 只读', 'Judge account · read only') : text('受信账号签核', 'Trusted-account signoff')}
+                    </Badge>
                   </div>
 
                   {!publicationReady && (
                     <div className="mb-3 text-xs text-amber-700">
-                      {text('正式证据包尚被阻断：一名负责人需核对并批准所有必需阶段，且所有验收条件已解决。', 'Official bundle blocked: one accountable reviewer must approve every required stage and resolve all acceptance conditions.')}
+                      {text('正式档案仍被服务端门禁锁定；请按摘要中的阻断项逐项处理。', 'The official dossier remains server-locked; resolve each blocker listed in the summary.')}
                     </div>
                   )}
 
@@ -1473,6 +1502,11 @@ export function ExperimentFeedbackPanel({
                             <div className="mt-2 truncate font-mono text-[10px] text-slate-500" title={signoff.artifactHash}>
                               SHA-256 {signoff.artifactHash.slice(0, 12)}
                             </div>
+                            {signoff.status === 'approved' && (
+                              <div className="mt-1 truncate text-[10px] text-slate-600" title={`${signoff.actorAccountId || ''} · ${signoff.authAssurance || ''}`}>
+                                {signoff.reviewerName || signoff.reviewerId} · {signoff.actorAccountId || text('旧记录未绑定账号', 'legacy unbound account')} · {signoff.authAssurance || 'self_reported'}
+                              </div>
+                            )}
                           </button>
                         )
                       })}
@@ -1493,7 +1527,7 @@ export function ExperimentFeedbackPanel({
                             SHA-256 {result.humanFeedback.feedbackHash.slice(0, 24)}
                           </div>
                         </div>
-                        {!result.humanFeedback.applied && (
+                        {!result.humanFeedback.applied && !isReadOnlyJudge && (
                           <Button
                             size="sm"
                             onClick={() => void applyHumanFeedback()}
@@ -1562,7 +1596,7 @@ export function ExperimentFeedbackPanel({
                           ))}
                         </div>
 
-                        {selectedConditionId && (
+                        {selectedConditionId && !isReadOnlyJudge && (
                           <div className="grid gap-2 border-t border-slate-200 pt-3">
                             <select
                               value={conditionEvidenceId}
@@ -1614,7 +1648,12 @@ export function ExperimentFeedbackPanel({
                       </div>
                     )}
 
-                    <div className="grid gap-2 rounded-md border border-slate-200 bg-slate-50 p-3">
+                    {isReadOnlyJudge ? (
+                      <div className="border-l-4 border-slate-400 bg-slate-50 px-4 py-3 text-sm text-slate-700 dark:bg-slate-900 dark:text-slate-200">
+                        {text('评委账号为只读证据观察者，不显示签核或共享反馈修改控件。', 'Judge accounts are read-only evidence observers; signoff and shared-feedback controls are hidden.')}
+                      </div>
+                    ) : (
+                    <div className="grid gap-3 rounded-md border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-900">
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <div className="text-sm font-semibold text-slate-900">
                           {signoffStageLabel[selectedSignoffStage][locale]}
@@ -1637,16 +1676,9 @@ export function ExperimentFeedbackPanel({
                         <input
                           value={reviewerId}
                           onChange={(event) => setReviewerId(event.target.value)}
-                          placeholder={text('审核人身份', 'Reviewer identity')}
-                          className="min-w-0 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
-                        />
-                        <input
-                          type="password"
-                          value={reviewAuthToken}
-                          onChange={(event) => setReviewAuthToken(event.target.value)}
-                          placeholder={text('Review bearer token（如服务端要求）', 'Review bearer token (if required)')}
-                          autoComplete="off"
-                          className="min-w-0 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm sm:col-span-2"
+                          placeholder={text('签核人真实姓名', 'Reviewer name')}
+                          aria-label={text('签核人真实姓名', 'Reviewer name')}
+                          className="min-w-0 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-950"
                         />
                       </div>
                       <textarea
@@ -1654,7 +1686,8 @@ export function ExperimentFeedbackPanel({
                         onChange={(event) => setSignoffRationale(event.target.value)}
                         placeholder={text('决策理由', 'Decision rationale')}
                         rows={2}
-                        className="min-w-0 resize-y rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
+                        aria-label={text('决策理由', 'Decision rationale')}
+                        className="min-w-0 resize-y rounded-md border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-950"
                       />
                       <input
                         value={signoffTargetSections}
@@ -1669,18 +1702,25 @@ export function ExperimentFeedbackPanel({
                         rows={2}
                         className="min-w-0 resize-y rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
                       />
-                      <Button
-                        size="sm"
-                        onClick={() => void approveRequiredSignoffs()}
-                        disabled={signoffLoading || feedbackApplying || !signoffFormReady}
-                        className="w-full sm:w-fit"
-                      >
-                        {signoffLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ShieldCheck className="mr-2 h-4 w-4" />}
-                        {text('批准全部必需阶段', 'Approve all required stages')}
-                      </Button>
-                      <div className="text-xs leading-relaxed text-slate-500">
-                        {text('同一负责人完成方案、必要修复和结论签核；每个阶段仍分别绑定当前证据 SHA-256。', 'The same reviewer signs the plan, required repair, and conclusion; every stage remains bound to its current evidence SHA-256.')}
-                      </div>
+                      <fieldset className="grid gap-2 border-y border-slate-200 py-3 dark:border-slate-700">
+                        <legend className="px-1 text-sm font-semibold">{text('本阶段责任确认（不预勾选）', 'Stage acknowledgements (never preselected)')}</legend>
+                        {signoffAcknowledgements[selectedSignoffStage].map((item) => (
+                          <label key={item.id} className="flex items-start gap-2 text-sm">
+                            <input
+                              type="checkbox"
+                              className="mt-0.5 h-4 w-4"
+                              checked={acknowledgements[selectedSignoffStage].includes(item.id)}
+                              onChange={(event) => setAcknowledgements((current) => ({
+                                ...current,
+                                [selectedSignoffStage]: event.target.checked
+                                  ? [...current[selectedSignoffStage], item.id]
+                                  : current[selectedSignoffStage].filter((value) => value !== item.id),
+                              }))}
+                            />
+                            <span>{item.label[locale]}</span>
+                          </label>
+                        ))}
+                      </fieldset>
                       <div className="flex flex-wrap gap-2">
                         <Button
                           size="sm"
@@ -1711,10 +1751,35 @@ export function ExperimentFeedbackPanel({
                       </div>
                       {!signoffFormReady && (
                         <div className="text-xs text-amber-700">
-                          {text('填写审核人身份和决策理由后方可提交。', 'Enter reviewer identity and decision rationale to enable signoff.')}
+                          {text('填写真实姓名和决策理由，并逐项完成本阶段责任确认后方可提交。', 'Enter a real name and rationale, then complete every stage acknowledgement.')}
                         </div>
                       )}
+                      <details className="border-t border-slate-200 pt-3 text-sm dark:border-slate-700">
+                        <summary className="cursor-pointer text-slate-600 dark:text-slate-300">{text('高级 API 客户端与批量操作', 'Advanced API client and batch actions')}</summary>
+                        <div className="mt-3 grid gap-2">
+                          <input
+                            type="password"
+                            value={reviewAuthToken}
+                            onChange={(event) => setReviewAuthToken(event.target.value)}
+                            placeholder={text('Bearer Token（仅 API 兼容模式）', 'Bearer token (API compatibility mode only)')}
+                            autoComplete="off"
+                            aria-label={text('ReviewX API Bearer Token', 'ReviewX API bearer token')}
+                            className="min-w-0 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-950"
+                          />
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => void approveRequiredSignoffs()}
+                            disabled={signoffLoading || feedbackApplying || !reviewerId.trim() || !signoffRationale.trim() || !allRequiredAcknowledgementsComplete}
+                            className="w-full sm:w-fit"
+                          >
+                            {signoffLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ShieldCheck className="mr-2 h-4 w-4" />}
+                            {text('批准全部必需阶段', 'Approve all required stages')}
+                          </Button>
+                        </div>
+                      </details>
                     </div>
+                    )}
                   </div>
                 </section>
 

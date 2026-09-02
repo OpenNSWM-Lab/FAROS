@@ -212,6 +212,61 @@ interface ExternalReviewEvidence {
   scope?: string
 }
 
+interface OscillatorEvidence {
+  available: boolean
+  eligibleForHeadline: boolean
+  decision?: 'UPDATE' | 'KEEP' | 'BOUNDARY' | 'ROLLBACK'
+  scientificQuestion?: string
+  hypothesis?: string
+  blockingReasons: string[]
+  primaryMetric?: {
+    name: string
+    direction: 'minimize'
+    roundOne: number
+    roundTwo: number
+    relativeImprovement: number
+    pairedBootstrap95: [number, number]
+    pairedWilcoxonP: number
+    pairedSignPermutationP: number
+    effectSize: number
+    ciCrossesZero: boolean
+    sourceArtifact: string
+  }
+  mechanism?: {
+    round1MeanFisherConditionNumber?: number
+    round2MeanFisherConditionNumber?: number
+  }
+  guardrails?: {
+    parameterError?: {
+      omega0RelativeImprovement?: number
+      zetaRelativeImprovement?: number
+      passed?: boolean
+    }
+    matchedBudget?: { passed?: boolean }
+    solverFailureRate?: number
+    passed?: boolean
+  }
+  planDelta?: {
+    selectedCandidateId?: string
+    changes: Array<{
+      field: string
+      oldValue: unknown
+      newValue: unknown
+      rationale: string
+      targetNode: string
+    }>
+    affectedNodesRerun: string[]
+  }
+  qwen?: {
+    model?: string
+    isRealApiCall?: boolean
+    latencyMs?: number
+    finalHoldoutExposed?: boolean
+  }
+  artifacts?: EvidenceArtifact[]
+  limitations?: string[]
+}
+
 interface DashboardPayload {
   generatedAt: string
   track: {
@@ -328,6 +383,7 @@ interface DashboardPayload {
     scope: string
   }
   externalReview: ExternalReviewEvidence
+  oscillator: OscillatorEvidence
   humanGovernance: {
     feedbackId?: string
     signoffs: Record<'plan' | 'repair' | 'conclusion', string>
@@ -768,7 +824,7 @@ export function CompetitionEvidence() {
 
   return (
     <AppPageLayout
-      title={text('赛事证据 · Track 1B', 'Competition Evidence · Track 1B')}
+      title={text('代表性闭环验收', 'Research loop evidence')}
       subtitle={text('主流程完成后的验收视图：汇总实验、ReviewX 反馈闭环与人工签核', 'Acceptance view after the main workflow: experiments, ReviewX feedback loops, and human signoff')}
       icon={Gauge}
       iconColor="blue"
@@ -868,9 +924,69 @@ export function CompetitionEvidence() {
           <Skeleton className="h-80 w-full" />
         </div>
       ) : !dashboard || !headline ? (
-        <EmptyState message={text('尚无可核验的方向 1B 代表案例。', 'No verifiable Track 1B case is available yet.')} />
+        <EmptyState message={text('尚无可核验的代表性闭环案例。', 'No verifiable representative research loop is available yet.')} />
       ) : (
         <div className="min-w-0 space-y-5">
+          {dashboard.oscillator?.eligibleForHeadline && dashboard.oscillator.primaryMetric && (
+            <section id="adaptive-oscillator-headline" className="overflow-hidden rounded-lg border border-teal-200 bg-white shadow-sm dark:border-teal-900 dark:bg-slate-950">
+              <div className="border-b border-teal-200 bg-teal-950 px-5 py-5 text-white dark:border-teal-900">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-teal-200">
+                    FAROS / ReviewX · {text('阻尼振子自适应系统辨识', 'Adaptive damped-oscillator identification')}
+                  </div>
+                  <Badge className="border-emerald-300 bg-emerald-300 text-emerald-950">
+                    <Check className="mr-1 h-3.5 w-3.5" />
+                    {text('统计门与护栏通过', 'Statistical gate and guardrails passed')}
+                  </Badge>
+                </div>
+                <h1 className="mt-2 max-w-5xl text-xl font-semibold leading-snug sm:text-2xl">
+                  {text('固定预算下，自适应激励与瞬态加权采样能否提升阻尼振子参数辨识？', dashboard.oscillator.scientificQuestion || '')}
+                </h1>
+                <p className="mt-2 max-w-5xl text-sm leading-relaxed text-teal-100">
+                  {text('假设：在相同观测与优化预算下，近共振激励配合瞬态加权采样可降低未见轨迹 NRMSE，同时满足参数误差护栏。', dashboard.oscillator.hypothesis || '')}
+                </p>
+              </div>
+              <div className="grid divide-y divide-slate-200 sm:grid-cols-2 sm:divide-x sm:divide-y-0 lg:grid-cols-4 dark:divide-slate-800">
+                <div className="p-4">
+                  <div className="text-xs font-medium text-slate-500 dark:text-slate-400">{text('未见轨迹 NRMSE', 'Holdout trajectory NRMSE')}</div>
+                  <div className="mt-1 text-2xl font-semibold tabular-nums text-slate-950 dark:text-white">{formatNumber(dashboard.oscillator.primaryMetric.roundTwo, 4)}</div>
+                  <div className="mt-1 text-xs text-teal-700 dark:text-teal-300">{formatNumber(dashboard.oscillator.primaryMetric.roundOne, 4)} → {formatNumber(dashboard.oscillator.primaryMetric.roundTwo, 4)}</div>
+                </div>
+                <div className="p-4">
+                  <div className="text-xs font-medium text-slate-500 dark:text-slate-400">{text('相对改善', 'Relative improvement')}</div>
+                  <div className="mt-1 text-2xl font-semibold tabular-nums text-slate-950 dark:text-white">{formatSignedPercent(dashboard.oscillator.primaryMetric.relativeImprovement)}</div>
+                  <div className="mt-1 text-xs text-slate-600 dark:text-slate-300">95% CI [{formatNumber(dashboard.oscillator.primaryMetric.pairedBootstrap95?.[0], 4)}, {formatNumber(dashboard.oscillator.primaryMetric.pairedBootstrap95?.[1], 4)}]</div>
+                </div>
+                <div className="p-4">
+                  <div className="text-xs font-medium text-slate-500 dark:text-slate-400">{text('参数误差护栏', 'Parameter-error guardrail')}</div>
+                  <div className="mt-1 text-lg font-semibold tabular-nums text-slate-950 dark:text-white">ω₀ {formatSignedPercent(dashboard.oscillator.guardrails?.parameterError?.omega0RelativeImprovement)}</div>
+                  <div className="mt-1 text-xs text-slate-600 dark:text-slate-300">ζ {formatSignedPercent(dashboard.oscillator.guardrails?.parameterError?.zetaRelativeImprovement)}</div>
+                </div>
+                <div className="p-4">
+                  <div className="text-xs font-medium text-slate-500 dark:text-slate-400">{text('Fisher 条件数', 'Fisher condition number')}</div>
+                  <div className="mt-1 text-lg font-semibold tabular-nums text-slate-950 dark:text-white">{formatNumber(dashboard.oscillator.mechanism?.round1MeanFisherConditionNumber, 2)} → {formatNumber(dashboard.oscillator.mechanism?.round2MeanFisherConditionNumber, 2)}</div>
+                  <div className="mt-1 text-xs text-slate-600 dark:text-slate-300">Qwen {dashboard.oscillator.qwen?.model || '--'} · {text('未见集隔离', 'holdout hidden')}</div>
+                </div>
+              </div>
+              <div className="overflow-x-auto border-t border-slate-200 dark:border-slate-800">
+                <table className="w-full min-w-[760px] text-left text-sm">
+                  <thead className="bg-slate-50 text-xs text-slate-500 dark:bg-slate-900 dark:text-slate-400">
+                    <tr><th className="px-4 py-2">Plan Delta</th><th className="px-4 py-2">{text('旧值', 'Before')}</th><th className="px-4 py-2">{text('新值', 'After')}</th><th className="px-4 py-2">{text('依据 / 影响节点', 'Rationale / node')}</th></tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                    {(dashboard.oscillator.planDelta?.changes || []).map((change) => (
+                      <tr key={change.field}>
+                        <td className="px-4 py-3 font-mono text-xs">{change.field}</td>
+                        <td className="px-4 py-3">{formatValue(change.oldValue)}</td>
+                        <td className="px-4 py-3">{formatValue(change.newValue)}</td>
+                        <td className="px-4 py-3"><div>{change.rationale}</div><div className="mt-1 font-mono text-[11px] text-slate-500">{change.targetNode}</div></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          )}
           <section className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
             <div className="grid gap-5 border-b border-slate-200 bg-slate-950 px-5 py-5 text-white lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
               <div className="min-w-0">

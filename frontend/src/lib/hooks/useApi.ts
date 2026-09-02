@@ -19,8 +19,28 @@ export const queryKeys = {
   systemLogs: (filters?: { level?: string; limit?: number }) => ['system', 'logs', filters] as const,
   systemMetrics: (timeRange?: string) => ['system', 'metrics', timeRange] as const,
   systemConfig: ['system', 'config'] as const,
+  systemSession: ['system', 'session'] as const,
   competitionSnapshot: ['competition', 'snapshot'] as const,
   competitionWorkspace: ['competition', 'workspace'] as const,
+}
+
+export interface SystemSession {
+  userId: string
+  role: 'team' | 'judge' | 'reviewer' | 'user'
+  credentialScope: string
+}
+
+export function useSystemSession() {
+  return useQuery({
+    queryKey: queryKeys.systemSession,
+    queryFn: async (): Promise<SystemSession> => {
+      const response = await fetch(`${API_BASE_URL}/api/system/session`)
+      if (!response.ok) throw new Error(`Session unavailable (${response.status})`)
+      return response.json()
+    },
+    retry: false,
+    staleTime: 60_000,
+  })
 }
 
 export interface CompetitionSnapshot {
