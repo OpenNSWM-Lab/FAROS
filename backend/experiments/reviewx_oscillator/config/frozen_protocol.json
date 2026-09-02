@@ -1,0 +1,32 @@
+{
+  "schemaVersion": "reviewx-oscillator/v1",
+  "protocolStatus": "frozen_before_final_holdout",
+  "scientificQuestion": "Can adaptive excitation and transient-weighted sampling improve damped-oscillator identification under a fixed observation budget?",
+  "hypothesis": "Near-resonance excitation with transient-weighted sampling reduces held-out trajectory NRMSE by at least 15% without worsening either parameter-error guardrail under matched budgets.",
+  "trueOmega0": 1.2,
+  "trueZeta": 0.1,
+  "noiseStd": 0.08,
+  "observationBudget": 80,
+  "optimizerMaxNfev": 80,
+  "candidateNearResonanceFrequency": 1.15,
+  "holdoutExcitationFrequencies": [0.7, 0.95, 1.35],
+  "holdoutTrajectoryPoints": 160,
+  "developmentSeeds": [1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008, 1009, 1010, 1011, 1012, 1013, 1014, 1015, 1016, 1017, 1018, 1019, 1020, 1021, 1022, 1023, 1024, 1025, 1026, 1027, 1028, 1029, 1030],
+  "calibrationSeeds": [2001, 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010],
+  "retiredEngineeringPreflightSeeds": [3001, 3002, 3003, 3004, 3005, 3006, 3007, 3008, 3009, 3010, 3011, 3012, 3013, 3014, 3015, 3016, 3017, 3018, 3019, 3020, 3021, 3022, 3023, 3024, 3025, 3026, 3027, 3028, 3029, 3030],
+  "retiredEngineeringPreflightReason": "The original engineering preflight exposed aggregate outcomes for seeds 3001-3030 before the real-Qwen run. They are retained for provenance but are permanently excluded from final inference.",
+  "finalHoldoutSeeds": [5001, 5002, 5003, 5004, 5005, 5006, 5007, 5008, 5009, 5010, 5011, 5012, 5013, 5014, 5015, 5016, 5017, 5018, 5019, 5020, 5021, 5022, 5023, 5024, 5025, 5026, 5027, 5028, 5029, 5030],
+  "bootstrapSamples": 2000,
+  "bootstrapSeed": 92026,
+  "primaryGate": {
+    "metric": "heldout_trajectory_nrmse",
+    "direction": "minimize",
+    "minimumRelativeImprovement": 0.15,
+    "confidenceIntervalMustExcludeZero": true
+  },
+  "parameterGuardrail": {
+    "oneParameterMinimumRelativeImprovement": 0.2,
+    "otherParameterMaximumRelativeDegradation": 0.05
+  },
+  "finalHoldoutPolicy": "Run seeds 5001-5030 exactly once after the Plan Delta and gates are frozen; any retuning requires a new unseen seed set. Seeds 3001-3030 are retired engineering-preflight data and must never be used for final inference."
+}

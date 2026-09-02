@@ -7,6 +7,10 @@ import json
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
+from app.modules.review.audit_chain import record_audit_integrity
+from app.modules.review.competition_evidence import build_oscillator_evidence_view
+from app.modules.review.human_signoff import publication_ready as is_publication_ready
+
 
 def _read_object(path: Path) -> dict[str, Any]:
     payload = json.loads(path.read_text(encoding="utf-8"))
@@ -186,20 +190,30 @@ def build_competition_workspace_dashboard(data_dir: Path) -> dict[str, Any]:
     quality_gate = str((review_summary.get("qualityGate") or {}).get("status") or "").lower()
     required_signoffs, approved_signoffs = _required_signoffs(feedback)
     reviewer_ids = {
-        str(item.get("reviewerId") or item.get("reviewerName") or "")
+        str(item.get("actorAccountId") or "")
         for item in approved_signoffs
-        if item.get("reviewerId") or item.get("reviewerName")
+        if item.get("actorAccountId")
     }
-    publication_ready = bool(feedback.get("publicationReady")) or (
-        bool(required_signoffs) and len(approved_signoffs) == len(required_signoffs)
+    publication_ready = is_publication_ready(feedback)
+    reviewer_policy = str(
+        feedback.get("reviewerPolicy")
+        or ("separated_reviewers" if feedback.get("enforceReviewerSeparation") else "single_accountable_reviewer")
     )
-    single_reviewer = len(reviewer_ids) == 1
+    reviewer_policy_passed = (
+        len(reviewer_ids) >= 2 if reviewer_policy == "separated_reviewers" else len(reviewer_ids) == 1
+    )
+    auth_assurances = {
+        str(item.get("authAssurance") or "unverified") for item in approved_signoffs
+    }
+    signoff_mode = next(iter(auth_assurances)) if len(auth_assurances) == 1 else "mixed_or_unverified"
+    audit_valid = record_audit_integrity(feedback)["valid"]
     qwen_model = str(review_job.get("model") or "")
     review_passed = bool(
         quality_gate == "passed"
         and qwen_model.lower().startswith("qwen")
         and publication_ready
-        and single_reviewer
+        and reviewer_policy_passed
+        and audit_valid
     )
 
     stages = [
@@ -273,9 +287,10 @@ def build_competition_workspace_dashboard(data_dir: Path) -> dict[str, Any]:
                 "qualityGate": quality_gate,
                 "model": qwen_model,
                 "publicationReady": publication_ready,
-                "reviewerPolicy": "single_accountable_reviewer",
+                "reviewerPolicy": reviewer_policy,
                 "responsibleReviewerCount": len(reviewer_ids),
-                "signoffMode": "simulated_demo",
+                "signoffMode": signoff_mode,
+                "auditIntegrityValid": audit_valid,
                 "requiredStages": required_signoffs,
                 "approvedStages": len(approved_signoffs),
             },
@@ -297,6 +312,10 @@ def build_competition_workspace_dashboard(data_dir: Path) -> dict[str, Any]:
     chain_digest = hashlib.sha256(
         json.dumps(hashes, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
+
+    oscillator = build_oscillator_evidence_view(
+        root / "experiments" / "reviewx_oscillator" / "latest"
+    )
 
     return {
         "schemaVersion": "faros-competition-workspace/v2",
@@ -321,10 +340,12 @@ def build_competition_workspace_dashboard(data_dir: Path) -> dict[str, Any]:
         },
         "stages": stages,
         "governance": {
-            "reviewerPolicy": "single_accountable_reviewer",
+            "reviewerPolicy": reviewer_policy,
             "responsibleReviewerCount": len(reviewer_ids),
-            "signoffMode": "simulated_demo",
+            "signoffMode": signoff_mode,
             "publicationReady": publication_ready,
+            "auditIntegrityValid": audit_valid,
         },
+        "adaptiveOscillator": oscillator,
         "integrity": {**hashes, "chainSha256": f"sha256:{chain_digest}"},
     }

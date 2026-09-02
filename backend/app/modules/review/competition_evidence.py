@@ -34,6 +34,33 @@ def _sha256(path: Path) -> str:
     return f"sha256:{digest.hexdigest()}"
 
 
+def _verify_checksum_manifest(run_dir: Path) -> None:
+    manifest_path = run_dir / "CHECKSUMS.sha256"
+    if not manifest_path.is_file():
+        raise ValueError("CHECKSUMS.sha256 is missing")
+    recorded: Dict[str, str] = {}
+    for line in manifest_path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        digest, separator, relative = line.partition("  ")
+        if not separator or len(digest) != 64 or not relative:
+            raise ValueError("CHECKSUMS.sha256 contains a malformed entry")
+        path = (run_dir / relative).resolve()
+        if run_dir.resolve() not in path.parents or not path.is_file():
+            raise ValueError(f"Checksum entry is unsafe or missing: {relative}")
+        actual = _sha256(path).removeprefix("sha256:")
+        if actual != digest:
+            raise ValueError(f"Checksum mismatch: {relative}")
+        recorded[relative] = digest
+    actual_files = {
+        path.relative_to(run_dir).as_posix()
+        for path in run_dir.rglob("*")
+        if path.is_file() and path.name != "CHECKSUMS.sha256"
+    }
+    if actual_files != set(recorded):
+        raise ValueError("CHECKSUMS.sha256 does not cover the complete evidence bundle")
+
+
 def _metric_rows(
     first: Dict[str, Any],
     second: Dict[str, Any],
@@ -86,6 +113,180 @@ def _candidate_rows(
             -float((item["metrics"] or {}).get("F1-Score") or 0),
         ),
     )
+
+
+OSCILLATOR_PUBLIC_ARTIFACTS = (
+    "protocol.json",
+    "manifest.json",
+    "round_1/per_seed_results.csv",
+    "round_1/metrics.json",
+    "round_1/diagnostics.json",
+    "round_2/per_seed_results.csv",
+    "round_2/metrics.json",
+    "calibration/per_seed_results.csv",
+    "calibration/statistical_summary.json",
+    "calibration/frozen_gate.json",
+    "calibration/method_comparison_per_seed.csv",
+    "method_comparison.json",
+    "plan_delta.json",
+    "qwen_trace.json",
+    "final_holdout/per_seed_results.csv",
+    "statistical_summary.json",
+    "human_signoff.json",
+    "CHECKSUMS.sha256",
+    "README.md",
+)
+
+
+def build_oscillator_evidence_view(
+    run_dir: Optional[Path],
+    *,
+    artifact_base_url: str = "/api/v1/reviews/reviewx/competition/oscillator/artifacts",
+) -> Dict[str, Any]:
+    """Build a fail-closed view from one persisted oscillator evidence bundle."""
+
+    if run_dir is None or not run_dir.is_dir():
+        return {
+            "available": False,
+            "eligibleForHeadline": False,
+            "blockingReasons": ["No deployed adaptive-oscillator evidence bundle is available."],
+        }
+
+    missing = [name for name in OSCILLATOR_PUBLIC_ARTIFACTS if not (run_dir / name).is_file()]
+    blockers = [f"Missing artifact: {name}" for name in missing]
+    try:
+        protocol = _read_json(run_dir / "protocol.json")
+        manifest = _read_json(run_dir / "manifest.json")
+        statistics = _read_json(run_dir / "statistical_summary.json")
+        plan_delta = _read_json(run_dir / "plan_delta.json")
+        qwen_trace = _read_json(run_dir / "qwen_trace.json")
+        method_comparison = _read_json(run_dir / "method_comparison.json")
+        frozen_gate = _read_json(run_dir / "calibration" / "frozen_gate.json")
+        import experiments.reviewx_oscillator.run as oscillator_run
+
+        _verify_checksum_manifest(run_dir)
+        oscillator_run.recompute_and_validate_output(run_dir)
+    except (FileNotFoundError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+        return {
+            "available": True,
+            "eligibleForHeadline": False,
+            "blockingReasons": [*blockers, f"Evidence recomputation failed: {exc}"],
+            "artifacts": [],
+        }
+
+    primary_gate = protocol.get("primaryGate") or {}
+    interval = statistics.get("pairedBootstrap95") or []
+    interval_valid = (
+        len(interval) == 2
+        and all(isinstance(item, (int, float)) for item in interval)
+        and float(interval[1]) < 0
+    )
+    relative_improvement = statistics.get("relativeImprovement")
+    minimum_improvement = primary_gate.get("minimumRelativeImprovement")
+    improvement_passed = (
+        isinstance(relative_improvement, (int, float))
+        and isinstance(minimum_improvement, (int, float))
+        and float(relative_improvement) >= float(minimum_improvement)
+    )
+    qwen_usage = qwen_trace.get("usage") or {}
+    qwen_model = str(qwen_trace.get("model") or "")
+    qwen_real = bool(qwen_trace.get("isRealApiCall")) and bool(manifest.get("qwenRealApiCall"))
+    holdout_hidden = (
+        qwen_trace.get("finalHoldoutExposedToQwen") is False
+        and manifest.get("finalHoldoutExposedToQwen") is False
+    )
+    prompt = str(qwen_trace.get("prompt") or "")
+    final_seeds = {int(seed) for seed in manifest.get("finalHoldoutSeeds") or []}
+    development_seeds = {int(seed) for seed in manifest.get("developmentSeeds") or []}
+    calibration_seeds = {int(seed) for seed in manifest.get("calibrationSeeds") or []}
+    retired_seeds = {int(seed) for seed in manifest.get("retiredEngineeringPreflightSeeds") or []}
+    guardrails = statistics.get("guardrails") or {}
+    checks = {
+        "decisionUpdate": statistics.get("decision") == "UPDATE",
+        "minimumImprovement": improvement_passed,
+        "confidenceIntervalExcludesZero": interval_valid,
+        "guardrailsPassed": guardrails.get("passed") is True,
+        "realQwenCall": qwen_real,
+        "qwenModelRecorded": qwen_model.lower().startswith("qwen"),
+        "qwenUsageRecorded": int(qwen_usage.get("total_tokens") or 0) > 0,
+        "qwenLatencyRecorded": float(qwen_trace.get("latencyMs") or 0) > 0,
+        "finalHoldoutHiddenFromQwen": holdout_hidden,
+        "finalHoldoutSeedsAbsentFromPrompt": all(str(seed) not in prompt for seed in final_seeds),
+        "seedPartitionsDisjoint": not (
+            final_seeds & development_seeds
+            or final_seeds & calibration_seeds
+            or final_seeds & retired_seeds
+        ),
+        "protocolHashMatches": manifest.get("protocolHash") == _sha256(run_dir / "protocol.json"),
+        "codeHashMatches": manifest.get("codeHash") == _sha256(Path(oscillator_run.__file__)),
+        "thresholdsStayedFrozen": frozen_gate.get("thresholdsChangedAfterCalibration") is False,
+        "methodComparisonMatchedBudget": (method_comparison.get("matchedBudget") or {}).get("passed") is True,
+        "evidenceComplete": not missing,
+    }
+    blockers.extend(name for name, passed in checks.items() if not passed)
+    eligible = all(checks.values())
+    artifacts = [
+        {
+            "filename": name,
+            "sizeBytes": (run_dir / name).stat().st_size,
+            "sha256": _sha256(run_dir / name),
+            "url": f"{artifact_base_url}/{name}",
+        }
+        for name in OSCILLATOR_PUBLIC_ARTIFACTS
+        if (run_dir / name).is_file()
+    ]
+    return {
+        "available": True,
+        "eligibleForHeadline": eligible,
+        "decision": statistics.get("decision"),
+        "scientificQuestion": protocol.get("scientificQuestion"),
+        "hypothesis": protocol.get("hypothesis"),
+        "checks": checks,
+        "blockingReasons": blockers,
+        "primaryMetric": {
+            "name": statistics.get("primaryMetric"),
+            "direction": statistics.get("direction"),
+            "roundOne": statistics.get("round1Mean"),
+            "roundTwo": statistics.get("round2Mean"),
+            "relativeImprovement": relative_improvement,
+            "pairedBootstrap95": interval,
+            "pairedWilcoxonP": statistics.get("pairedWilcoxonP"),
+            "pairedSignPermutationP": statistics.get("pairedSignPermutationP"),
+            "effectSize": statistics.get("effectSizeStandardizedMeanDifference"),
+            "ciCrossesZero": statistics.get("ciCrossesZero"),
+            "sourceArtifact": "statistical_summary.json",
+        },
+        "mechanism": statistics.get("mechanism") or {},
+        "guardrails": guardrails,
+        "planDelta": {
+            "selectedCandidateId": plan_delta.get("selectedCandidateId"),
+            "changes": plan_delta.get("parameterChanges") or [],
+            "affectedNodesRerun": plan_delta.get("affectedNodesRerun") or [],
+        },
+        "qwen": {
+            "provider": qwen_trace.get("provider"),
+            "model": qwen_model,
+            "isRealApiCall": qwen_trace.get("isRealApiCall"),
+            "latencyMs": qwen_trace.get("latencyMs"),
+            "usage": qwen_trace.get("usage") or {},
+            "promptSha256": qwen_trace.get("promptSha256"),
+            "finalHoldoutExposed": qwen_trace.get("finalHoldoutExposedToQwen"),
+        },
+        "methodComparison": method_comparison,
+        "manifest": {
+            "completedAt": manifest.get("completedAt"),
+            "codeHash": manifest.get("codeHash"),
+            "protocolHash": manifest.get("protocolHash"),
+            "developmentSeedCount": len(manifest.get("developmentSeeds") or []),
+            "calibrationSeedCount": len(manifest.get("calibrationSeeds") or []),
+            "finalHoldoutSeedCount": len(manifest.get("finalHoldoutSeeds") or []),
+        },
+        "artifacts": artifacts,
+        "limitations": [
+            "This is a controlled simulated dynamical system, not a physical instrument experiment.",
+            "Human signoff remains separate from the deterministic technical gate.",
+        ],
+    }
 
 
 def _multidomain_effect_rows(summary: Dict[str, Any]) -> list[Dict[str, Any]]:
@@ -427,6 +628,7 @@ def build_competition_evidence_dashboard(
     peerqa_full_audit_summary_path: Optional[Path] = None,
     feedback_record: Optional[Dict[str, Any]] = None,
     public_artifacts: Iterable[str] = (),
+    oscillator_run_dir: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Compose verified artifacts without asking an LLM to summarize its own result."""
 
@@ -484,6 +686,7 @@ def build_competition_evidence_dashboard(
         reliability,
         reliability_records,
     )
+    oscillator = build_oscillator_evidence_view(oscillator_run_dir)
 
     feedback_first = summary["feedbackResults"]["roundOne"]
     feedback_second = summary["feedbackResults"]["roundTwo"]
@@ -828,6 +1031,7 @@ def build_competition_evidence_dashboard(
             "scope": "Cross-domain stress evidence; it does not establish zero-shot universal transfer.",
         },
         "externalReview": _peerqa_evidence_view(peerqa, peerqa_full_audit),
+        "oscillator": oscillator,
         "humanGovernance": {
             "feedbackId": (feedback_record or {}).get("id") or job.get("feedbackId"),
             "signoffs": human_status,
