@@ -2171,7 +2171,7 @@ async def decide_human_condition_verification_endpoint(
     if record is None:
         raise HTTPException(status_code=404, detail=f"Experiment feedback '{feedback_id}' not found")
     try:
-        authorize_reviewer(
+        principal = authorize_reviewer(
             stage="condition",
             reviewer_role=req.verifierRole,
             reviewer_id=req.verifierId,
@@ -2186,6 +2186,9 @@ async def decide_human_condition_verification_endpoint(
             verifier_id=req.verifierId,
             rationale=req.rationale,
             evidence_artifact_ids=req.evidenceArtifactIds,
+            actor_account_id=str(principal.get("actorAccountId") or ""),
+            actor_role=str(principal.get("actorRole") or ""),
+            auth_assurance=str(principal.get("authAssurance") or principal.get("assurance") or ""),
         )
     except ReviewAuthenticationError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc

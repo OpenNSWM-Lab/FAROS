@@ -169,7 +169,9 @@ def test_inherited_human_conditions_require_current_evidence_before_conclusion()
 def test_technical_test_record_can_never_become_publication_ready():
     record = _record(decision="accept_results")
     record["reviewPurpose"] = "technical_test"
-    record["publicationEligible"] = False
+    # The purpose itself is a hard gate even if an upstream producer sets the
+    # eligibility flag incorrectly.
+    record["publicationEligible"] = True
     record["humanSignoffs"] = initialize_human_signoffs(record)
 
     for stage in ("plan", "conclusion"):
@@ -183,6 +185,38 @@ def test_technical_test_record_can_never_become_publication_ready():
         )
 
     assert human_signoff_state(record)["conclusion"]["status"] == "approved"
+    assert publication_ready(record) is False
+
+
+def test_condition_state_tampering_revokes_publication():
+    record = _record(decision="accept_results")
+    record["inheritedHumanFeedback"] = {
+        "feedbackHash": "sha256:human-feedback",
+        "items": [{
+            "decisionId": "hsd_parent",
+            "stage": "plan",
+            "status": "changes_requested",
+            "conditions": ["Record the leakage check as an artifact"],
+        }],
+    }
+    _approve(record, "plan")
+    condition_id = human_condition_verification_state(record)["conditions"][0]["conditionId"]
+    record["humanFeedbackVerifications"] = decide_human_condition_verification(
+        record,
+        condition_id=condition_id,
+        status="passed",
+        verifier_role="domain_expert",
+        verifier_id="expert@example.com",
+        rationale="Leakage report checked against the experiment evidence.",
+        evidence_artifact_ids=["artifact-1"],
+    )
+    _approve(record, "conclusion")
+    assert publication_ready(record) is True
+
+    record["humanFeedbackVerifications"][condition_id]["rationale"] = "tampered"
+    integrity = record_audit_integrity(record)
+    assert integrity["valid"] is False
+    assert integrity["invalidStreams"] == [f"condition:{condition_id}"]
     assert publication_ready(record) is False
 
 

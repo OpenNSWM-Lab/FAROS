@@ -90,7 +90,39 @@ def record_audit_integrity(record: Dict[str, Any]) -> Dict[str, Any]:
                     }
         streams[f"signoff:{stage}"] = state
     for condition_id, item in (record.get("humanFeedbackVerifications") or {}).items():
-        streams[f"condition:{condition_id}"] = verify_history((item or {}).get("history") or [])
+        verification = item or {}
+        history = verification.get("history") or []
+        state = verify_history(history)
+        status = str(verification.get("status") or "pending")
+        if state["valid"] and status != "pending":
+            if not history:
+                state = {**state, "valid": False, "reason": "decision_missing_from_history"}
+            else:
+                head = history[-1]
+                sealed_fields = (
+                    "verificationId",
+                    "status",
+                    "subjectHash",
+                    "verifierRole",
+                    "verifierId",
+                    "actorAccountId",
+                    "actorRole",
+                    "authAssurance",
+                    "rationale",
+                    "evidenceArtifactIds",
+                    "decidedAt",
+                )
+                mismatches = [
+                    field for field in sealed_fields if verification.get(field) != head.get(field)
+                ]
+                if mismatches:
+                    state = {
+                        **state,
+                        "valid": False,
+                        "reason": "stored_state_differs_from_history_head",
+                        "mismatchedFields": mismatches,
+                    }
+        streams[f"condition:{condition_id}"] = state
     invalid = [name for name, state in streams.items() if not state["valid"]]
     return {
         "valid": not invalid,
