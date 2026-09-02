@@ -111,6 +111,9 @@ def decide_human_condition_verification(
     verifier_id: str,
     rationale: str,
     evidence_artifact_ids: Iterable[str] = (),
+    actor_account_id: str | None = None,
+    actor_role: str | None = None,
+    auth_assurance: str = "self_reported",
 ) -> Dict[str, Any]:
     if status not in VERIFICATION_STATUSES or status == "pending":
         raise ValueError("Verification must be passed, failed, or waived")
@@ -146,6 +149,9 @@ def decide_human_condition_verification(
         "subjectHash": current["subjectHash"],
         "verifierRole": verifier_role.strip(),
         "verifierId": verifier_id.strip(),
+        "actorAccountId": (actor_account_id or verifier_id).strip(),
+        "actorRole": (actor_role or "legacy_verifier").strip(),
+        "authAssurance": auth_assurance.strip() or "self_reported",
         "rationale": rationale.strip(),
         "evidenceArtifactIds": evidence_ids,
         "decidedAt": decided_at,

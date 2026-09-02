@@ -267,6 +267,8 @@ def require_human_signoff(record: Dict[str, Any], stage: str) -> Dict[str, Any]:
 
 
 def publication_ready(record: Dict[str, Any]) -> bool:
+    if record.get("reviewPurpose") == "technical_test":
+        return False
     if record.get("publicationEligible", True) is not True:
         return False
     if not record_audit_integrity(record)["valid"]:
@@ -283,6 +285,7 @@ def publication_ready(record: Dict[str, Any]) -> bool:
             require_human_signoff(record, "repair")
         require_human_signoff(record, "conclusion")
         from app.modules.review.human_feedback_verification import (
+            human_condition_verification_state,
             require_human_conditions_resolved,
         )
 
@@ -306,6 +309,14 @@ def publication_ready(record: Dict[str, Any]) -> bool:
             if not set(SIGNOFF_ACKNOWLEDGEMENTS[stage]).issubset(
                 set(item.get("acknowledgements") or [])
             ):
+                return False
+        condition_state = human_condition_verification_state(record)
+        for item in condition_state.get("conditions") or []:
+            if item.get("status") not in {"passed", "waived"}:
+                return False
+            if item.get("authAssurance") != "trusted_proxy_basic_auth":
+                return False
+            if not stored_actor_is_authorized(str(item.get("actorAccountId") or "")):
                 return False
     gate = str((record.get("qualityAssessment") or {}).get("gateStatus") or "").lower()
     return gate != "fail" and _blocker_count(record) == 0

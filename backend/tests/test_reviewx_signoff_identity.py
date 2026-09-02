@@ -8,6 +8,7 @@ from fastapi import HTTPException
 from app.core.user_context import use_user
 from app.modules.review import experiment_feedback_storage, reviews_api
 from app.modules.review.audit_chain import record_audit_integrity
+from app.modules.review.human_feedback_verification import human_condition_verification_state
 from app.modules.review.human_signoff import SIGNOFF_ACKNOWLEDGEMENTS, publication_ready
 
 
@@ -142,3 +143,39 @@ def test_local_test_assurance_cannot_unlock_official_release(
             ))
     assert response.humanSignoffs["conclusion"]["authAssurance"] == "local_test"
     assert response.publicationReady is False
+
+
+def test_condition_verification_is_bound_to_proxy_actor(
+    monkeypatch, tmp_path: Path, proxy_auth
+):
+    monkeypatch.setattr(experiment_feedback_storage, "_STORAGE_DIR", tmp_path)
+    record = _record()
+    record["inheritedHumanFeedback"] = {
+        "feedbackHash": "sha256:human-feedback",
+        "items": [{
+            "decisionId": "hsd_parent",
+            "stage": "plan",
+            "status": "changes_requested",
+            "conditions": ["Verify the current experiment artifact"],
+        }],
+    }
+    stored = experiment_feedback_storage.create_experiment_feedback(record)
+    condition_id = human_condition_verification_state(stored)["conditions"][0]["conditionId"]
+    request = reviews_api.HumanConditionVerificationRequest(
+        status="passed",
+        verifierRole="domain_expert",
+        verifierId="untrusted-body-identity",
+        rationale="Verified against the current source artifact.",
+        evidenceArtifactIds=["artifact-1"],
+    )
+
+    with use_user("faros-signer-wzj"):
+        asyncio.run(reviews_api.decide_human_condition_verification_endpoint(
+            stored["id"], condition_id, request
+        ))
+
+    current = experiment_feedback_storage.get_experiment_feedback(stored["id"])
+    verification = current["humanFeedbackVerifications"][condition_id]
+    assert verification["actorAccountId"] == "faros-signer-wzj"
+    assert verification["authAssurance"] == "trusted_proxy_basic_auth"
+    assert verification["verifierId"] == "untrusted-body-identity"

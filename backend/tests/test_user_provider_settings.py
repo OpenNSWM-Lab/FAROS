@@ -26,39 +26,39 @@ def test_provider_credentials_are_encrypted_and_isolated_by_user(monkeypatch, tm
     settings = _isolated_settings(monkeypatch, tmp_path)
 
     with use_user("faros-team"):
-        settings.set_runtime_key("qwen", "sk-team-only-secret")
+        settings.set_runtime_key("qwen", "fixture-team-only-secret")
         settings.set_active_provider("qwen")
         settings.set_runtime_model("qwen", "qwen-max")
 
     with use_user("faros-judge"):
-        settings.set_runtime_key("qwen", "sk-judge-only-secret")
+        settings.set_runtime_key("qwen", "fixture-judge-only-secret")
         settings.set_active_provider("openai")
         settings.set_runtime_model("openai", "gpt-4o-mini")
 
-    assert settings.get_api_key("qwen", "faros-team") == "sk-team-only-secret"
-    assert settings.get_api_key("qwen", "faros-judge") == "sk-judge-only-secret"
+    assert settings.get_api_key("qwen", "faros-team") == "fixture-team-only-secret"
+    assert settings.get_api_key("qwen", "faros-judge") == "fixture-judge-only-secret"
     assert settings.get_active_provider("faros-team") == "qwen"
     assert settings.get_active_provider("faros-judge") == "openai"
 
     files = list((tmp_path / "providers").glob("*.json"))
     assert len(files) == 2
     serialized = "\n".join(path.read_text(encoding="utf-8") for path in files)
-    assert "sk-team-only-secret" not in serialized
-    assert "sk-judge-only-secret" not in serialized
+    assert "fixture-team-only-secret" not in serialized
+    assert "fixture-judge-only-secret" not in serialized
     for path in files:
         assert path.stat().st_mode & 0o777 == 0o600
 
     reloaded = Settings()
-    assert reloaded.get_api_key("qwen", "faros-team") == "sk-team-only-secret"
-    assert reloaded.get_api_key("qwen", "faros-judge") == "sk-judge-only-secret"
+    assert reloaded.get_api_key("qwen", "faros-team") == "fixture-team-only-secret"
+    assert reloaded.get_api_key("qwen", "faros-judge") == "fixture-judge-only-secret"
     assert reloaded.get_active_model("openai", "faros-judge") == "gpt-4o-mini"
 
 
 def test_environment_key_is_visible_only_to_declared_owner(monkeypatch, tmp_path):
     settings = _isolated_settings(monkeypatch, tmp_path)
-    monkeypatch.setenv("QWEN_API_KEY", "sk-environment-team-key")
+    monkeypatch.setenv("QWEN_API_KEY", "fixture-environment-team-key")
 
-    assert settings.get_api_key("qwen", "faros-team") == "sk-environment-team-key"
+    assert settings.get_api_key("qwen", "faros-team") == "fixture-environment-team-key"
     assert settings.get_api_key("qwen", "faros-judge") is None
 
 

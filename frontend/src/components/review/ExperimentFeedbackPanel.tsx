@@ -1419,28 +1419,28 @@ export function ExperimentFeedbackPanel({
 
                 <div className="grid gap-4 md:grid-cols-2">
                   <div>
-                    <div className="mb-2 text-xs font-semibold uppercase text-slate-600">{text('下一步行动', 'Next actions')}</div>
+                    <div className="mb-2 text-xs font-semibold uppercase text-slate-600 dark:text-slate-300">{text('下一步行动', 'Next actions')}</div>
                     <div className="space-y-2">
                       {result.iterationDecision.nextActions.slice(0, 4).map((action, index) => (
-                        <div key={`${index}-${action}`} className="flex gap-2 text-sm text-slate-700">
-                          <span className="font-semibold text-emerald-700">{index + 1}.</span>
+                        <div key={`${index}-${action}`} className="flex gap-2 text-sm text-slate-700 dark:text-slate-200">
+                          <span className="font-semibold text-emerald-700 dark:text-emerald-400">{index + 1}.</span>
                           <span>{messageText(action)}</span>
                         </div>
                       ))}
                     </div>
                   </div>
                   <div>
-                    <div className="mb-2 text-xs font-semibold uppercase text-slate-600">{text('证据与反馈', 'Evidence & feedback')}</div>
-                    <div className="space-y-2 text-sm text-slate-700">
+                    <div className="mb-2 text-xs font-semibold uppercase text-slate-600 dark:text-slate-300">{text('证据与反馈', 'Evidence & feedback')}</div>
+                    <div className="space-y-2 text-sm text-slate-700 dark:text-slate-200">
                       <div>{Object.keys(result.sourceArtifacts).length} {text('个合同 artifact 已验证', 'contract artifacts verified')}</div>
                       <div>{result.qualityAssessment.findings.length} {text('个质量 finding', 'quality findings')}</div>
-                      <div className={result.planFeedback.applied ? 'text-emerald-700' : 'text-slate-500'}>
+                      <div className={result.planFeedback.applied ? 'text-emerald-700 dark:text-emerald-400' : 'text-slate-500 dark:text-slate-400'}>
                         {result.planFeedback.applied
                           ? text('PlanPackage 修正已附加', 'PlanPackage correction attached')
                           : messageText(result.planFeedback.reason) || text('未请求写入 PlanPackage', 'No PlanPackage write requested')}
                       </div>
                       {result.humanFeedback?.requiresApplication && (
-                        <div className={result.humanFeedback.applied ? 'text-emerald-700' : 'font-medium text-amber-700'}>
+                        <div className={result.humanFeedback.applied ? 'text-emerald-700 dark:text-emerald-400' : 'font-medium text-amber-700 dark:text-amber-300'}>
                           {text('人工反馈', 'Human feedback')} {result.humanFeedback.applied ? text('已应用', 'applied') : text('待应用', 'awaiting application')}
                         </div>
                       )}
@@ -1448,10 +1448,10 @@ export function ExperimentFeedbackPanel({
                   </div>
                 </div>
 
-                <section id="reviewx-human-oversight" className="scroll-mt-24 border-t border-slate-200 pt-4" aria-label={text('人工审核', 'Human oversight')}>
+                <section id="reviewx-human-oversight" className="scroll-mt-24 border-t border-slate-200 pt-4 dark:border-slate-700" aria-label={text('人工审核', 'Human oversight')}>
                   <SignoffDossier feedbackId={result.feedbackId} refreshKey={dossierRefreshKey} />
                   <div className="mb-3 mt-5 flex flex-wrap items-center justify-between gap-2">
-                    <div className="flex items-center gap-2 text-xs font-semibold uppercase text-slate-600">
+                    <div className="flex items-center gap-2 text-xs font-semibold uppercase text-slate-600 dark:text-slate-300">
                       <ShieldCheck className="h-4 w-4" />
                       {text('逐阶段责任确认', 'Stage-by-stage responsibility confirmation')}
                     </div>
@@ -1461,7 +1461,7 @@ export function ExperimentFeedbackPanel({
                   </div>
 
                   {!publicationReady && (
-                    <div className="mb-3 text-xs text-amber-700">
+                    <div className="mb-3 text-xs text-amber-700 dark:text-amber-300">
                       {text('正式档案仍被服务端门禁锁定；请按摘要中的阻断项逐项处理。', 'The official dossier remains server-locked; resolve each blocker listed in the summary.')}
                     </div>
                   )}
@@ -1478,12 +1478,12 @@ export function ExperimentFeedbackPanel({
                             onClick={() => setSelectedSignoffStage(stage)}
                             className={`min-w-0 rounded-md border px-3 py-3 text-left ${
                               active
-                                ? 'border-emerald-700 bg-emerald-50'
-                                : 'border-slate-200 bg-white hover:border-slate-300'
+                                ? 'border-emerald-700 bg-emerald-50 dark:border-emerald-500 dark:bg-emerald-950/30'
+                                : 'border-slate-200 bg-white hover:border-slate-300 dark:border-slate-700 dark:bg-slate-950 dark:hover:border-slate-600'
                             }`}
                           >
                             <div className="flex items-center justify-between gap-2">
-                              <span className="truncate text-xs font-semibold text-slate-900">{signoffStageLabel[stage][locale]}</span>
+                              <span className="truncate text-xs font-semibold text-slate-900 dark:text-slate-100">{signoffStageLabel[stage][locale]}</span>
                               <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${
                                 signoff.status === 'approved'
                                   ? 'bg-emerald-600'
@@ -1499,11 +1499,11 @@ export function ExperimentFeedbackPanel({
                               <Badge variant="outline">{signoff.required ? text('必需', 'Required') : text('可选', 'Optional')}</Badge>
                               {signoff.stale && <Badge variant="destructive">{text('已过期', 'Stale')}</Badge>}
                             </div>
-                            <div className="mt-2 truncate font-mono text-[10px] text-slate-500" title={signoff.artifactHash}>
+                            <div className="mt-2 truncate font-mono text-[10px] text-slate-500 dark:text-slate-400" title={signoff.artifactHash}>
                               SHA-256 {signoff.artifactHash.slice(0, 12)}
                             </div>
                             {signoff.status === 'approved' && (
-                              <div className="mt-1 truncate text-[10px] text-slate-600" title={`${signoff.actorAccountId || ''} · ${signoff.authAssurance || ''}`}>
+                              <div className="mt-1 truncate text-[10px] text-slate-600 dark:text-slate-300" title={`${signoff.actorAccountId || ''} · ${signoff.authAssurance || ''}`}>
                                 {signoff.reviewerName || signoff.reviewerId} · {signoff.actorAccountId || text('旧记录未绑定账号', 'legacy unbound account')} · {signoff.authAssurance || 'self_reported'}
                               </div>
                             )}
@@ -1515,15 +1515,15 @@ export function ExperimentFeedbackPanel({
                     {result.humanFeedback?.requiresApplication && (
                       <div className={`flex flex-wrap items-center justify-between gap-3 rounded-md border px-3 py-3 ${
                         result.humanFeedback.applied
-                          ? 'border-emerald-200 bg-emerald-50'
-                          : 'border-amber-200 bg-amber-50'
+                          ? 'border-emerald-200 bg-emerald-50 dark:border-emerald-800 dark:bg-emerald-950/30'
+                          : 'border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-950/30'
                       }`}>
                         <div className="min-w-0">
-                          <div className="text-sm font-semibold text-slate-900">
+                          <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">
                             {result.humanFeedback.requiredActions.length} {text('项人工行动', `human action${result.humanFeedback.requiredActions.length === 1 ? '' : 's'}`)}
                             {' · '}{result.humanFeedback.applied ? text('已应用', 'Applied') : text('需要应用', 'Application required')}
                           </div>
-                          <div className="mt-1 truncate font-mono text-[10px] text-slate-600" title={result.humanFeedback.feedbackHash}>
+                          <div className="mt-1 truncate font-mono text-[10px] text-slate-600 dark:text-slate-300" title={result.humanFeedback.feedbackHash}>
                             SHA-256 {result.humanFeedback.feedbackHash.slice(0, 24)}
                           </div>
                         </div>
@@ -1545,11 +1545,11 @@ export function ExperimentFeedbackPanel({
                     )}
 
                     {result.humanConditionVerifications?.required && (
-                      <div className="grid gap-3 rounded-md border border-slate-200 bg-white p-3">
+                      <div className="grid gap-3 rounded-md border border-slate-200 bg-white p-3 text-slate-900 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100">
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <div>
-                            <div className="text-sm font-semibold text-slate-900">{text('继承的验收条件', 'Inherited acceptance conditions')}</div>
-                            <div className="mt-1 text-xs text-slate-600">
+                            <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">{text('继承的验收条件', 'Inherited acceptance conditions')}</div>
+                            <div className="mt-1 text-xs text-slate-600 dark:text-slate-300">
                               {result.humanConditionVerifications.passed} {text('已通过', 'passed')}
                               {' · '}{result.humanConditionVerifications.waived} {text('已豁免', 'waived')}
                               {' · '}{result.humanConditionVerifications.unresolved} {text('未解决', 'unresolved')}
@@ -1571,25 +1571,25 @@ export function ExperimentFeedbackPanel({
                               }}
                               className={`min-w-0 rounded-md border px-3 py-2 text-left ${
                                 selectedConditionId === condition.conditionId
-                                  ? 'border-emerald-700 bg-emerald-50'
-                                  : 'border-slate-200 hover:border-slate-300'
+                                  ? 'border-emerald-700 bg-emerald-50 dark:border-emerald-500 dark:bg-emerald-950/30'
+                                  : 'border-slate-200 hover:border-slate-300 dark:border-slate-700 dark:hover:border-slate-600'
                               }`}
                             >
                               <div className="flex flex-wrap items-start justify-between gap-2">
-                                <span className="min-w-0 flex-1 text-sm text-slate-800">{condition.condition}</span>
+                                <span className="min-w-0 flex-1 text-sm text-slate-800 dark:text-slate-200">{condition.condition}</span>
                                 <span className={`text-xs font-semibold ${
                                   condition.status === 'passed' || condition.status === 'waived'
-                                    ? 'text-emerald-700'
+                                      ? 'text-emerald-700 dark:text-emerald-400'
                                     : condition.status === 'failed'
-                                      ? 'text-red-700'
-                                      : 'text-amber-700'
+                                      ? 'text-red-700 dark:text-red-400'
+                                      : 'text-amber-700 dark:text-amber-300'
                                 }`}>
                                   {condition.stale
                                     ? `${statusText(condition.storedStatus)} · ${text('已过期', 'stale')}`
                                     : statusText(condition.status)}
                                 </span>
                               </div>
-                              <div className="mt-1 truncate font-mono text-[10px] text-slate-500" title={condition.subjectHash}>
+                              <div className="mt-1 truncate font-mono text-[10px] text-slate-500 dark:text-slate-400" title={condition.subjectHash}>
                                 {text('证据状态', 'Evidence state')} {condition.subjectHash.slice(0, 19)}
                               </div>
                             </button>
@@ -1601,7 +1601,7 @@ export function ExperimentFeedbackPanel({
                             <select
                               value={conditionEvidenceId}
                               onChange={(event) => setConditionEvidenceId(event.target.value)}
-                              className="min-w-0 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
+                              className="min-w-0 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-950"
                               aria-label={text('验收条件的证据 artifact', 'Condition evidence artifact')}
                             >
                               <option value="">{text('选择当前证据 artifact', 'Select current evidence artifact')}</option>
@@ -1614,7 +1614,7 @@ export function ExperimentFeedbackPanel({
                               onChange={(event) => setConditionRationale(event.target.value)}
                               placeholder={text('验证理由', 'Verification rationale')}
                               rows={2}
-                              className="min-w-0 resize-y rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
+                              className="min-w-0 resize-y rounded-md border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-950"
                             />
                             <div className="flex flex-wrap gap-2">
                               <Button
@@ -1653,9 +1653,9 @@ export function ExperimentFeedbackPanel({
                         {text('评委账号为只读证据观察者，不显示签核或共享反馈修改控件。', 'Judge accounts are read-only evidence observers; signoff and shared-feedback controls are hidden.')}
                       </div>
                     ) : (
-                    <div className="grid gap-3 rounded-md border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-900">
+                    <div className="grid gap-3 rounded-md border border-slate-200 bg-slate-50 p-3 text-slate-900 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100">
                       <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div className="text-sm font-semibold text-slate-900">
+                        <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">
                           {signoffStageLabel[selectedSignoffStage][locale]}
                         </div>
                         {result.humanSignoffs[selectedSignoffStage].stale && (
@@ -1666,7 +1666,7 @@ export function ExperimentFeedbackPanel({
                         <select
                           value={reviewerRole}
                           onChange={(event) => setReviewerRole(event.target.value)}
-                          className="min-w-0 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
+                          className="min-w-0 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-950"
                           aria-label={text('审核人角色', 'Reviewer role')}
                         >
                           <option value="team_lead">{text('团队负责人', 'Team lead')}</option>
@@ -1693,16 +1693,16 @@ export function ExperimentFeedbackPanel({
                         value={signoffTargetSections}
                         onChange={(event) => setSignoffTargetSections(event.target.value)}
                         placeholder={text('目标章节，用逗号分隔', 'Target sections, comma separated')}
-                        className="min-w-0 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
+                        className="min-w-0 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-950"
                       />
                       <textarea
                         value={signoffConditions}
                         onChange={(event) => setSignoffConditions(event.target.value)}
                         placeholder={text('验收条件，每行一条', 'Acceptance conditions, one per line')}
                         rows={2}
-                        className="min-w-0 resize-y rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
+                        className="min-w-0 resize-y rounded-md border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-950"
                       />
-                      <fieldset className="grid gap-2 border-y border-slate-200 py-3 dark:border-slate-700">
+                      <fieldset className="grid gap-2 border-y border-slate-200 py-3 text-slate-900 dark:border-slate-700 dark:text-slate-100">
                         <legend className="px-1 text-sm font-semibold">{text('本阶段责任确认（不预勾选）', 'Stage acknowledgements (never preselected)')}</legend>
                         {signoffAcknowledgements[selectedSignoffStage].map((item) => (
                           <label key={item.id} className="flex items-start gap-2 text-sm">
@@ -1750,7 +1750,7 @@ export function ExperimentFeedbackPanel({
                         </Button>
                       </div>
                       {!signoffFormReady && (
-                        <div className="text-xs text-amber-700">
+                        <div className="text-xs text-amber-700 dark:text-amber-300">
                           {text('填写真实姓名和决策理由，并逐项完成本阶段责任确认后方可提交。', 'Enter a real name and rationale, then complete every stage acknowledgement.')}
                         </div>
                       )}
