@@ -35,6 +35,9 @@ Browser
 
 至少还需要一个 OpenAI-compatible LLM Provider。推荐千问/DashScope；Semantic Scholar、OpenAlex、Crossref 和 arXiv 的基础检索不依赖付费 API Key，配置联系邮箱或可选 Key 可以改善限流体验。
 
+阻尼振子代表实验额外依赖 requirements 中锁定范围的 SciPy；CPU 即可运行，
+不应为了该案例申请 GPU。部署预检会同时校验 NumPy、SciPy 和 Matplotlib 可导入。
+
 ## 3. 自动预检
 
 仓库提供分角色预检，不会输出 API Key 或凭据内容：
@@ -201,6 +204,12 @@ install -m 0600 deploy/systemd/faros-credentials.env.example \
 ```
 
 该 Key 必须在升级时保持不变，否则已保存的用户 API Key 无法解密。推荐让每个账号在 UI 的“设置 / LLM Provider”中填写自己的 Key；服务环境中的 `QWEN_API_KEY` 可以留空。
+
+ReviewX 正式签核必须使用专用 signer 账号。生产模板启用
+`FAROS_REVIEWX_AUTH_MODE=proxy`，Caddy 在完成 Basic Auth 后覆盖
+`X-Faros-User`，后端再用 `FAROS_REVIEWX_SIGNER_USERS` 校验允许名单。
+`faros-judge` 始终只读，`faros-team` 只有被显式加入 signer 允许名单时才可签核。
+本地 `local` 模式仅用于技术测试，产生的 `authAssurance=local_test` 不得作为正式生产签核。
 
 ### 5.5 数据库迁移
 

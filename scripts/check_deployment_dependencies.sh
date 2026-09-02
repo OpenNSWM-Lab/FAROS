@@ -211,6 +211,18 @@ PY
   else
     warn "pip is absent from the selected environment; package presence was checked via importlib metadata"
   fi
+
+  if PYTHONPATH="$ROOT_DIR/backend${PYTHONPATH:+:$PYTHONPATH}" "$PYTHON_BIN" -c '
+import numpy as np
+from experiments.reviewx_oscillator.run import analytic_free_decay, simulate_trajectory
+t = np.linspace(0.0, 2.0, 9)
+error = np.max(np.abs(simulate_trajectory(1.2, 0.1, 1.0, t, amplitude=0.0, initial_state=(1.0, 0.0)) - analytic_free_decay(1.2, 0.1, t)))
+raise SystemExit(0 if error < 1e-8 else 1)
+' >/dev/null 2>&1; then
+    ok "SciPy adaptive-oscillator solver import and analytic smoke check"
+  else
+    fail "adaptive-oscillator solver smoke check failed"
+  fi
 }
 
 check_node_runtime() {
