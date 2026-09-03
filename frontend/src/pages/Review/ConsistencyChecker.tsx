@@ -20,6 +20,7 @@ import {
   Check,
   Loader2,
   Database,
+  ScanSearch,
 } from 'lucide-react'
 import { usePapers, useReviewFindings, useRunConsistencyCheck } from '@/lib/hooks/useApi'
 import { API_BASE_URL } from '@/lib/api'
@@ -61,6 +62,9 @@ interface ReviewXHistoryItem {
   llmCallCount?: number
   llmSkipped?: boolean
   llmSkipReason?: string
+  visualAuditEnabled?: boolean
+  visualModel?: string
+  visualAuditStatus?: string
 }
 
 interface ReviewXRunDetail {
@@ -116,6 +120,28 @@ interface ReviewXRunDetail {
         usage?: Record<string, number>
         selectedFindingIds?: string[]
         finishReason?: string
+      }>
+    }
+    visualEvidenceAudit?: {
+      enabled?: boolean
+      status?: string
+      providerName?: string
+      model?: string
+      selectedFigureCount?: number
+      auditedFigureCount?: number
+      captionCheckCount?: number
+      checkCount?: number
+      verificationCount?: number
+      anomalyCount?: number
+      estimatedTokenCost?: number
+      skipped?: boolean
+      skipReason?: string
+      calls?: Array<{
+        sourcePath?: string
+        status?: string
+        latencyMs?: number
+        anomalyCount?: number
+        error?: string
       }>
     }
     localRulePasses?: string[]
@@ -333,6 +359,7 @@ export function ConsistencyChecker() {
   const { data: papers, isLoading: papersLoading } = usePapers()
   const [selectedPaperId, setSelectedPaperId] = useState<string>('')
   const [budgetMode, setBudgetMode] = useState<string>('balanced')
+  const [visualAuditEnabled, setVisualAuditEnabled] = useState(false)
   const [severityFilter, setSeverityFilter] = useState<string>('all')
   const [searchQuery, setSearchQuery] = useState('')
   const [history, setHistory] = useState<ReviewXHistoryItem[]>([])
@@ -357,6 +384,7 @@ export function ConsistencyChecker() {
   const findings = selectedHistoryId ? historyFindings : latestResultsEnabled ? latestFindings : null
   const findingsLoading = selectedHistoryId ? historyFindingsLoading : latestResultsEnabled ? latestFindingsLoading : false
   const hasLlmCalls = (runDetail?.modelTrace?.llmCalls || []).length > 0
+  const visualTrace = runDetail?.modelTrace?.visualEvidenceAudit
   const runSourceLabel = selectedHistoryId
     ? text('已保存历史', 'Stored History')
     : latestResultsEnabled
@@ -751,6 +779,36 @@ export function ConsistencyChecker() {
                     : text('Balanced 和 Deep 先执行本地检查，再可能为高风险 finding 调用已配置模型。', 'Balanced and Deep run local checks first, then may call the configured model for high-risk findings.')}
                 </div>
               </div>
+              <label
+                className={`flex items-start gap-3 rounded-md border px-3 py-3 ${
+                  budgetMode === 'local_only'
+                    ? 'cursor-not-allowed border-slate-200 bg-slate-50 opacity-60'
+                    : visualAuditEnabled
+                      ? 'cursor-pointer border-amber-300 bg-amber-50'
+                      : 'cursor-pointer border-slate-200 bg-white hover:border-amber-300'
+                }`}
+              >
+                <input
+                  type="checkbox"
+                  className="mt-0.5 h-4 w-4 accent-amber-600"
+                  checked={visualAuditEnabled && budgetMode !== 'local_only'}
+                  disabled={budgetMode === 'local_only'}
+                  onChange={(event) => setVisualAuditEnabled(event.target.checked)}
+                />
+                <ScanSearch className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" />
+                <span className="min-w-0">
+                  <span className="block text-sm font-semibold text-slate-800">
+                    {text('图表视觉审计', 'Visual Figure Audit')}
+                    <Badge variant="outline" className="ml-2 border-amber-300 bg-white text-[10px]">Qwen3-VL</Badge>
+                  </span>
+                  <span className="mt-1 block text-xs leading-relaxed text-muted-foreground">
+                    {text(
+                      '核对图中数值、趋势、坐标轴、图例与论文主张；仅发送本次选中的论文图表。',
+                      'Check visible values, trends, axes, and legends against paper claims; only selected paper figures are sent.',
+                    )}
+                  </span>
+                </span>
+              </label>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 <Button
                   disabled={!selectedPaperId || runDetailLoading}
@@ -766,7 +824,12 @@ export function ConsistencyChecker() {
                   onClick={() => {
                     if (selectedPaperId) {
                       runConsistencyCheck.mutate(
-                        { paperId: selectedPaperId, budgetMode },
+                        {
+                          paperId: selectedPaperId,
+                          budgetMode,
+                          visualAuditEnabled: visualAuditEnabled && budgetMode !== 'local_only',
+                          visualModel: visualAuditEnabled && budgetMode !== 'local_only' ? 'qwen3-vl-plus' : undefined,
+                        },
                         {
                           onSuccess: () => {
                             setSelectedHistoryId('')
@@ -1343,6 +1406,28 @@ export function ConsistencyChecker() {
                         <Badge variant="secondary">Policy: {runDetail.modelTrace.llmRouting.budgetPolicy}</Badge>
                       )}
                     </div>
+
+                    {visualTrace?.enabled && (
+                      <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-950">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <ScanSearch className="h-4 w-4 text-amber-700" />
+                          <span className="font-semibold">{text('图表视觉审计', 'Visual Figure Audit')}</span>
+                          <Badge variant={visualTrace.status === 'completed' ? 'secondary' : 'outline'}>
+                            {visualTrace.status || 'unknown'}
+                          </Badge>
+                          <Badge variant="outline">{visualTrace.model || 'qwen3-vl-plus'}</Badge>
+                        </div>
+                        <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                          <span>{text('候选图', 'Selected')}: {visualTrace.selectedFigureCount || 0}</span>
+                          <span>{text('已审计', 'Audited')}: {visualTrace.auditedFigureCount || 0}</span>
+                          <span>{text('核验', 'Checks')}: {visualTrace.checkCount || 0}</span>
+                          <span>{text('异常', 'Anomalies')}: {visualTrace.anomalyCount || 0}</span>
+                        </div>
+                        {visualTrace.skipReason && (
+                          <div className="mt-2 leading-relaxed text-amber-900">{visualTrace.skipReason}</div>
+                        )}
+                      </div>
+                    )}
 
                     {runDetail.modelTrace.llmRouting?.budgetFormula && (
                       <div className="rounded-md border border-slate-200 bg-slate-50 p-3 text-xs leading-relaxed text-slate-700">

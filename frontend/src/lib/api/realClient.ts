@@ -235,12 +235,19 @@ export class RealApiClient implements ApiClient {
     return dtos.map(mapReviewFindingDTOToFinding)
   }
 
-  async runConsistencyCheck(input: string | { paperId: string; budgetMode?: string }) {
+  async runConsistencyCheck(input: string | {
+    paperId: string
+    budgetMode?: string
+    visualAuditEnabled?: boolean
+    visualModel?: string
+  }) {
     const paperId = typeof input === 'string' ? input : input.paperId
     const budgetMode = typeof input === 'string' ? 'balanced' : input.budgetMode ?? 'balanced'
+    const visualAuditEnabled = typeof input === 'string' ? false : input.visualAuditEnabled ?? false
+    const visualModel = typeof input === 'string' ? undefined : input.visualModel
     const dtos = await this.fetchWithError<ReviewFindingDTO[]>('/api/v1/reviews/reviewx/run', {
       method: 'POST',
-      body: JSON.stringify({ paperId, budgetMode }),
+      body: JSON.stringify({ paperId, budgetMode, visualAuditEnabled, visualModel }),
     })
     return dtos.map(mapReviewFindingDTOToFinding)
   }

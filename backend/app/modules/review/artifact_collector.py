@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import hashlib
+import re
 from typing import Any, Dict, List
 
 from app.core.paths import get_data_dir
@@ -21,6 +23,20 @@ _IGNORED_CODE_DIRS = {
     ".git", ".mypy_cache", ".pytest_cache", ".ruff_cache", ".venv",
     "__pycache__", "node_modules", "venv",
 }
+_VISUAL_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp")
+_MAX_VISUAL_BYTES = 8 * 1024 * 1024
+_FIGURE_BLOCK_RE = re.compile(
+    r"\\begin\{figure\*?\}(.*?)\\end\{figure\*?\}",
+    re.IGNORECASE | re.DOTALL,
+)
+_INCLUDE_GRAPHICS_RE = re.compile(
+    r"\\includegraphics(?:\[[^\]]*\])?\{([^}]+)\}",
+    re.IGNORECASE,
+)
+_CAPTION_RE = re.compile(
+    r"\\caption(?:\[[^\]]*\])?\{((?:[^{}]|\{[^{}]*\})*)\}",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 def _read_json(path: str, fallback: Any) -> Any:
@@ -38,6 +54,194 @@ def _safe_rel(path: str) -> str:
         return os.path.relpath(path, _BASE_DIR)
     except ValueError:
         return path
+
+
+def _path_within(path: str, root: str) -> bool:
+    try:
+        return os.path.commonpath([os.path.realpath(path), os.path.realpath(root)]) == os.path.realpath(root)
+    except ValueError:
+        return False
+
+
+def _image_mime(path: str) -> str | None:
+    try:
+        with open(path, "rb") as handle:
+            header = handle.read(16)
+    except OSError:
+        return None
+    if header.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if header.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if len(header) >= 12 and header.startswith(b"RIFF") and header[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+def _valid_visual_path(path: str) -> tuple[str, str] | None:
+    real = os.path.realpath(path)
+    if not _path_within(real, _DATA_DIR) or not os.path.isfile(real):
+        return None
+    if os.path.splitext(real)[1].lower() not in _VISUAL_SUFFIXES:
+        return None
+    size = os.path.getsize(real)
+    if size <= 0 or size > _MAX_VISUAL_BYTES:
+        return None
+    mime = _image_mime(real)
+    return (real, mime) if mime else None
+
+
+def _resolve_visual_path(candidate: str, roots: List[str]) -> tuple[str, str] | None:
+    value = str(candidate or "").strip()
+    if not value:
+        return None
+    possibilities = [value] if os.path.isabs(value) else [os.path.join(root, value) for root in roots]
+    expanded: List[str] = []
+    for path in possibilities:
+        expanded.append(path)
+        if not os.path.splitext(path)[1]:
+            expanded.extend(path + suffix for suffix in _VISUAL_SUFFIXES)
+    for path in expanded:
+        resolved = _valid_visual_path(path)
+        if resolved:
+            return resolved
+    return None
+
+
+def _clean_caption(value: str) -> str:
+    text = re.sub(r"\\(?:textbf|textit|emph)\{([^{}]*)\}", r"\1", str(value or ""))
+    text = re.sub(r"\\[A-Za-z]+(?:\[[^\]]*\])?", " ", text)
+    text = text.replace("{", "").replace("}", "")
+    return re.sub(r"\s+", " ", text).strip()[:1200]
+
+
+def _visual_id(source_path: str) -> str:
+    digest = hashlib.sha256(source_path.encode("utf-8")).hexdigest()[:12]
+    return f"visual_{digest}"
+
+
+def _collect_visual_figures(
+    paper_id: str,
+    paper: Dict[str, Any],
+    latex_files: List[Dict[str, Any]],
+    experiments: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    latex_root = os.path.join(_DATA_DIR, "papers", paper_id, "latex")
+    figures: List[Dict[str, Any]] = []
+    by_path: Dict[str, Dict[str, Any]] = {}
+
+    def add(
+        candidate: str,
+        *,
+        roots: List[str],
+        caption: str = "",
+        title: str = "",
+        figure_id: Any = None,
+        experiment_id: Any = None,
+        source: str,
+        source_tex_path: str = "",
+        source_line: int | None = None,
+    ) -> None:
+        resolved = _resolve_visual_path(candidate, roots)
+        if not resolved:
+            return
+        absolute_path, mime = resolved
+        existing = by_path.get(absolute_path)
+        if existing:
+            if source_tex_path:
+                existing["sourceTexPath"] = source_tex_path
+                existing["sourceLine"] = source_line
+                existing["source"] = "paper_latex"
+            if caption and not existing.get("caption"):
+                existing["caption"] = _clean_caption(caption)
+            return
+        source_path = _safe_rel(absolute_path)
+        record = {
+            "id": str(figure_id or _visual_id(source_path)),
+            "source": source,
+            "sourcePath": source_path,
+            "absolutePath": absolute_path,
+            "mimeType": mime,
+            "sizeBytes": os.path.getsize(absolute_path),
+            "caption": _clean_caption(caption),
+            "title": _clean_caption(title),
+            "experimentId": str(experiment_id) if experiment_id else None,
+            "sourceTexPath": source_tex_path or None,
+            "sourceLine": source_line,
+        }
+        figures.append(record)
+        by_path[absolute_path] = record
+
+    for exp in experiments:
+        for figure in exp.get("figures", []) or []:
+            figure_id = figure.get("id")
+            fallback_root = os.path.join(_DATA_DIR, "figures", str(figure_id or ""))
+            add(
+                str(figure.get("pathPng") or figure.get("fileNamePng") or ""),
+                roots=[fallback_root, latex_root],
+                caption=str(figure.get("caption") or ""),
+                title=str(figure.get("title") or figure.get("figureType") or ""),
+                figure_id=figure_id,
+                experiment_id=exp.get("id"),
+                source="experiment",
+            )
+
+    for figure in paper.get("selectedFigures", []) or []:
+        if not isinstance(figure, dict):
+            continue
+        candidate = str(
+            figure.get("pngPath")
+            or figure.get("pathPng")
+            or figure.get("path")
+            or figure.get("fileNamePng")
+            or ""
+        )
+        add(
+            candidate,
+            roots=[latex_root, os.path.join(latex_root, "figures"), os.path.join(latex_root, "Figures")],
+            caption=str(figure.get("caption") or ""),
+            title=str(figure.get("title") or figure.get("figureType") or ""),
+            figure_id=figure.get("figureId") or figure.get("id"),
+            experiment_id=figure.get("experimentId"),
+            source="paper_selection",
+        )
+
+    for latex_file in latex_files:
+        if not str(latex_file.get("path", "")).lower().endswith(".tex"):
+            continue
+        content = str(latex_file.get("content") or "")
+        file_dir = os.path.dirname(os.path.join(latex_root, str(latex_file.get("path") or "")))
+        matched_paths: set[str] = set()
+        for block_match in _FIGURE_BLOCK_RE.finditer(content):
+            block = block_match.group(1)
+            source_line = content.count("\n", 0, block_match.start()) + 1
+            caption_match = _CAPTION_RE.search(block)
+            caption = caption_match.group(1) if caption_match else ""
+            for candidate in _INCLUDE_GRAPHICS_RE.findall(block):
+                matched_paths.add(candidate)
+                add(
+                    candidate,
+                    roots=[file_dir, latex_root],
+                    caption=caption,
+                    title=os.path.basename(candidate),
+                    source="paper_latex",
+                    source_tex_path=str(latex_file.get("path") or ""),
+                    source_line=source_line,
+                )
+        for include_match in _INCLUDE_GRAPHICS_RE.finditer(content):
+            candidate = include_match.group(1)
+            if candidate in matched_paths:
+                continue
+            add(
+                candidate,
+                roots=[file_dir, latex_root],
+                title=os.path.basename(candidate),
+                source="paper_latex",
+                source_tex_path=str(latex_file.get("path") or ""),
+                source_line=content.count("\n", 0, include_match.start()) + 1,
+            )
+
+    return figures[:40]
 
 
 def collect_reviewx_artifacts(paper_id: str) -> Dict[str, Any]:
@@ -80,6 +284,8 @@ def collect_reviewx_artifacts(paper_id: str) -> Dict[str, Any]:
             "figures": figures,
             "report": report,
         })
+
+    visual_figures = _collect_visual_figures(paper_id, paper, latex_files, experiments)
 
     code_artifacts: List[Dict[str, Any]] = []
     execution_assessment: Dict[str, Any] = {}
@@ -160,6 +366,7 @@ def collect_reviewx_artifacts(paper_id: str) -> Dict[str, Any]:
         "paper": paper,
         "latexFiles": latex_files,
         "experiments": experiments,
+        "visualFigures": visual_figures,
         "codeArtifacts": code_artifacts,
         "executionAssessment": execution_assessment,
         "experimentEvidence": experiment_evidence,
