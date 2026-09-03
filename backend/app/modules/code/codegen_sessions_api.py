@@ -26,6 +26,7 @@ from app.modules.platform.storage import (
     get_plan_session_storage,
 )
 from app.services.code_project_service import create_project
+from app.db import crud
 from app.db.engine import get_session_context
 from app.core.settings import get_settings
 from app.core.user_context import call_with_current_context
@@ -325,17 +326,15 @@ async def validate_codegen_repo(session_id: str):
     if session.status != "completed":
         raise HTTPException(status_code=400, detail="Session not completed yet")
 
-    # Load files from project
+    # Read the complete persisted file index.  The tree API only returns one
+    # directory level, which would under-count generated repositories.
     project_id = session.projectId
     try:
-        from app.services.code_project_service import get_file_tree, read_file_content
-        from app.db.engine import get_session_context
         with get_session_context() as db:
-            tree = get_file_tree(db, project_id)
+            files = crud.list_project_files(db, project_id)
+            paths = [str(record.path) for record in files if not bool(record.is_dir)]
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to load project files: {e}")
-
-    paths = [n.get("path", "") for n in (tree or []) if not n.get("is_dir")]
     issues = []
     required = ["README.md"]
     for req in required:

@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import json
 import zipfile
+from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
@@ -176,6 +178,45 @@ def test_planpackage_codegen_context_uses_current_package(monkeypatch):
     assert context["title"] == package.idea.title
     assert context["research_question"] == package.researchQuestion
     assert context["method"] == package.principle.mechanism
+
+
+def test_codegen_validation_reads_complete_persisted_file_index(monkeypatch):
+    session = SimpleNamespace(status="completed", projectId="cproj_validation")
+    records = [
+        SimpleNamespace(path="README.md", is_dir=False),
+        SimpleNamespace(path="docs/method.md", is_dir=False),
+        SimpleNamespace(path="tests/test_pipeline.py", is_dir=False),
+        SimpleNamespace(path=".github/workflows/ci.yml", is_dir=False),
+        SimpleNamespace(path="src/model.py", is_dir=False),
+    ]
+    records.extend(
+        SimpleNamespace(path=f"src/components/component_{index}.py", is_dir=False)
+        for index in range(35)
+    )
+
+    @contextmanager
+    def fake_session_context():
+        yield object()
+
+    monkeypatch.setattr(codegen_sessions_api, "get_session", lambda _session_id: session)
+    monkeypatch.setattr(codegen_sessions_api, "get_session_context", fake_session_context)
+    monkeypatch.setattr(
+        codegen_sessions_api.crud,
+        "list_project_files",
+        lambda _db, project_id: records if project_id == session.projectId else [],
+    )
+
+    result = asyncio.run(codegen_sessions_api.validate_codegen_repo("cgs_validation"))
+
+    assert result["fileCount"] == 40
+    assert result["qualityScore"] == 100
+    assert result["passed"] is True
+    assert result["categories"] == {
+        "tests": True,
+        "ci": True,
+        "db": True,
+        "docs": 2,
+    }
 
 
 def test_evidence_requires_existing_reproducibility_artifacts(tmp_path):

@@ -1,5 +1,6 @@
 from app.modules.review.cem_guidance import annotate_risk_tree_with_mismatch
 from app.modules.review.cem_guidance import build_cem_budget_plan
+from app.modules.review import artifact_collector
 from app.modules.review.evidence_verifier import verify_claim_evidence
 from app.modules.review.mismatch_scorer import build_mismatch_report
 from app.modules.review.model_router import (
@@ -47,6 +48,45 @@ def _finding(**updates) -> Finding:
     }
     data.update(updates)
     return Finding(**data)
+
+
+def test_artifact_collector_keeps_large_export_and_discovers_nested_source(monkeypatch, tmp_path):
+    project_id = "cproj_artifacts"
+    project_dir = tmp_path / "code_projects" / project_id
+    exports_dir = project_dir / "exports"
+    repo_dir = project_dir / "repo"
+    exports_dir.mkdir(parents=True)
+    (exports_dir / "project.zip").write_bytes(b"x" * 250_001)
+    (repo_dir / "src" / "package").mkdir(parents=True)
+    (repo_dir / "src" / "package" / "model.py").write_text("def run():\n    return 1\n", encoding="utf-8")
+    (repo_dir / "configs").mkdir()
+    (repo_dir / "configs" / "experiment.yaml").write_text("seed: 42\n", encoding="utf-8")
+    (repo_dir / ".venv").mkdir()
+    (repo_dir / ".venv" / "ignored.py").write_text("secret = True\n", encoding="utf-8")
+
+    monkeypatch.setattr(artifact_collector, "_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(artifact_collector, "_BASE_DIR", str(tmp_path.parent))
+    monkeypatch.setattr(
+        artifact_collector,
+        "get_paper",
+        lambda _paper_id: {
+            "id": "paper_artifacts",
+            "projectId": project_id,
+            "experimentIds": [],
+        },
+    )
+    monkeypatch.setattr(artifact_collector, "list_paper_files", lambda _paper_id: [])
+
+    result = artifact_collector.collect_reviewx_artifacts("paper_artifacts")
+    names = {item["name"] for item in result["codeArtifacts"]}
+    paths = {item["path"] for item in result["codeArtifacts"]}
+
+    assert {"project.zip", "model.py", "experiment.yaml"} <= names
+    assert not any(".venv" in path for path in paths)
+    export = next(item for item in result["codeArtifacts"] if item["name"] == "project.zip")
+    assert export["content"] == ""
+    assert export["contentOmitted"] is True
+    assert export["sizeBytes"] == 250_001
 
 
 def test_mismatch_report_keeps_raw_and_calibrated_scores():
