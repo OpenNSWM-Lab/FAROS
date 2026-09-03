@@ -13,6 +13,14 @@ from app.modules.review.storage import get_paper, list_paper_files, read_paper_f
 
 _BASE_DIR = str(get_data_dir().parent)
 _DATA_DIR = str(get_data_dir())
+_REVIEWABLE_CODE_SUFFIXES = {
+    ".cfg", ".ini", ".json", ".md", ".py", ".sh", ".toml", ".txt", ".yaml", ".yml",
+}
+_REVIEWABLE_CODE_NAMES = {"Dockerfile", "LICENSE", "Makefile"}
+_IGNORED_CODE_DIRS = {
+    ".git", ".mypy_cache", ".pytest_cache", ".ruff_cache", ".venv",
+    "__pycache__", "node_modules", "venv",
+}
 
 
 def _read_json(path: str, fallback: Any) -> Any:
@@ -84,16 +92,17 @@ def collect_reviewx_artifacts(paper_id: str) -> Dict[str, Any]:
             for root, _dirs, files in os.walk(exports_dir):
                 for name in files:
                     abs_path = os.path.join(root, name)
-                    if os.path.getsize(abs_path) > 250_000:
-                        continue
+                    size_bytes = os.path.getsize(abs_path)
                     content = ""
-                    if name.endswith((".json", ".md", ".txt", ".py", ".yaml", ".yml")):
+                    if size_bytes <= 250_000 and name.endswith((".json", ".md", ".txt", ".py", ".yaml", ".yml")):
                         with open(abs_path, encoding="utf-8", errors="replace") as f:
                             content = f.read()[:5000]
                     code_artifacts.append({
                         "path": _safe_rel(abs_path),
                         "name": name,
                         "content": content,
+                        "sizeBytes": size_bytes,
+                        "contentOmitted": bool(size_bytes > 250_000),
                     })
         repo_dir = os.path.join(project_dir, "repo")
         evidence_dir = os.path.join(repo_dir, "artifacts", "evidence")
@@ -103,9 +112,10 @@ def collect_reviewx_artifacts(paper_id: str) -> Dict[str, Any]:
         experiment_evidence = _read_json(
             os.path.join(evidence_dir, "experiment_evidence.json"), {}
         )
-        reviewable_paths = [
+        preferred_paths = [
             "src/main.py",
             "configs/experiment.json",
+            "configs/experiment.yaml",
             "metrics.json",
             "evaluation_records.json",
             "experiment_report.md",
@@ -116,7 +126,21 @@ def collect_reviewx_artifacts(paper_id: str) -> Dict[str, Any]:
             "artifacts/evidence/experiment_evidence.json",
         ]
         seen_paths = {item["path"] for item in code_artifacts}
-        for rel_path in reviewable_paths:
+        reviewable_paths = list(preferred_paths)
+        if os.path.isdir(repo_dir):
+            discovered: List[str] = []
+            for root, dirs, files in os.walk(repo_dir):
+                dirs[:] = sorted(item for item in dirs if item not in _IGNORED_CODE_DIRS)
+                for name in sorted(files):
+                    suffix = os.path.splitext(name)[1].lower()
+                    if suffix not in _REVIEWABLE_CODE_SUFFIXES and name not in _REVIEWABLE_CODE_NAMES:
+                        continue
+                    discovered.append(os.path.relpath(os.path.join(root, name), repo_dir))
+            reviewable_paths.extend(discovered)
+
+        for rel_path in dict.fromkeys(reviewable_paths):
+            if len(code_artifacts) >= 80:
+                break
             abs_path = os.path.join(repo_dir, rel_path)
             safe_path = _safe_rel(abs_path)
             if safe_path in seen_paths or not os.path.isfile(abs_path) or os.path.getsize(abs_path) > 250_000:
@@ -127,6 +151,8 @@ def collect_reviewx_artifacts(paper_id: str) -> Dict[str, Any]:
                 "path": safe_path,
                 "name": os.path.basename(abs_path),
                 "content": content,
+                "sizeBytes": os.path.getsize(abs_path),
+                "contentOmitted": False,
             })
             seen_paths.add(safe_path)
 
