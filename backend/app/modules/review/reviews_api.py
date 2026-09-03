@@ -107,6 +107,8 @@ class RunReviewXRequest(BaseModel):
     model: Optional[str] = None
     budgetMode: str = "balanced"
     ablationMode: str = "full"
+    visualAuditEnabled: bool = False
+    visualModel: Optional[str] = None
 
 
 class UpdateImprovementRequest(BaseModel):
@@ -795,6 +797,8 @@ def _reviewx_history_summary(review: Dict[str, Any]) -> Dict[str, Any]:
         "status": review.get("status"),
         "budgetMode": review.get("budgetMode", "balanced"),
         "ablationMode": review.get("ablationMode", "full"),
+        "visualAuditEnabled": bool(review.get("visualAuditEnabled", False)),
+        "visualModel": review.get("visualModel"),
         "providerName": review.get("providerName"),
         "model": review.get("model"),
         "scoreSuggestion": review.get("scoreSuggestion"),
@@ -811,6 +815,7 @@ def _reviewx_history_summary(review: Dict[str, Any]) -> Dict[str, Any]:
         "llmCallCount": len(model_trace.get("llmCalls", []) or []) if isinstance(model_trace, dict) else 0,
         "llmSkipped": llm_routing.get("skipped"),
         "llmSkipReason": llm_routing.get("skipReason"),
+        "visualAuditStatus": (model_trace.get("visualEvidenceAudit") or {}).get("status"),
     }
 
 
@@ -1041,6 +1046,8 @@ async def run_reviewx_endpoint(req: RunReviewXRequest):
         "reviewKind": "reviewx",
         "budgetMode": req.budgetMode,
         "ablationMode": req.ablationMode,
+        "visualAuditEnabled": req.visualAuditEnabled,
+        "visualModel": req.visualModel,
     })
 
     try:

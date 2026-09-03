@@ -39,7 +39,12 @@ export interface ApiClient {
 
   // Review
   getReviewFindings(paperId: string): Promise<ReviewFinding[]>
-  runConsistencyCheck(input: string | { paperId: string; budgetMode?: string }): Promise<ReviewFinding[]>
+  runConsistencyCheck(input: string | {
+    paperId: string
+    budgetMode?: string
+    visualAuditEnabled?: boolean
+    visualModel?: string
+  }): Promise<ReviewFinding[]>
 
   // System
   getSystemHealth(): Promise<SystemHealth>

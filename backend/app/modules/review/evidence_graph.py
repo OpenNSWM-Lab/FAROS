@@ -111,6 +111,12 @@ def build_evidence(artifacts: Dict[str, Any]) -> List[Evidence]:
     paper_id = paper["id"]
     evidence: List[Evidence] = []
     seen_citation_keys: set[str] = set()
+    visual_by_figure_id = {
+        str(item.get("id")): item
+        for item in artifacts.get("visualFigures", [])
+        if item.get("id")
+    }
+    represented_visual_ids: set[str] = set()
 
     brief = paper.get("briefJson") or {}
     if isinstance(brief, dict):
@@ -238,16 +244,49 @@ def build_evidence(artifacts: Dict[str, Any]) -> List[Evidence]:
                 metadata={"experimentId": exp["id"]},
             ))
         for fig in exp.get("figures", []) or []:
+            visual = visual_by_figure_id.get(str(fig.get("id") or ""))
+            if visual:
+                represented_visual_ids.add(str(visual["id"]))
             evidence.append(Evidence(
                 id=f"evidence_{len(evidence) + 1:03d}",
                 paperId=paper_id,
                 evidenceType="figure",
                 sourceModule="experiment",
-                sourcePath=str(fig.get("pathPng") or fig.get("fileNamePng") or "figures.json"),
+                sourcePath=str(
+                    visual.get("sourcePath")
+                    if visual
+                    else fig.get("pathPng") or fig.get("fileNamePng") or "figures.json"
+                ),
                 summary=str(fig.get("caption") or fig.get("title") or "Generated figure"),
                 confidence=0.75,
-                metadata={"experimentId": exp["id"], "figureId": fig.get("id")},
+                metadata={
+                    "experimentId": exp["id"],
+                    "figureId": fig.get("id"),
+                    "visualAuditEligible": bool(visual),
+                    "mimeType": visual.get("mimeType") if visual else None,
+                },
             ))
+
+    for visual in artifacts.get("visualFigures", []):
+        visual_id = str(visual.get("id") or "")
+        if not visual_id or visual_id in represented_visual_ids:
+            continue
+        evidence.append(Evidence(
+            id=f"evidence_{len(evidence) + 1:03d}",
+            paperId=paper_id,
+            evidenceType="figure",
+            sourceModule="paper" if str(visual.get("source", "")).startswith("paper") else "experiment",
+            sourcePath=str(visual.get("sourcePath") or "figure"),
+            summary=str(visual.get("caption") or visual.get("title") or "Paper figure"),
+            confidence=0.78,
+            metadata={
+                "experimentId": visual.get("experimentId"),
+                "figureId": visual_id,
+                "visualAuditEligible": True,
+                "mimeType": visual.get("mimeType"),
+                "visualSource": visual.get("source"),
+            },
+        ))
 
     structured_evidence = artifacts.get("experimentEvidence") or {}
     if structured_evidence:

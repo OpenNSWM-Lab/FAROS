@@ -25,6 +25,7 @@ from app.modules.review.risk_analyzer import analyze_reviewx_risks
 from app.modules.review.revision_planner import findings_to_action_items
 from app.modules.review.revision_feedback import attach_revision_feedback
 from app.modules.review.reviewx_models import ReviewXReport
+from app.modules.review.visual_evidence import audit_visual_evidence
 from app.modules.review.storage import get_paper, read_paper_file, list_paper_files
 from app.modules.review.storage import get_review, update_review
 
@@ -263,15 +264,29 @@ def generate_reviewx(review_id: str) -> Dict[str, Any]:
         if "no_external_calibration" in ablations and paper.get("externalPaper"):
             risk_paper = {key: value for key, value in paper.items() if key != "externalPaper"}
         findings, risk_tree = analyze_reviewx_risks(risk_paper, claims, evidence, links, verifications)
+        settings = get_settings()
+        provider_name = review.get("providerName") or settings.get_active_provider()
+        model = review.get("model") or settings.get_active_model(provider_name)
+        budget_mode = review.get("budgetMode", "balanced")
+        visual_audit = audit_visual_evidence(
+            paper=paper,
+            claims=claims,
+            evidence=evidence,
+            links=links,
+            artifacts=artifacts,
+            provider_name=provider_name,
+            visual_model=review.get("visualModel"),
+            budget_mode=budget_mode,
+            enabled=bool(review.get("visualAuditEnabled")) and "no_visual_audit" not in ablations,
+        )
+        verifications.extend(visual_audit.verifications)
+        findings.extend(visual_audit.findings)
+        risk_tree.extend(visual_audit.risk_nodes)
         preliminary_mismatch = build_mismatch_report(claims, evidence, links, verifications, findings)
         if "no_risk_tree" in ablations:
             risk_tree = []
         else:
             risk_tree = annotate_risk_tree_with_mismatch(risk_tree, preliminary_mismatch)
-        settings = get_settings()
-        provider_name = review.get("providerName") or settings.get_active_provider()
-        model = review.get("model") or settings.get_active_model(provider_name)
-        budget_mode = review.get("budgetMode", "balanced")
         findings, routing_trace = refine_findings_with_budget(
             paper=paper,
             claims=claims,
@@ -327,7 +342,22 @@ def generate_reviewx(review_id: str) -> Dict[str, Any]:
             "cemMethod": mismatch_report.get("method", {}),
             "cemBudgetPolicy": routing_trace.get("budgetPolicy"),
             "revisionFeedback": revision_feedback,
+            "visualEvidenceAudit": {
+                "enabled": visual_audit.trace.get("enabled", False),
+                "status": visual_audit.trace.get("status", "disabled"),
+                "selectedFigureCount": visual_audit.trace.get("selectedFigureCount", 0),
+                "auditedFigureCount": visual_audit.trace.get("auditedFigureCount", 0),
+                "captionCheckCount": visual_audit.trace.get("captionCheckCount", 0),
+                "checkCount": visual_audit.trace.get("checkCount", 0),
+                "verificationCount": visual_audit.trace.get("verificationCount", 0),
+                "anomalyCount": visual_audit.trace.get("anomalyCount", 0),
+            },
         }
+        visual_calls = [
+            call for call in visual_audit.trace.get("calls", [])
+            if call.get("status") == "completed"
+        ]
+        all_llm_calls = [*routing_trace.get("llmCalls", []), *visual_calls]
         model_trace = {
             "routingMode": budget_mode,
             "ablationMode": ablation_mode,
@@ -343,10 +373,16 @@ def generate_reviewx(review_id: str) -> Dict[str, Any]:
                 "revision_planning",
             ],
             "llmRouting": routing_trace,
-            "llmCalls": routing_trace.get("llmCalls", []),
-            "estimatedTokenCost": routing_trace.get("estimatedTokenCost", 0),
-            "note": "ReviewX runs deterministic local checks first, then optionally escalates high-risk findings.",
+            "visualEvidenceAudit": visual_audit.trace,
+            "llmCalls": all_llm_calls,
+            "estimatedTokenCost": (
+                routing_trace.get("estimatedTokenCost", 0)
+                + visual_audit.trace.get("estimatedTokenCost", 0)
+            ),
+            "note": "ReviewX runs deterministic local checks first, then optionally audits figure pixels and escalates high-risk findings.",
         }
+        if visual_audit.trace.get("enabled"):
+            model_trace["localRulePasses"].append("visual_evidence_selection_and_safety")
 
         report = ReviewXReport(
             reviewId=review_id,
@@ -416,6 +452,7 @@ def _build_reviewx_markdown(paper: Dict[str, Any], report: Dict[str, Any]) -> st
         f"- Severity counts: {json.dumps(summary.get('severityCounts', {}), ensure_ascii=False)}",
         f"- Support counts: {json.dumps(summary.get('supportCounts', {}), ensure_ascii=False)}",
         f"- Mismatch: {json.dumps(summary.get('mismatch', {}), ensure_ascii=False)}",
+        f"- Visual evidence audit: {json.dumps(summary.get('visualEvidenceAudit', {}), ensure_ascii=False)}",
         "",
         "## Risk Question Tree",
         "",

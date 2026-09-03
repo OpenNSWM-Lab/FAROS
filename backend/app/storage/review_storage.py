@@ -40,6 +40,8 @@ def create_review(data: Dict[str, Any]) -> Dict[str, Any]:
         "reviewKind": data.get("reviewKind", "standard"),
         "budgetMode": data.get("budgetMode", "balanced"),
         "ablationMode": data.get("ablationMode", "full"),
+        "visualAuditEnabled": bool(data.get("visualAuditEnabled", False)),
+        "visualModel": data.get("visualModel"),
         "status": "pending",
         "scoreSuggestion": None,
         "jsonReport": None,

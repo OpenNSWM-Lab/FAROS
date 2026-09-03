@@ -9,7 +9,7 @@ import os
 import time
 import logging
 from urllib.parse import urlparse
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Union
 from dataclasses import dataclass
 
 from app.core.settings import get_settings, ProviderConfig
@@ -70,7 +70,7 @@ def qwen_thinking_enabled() -> bool:
 class ChatMessage:
     """A single chat message."""
     role: str
-    content: str
+    content: Union[str, List[Dict[str, Any]]]
 
 
 @dataclass
@@ -256,7 +256,7 @@ class ProviderClient:
         self,
         api_config: Dict[str, Any],
         model_name: str,
-        messages_dict: List[Dict[str, str]],
+        messages_dict: List[Dict[str, Any]],
         temperature: float,
         max_tokens: int,
         **kwargs,
@@ -293,7 +293,7 @@ class ProviderClient:
         self,
         api_config: Dict[str, Any],
         model_name: str,
-        messages_dict: List[Dict[str, str]],
+        messages_dict: List[Dict[str, Any]],
         temperature: float,
         max_tokens: int,
         **kwargs,
