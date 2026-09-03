@@ -72,3 +72,68 @@ def test_claim_extraction_includes_evidence_assertions():
     assert {claim.text for claim in claims} == set(assertions)
     assert all(claim.requiresEvidence for claim in claims)
     assert all("evidence_assertion" in claim.riskHints for claim in claims)
+
+
+def test_claim_extraction_supports_chinese_quantitative_and_method_claims():
+    artifacts = {
+        "paper": {"id": "paper_zh", "briefJson": {}},
+        "latexFiles": [{
+            "path": "sections/results.tex",
+            "content": (
+                "\\section{实验结果}\n"
+                "我们提出基于证据门禁的阈值校准方法，并在独立划分上进行选择。\n"
+                "实验结果表明，该方法将 Macro F1 从 0.4640 提升 11.41%，"
+                "同时准确率降低 3.11%。\n"
+            ),
+        }],
+    }
+
+    claims = extract_claims(artifacts)
+
+    assert len(claims) == 2
+    assert claims[0].claimType == "method"
+    assert claims[1].claimType == "performance"
+    assert all(claim.requiresEvidence for claim in claims)
+    assert claims[1].sourceSpan.section == "实验结果"
+
+
+def test_claim_extraction_joins_wrapped_latex_paragraphs():
+    artifacts = {
+        "paper": {"id": "paper_wrapped", "briefJson": {}},
+        "latexFiles": [{
+            "path": "main.tex",
+            "content": (
+                "\\section{Results}\n"
+                "Our method improves Macro F1 from 0.4640\n"
+                "to 0.5781 on the held-out Climate-FEVER test split.\n"
+            ),
+        }],
+    }
+
+    claims = extract_claims(artifacts)
+
+    assert len(claims) == 1
+    assert "0.5781" in claims[0].text
+    assert claims[0].sourceSpan.line == 2
+
+
+def test_claim_extraction_recognizes_metric_name_before_decimal_value():
+    artifacts = {
+        "paper": {"id": "paper_metric", "briefJson": {}},
+        "latexFiles": [{
+            "path": "main.tex",
+            "content": (
+                "\\section{Results}\n"
+                "The independent gate authorized the threshold update. "
+                "The method improved held-out Macro F1 from 0.4640 to 0.5781, "
+                "an absolute gain of 11.41 percentage points.\n"
+            ),
+        }],
+    }
+
+    claims = extract_claims(artifacts)
+
+    assert len(claims) == 2
+    assert claims[0].claimType == "content"
+    assert claims[1].claimType == "performance"
+    assert "0.4640" in claims[1].text

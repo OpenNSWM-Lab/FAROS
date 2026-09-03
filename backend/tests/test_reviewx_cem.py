@@ -350,6 +350,116 @@ def test_numeric_verifier_recomputes_relative_metric_improvement():
     assert "baseline/method values" in numeric.verdict
 
 
+def test_numeric_verifier_rejects_wrong_fraction_and_ignores_threshold_metric():
+    claim = Claim(
+        id="claim_wrong_f1",
+        paperId="paper_wrong_f1",
+        text="The proposed threshold yields a final test Macro F1 of 0.8163.",
+        claimType="performance",
+        importance="high",
+        requiresEvidence=True,
+        sourceSpan=SourceSpan(file="results.tex", section="Results", line=5),
+    )
+    evidence = [
+        Evidence(
+            id="metric_threshold",
+            paperId=claim.paperId,
+            evidenceType="metric",
+            sourceModule="experiment",
+            sourcePath="metrics.json",
+            summary="proposed_threshold = 0.475",
+            metadata={"metricName": "proposed_threshold", "value": 0.475},
+        ),
+        Evidence(
+            id="metric_method_f1",
+            paperId=claim.paperId,
+            evidenceType="metric",
+            sourceModule="experiment",
+            sourcePath="metrics.json",
+            summary="method_macro_f1 = 0.6944",
+            metadata={"metricName": "method_macro_f1", "value": 0.6944},
+        ),
+    ]
+
+    verifications = verify_claim_evidence(
+        {"id": claim.paperId, "briefJson": {}},
+        [claim],
+        evidence,
+        {claim.id: [item.id for item in evidence]},
+    )
+    numeric = next(item for item in verifications if item.verifierType == "numeric_metric")
+
+    assert numeric.supportStatus == "contradicted"
+    assert numeric.evidenceIds == ["metric_method_f1"]
+
+
+def test_evidence_linker_prioritizes_rounded_values_from_named_metric_family():
+    from app.modules.review.evidence_graph import link_claims_to_evidence
+
+    claim = Claim(
+        id="claim_linked_f1",
+        paperId="paper_linked_f1",
+        text="The method improves Macro F1 from 0.4640 to 0.5781.",
+        claimType="performance",
+        importance="high",
+        requiresEvidence=True,
+        sourceSpan=SourceSpan(file="results.tex", section="Results", line=5),
+    )
+    evidence = [
+        Evidence(
+            id=f"unrelated_{index}",
+            paperId=claim.paperId,
+            evidenceType="metric",
+            sourceModule="experiment",
+            sourcePath="metrics.json",
+            summary=f"validation_macro_f1_aux_{index} = {0.1 + index / 100}",
+            metadata={"metricName": f"validation_macro_f1_aux_{index}", "value": 0.1 + index / 100},
+        )
+        for index in range(10)
+    ]
+    evidence.extend([
+        Evidence(
+            id="baseline_macro_f1",
+            paperId=claim.paperId,
+            evidenceType="metric",
+            sourceModule="experiment",
+            sourcePath="metrics.json",
+            summary="baseline_macro_f1 = 0.46403395",
+            metadata={"metricName": "baseline_macro_f1", "value": 0.46403395},
+        ),
+        Evidence(
+            id="method_macro_f1",
+            paperId=claim.paperId,
+            evidenceType="metric",
+            sourceModule="experiment",
+            sourcePath="metrics.json",
+            summary="method_macro_f1 = 0.57811733",
+            metadata={"metricName": "method_macro_f1", "value": 0.57811733},
+        ),
+    ])
+
+    links = link_claims_to_evidence([claim], evidence)
+
+    assert "baseline_macro_f1" in links[claim.id]
+    assert "method_macro_f1" in links[claim.id]
+
+
+def test_zero_extracted_claims_is_a_blocker_not_a_clean_review():
+    from app.modules.review.risk_analyzer import analyze_reviewx_risks
+
+    findings, risk_tree = analyze_reviewx_risks(
+        {"id": "paper_empty", "briefJson": {}},
+        [],
+        [],
+        {},
+        [],
+    )
+
+    no_claims = next(finding for finding in findings if finding.riskType == "no_auditable_claims")
+    assert no_claims.severity == "blocker"
+    assert any(node.findingIds == [no_claims.id] for node in risk_tree)
+
+
 def test_own_experiment_result_does_not_require_bibliography_citation():
     claim = Claim(
         id="claim_own_result",
