@@ -42,7 +42,7 @@ def _claim() -> Claim:
 
 def _visual_fixture(tmp_path: Path):
     image = tmp_path / "papers" / "paper_visual" / "latex" / "figures" / "result.png"
-    image.parent.mkdir(parents=True)
+    image.parent.mkdir(parents=True, exist_ok=True)
     image.write_bytes(PNG_BYTES)
     figure = {
         "id": "fig_result",
@@ -141,6 +141,52 @@ def test_clean_visual_audit_adds_support_without_a_finding(tmp_path: Path):
     assert result.verifications[0].supportStatus == "supported"
     assert result.findings == []
     assert result.trace["anomalyCount"] == 0
+
+    metadata_result, _client = _run(tmp_path, {
+        "chartType": "bar",
+        "readable": True,
+        "observations": ["The bars are readable."],
+        "captionStatus": "partially_consistent",
+        "captionRationale": "The sample size is stated only in the caption.",
+        "claimAssessments": [],
+        "anomalies": [
+            {
+                "type": "caption_mismatch",
+                "claimId": None,
+                "severity": "major",
+                "description": "The sample size is not printed in the plot.",
+                "confidence": 0.9,
+            },
+            {
+                "type": "uncertainty_missing",
+                "claimId": None,
+                "severity": "major",
+                "description": "No uncertainty marker is visible.",
+                "confidence": 0.85,
+            },
+        ],
+    })
+    assert len(metadata_result.findings) == 1
+    assert metadata_result.findings[0].riskType == "visual_uncertainty_missing"
+    assert metadata_result.findings[0].severity == "minor"
+
+    weak_result, _client = _run(tmp_path, {
+        "chartType": "bar",
+        "readable": True,
+        "observations": ["The visible improvement is 0.01."],
+        "captionStatus": "partially_consistent",
+        "captionRationale": "The direction agrees but the effect is small.",
+        "claimAssessments": [{
+            "claimId": "claim_001",
+            "status": "weakly_supported",
+            "verdict": "The visible effect is too small for the strength of the claim.",
+            "confidence": 0.8,
+        }],
+        "anomalies": [],
+    })
+    assert len(weak_result.findings) == 1
+    assert weak_result.findings[0].riskType == "visual_claim_support_gap"
+    assert weak_result.findings[0].supportStatus == "needs_human_verification"
 
 
 def test_related_visual_mismatches_are_collapsed_into_one_action(tmp_path: Path):

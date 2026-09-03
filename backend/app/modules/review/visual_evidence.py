@@ -43,6 +43,7 @@ _ANOMALY_TYPES = {
     "uncertainty_missing",
     "unreadable_figure",
     "claim_mismatch",
+    "claim_support_gap",
     "other",
 }
 _NUMERIC_OR_RESULT_RE = re.compile(
@@ -385,8 +386,17 @@ Important decision rules:
 - A candidate claim may come from nearby paper text, but this one figure may not be intended to prove it.
 - If the figure simply does not discuss a candidate claim, omit that claim from claimAssessments.
 - Absence from one figure is not a contradiction or an unsupported scientific claim.
+- Captions may legitimately state sample size, provenance, or analysis that is not printed in the plot area.
+- Only report caption_mismatch when a visible label, value, direction, or legend directly conflicts with the caption.
 - Use "contradicted" only when visible content directly conflicts with a value, direction, label, or caption.
 - Ignore filenames and storage paths; they are not scientific evidence.
+
+Audit checklist:
+1. Read explicit values, labels, legend mappings, and uncertainty marks.
+2. Compare numeric magnitude and direction with each genuinely related candidate claim.
+3. Check the axis minimum and displayed range; flag axis_issue when truncation visually exaggerates a small effect.
+4. Use claim_support_gap when the visible result is directionally compatible but too weak for wording such as
+   "large", "substantial", or "significant".
 
 Paper title: {_clip(paper.get('title', 'Untitled'), 240)}
 Figure caption: {_clip(figure.get('caption', ''), 1200)}
@@ -410,7 +420,7 @@ Return one strict JSON object with this schema:
   ],
   "anomalies": [
     {{
-      "type": "caption_mismatch | numeric_mismatch | trend_reversal | legend_mismatch | axis_issue | uncertainty_missing | unreadable_figure | claim_mismatch | other",
+      "type": "caption_mismatch | numeric_mismatch | trend_reversal | legend_mismatch | axis_issue | uncertainty_missing | unreadable_figure | claim_mismatch | claim_support_gap | other",
       "claimId": "supplied claimId or null",
       "severity": "blocker | major | minor | info",
       "description": "specific visible mismatch",
@@ -475,6 +485,10 @@ def _normalize_assessment(payload: Dict[str, Any], *, valid_claim_ids: set[str])
         anomaly_type = str(item.get("type") or "other").lower()
         claim_id = str(item.get("claimId") or "") or None
         severity = str(item.get("severity") or "minor").lower()
+        if anomaly_type == "caption_mismatch" and not claim_id and caption_status != "contradicted":
+            continue
+        if anomaly_type == "uncertainty_missing" and not claim_id and severity in {"blocker", "major"}:
+            severity = "minor"
         anomalies.append({
             "type": anomaly_type if anomaly_type in _ANOMALY_TYPES else "other",
             "claimId": claim_id if claim_id in valid_claim_ids else None,
@@ -569,20 +583,38 @@ def _append_assessment(
         )
 
     for item in assessment.get("claimAssessments", []):
-        if item["status"] != "contradicted" or item["claimId"] in anomaly_claims:
+        if item["claimId"] in anomaly_claims:
+            continue
+        claim = claims_by_id.get(item["claimId"])
+        if item["status"] == "contradicted":
+            anomaly_type = "claim_mismatch"
+            severity = "major"
+            suggested_fix = "Correct the figure, regenerate it from the audited metrics, or revise the paper claim."
+            acceptance = "The regenerated figure and exact claim agree on direction, values, labels, and uncertainty."
+        elif (
+            item["status"] == "weakly_supported"
+            and item["confidence"] >= 0.6
+            and claim
+            and (claim.importance == "high" or claim.claimType == "performance")
+        ):
+            anomaly_type = "claim_support_gap"
+            severity = "minor"
+            suggested_fix = "Report the visible effect size precisely, soften the claim, or add the missing statistical evidence."
+            acceptance = "The claim strength matches the visible effect size and its stated uncertainty."
+        else:
             continue
         _append_finding(
             result,
             paper_id=paper_id,
             figure=figure,
-            claim=claims_by_id.get(item["claimId"]),
+            claim=claim,
             anomaly={
-                "type": "claim_mismatch",
+                "type": anomaly_type,
                 "claimId": item["claimId"],
-                "severity": "major",
+                "severity": severity,
                 "description": item["verdict"],
-                "suggestedFix": "Correct the figure, regenerate it from the audited metrics, or revise the paper claim.",
-                "acceptanceCriterion": "The regenerated figure and exact claim agree on direction, values, labels, and uncertainty.",
+                "suggestedFix": suggested_fix,
+                "acceptanceCriterion": acceptance,
                 "confidence": item["confidence"],
             },
             evidence_ids=evidence_ids,
@@ -600,6 +632,7 @@ def _merge_related_anomalies(anomalies: List[Dict[str, Any]]) -> List[Dict[str, 
         "trend_reversal",
         "legend_mismatch",
         "claim_mismatch",
+        "claim_support_gap",
     }
     type_priority = {
         "numeric_mismatch": 0,
@@ -607,6 +640,7 @@ def _merge_related_anomalies(anomalies: List[Dict[str, Any]]) -> List[Dict[str, 
         "legend_mismatch": 2,
         "caption_mismatch": 3,
         "claim_mismatch": 4,
+        "claim_support_gap": 5,
     }
     severity_rank = {"blocker": 0, "major": 1, "minor": 2, "info": 3}
     grouped: Dict[tuple[str, str], List[Dict[str, Any]]] = {}
@@ -659,6 +693,7 @@ def _append_finding(
         "uncertainty_missing": "Figure omits uncertainty needed for the claim",
         "unreadable_figure": "Figure cannot be audited at its current resolution",
         "claim_mismatch": "Figure content conflicts with a paper claim",
+        "claim_support_gap": "Figure evidence is weaker than the paper claim",
     }.get(anomaly_type, "Visual evidence requires revision")
     suggested_fix = str(anomaly.get("suggestedFix") or "Regenerate the figure from audited data and align the caption and claim.")
     acceptance = str(anomaly.get("acceptanceCriterion") or "The figure, caption, and linked claim agree under visual re-audit.")

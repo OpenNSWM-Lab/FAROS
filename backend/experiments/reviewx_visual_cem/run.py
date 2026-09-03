@@ -68,7 +68,7 @@ CASES = (
         "truncated_axis", "bar", 0.80, 0.81,
         "The proposed method delivers a large held-out F1 improvement over the baseline.",
         "A large performance gain is visible for Proposed over Baseline.",
-        True, ("axis_issue", "claim_mismatch", "caption_mismatch"), narrow_axis=True,
+        True, ("axis_issue", "claim_mismatch", "claim_support_gap", "caption_mismatch"), narrow_axis=True,
     ),
     VisualCase(
         "clean_legend", "line", 0.70, 0.82,
