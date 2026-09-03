@@ -1874,6 +1874,7 @@ async def get_experiment_signoffs_endpoint(feedback_id: str) -> HumanSignoffResp
 )
 async def get_experiment_signoff_dossier_endpoint(
     feedback_id: str,
+    release: Literal["draft", "official"] = "draft",
     response: Response = None,
 ) -> SignoffDossier:
     record = get_experiment_feedback(feedback_id)
@@ -1882,7 +1883,17 @@ async def get_experiment_signoff_dossier_endpoint(
     if response is not None:
         response.headers["Cache-Control"] = "no-store"
         response.headers["X-Content-Type-Options"] = "nosniff"
-    return build_signoff_dossier(record, release="draft")
+    try:
+        return build_signoff_dossier(record, release=release)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "OFFICIAL_DOSSIER_LOCKED",
+                "message": str(exc),
+                "nextStep": "Complete all current ReviewX signoffs and resolve every blocker.",
+            },
+        ) from exc
 
 
 @router.get(
