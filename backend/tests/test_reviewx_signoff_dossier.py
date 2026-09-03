@@ -148,6 +148,30 @@ def test_official_html_requires_publication_ready(monkeypatch, tmp_path: Path):
     assert response.headers["cache-control"] == "no-store"
 
 
+def test_official_json_requires_publication_ready_and_preserves_release(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(experiment_feedback_storage, "_STORAGE_DIR", tmp_path)
+    stored = experiment_feedback_storage.create_experiment_feedback(_record())
+    with pytest.raises(HTTPException) as blocked:
+        asyncio.run(reviews_api.get_experiment_signoff_dossier_endpoint(
+            stored["id"], "official"
+        ))
+    assert blocked.value.status_code == 409
+
+    _approve(stored, "plan")
+    _approve(stored, "conclusion")
+    experiment_feedback_storage.update_experiment_feedback(
+        stored["id"], {"humanSignoffs": stored["humanSignoffs"]}
+    )
+    response = Response()
+    dossier = asyncio.run(reviews_api.get_experiment_signoff_dossier_endpoint(
+        stored["id"], "official", response
+    ))
+    assert dossier.release == "official"
+    assert dossier.watermark is None
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["x-content-type-options"] == "nosniff"
+
+
 def test_raw_bundle_remains_backward_compatible(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(experiment_feedback_storage, "_STORAGE_DIR", tmp_path)
     stored = experiment_feedback_storage.create_experiment_feedback(_record())
