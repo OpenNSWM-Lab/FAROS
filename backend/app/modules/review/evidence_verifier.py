@@ -365,6 +365,40 @@ def _numeric_metric_value(ev: Evidence) -> Optional[float]:
     return summary_numbers[0] if summary_numbers else None
 
 
+def _metrics_relevant_to_claim(
+    claim_text: str,
+    observed: List[tuple[Evidence, float]],
+) -> List[tuple[Evidence, float]]:
+    """Prefer values from the metric family explicitly named by the claim."""
+    lowered = claim_text.lower()
+    families = [
+        (("macro f1", "macro-f1", "macro_f1"), ("macro", "f1")),
+        (("balanced accuracy", "balanced-accuracy", "balanced_accuracy"), ("balanced", "accuracy")),
+        (("accuracy", "准确率"), ("accuracy",)),
+        (("precision", "精确率"), ("precision",)),
+        (("recall", "召回率"), ("recall",)),
+        (("auc",), ("auc",)),
+        (("ece", "calibration error"), ("ece",)),
+        (("f1", "f1-score", "f1 score"), ("f1",)),
+        (("threshold", "阈值"), ("threshold",)),
+    ]
+    required_tokens: tuple[str, ...] | None = None
+    for aliases, tokens in families:
+        if any(alias in lowered for alias in aliases):
+            required_tokens = tokens
+            break
+    if not required_tokens:
+        return observed
+
+    relevant = []
+    for ev, value in observed:
+        metric_name = str(ev.metadata.get("metricName") or "")
+        haystack = f"{metric_name} {ev.summary}".lower().replace("-", "_")
+        if all(token in haystack for token in required_tokens):
+            relevant.append((ev, value))
+    return relevant or observed
+
+
 def _verify_numeric_claim(
     paper_id: str,
     claim: Claim,
@@ -392,6 +426,7 @@ def _verify_numeric_claim(
         value = _numeric_metric_value(ev)
         if value is not None:
             observed.append((ev, value))
+    observed = _metrics_relevant_to_claim(claim.text, observed)
     if not observed:
         return EvidenceVerification(
             id=_verification_id(index),
@@ -483,7 +518,14 @@ def _verify_numeric_claim(
 
 
 def _numbers_compatible(expected: float, observed: float) -> bool:
-    if math.isclose(expected, observed, rel_tol=0.08, abs_tol=0.5):
+    scale = max(abs(expected), abs(observed))
+    if scale <= 1.0:
+        absolute_tolerance = 0.01
+    elif scale <= 10.0:
+        absolute_tolerance = 0.05
+    else:
+        absolute_tolerance = 0.5
+    if math.isclose(expected, observed, rel_tol=0.08, abs_tol=absolute_tolerance):
         return True
     # Common FAROS papers mix fractions and percentages.
     if expected > 1 and observed <= 1:

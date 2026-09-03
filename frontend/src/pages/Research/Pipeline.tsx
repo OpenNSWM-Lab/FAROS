@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom'
 import { AppPageLayout } from '@/components/layout/AppPageLayout'
 import { IdeaGenerationPanel } from '@/components/ideas/IdeaGenerationPanel'
 import { PlanGenerationPanel } from '@/components/plans/PlanGenerationPanel'
+import { VerifiedResearchHistories } from '@/components/research/VerifiedResearchHistories'
 import { FlaskConical, ArrowDown } from 'lucide-react'
 import { useReviewLocale } from '@/lib/reviewLocale'
 
@@ -51,6 +52,8 @@ export function ResearchPipeline() {
       headerViz="metricCapsules"
     >
       <div className="space-y-6">
+        <VerifiedResearchHistories />
+
         {/* Phase 1: Idea Generation */}
         <div id="pipeline-phase-1">
           <div className="mb-4 flex items-center gap-3">

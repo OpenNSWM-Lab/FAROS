@@ -390,6 +390,24 @@ def link_claims_to_evidence(claims: List[Claim], evidence: List[Evidence]) -> Di
                 overlap += 2
             if ev.evidenceType == "metric":
                 metric_name = str(ev.metadata.get("metricName") or "").lower()
+                normalized_claim = claim_text.replace("-", " ").replace("_", " ")
+                normalized_metric = metric_name.replace("-", " ").replace("_", " ")
+                metric_families = (
+                    (("macro f1",), ("macro", "f1")),
+                    (("balanced accuracy",), ("balanced", "accuracy")),
+                    (("accuracy",), ("accuracy",)),
+                    (("precision",), ("precision",)),
+                    (("recall",), ("recall",)),
+                    (("auc",), ("auc",)),
+                    (("ece", "calibration error"), ("ece",)),
+                    (("f1",), ("f1",)),
+                    (("threshold",), ("threshold",)),
+                )
+                for aliases, required_tokens in metric_families:
+                    if any(alias in normalized_claim for alias in aliases):
+                        if all(token in normalized_metric for token in required_tokens):
+                            overlap += 10
+                        break
                 if "baseline" in claim_text and "baseline" in metric_name:
                     overlap += 6
                 if any(term in claim_text for term in ("method", "proposed", "ours", "our ")):
@@ -400,7 +418,7 @@ def link_claims_to_evidence(claims: List[Claim], evidence: List[Evidence]) -> Di
                 except (TypeError, ValueError):
                     metric_value = None
                 if metric_value is not None and any(
-                    abs(metric_value - claim_value) <= max(1e-8, abs(metric_value) * 1e-5)
+                    abs(metric_value - claim_value) <= max(5e-4, abs(metric_value) * 1e-3)
                     for claim_value in claim_numbers
                 ):
                     overlap += 8

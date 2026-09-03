@@ -11,6 +11,7 @@ from app.modules.platform.runs_api import router as runs_router
 from app.modules.platform.runs_monitor_api import router as runs_monitor_router
 from app.modules.platform.skills_api import router as skills_router
 from app.modules.platform.templates_api import router as templates_router
+from app.modules.platform.verified_histories_api import router as verified_histories_router
 
 router = APIRouter(tags=["module:platform"])
 router.include_router(plan_packages_router)
@@ -22,3 +23,4 @@ router.include_router(artifacts_router)
 router.include_router(providers_router)
 router.include_router(skills_router)
 router.include_router(templates_router)
+router.include_router(verified_histories_router)

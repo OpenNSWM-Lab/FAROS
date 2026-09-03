@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from 'react'
+import { useEffect, useState, useMemo, useRef } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { AppPageLayout } from '@/components/layout/AppPageLayout'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -74,6 +74,12 @@ interface ReviewXRunDetail {
   providerName?: string
   model?: string
   scoreSuggestion?: number
+  claims?: Array<{ id: string }>
+  jsonReport?: {
+    summary?: {
+      claimCount?: number
+    }
+  }
   actionItems?: ReviewXActionItem[]
   riskTree?: ReviewXRiskNode[]
   mismatchReport?: ReviewXMismatchReport
@@ -354,10 +360,14 @@ const findingHasLlmRefinement = (finding: ReviewFinding) =>
 export function ConsistencyChecker() {
   const { text } = useReviewLocale()
   const [searchParams] = useSearchParams()
+  const requestedPaperId = searchParams.get('paperId')?.trim() || ''
+  const requestedReviewId = searchParams.get('reviewId')?.trim() || ''
+  const openedDeepLinkRef = useRef('')
+  const historyLoaderRef = useRef<(reviewId: string) => Promise<void>>(async () => undefined)
   const requestedFeedbackId = searchParams.get('feedbackId') || undefined
   const requestedFeedbackFocus = searchParams.get('focus') === 'signoff' ? 'signoff' : 'loop'
   const { data: papers, isLoading: papersLoading } = usePapers()
-  const [selectedPaperId, setSelectedPaperId] = useState<string>('')
+  const [selectedPaperId, setSelectedPaperId] = useState<string>(requestedPaperId)
   const [budgetMode, setBudgetMode] = useState<string>('balanced')
   const [visualAuditEnabled, setVisualAuditEnabled] = useState(false)
   const [severityFilter, setSeverityFilter] = useState<string>('all')
@@ -554,6 +564,7 @@ export function ConsistencyChecker() {
       void loadComparison(runDetail.paperId, runDetail.id)
     }
   }
+  historyLoaderRef.current = loadHistoryFindings
 
   useEffect(() => {
     setSelectedHistoryId('')
@@ -568,6 +579,14 @@ export function ConsistencyChecker() {
     setSeverityFilter('all')
     void refreshHistory(selectedPaperId)
   }, [selectedPaperId])
+
+  useEffect(() => {
+    if (!requestedPaperId || selectedPaperId !== requestedPaperId || !requestedReviewId) return
+    const deepLinkKey = `${requestedPaperId}:${requestedReviewId}`
+    if (openedDeepLinkRef.current === deepLinkKey) return
+    openedDeepLinkRef.current = deepLinkKey
+    void historyLoaderRef.current(requestedReviewId)
+  }, [requestedPaperId, requestedReviewId, selectedPaperId])
 
   const filteredFindings = useMemo(() => {
     if (!findings) return []
@@ -1623,7 +1642,17 @@ export function ConsistencyChecker() {
               </div>
             ) : filteredFindings.length === 0 ? (
               <div className="text-center py-8 text-sm text-muted-foreground">
-                {text('未发现 finding。', 'No findings. Paper looks good.')}
+                {(findings?.length || 0) > 0
+                  ? text('当前筛选条件下没有 finding。', 'No findings match the current filters.')
+                  : (runDetail?.jsonReport?.summary?.claimCount ?? runDetail?.claims?.length ?? 0) === 0
+                    ? text(
+                        '未提取到可审计主张，不能据此判断论文通过。请确认论文正文完整，并用完整句明确陈述方法与结果后重新审计。',
+                        'No auditable claims were extracted, so this is not a pass. Check that the full manuscript is present, state method and result claims explicitly, then rerun the audit.',
+                      )
+                    : text(
+                        `已审计 ${runDetail?.jsonReport?.summary?.claimCount ?? runDetail?.claims?.length ?? 0} 条主张，未发现证据矛盾。`,
+                        `No evidence conflicts were found across ${runDetail?.jsonReport?.summary?.claimCount ?? runDetail?.claims?.length ?? 0} audited claims.`,
+                      )}
               </div>
             ) : (
               <div className="space-y-8">

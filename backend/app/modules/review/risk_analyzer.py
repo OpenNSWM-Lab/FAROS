@@ -10,7 +10,12 @@ from app.modules.review.guardrails import find_guardrail_conflicts
 from app.modules.review.reviewx_models import Claim, Evidence, EvidenceVerification, Finding, RiskNode
 
 
-_NUMERIC_RE = re.compile(r"\b\d+(\.\d+)?\s*(%|percent|x|times|k|ms|s|tokens?|accuracy|f1|auc)\b", re.IGNORECASE)
+_NUMERIC_RE = re.compile(
+    r"(?:\b\d+(?:\.\d+)?\s*(?:%|percent(?:age points?)?|x|times|k|ms|s|tokens?|accuracy|f1|auc)\b|"
+    r"\b(?:macro\s+f1|f1(?:-score)?|accuracy|precision|recall|auc|ece)\b.{0,24}\d+(?:\.\d+)?|"
+    r"(?<![A-Za-z0-9_.])-?\d+\.\d{2,}(?=$|[^A-Za-z0-9_]))",
+    re.IGNORECASE,
+)
 _BASELINE_RE = re.compile(r"\b(baseline|ablation|compare|comparison|outperform|state-of-the-art|sota)\b", re.IGNORECASE)
 _OVERCLAIM_RE = re.compile(r"\b(always|guarantee|guarantees|prove|proves|state-of-the-art|sota|without degrading|no degradation)\b", re.IGNORECASE)
 
@@ -137,6 +142,8 @@ def analyze_reviewx_risks(
             reasons.append(f"The claim conflicts with the paper brief guardrail: {avoid_hits[0]}")
 
         statuses = {verification.supportStatus for verification in claim_verifications}
+        if statuses and statuses <= {"supported"} and not avoid_hits and not _OVERCLAIM_RE.search(claim.text):
+            score = min(score, 0.28)
         artifact_only = bool(statuses) and statuses <= {"artifact_absent", "weakly_supported", "supported"}
         if external_claim and artifact_only and not avoid_hits and not _OVERCLAIM_RE.search(claim.text):
             score = min(score, 0.28)
@@ -266,6 +273,8 @@ def _finding_cem_calibration(verifications: List[EvidenceVerification]) -> Dict[
 
 
 def _finding_category(finding: Finding) -> str:
+    if finding.riskType == "no_auditable_claims":
+        return "evidence_support"
     if finding.riskType == "artifact_gap":
         return "evidence_support"
     if finding.riskType == "citation_uncertainty":
@@ -343,6 +352,8 @@ def _global_risk_nodes(findings: List[Finding], offset: int) -> List[RiskNode]:
 
 
 def _global_risk_question(finding: Finding) -> str:
+    if finding.riskType == "no_auditable_claims":
+        return "Did ReviewX extract enough substantive claims to perform an audit?"
     if finding.riskType == "missing_metrics":
         return "Are experiment metrics available before performance claims are accepted?"
     if finding.riskType == "missing_citations":
@@ -441,6 +452,30 @@ def _global_findings(
     evidence_counts = Counter(ev.evidenceType for ev in evidence)
     performance_claims = [c for c in claims if c.claimType == "performance"]
     external_paper = bool(paper.get("externalPaper"))
+
+    if not claims:
+        extra.append(Finding(
+            id=f"finding_{len(current_findings) + len(extra) + 1:03d}",
+            paperId=paper["id"],
+            claimId=None,
+            severity="major" if external_paper else "blocker",
+            riskType="no_auditable_claims",
+            title="No auditable research claims were extracted",
+            description=(
+                "ReviewX could not identify a substantive method, performance, robustness, or evidence assertion "
+                "in the available manuscript. Zero findings would therefore mean that the audit had no usable "
+                "claim input, not that the paper passed review."
+            ),
+            evidenceIds=[],
+            targetModule="papers",
+            suggestedFix=(
+                "Open the paper workspace and verify that the complete LaTeX manuscript is present. State the "
+                "main method and result claims as complete sentences, then rerun ReviewX."
+            ),
+            confidence=0.99,
+            location={"section": "Manuscript input"},
+            supportStatus="artifact_absent",
+        ))
 
     if external_paper and (evidence_counts["metric"] == 0 or not evidence_counts["code_artifact"]):
         missing = []
