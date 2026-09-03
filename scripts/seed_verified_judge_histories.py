@@ -802,6 +802,14 @@ def _seed_run_and_experiment(
         f"- Held-out accuracy: {values['beforeAccuracy']:.4f} -> {values['afterAccuracy']:.4f}\n\n"
         "The threshold proposal and gate use disjoint claim groups. The test labels were opened only after the "
         "UPDATE/KEEP decision had been frozen. Accuracy and Macro F1 are reported together to expose trade-offs.\n"
+        + (
+            f"The candidate threshold {values['proposedThreshold']:.3f} passed the independent gate and replaced "
+            f"the round-one threshold with {values['appliedThreshold']:.3f}.\n"
+            if values["gateDecision"] == "apply_revision"
+            else f"The candidate threshold {values['proposedThreshold']:.3f} failed the independent gate and was "
+            f"not applied. The retained {values['appliedThreshold']:.3f} threshold makes the authorized-policy "
+            "metric equal to round one by design; this is a successful non-update, not a failed execution.\n"
+        )
     )
     _write_json(experiment_dir / "experiment.json", experiment)
     _write_json(experiment_dir / "metrics.json", metrics)
@@ -860,7 +868,10 @@ def _seed_figure(
     axes[1].set_xlabel("Validation Macro F1 delta")
     axes[1].set_title("Claim-cluster bootstrap 95% CI", fontsize=13, fontweight="bold")
     axes[1].grid(axis="x", alpha=0.2)
-    axes[1].text(0.02, 0.08, definition["decision"].upper(), transform=axes[1].transAxes, fontsize=12, fontweight="bold", color="#0F766E" if values["gateDecision"] == "apply_revision" else "#B45309")
+    decision_label = "UPDATE" if values["gateDecision"] == "apply_revision" else "KEEP"
+    axes[1].text(0.02, 0.08, decision_label, transform=axes[1].transAxes, fontsize=12, fontweight="bold", color="#0F766E" if values["gateDecision"] == "apply_revision" else "#B45309")
+    axes[1].text(values["ciLow"], -0.16, f"{values['ciLow']:.4f}", ha="center", va="top", fontsize=10)
+    axes[1].text(values["ciHigh"], -0.16, f"{values['ciHigh']:.4f}", ha="center", va="top", fontsize=10)
     fig.suptitle(definition["titleEn"], fontsize=15, fontweight="bold", y=1.01)
     fig.tight_layout()
     fig.savefig(figure_path, dpi=180, bbox_inches="tight")
@@ -868,7 +879,8 @@ def _seed_figure(
 
     caption = (
         f"Real-data result for {definition['dataset']}. Left: held-out Macro F1 under round one and the "
-        f"gate-authorized policy. Right: validation claim-cluster bootstrap interval; decision={values['gateDecision']}."
+        f"gate-authorized policy. Right: validation claim-cluster bootstrap interval "
+        f"[{values['ciLow']:.4f}, {values['ciHigh']:.4f}]; decision={decision_label}."
     )
     spec = {
         "id": ids["figure"],
@@ -893,12 +905,15 @@ def _seed_figure(
 def _paper_sources(definition: dict[str, Any], values: dict[str, Any], *, revised: bool) -> tuple[str, list[dict[str, str]], str]:
     references = _references(definition["dataset"])
     primary_key = references[0]["key"]
+    decision_label = "UPDATE" if values["gateDecision"] == "apply_revision" else "KEEP"
     decision_sentence = (
         f"The independent gate authorized UPDATE because its claim-cluster 95\\% interval "
         f"[{values['ciLow']:.4f}, {values['ciHigh']:.4f}] remained above zero."
         if values["gateDecision"] == "apply_revision"
         else f"The independent gate returned KEEP because its claim-cluster 95\\% interval "
-        f"[{values['ciLow']:.4f}, {values['ciHigh']:.4f}] crossed zero."
+        f"[{values['ciLow']:.4f}, {values['ciHigh']:.4f}] crossed zero. The proposed threshold "
+        f"{values['proposedThreshold']:.3f} was therefore rejected and the preregistered threshold "
+        f"{values['appliedThreshold']:.3f} remained active."
     )
     if revised:
         if values["gateDecision"] == "apply_revision":
@@ -911,9 +926,10 @@ def _paper_sources(definition: dict[str, Any], values: dict[str, Any], *, revise
             )
         else:
             result_claim = (
-                f"The proposed threshold {values['proposedThreshold']:.3f} was not adopted; the frozen threshold "
-                f"remained {values['appliedThreshold']:.3f}. Consequently, held-out Macro F1 remained "
-                f"{values['afterF1']:.4f} rather than being reported as an improvement."
+                f"Because the policy did not change, held-out Macro F1 at the retained threshold was "
+                f"{values['beforeF1']:.4f} in both the round-one and authorized-policy columns "
+                f"(absolute delta {values['f1Delta']:.4f}). This controlled non-update is not evidence of a "
+                "performance improvement."
             )
     else:
         result_claim = definition["falseClaim"]
@@ -935,6 +951,8 @@ def _paper_sources(definition: dict[str, Any], values: dict[str, Any], *, revise
             "content": (
                 "We propose a four-step controller: fit once, propose a threshold on one validation claim-group "
                 "partition, gate it on a disjoint partition, and freeze UPDATE or KEEP before reading test labels. "
+                "The controller is implemented by the linked code artifact and its decisions are reproduced in the "
+                "experiment record.\n\n"
                 "The uncertainty estimate resamples claim IDs rather than individual evidence pairs. This matches "
                 "the scientific-claim dependence structure used by SciFact-style evaluation \\cite{scifact2020} "
                 "and treats calibration as a decision process \\cite{calibration2017}."
@@ -972,7 +990,7 @@ def _paper_sources(definition: dict[str, Any], values: dict[str, Any], *, revise
             "id": "conclusion",
             "title": "6 Conclusion",
             "content": (
-                f"This case demonstrates an auditable {values['gateDecision'].upper()} decision: ReviewX links a "
+                f"This case demonstrates an auditable {decision_label} decision: ReviewX links a "
                 "paper claim to exact metrics, preserves the uncertainty boundary, and returns the correction to "
                 "the research workflow."
             ),
@@ -981,7 +999,7 @@ def _paper_sources(definition: dict[str, Any], values: dict[str, Any], *, revise
     abstract = (
         f"We evaluate evidence-gated threshold revision on {definition['dataset']} using disjoint validation "
         f"claim groups, {values['bootstrapSamples']} claim-cluster bootstrap samples, and a frozen held-out test "
-        f"set of {values['testPairs']} pairs. The gate decision is {values['gateDecision']}. All values are linked "
+        f"set of {values['testPairs']} pairs. The gate decision is {decision_label}. All values are linked "
         "to per-record predictions and source hashes, and the manuscript is audited by ReviewX before release."
     )
     body_parts = []

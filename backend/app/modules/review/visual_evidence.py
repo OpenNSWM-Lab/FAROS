@@ -223,12 +223,25 @@ def _select_figures(figures: Any, mode: str, *, data_root: Optional[str]) -> Lis
     if not isinstance(figures, list):
         return []
     limit = 3 if mode == "deep" else 1
-    valid = [item for item in figures if isinstance(item, dict) and _image_payload(item, data_root=data_root)]
-    valid.sort(key=lambda item: (
-        0 if str(item.get("source", "")).startswith("paper") else 1,
-        0 if _NUMERIC_OR_RESULT_RE.search(f"{item.get('caption', '')} {item.get('title', '')}") else 1,
-        str(item.get("sourcePath") or ""),
+    valid_with_digests = []
+    for item in figures:
+        if not isinstance(item, dict):
+            continue
+        payload = _image_payload(item, data_root=data_root)
+        if payload:
+            valid_with_digests.append((item, payload["sha256"]))
+    valid_with_digests.sort(key=lambda entry: (
+        0 if str(entry[0].get("source", "")).startswith("paper") else 1,
+        0 if _NUMERIC_OR_RESULT_RE.search(f"{entry[0].get('caption', '')} {entry[0].get('title', '')}") else 1,
+        str(entry[0].get("sourcePath") or ""),
     ))
+    seen_digests: set[str] = set()
+    valid: List[Dict[str, Any]] = []
+    for item, digest in valid_with_digests:
+        if digest in seen_digests:
+            continue
+        seen_digests.add(digest)
+        valid.append(item)
     return valid[:limit]
 
 

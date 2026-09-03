@@ -189,6 +189,53 @@ def test_clean_visual_audit_adds_support_without_a_finding(tmp_path: Path):
     assert weak_result.findings[0].supportStatus == "needs_human_verification"
 
 
+def test_visual_audit_deduplicates_identical_images(tmp_path: Path):
+    claim = _claim()
+    first, evidence = _visual_fixture(tmp_path)
+    duplicate_path = tmp_path / "figures" / "copied-result.png"
+    duplicate_path.parent.mkdir(parents=True, exist_ok=True)
+    duplicate_path.write_bytes(PNG_BYTES)
+    duplicate = {
+        **first,
+        "id": "fig_result_copy",
+        "source": "experiment",
+        "sourcePath": "data/figures/copied-result.png",
+        "absolutePath": str(duplicate_path),
+    }
+    client = FakeVisionClient({
+        "chartType": "bar",
+        "readable": True,
+        "observations": ["Values are readable."],
+        "captionStatus": "consistent",
+        "captionRationale": "The values match.",
+        "claimAssessments": [{
+            "claimId": claim.id,
+            "status": "supported",
+            "verdict": "The figure supports the claim.",
+            "confidence": 0.9,
+        }],
+        "anomalies": [],
+    })
+
+    result = audit_visual_evidence(
+        paper={"id": claim.paperId, "title": "Duplicate visual fixture"},
+        claims=[claim],
+        evidence=[evidence],
+        links={claim.id: [evidence.id]},
+        artifacts={"visualFigures": [duplicate, first]},
+        provider_name="qwen",
+        visual_model="qwen3-vl-plus",
+        budget_mode="deep",
+        enabled=True,
+        client=client,
+        data_root=str(tmp_path),
+    )
+
+    assert result.trace["selectedFigureCount"] == 1
+    assert result.trace["auditedFigureCount"] == 1
+    assert len(client.calls) == 1
+
+
 def test_related_visual_mismatches_are_collapsed_into_one_action(tmp_path: Path):
     result, _client = _run(tmp_path, {
         "chartType": "bar",
