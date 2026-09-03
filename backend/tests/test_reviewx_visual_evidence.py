@@ -276,6 +276,18 @@ def test_artifact_collector_discovers_latex_figure_and_rejects_fake_image(monkey
     figures_dir.mkdir(parents=True)
     (figures_dir / "result.png").write_bytes(PNG_BYTES)
     (figures_dir / "fake.png").write_text("not an image", encoding="utf-8")
+    experiment_figure_dir = tmp_path / "figures" / "fig_migrated"
+    experiment_figure_dir.mkdir(parents=True)
+    (experiment_figure_dir / "migrated.png").write_bytes(PNG_BYTES)
+    experiment_dir = tmp_path / "experiments" / "exp_migrated"
+    experiment_dir.mkdir(parents=True)
+    (experiment_dir / "experiment.json").write_text("{}", encoding="utf-8")
+    (experiment_dir / "figures.json").write_text(json.dumps([{
+        "id": "fig_migrated",
+        "pathPng": "/retired/developer/workspace/migrated.png",
+        "fileNamePng": "migrated.png",
+        "caption": "Migrated experiment figure.",
+    }]), encoding="utf-8")
     tex = r"""
     \begin{figure}
       \includegraphics{Figures/result.png}
@@ -288,7 +300,7 @@ def test_artifact_collector_discovers_latex_figure_and_rejects_fake_image(monkey
     monkeypatch.setattr(artifact_collector, "_BASE_DIR", str(tmp_path.parent))
     monkeypatch.setattr(artifact_collector, "get_paper", lambda _paper_id: {
         "id": paper_id,
-        "experimentIds": [],
+        "experimentIds": ["exp_migrated"],
         "selectedFigures": [],
     })
     monkeypatch.setattr(artifact_collector, "list_paper_files", lambda _paper_id: [{
@@ -300,9 +312,12 @@ def test_artifact_collector_discovers_latex_figure_and_rejects_fake_image(monkey
 
     artifacts = artifact_collector.collect_reviewx_artifacts(paper_id)
 
-    assert len(artifacts["visualFigures"]) == 1
-    visual = artifacts["visualFigures"][0]
+    assert len(artifacts["visualFigures"]) == 2
+    visual = next(item for item in artifacts["visualFigures"] if item["source"] == "paper_latex")
     assert visual["source"] == "paper_latex"
     assert visual["mimeType"] == "image/png"
     assert visual["caption"] == "F1 comparison on the held-out set."
     assert visual["sourcePath"].endswith("Figures/result.png")
+    migrated = next(item for item in artifacts["visualFigures"] if item["source"] == "experiment")
+    assert migrated["sourcePath"].endswith("figures/fig_migrated/migrated.png")
+    assert migrated["caption"] == "Migrated experiment figure."

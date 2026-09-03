@@ -91,20 +91,26 @@ def _valid_visual_path(path: str) -> tuple[str, str] | None:
     return (real, mime) if mime else None
 
 
-def _resolve_visual_path(candidate: str, roots: List[str]) -> tuple[str, str] | None:
-    value = str(candidate or "").strip()
-    if not value:
-        return None
-    possibilities = [value] if os.path.isabs(value) else [os.path.join(root, value) for root in roots]
-    expanded: List[str] = []
-    for path in possibilities:
-        expanded.append(path)
-        if not os.path.splitext(path)[1]:
-            expanded.extend(path + suffix for suffix in _VISUAL_SUFFIXES)
-    for path in expanded:
-        resolved = _valid_visual_path(path)
-        if resolved:
-            return resolved
+def _resolve_visual_path(candidates: Any, roots: List[str]) -> tuple[str, str] | None:
+    values = candidates if isinstance(candidates, (list, tuple)) else [candidates]
+    for candidate in values:
+        value = str(candidate or "").strip()
+        if not value:
+            continue
+        possibilities = [value] if os.path.isabs(value) else [os.path.join(root, value) for root in roots]
+        expanded: List[str] = []
+        for path in possibilities:
+            stem, suffix = os.path.splitext(path)
+            if suffix.lower() in _VISUAL_SUFFIXES:
+                expanded.append(path)
+            elif suffix:
+                expanded.extend(stem + visual_suffix for visual_suffix in _VISUAL_SUFFIXES)
+            else:
+                expanded.extend(path + visual_suffix for visual_suffix in _VISUAL_SUFFIXES)
+        for path in expanded:
+            resolved = _valid_visual_path(path)
+            if resolved:
+                return resolved
     return None
 
 
@@ -131,7 +137,7 @@ def _collect_visual_figures(
     by_path: Dict[str, Dict[str, Any]] = {}
 
     def add(
-        candidate: str,
+        candidate: Any,
         *,
         roots: List[str],
         caption: str = "",
@@ -177,7 +183,12 @@ def _collect_visual_figures(
             figure_id = figure.get("id")
             fallback_root = os.path.join(_DATA_DIR, "figures", str(figure_id or ""))
             add(
-                str(figure.get("pathPng") or figure.get("fileNamePng") or ""),
+                [
+                    figure.get("pathPng"),
+                    figure.get("fileNamePng"),
+                    figure.get("fileName"),
+                    figure.get("pathPdf"),
+                ],
                 roots=[fallback_root, latex_root],
                 caption=str(figure.get("caption") or ""),
                 title=str(figure.get("title") or figure.get("figureType") or ""),
@@ -189,13 +200,13 @@ def _collect_visual_figures(
     for figure in paper.get("selectedFigures", []) or []:
         if not isinstance(figure, dict):
             continue
-        candidate = str(
-            figure.get("pngPath")
-            or figure.get("pathPng")
-            or figure.get("path")
-            or figure.get("fileNamePng")
-            or ""
-        )
+        candidate = [
+            figure.get("pngPath"),
+            figure.get("pathPng"),
+            figure.get("path"),
+            figure.get("fileNamePng"),
+            figure.get("filename"),
+        ]
         add(
             candidate,
             roots=[latex_root, os.path.join(latex_root, "figures"), os.path.join(latex_root, "Figures")],
