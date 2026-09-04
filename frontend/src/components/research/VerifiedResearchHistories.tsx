@@ -15,11 +15,12 @@ import {
   ShieldCheck,
 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
+import { Button, buttonVariants } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { API_BASE_URL } from '@/lib/api'
 import { useReviewLocale } from '@/lib/reviewLocale'
+import { cn } from '@/lib/utils'
 
 interface VerifiedStage {
   id: 'idea' | 'plan' | 'code' | 'experiment' | 'paper' | 'reviewx'
@@ -159,7 +160,9 @@ export function VerifiedResearchHistories() {
         </div>
       ) : (
         <div className="grid gap-4 lg:grid-cols-2">
-          {histories.map((history) => {
+          {[...histories]
+            .sort((left, right) => right.primaryMetric.delta - left.primaryMetric.delta)
+            .map((history) => {
             const isUpdate = history.decision.code === 'apply_revision'
             const initialBlockers = history.reviewTrail.initial.severityCounts?.blocker || 0
             const finalBlockers = history.reviewTrail.final.severityCounts?.blocker || 0
@@ -169,7 +172,7 @@ export function VerifiedResearchHistories() {
 
             return (
               <Card key={history.id} className="border-slate-200 shadow-sm">
-                <CardHeader className="space-y-3 pb-3">
+                <CardHeader className="space-y-3 p-4 pb-3 sm:p-6 sm:pb-3">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="flex items-center gap-2 text-xs font-semibold uppercase text-slate-500">
                       <FlaskConical className="h-4 w-4" />
@@ -190,25 +193,25 @@ export function VerifiedResearchHistories() {
                   </CardTitle>
                   <p className="text-sm leading-6 text-slate-600">{text(history.summaryZh, history.summaryEn)}</p>
                 </CardHeader>
-                <CardContent className="space-y-4">
-                  <div className="grid grid-cols-3 divide-x divide-slate-200 border-y border-slate-200 py-3 text-center">
-                    <div className="px-2">
-                      <div className="text-lg font-bold text-slate-950">{history.provenance.testPairs.toLocaleString()}</div>
-                      <div className="text-xs text-slate-500">{text('留出测试对', 'held-out pairs')}</div>
+                <CardContent className="space-y-4 p-4 pt-0 sm:p-6 sm:pt-0">
+                  <div className="grid grid-cols-2 border-y border-slate-200 py-3 text-center sm:grid-cols-3">
+                    <div className="border-r border-slate-200 px-2">
+                      <div className="whitespace-nowrap text-base font-bold text-slate-950 sm:text-lg">{history.provenance.testPairs.toLocaleString()}</div>
+                      <div className="text-[11px] leading-4 text-slate-500 sm:text-xs">{text('留出测试对', 'held-out pairs')}</div>
                     </div>
                     <div className="px-2">
-                      <div className={`text-lg font-bold ${history.primaryMetric.delta > 0 ? 'text-emerald-700' : 'text-slate-700'}`}>
+                      <div className={`whitespace-nowrap text-base font-bold sm:text-lg ${history.primaryMetric.delta > 0 ? 'text-emerald-700' : 'text-slate-700'}`}>
                         {formatSigned(history.primaryMetric.delta)}
                       </div>
-                      <div className="text-xs text-slate-500">{history.primaryMetric.name}</div>
+                      <div className="text-[11px] leading-4 text-slate-500 sm:text-xs">{history.primaryMetric.name}</div>
                     </div>
-                    <div className="px-2">
-                      <div className="text-lg font-bold text-slate-950">{initialBlockers} → {finalBlockers}</div>
-                      <div className="text-xs text-slate-500">Blockers</div>
+                    <div className="col-span-2 mt-3 border-t border-slate-200 px-2 pt-3 sm:col-span-1 sm:mt-0 sm:border-l sm:border-t-0 sm:pt-0">
+                      <div className="whitespace-nowrap text-base font-bold text-slate-950 sm:text-lg">{initialBlockers} → {finalBlockers}</div>
+                      <div className="text-[11px] leading-4 text-slate-500 sm:text-xs">Blockers</div>
                     </div>
                   </div>
 
-                  <div className="flex items-center justify-between gap-3 border-l-4 border-slate-800 bg-white px-3 py-2">
+                  <div className="flex flex-col items-start justify-between gap-2 border-l-4 border-slate-800 bg-white px-3 py-2 sm:flex-row sm:items-center sm:gap-3">
                     <div className="min-w-0">
                       <div className="text-xs font-semibold text-slate-500">{text('独立证据门禁', 'Independent evidence gate')}</div>
                       <div className="mt-0.5 text-sm font-semibold text-slate-900">
@@ -226,12 +229,15 @@ export function VerifiedResearchHistories() {
                       {history.stages.map((stage) => {
                         const Icon = stageIcons[stage.id]
                         return (
-                          <Button key={stage.id} asChild size="sm" variant="outline" className="h-auto min-h-14 flex-col gap-1 px-1 py-2 text-[11px]">
-                            <Link to={stage.url} title={text(stage.labelZh, stage.labelEn)}>
-                              <Icon className="h-4 w-4" />
-                              <span className="max-w-full truncate">{text(stage.labelZh, stage.labelEn)}</span>
-                            </Link>
-                          </Button>
+                          <Link
+                            key={stage.id}
+                            to={stage.url}
+                            title={text(stage.labelZh, stage.labelEn)}
+                            className={cn(buttonVariants({ size: 'sm', variant: 'outline' }), 'h-auto min-h-14 flex-col gap-1 px-1 py-2 text-[11px]')}
+                          >
+                            <Icon className="h-4 w-4" />
+                            <span className="max-w-full text-center leading-3">{text(stage.labelZh, stage.labelEn)}</span>
+                          </Link>
                         )
                       })}
                     </div>
@@ -239,23 +245,27 @@ export function VerifiedResearchHistories() {
 
                   <div className="flex flex-wrap items-center gap-2 border-t border-slate-200 pt-3">
                     {highlightedArtifacts.map((artifact) => (
-                      <Button key={artifact.id} asChild size="sm" variant="ghost" className="px-2 text-xs">
-                        <a href={`${API_BASE_URL}${artifact.url}`} download>
-                          <Download className="mr-1.5 h-3.5 w-3.5" />
-                          {artifact.id === 'final-pdf'
-                            ? text('论文 PDF', 'Paper PDF')
-                            : artifact.id === 'research-dossier'
-                              ? text('研究档案', 'Dossier')
-                              : text('逐条结果', 'Records')}
-                        </a>
-                      </Button>
+                      <a
+                        key={artifact.id}
+                        href={`${API_BASE_URL}${artifact.url}`}
+                        download
+                        className={cn(buttonVariants({ size: 'sm', variant: 'ghost' }), 'px-2 text-xs')}
+                      >
+                        <Download className="mr-1.5 h-3.5 w-3.5" />
+                        {artifact.id === 'final-pdf'
+                          ? text('论文 PDF', 'Paper PDF')
+                          : artifact.id === 'research-dossier'
+                            ? text('研究档案', 'Dossier')
+                            : text('逐条结果', 'Records')}
+                      </a>
                     ))}
-                    <Button asChild size="sm" className="ml-auto">
-                      <Link to={history.stages.find((stage) => stage.id === 'reviewx')?.url || '/review/consistency'}>
-                        {text('查看闭环', 'Open loop')}
-                        <ArrowRight className="ml-2 h-4 w-4" />
-                      </Link>
-                    </Button>
+                    <Link
+                      to={history.stages.find((stage) => stage.id === 'reviewx')?.url || '/review/consistency'}
+                      className={cn(buttonVariants({ size: 'sm' }), 'ml-auto')}
+                    >
+                      {text('查看闭环', 'Open loop')}
+                      <ArrowRight className="ml-2 h-4 w-4" />
+                    </Link>
                   </div>
                 </CardContent>
               </Card>
