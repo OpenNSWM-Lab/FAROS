@@ -412,6 +412,7 @@ export function ConsistencyChecker() {
   const [selectedHistoryId, setSelectedHistoryId] = useState<string>('')
   const [historyFindings, setHistoryFindings] = useState<ReviewFinding[] | null>(null)
   const [historyFindingsLoading, setHistoryFindingsLoading] = useState(false)
+  const [historyLoadError, setHistoryLoadError] = useState(false)
   const [runDetail, setRunDetail] = useState<ReviewXRunDetail | null>(null)
   const [runDetailLoading, setRunDetailLoading] = useState(false)
   const [revisionRequests, setRevisionRequests] = useState<ImprovementRequest[]>([])
@@ -455,6 +456,7 @@ export function ConsistencyChecker() {
   const loadHistoryFindings = async (reviewId: string) => {
     setSelectedHistoryId(reviewId)
     setLatestResultsEnabled(false)
+    setHistoryLoadError(false)
     setHistoryFindingsLoading(true)
     setRunDetailLoading(true)
     try {
@@ -462,14 +464,27 @@ export function ConsistencyChecker() {
         fetch(`${API_BASE_URL}/api/v1/reviews/reviewx/${reviewId}/findings`),
         fetch(`${API_BASE_URL}/api/v1/reviews/reviewx/${reviewId}`),
       ])
+      if (!findingsResp.ok || !detailResp.ok) {
+        throw new Error('Saved ReviewX run is unavailable')
+      }
       const findingsData = await findingsResp.json()
       const detailData = await detailResp.json()
-      setHistoryFindings(findingsData || [])
+      if (!Array.isArray(findingsData) || !detailData?.id || !detailData?.paperId) {
+        throw new Error('Saved ReviewX run returned an invalid response')
+      }
+      setHistoryFindings(findingsData)
       setRunDetail(detailData)
       setSelectedActionIndexes(new Set())
       setApplyMessage('')
       void loadRevisionRequests(detailData.id)
       void loadComparison(detailData.paperId, detailData.id)
+    } catch {
+      setSelectedHistoryId('')
+      setHistoryFindings(null)
+      setRunDetail(null)
+      setRevisionRequests([])
+      setComparison(null)
+      setHistoryLoadError(true)
     } finally {
       setHistoryFindingsLoading(false)
       setRunDetailLoading(false)
@@ -503,6 +518,7 @@ export function ConsistencyChecker() {
 
   const loadLatestReviewX = async (paperId: string) => {
     if (!paperId) return
+    setHistoryLoadError(false)
     setSelectedHistoryId('')
     setHistoryFindings(null)
     setLatestResultsEnabled(true)
@@ -611,6 +627,7 @@ export function ConsistencyChecker() {
     setSelectedActionIndexes(new Set())
     setApplyMessage('')
     setComparison(null)
+    setHistoryLoadError(false)
     setLatestResultsEnabled(false)
     setSearchQuery('')
     setSeverityFilter('all')
@@ -977,6 +994,17 @@ export function ConsistencyChecker() {
                   </div>
                   <div className="mt-1 text-xs leading-5">
                     {text('请先确认论文正文已生成、Settings 中模型可用；若仅视觉审计失败，可关闭该选项后重试并保留本地审计结果。', 'Confirm that the paper body exists and the model in Settings is available. If only visual audit fails, disable it and retry; local audit results remain available.')}
+                  </div>
+                </div>
+              )}
+              {historyLoadError && (
+                <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-950" role="alert">
+                  <div className="font-semibold">{text('保存的审计记录已不可用', 'Saved audit record unavailable')}</div>
+                  <div className="mt-1 text-xs leading-5">
+                    {text(
+                      '当前论文选择已保留。请刷新历史记录，或点击“加载最新结果”继续。',
+                      'The current paper selection was kept. Refresh history or choose Load Latest to continue.',
+                    )}
                   </div>
                 </div>
               )}

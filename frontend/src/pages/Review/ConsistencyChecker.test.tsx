@@ -50,6 +50,7 @@ describe('ConsistencyChecker', () => {
         }] })
       }
       if (url.endsWith('/review-1/findings')) return response([])
+      if (url.includes('/review-missing')) return response({ detail: 'Review not found' }, false)
       if (url.endsWith('/reviewx/review-1')) {
         return response({
           id: 'review-1',
@@ -87,5 +88,17 @@ describe('ConsistencyChecker', () => {
     expect(screen.getByText('已审计 3 条主张，未发现证据矛盾。')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /实验反馈闭环与人工签核/ })).toHaveAttribute('aria-expanded', 'false')
     expect(screen.queryByText('Feedback panel content')).not.toBeInTheDocument()
+  })
+
+  it('recovers when a deep-linked saved review no longer exists', async () => {
+    render(
+      <MemoryRouter initialEntries={['/review/consistency?paperId=paper-1&reviewId=review-missing']}>
+        <ConsistencyChecker />
+      </MemoryRouter>,
+    )
+
+    expect(await screen.findByText('保存的审计记录已不可用')).toBeInTheDocument()
+    expect(screen.getByText('当前论文选择已保留。请刷新历史记录，或点击“加载最新结果”继续。')).toBeInTheDocument()
+    expect(screen.queryByText('Something went wrong')).not.toBeInTheDocument()
   })
 })
