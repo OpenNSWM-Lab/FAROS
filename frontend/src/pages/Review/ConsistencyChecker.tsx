@@ -21,6 +21,7 @@ import {
   Loader2,
   Database,
   ScanSearch,
+  ChevronDown,
 } from 'lucide-react'
 import { usePapers, useReviewFindings, useRunConsistencyCheck } from '@/lib/hooks/useApi'
 import { API_BASE_URL } from '@/lib/api'
@@ -41,6 +42,13 @@ const severityVariants = {
   minor: 'secondary' as const,
   info: 'outline' as const,
 }
+
+const severityLabels = {
+  blocker: ['阻断问题', 'Blocker'],
+  major: ['主要问题', 'Major'],
+  minor: ['次要问题', 'Minor'],
+  info: ['提示', 'Info'],
+} as const
 
 interface ReviewXHistoryItem {
   id: string
@@ -78,6 +86,11 @@ interface ReviewXRunDetail {
   jsonReport?: {
     summary?: {
       claimCount?: number
+      evidenceCount?: number
+      verificationCount?: number
+      findingCount?: number
+      riskQuestionCount?: number
+      coverage?: number
     }
   }
   actionItems?: ReviewXActionItem[]
@@ -306,16 +319,25 @@ interface ReviewXRiskNode {
   mismatchDrivers?: string[]
 }
 
-const formatDateTime = (value?: string) => {
-  if (!value) return 'Unknown time'
+const formatDateTime = (value: string | undefined, locale: 'zh-CN' | 'en-US') => {
+  if (!value) return locale === 'zh-CN' ? '时间未知' : 'Unknown time'
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return value
-  return date.toLocaleString()
+  return new Intl.DateTimeFormat(locale, {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(date)
 }
 
-const severityText = (counts?: Record<string, number>) => {
+const severityText = (counts: Record<string, number> | undefined, locale: 'zh-CN' | 'en-US') => {
   const c = counts || {}
-  return `B ${c.blocker || 0} · M ${c.major || 0} · m ${c.minor || 0} · I ${c.info || 0}`
+  return locale === 'zh-CN'
+    ? `阻断 ${c.blocker || 0} · 主要 ${c.major || 0}`
+    : `Blocker ${c.blocker || 0} · Major ${c.major || 0}`
 }
 
 const supportText = (counts?: Record<string, number>) => {
@@ -357,8 +379,21 @@ const deltaTone = (value?: number | null, lowerIsBetter = true) => {
 const findingHasLlmRefinement = (finding: ReviewFinding) =>
   finding.description.includes('LLM deep review')
 
+const mismatchDimensionLabels: Record<string, [string, string]> = {
+  baseline: ['基线完整性', 'Baseline'],
+  citation: ['引用完整性', 'Citation'],
+  citation_semantic: ['引用语义', 'Citation semantics'],
+  coverage: ['证据覆盖', 'Evidence coverage'],
+  general: ['综合风险', 'General risk'],
+  guardrail: ['护栏', 'Guardrail'],
+  importance: ['主张重要性', 'Claim importance'],
+  numeric: ['数值一致性', 'Numeric consistency'],
+  review_risk: ['评审风险', 'Review risk'],
+  visual_claim_consistency: ['图文一致性', 'Visual consistency'],
+}
+
 export function ConsistencyChecker() {
-  const { text } = useReviewLocale()
+  const { text, locale } = useReviewLocale()
   const [searchParams] = useSearchParams()
   const requestedPaperId = searchParams.get('paperId')?.trim() || ''
   const requestedReviewId = searchParams.get('reviewId')?.trim() || ''
@@ -387,6 +422,7 @@ export function ConsistencyChecker() {
   const [comparison, setComparison] = useState<ReviewXComparison | null>(null)
   const [comparisonLoading, setComparisonLoading] = useState(false)
   const [latestResultsEnabled, setLatestResultsEnabled] = useState(false)
+  const [feedbackPanelOpen, setFeedbackPanelOpen] = useState(Boolean(requestedFeedbackId))
 
   const latestFindingsPaperId = latestResultsEnabled && !selectedHistoryId ? selectedPaperId : ''
   const { data: latestFindings, isLoading: latestFindingsLoading } = useReviewFindings(latestFindingsPaperId)
@@ -567,6 +603,7 @@ export function ConsistencyChecker() {
   historyLoaderRef.current = loadHistoryFindings
 
   useEffect(() => {
+    openedDeepLinkRef.current = ''
     setSelectedHistoryId('')
     setHistoryFindings(null)
     setRunDetail(null)
@@ -579,6 +616,14 @@ export function ConsistencyChecker() {
     setSeverityFilter('all')
     void refreshHistory(selectedPaperId)
   }, [selectedPaperId])
+
+  useEffect(() => {
+    if (requestedPaperId) setSelectedPaperId(requestedPaperId)
+  }, [requestedPaperId])
+
+  useEffect(() => {
+    if (requestedFeedbackId) setFeedbackPanelOpen(true)
+  }, [requestedFeedbackId])
 
   useEffect(() => {
     if (!requestedPaperId || selectedPaperId !== requestedPaperId || !requestedReviewId) return
@@ -639,6 +684,21 @@ export function ConsistencyChecker() {
 
   const actionItems = runDetail?.actionItems || []
   const mismatchAggregate = runDetail?.mismatchReport?.aggregate
+  const mismatchDimensions = useMemo(
+    () => Object.entries(mismatchAggregate?.dimensionMax || {})
+      .sort((left, right) => right[1] - left[1]),
+    [mismatchAggregate?.dimensionMax],
+  )
+  const activeHistory = useMemo(
+    () => history.find((item) => item.id === runDetail?.id),
+    [history, runDetail?.id],
+  )
+  const auditSummary = runDetail?.jsonReport?.summary
+  const auditScore = runDetail?.scoreSuggestion ?? activeHistory?.scoreSuggestion
+  const auditClaimCount = auditSummary?.claimCount ?? activeHistory?.claimCount ?? runDetail?.claims?.length ?? 0
+  const auditEvidenceCount = auditSummary?.evidenceCount ?? activeHistory?.evidenceCount ?? 0
+  const auditVerificationCount = auditSummary?.verificationCount ?? activeHistory?.verificationCount ?? 0
+  const auditTraceAvailable = Boolean(runDetail?.mismatchReport && runDetail?.evidenceGraph && runDetail?.modelTrace)
   const topMismatchClaims = useMemo(() => {
     return [...(runDetail?.mismatchReport?.claimScores || [])]
       .sort((a, b) => (b.mismatchScore || 0) - (a.mismatchScore || 0))
@@ -680,16 +740,16 @@ export function ConsistencyChecker() {
       .filter(Boolean)
     return (
       <div key={node.id} className={depth === 0 ? 'space-y-2' : 'ml-4 border-l border-slate-200 pl-3 pt-2'}>
-        <div className="rounded-md border border-slate-200 bg-white p-3">
-          <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0 overflow-hidden rounded-md border border-slate-200 bg-white p-3">
+          <div className="flex min-w-0 flex-col items-start gap-2 sm:flex-row sm:justify-between">
             <div className="min-w-0">
               <div className="text-sm font-semibold text-slate-900 leading-snug">{node.question}</div>
-              <div className="mt-1 text-xs text-muted-foreground">
+              <div className="mt-1 break-words text-xs text-muted-foreground [overflow-wrap:anywhere]">
                 {node.id}
                 {node.category && ` · ${node.category}`}
               </div>
             </div>
-            <div className="flex flex-col items-end gap-1">
+            <div className="flex shrink-0 flex-row flex-wrap gap-1 sm:flex-col sm:items-end">
               <Badge variant={score >= 88 ? 'destructive' : score >= 62 ? 'default' : 'outline'}>{score}% risk</Badge>
               {mismatch !== null && (
                 <Badge variant={mismatch >= 72 ? 'destructive' : mismatch >= 30 ? 'default' : 'outline'}>
@@ -698,17 +758,17 @@ export function ConsistencyChecker() {
               )}
             </div>
           </div>
-          <div className="mt-2 flex flex-wrap gap-2 text-xs">
-            {node.status && <Badge variant="outline">{node.status}</Badge>}
-            {node.assignedModel && <Badge variant="outline">{node.assignedModel}</Badge>}
-            {node.expansionPolicy && <Badge variant="secondary">{node.expansionPolicy}</Badge>}
+          <div className="mt-2 flex min-w-0 flex-wrap gap-2 text-xs">
+            {node.status && <Badge variant="outline" className="max-w-full whitespace-normal break-all">{node.status}</Badge>}
+            {node.assignedModel && <Badge variant="outline" className="max-w-full whitespace-normal break-all">{node.assignedModel}</Badge>}
+            {node.expansionPolicy && <Badge variant="secondary" className="max-w-full whitespace-normal break-all">{node.expansionPolicy}</Badge>}
             {node.claimIds && node.claimIds.length > 0 && <Badge variant="secondary">{node.claimIds.length} {text('主张', 'claims')}</Badge>}
             {node.findingIds && node.findingIds.length > 0 && <Badge variant="secondary">{node.findingIds.length} findings</Badge>}
           </div>
           {node.mismatchDrivers && node.mismatchDrivers.length > 0 && (
             <div className="mt-2 flex flex-wrap gap-1 text-xs">
               {node.mismatchDrivers.map((driver) => (
-                <Badge key={driver} variant="outline">{text('驱动因素', 'Driver')}: {driver}</Badge>
+                <Badge key={driver} variant="outline" className="max-w-full whitespace-normal break-all">{text('驱动因素', 'Driver')}: {driver}</Badge>
               ))}
             </div>
           )}
@@ -753,22 +813,55 @@ export function ConsistencyChecker() {
         </Badge>
       </div>
 
-      <ExperimentFeedbackPanel initialFeedbackId={requestedFeedbackId} initialFocus={requestedFeedbackFocus} />
-      <div className="grid grid-cols-1 xl:grid-cols-[420px_minmax(0,1fr)] gap-6 items-start">
-        <div className="space-y-6">
-          <Card className="shadow-md">
+      <section className="mb-6 overflow-hidden border border-emerald-200 bg-white">
+        <button
+          type="button"
+          className="flex w-full items-center justify-between gap-4 px-4 py-3 text-left transition-colors hover:bg-emerald-50/60 sm:px-5"
+          aria-expanded={feedbackPanelOpen}
+          onClick={() => setFeedbackPanelOpen((open) => !open)}
+        >
+          <span className="flex min-w-0 items-center gap-3">
+            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-emerald-700 text-white">
+              <Route className="h-4 w-4" />
+            </span>
+            <span className="min-w-0">
+              <span className="block text-sm font-bold text-slate-950">
+                {text('实验反馈闭环与人工签核', 'Experiment feedback loop and human signoff')}
+              </span>
+              <span className="mt-0.5 block text-xs leading-5 text-slate-600">
+                {text('审计完成后，在这里决定退回计划、创建下一轮并确认可发布结论。', 'After an audit, return findings to the plan, create the next iteration, and sign off conclusions here.')}
+              </span>
+            </span>
+          </span>
+          <span className="flex shrink-0 items-center gap-2 text-xs font-semibold text-emerald-800">
+            {feedbackPanelOpen ? text('收起', 'Collapse') : text('展开闭环', 'Open loop')}
+            <ChevronDown className={`h-4 w-4 transition-transform ${feedbackPanelOpen ? 'rotate-180' : ''}`} />
+          </span>
+        </button>
+        {feedbackPanelOpen && (
+          <div className="border-t border-emerald-200 px-3 pt-4 sm:px-4">
+            <ExperimentFeedbackPanel initialFeedbackId={requestedFeedbackId} initialFocus={requestedFeedbackFocus} />
+          </div>
+        )}
+      </section>
+      <div className="grid min-w-0 grid-cols-1 items-start gap-6 xl:grid-cols-[420px_minmax(0,1fr)]">
+        <div className="contents xl:block xl:min-w-0 xl:space-y-6">
+          <Card className="order-1 min-w-0 overflow-hidden shadow-md xl:order-none">
             <CardHeader className="bg-gradient-to-r from-slate-50 to-white border-b">
               <CardTitle className="text-xl">{text('运行 ReviewX 审计', 'Run ReviewX Audit')}</CardTitle>
               <CardDescription>{text('对照引用和生成的 artifact 审计科学主张', 'Audit claims against citations and generated artifacts')}</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4 pt-6">
               <div className="space-y-2">
-                <label className="text-sm font-semibold text-slate-700">{text('选择论文', 'Select Paper')}</label>
+                <label className="flex items-center gap-2 text-sm font-semibold text-slate-700">
+                  <span className="flex h-5 w-5 items-center justify-center rounded-full bg-slate-900 text-[11px] text-white">1</span>
+                  {text('选择论文', 'Select Paper')}
+                </label>
                 {papersLoading ? (
                   <Skeleton className="h-10 w-full" />
                 ) : (
                   <select
-                    className="w-full rounded-md border-2 border-slate-200 bg-white px-4 py-2.5 text-sm font-medium hover:border-teal-500 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 transition-colors"
+                    className="w-full min-w-0 max-w-full overflow-hidden text-ellipsis whitespace-nowrap rounded-md border-2 border-slate-200 bg-white px-4 py-2.5 text-sm font-medium hover:border-teal-500 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 transition-colors"
                     value={selectedPaperId}
                     onChange={(e) => setSelectedPaperId(e.target.value)}
                   >
@@ -782,7 +875,10 @@ export function ConsistencyChecker() {
                 )}
               </div>
               <div className="space-y-2">
-                <label className="text-sm font-semibold text-slate-700">{text('审计模式', 'Review Mode')}</label>
+                <label className="flex items-center gap-2 text-sm font-semibold text-slate-700">
+                  <span className="flex h-5 w-5 items-center justify-center rounded-full bg-slate-900 text-[11px] text-white">2</span>
+                  {text('审计模式', 'Review Mode')}
+                </label>
                 <select
                   className="w-full rounded-md border-2 border-slate-200 bg-white px-4 py-2.5 text-sm font-medium hover:border-teal-500 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 transition-colors"
                   value={budgetMode}
@@ -828,6 +924,10 @@ export function ConsistencyChecker() {
                   </span>
                 </span>
               </label>
+              <div className="flex items-center gap-2 text-sm font-semibold text-slate-700">
+                <span className="flex h-5 w-5 items-center justify-center rounded-full bg-slate-900 text-[11px] text-white">3</span>
+                {text('加载存档或开始新审计', 'Load a saved result or start a new audit')}
+              </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 <Button
                   disabled={!selectedPaperId || runDetailLoading}
@@ -864,19 +964,27 @@ export function ConsistencyChecker() {
                   className="bg-teal-600 hover:bg-teal-700"
                   size="lg"
                 >
+                  {!runConsistencyCheck.isPending && <ScanSearch className="mr-2 h-4 w-4" />}
+                  {runConsistencyCheck.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                   {runConsistencyCheck.isPending ? text('ReviewX 正在运行...', 'Running ReviewX...') : text('运行新 ReviewX', 'Run New ReviewX')}
                 </Button>
               </div>
               {runConsistencyCheck.isError && (
-                <p className="text-sm text-destructive">
-                  {text('ReviewX 运行失败，请检查后端日志。', 'ReviewX failed to run. Check backend logs for details.')}
-                </p>
+                <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800" role="alert">
+                  <div className="font-semibold">{text('ReviewX 运行失败', 'ReviewX failed')}</div>
+                  <div className="mt-1 break-words text-xs leading-5">
+                    {runConsistencyCheck.error instanceof Error ? runConsistencyCheck.error.message : text('未返回具体原因。', 'No detailed error was returned.')}
+                  </div>
+                  <div className="mt-1 text-xs leading-5">
+                    {text('请先确认论文正文已生成、Settings 中模型可用；若仅视觉审计失败，可关闭该选项后重试并保留本地审计结果。', 'Confirm that the paper body exists and the model in Settings is available. If only visual audit fails, disable it and retry; local audit results remain available.')}
+                  </div>
+                </div>
               )}
             </CardContent>
           </Card>
 
           {selectedPaperId && (
-            <Card className="shadow-md">
+            <Card className="order-2 min-w-0 shadow-md xl:order-none">
               <CardHeader className="bg-gradient-to-r from-slate-50 to-white border-b">
                 <div className="flex items-center justify-between gap-3">
                   <div>
@@ -930,7 +1038,7 @@ export function ConsistencyChecker() {
                         <div className="flex items-start justify-between gap-3">
                           <div className="min-w-0">
                             <div className="text-sm font-semibold text-slate-900 truncate">
-                              {formatDateTime(item.updatedAt || item.createdAt)}
+                              {formatDateTime(item.updatedAt || item.createdAt, locale)}
                             </div>
                             <div className="mt-1 text-xs text-muted-foreground truncate">
                               {item.id}
@@ -942,14 +1050,17 @@ export function ConsistencyChecker() {
                         </div>
                         <div className="mt-3 flex flex-wrap gap-2 text-xs">
                           <Badge variant="outline">{item.findingCount || 0} findings</Badge>
-                          <Badge variant="outline">{severityText(item.severityCounts)}</Badge>
-                          <Badge variant="outline">{item.claimCount || 0} {text('主张', 'claims')}</Badge>
-                          <Badge variant="outline">{item.evidenceCount || 0} {text('证据', 'evidence')}</Badge>
-                          <Badge variant="outline">{item.verificationCount || 0} {text('检查', 'checks')}</Badge>
-                          <Badge variant="outline">{item.riskQuestionCount || 0} {text('问题', 'questions')}</Badge>
-                          <Badge variant="outline">{supportText(item.supportCounts)}</Badge>
+                          <Badge variant="outline">{severityText(item.severityCounts, locale)}</Badge>
+                          <Badge variant="outline">
+                            {item.claimCount || 0} {text('主张', 'claims')} · {item.evidenceCount || 0} {text('证据', 'evidence')}
+                          </Badge>
                           {item.llmCallCount !== undefined && (
                             <Badge variant="outline">LLM {text('调用', 'calls')}: {item.llmCallCount}</Badge>
+                          )}
+                          {item.visualAuditEnabled && (
+                            <Badge variant="outline">
+                              {text('视觉审计', 'Visual')}: {item.visualAuditStatus || text('已启用', 'enabled')}
+                            </Badge>
                           )}
                         </div>
                         {item.llmSkipped && item.llmSkipReason && (
@@ -966,14 +1077,15 @@ export function ConsistencyChecker() {
           )}
 
           {selectedPaperId && (
-            <Card className="shadow-md">
+            <Card className="order-4 min-w-0 overflow-hidden shadow-md xl:order-none">
               <CardHeader className="bg-gradient-to-r from-slate-50 to-white border-b">
                 <CardTitle className="text-xl flex items-center gap-2">
                   <GitBranch className="h-5 w-5 text-teal-600" />
-                  Mismatch Graph
+                  {text('证据失配图', 'Evidence Mismatch Graph')}
+                  <span className="text-sm font-medium text-slate-500">CEM</span>
                   <Badge variant="outline" className="ml-auto text-xs">{text('实验 Metric', 'Experiment Metrics')}</Badge>
                 </CardTitle>
-                <CardDescription>{text('用于 ReviewX 评估的主张-证据 mismatch 分数与图连接', 'Claim-evidence mismatch scores and graph links for ReviewX evaluation')}</CardDescription>
+                <CardDescription>{text('主张与证据的失配风险、来源节点与可追溯连接', 'Claim-evidence risk, source nodes, and traceable links')}</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4 pt-6">
                 {runDetailLoading ? (
@@ -991,18 +1103,18 @@ export function ConsistencyChecker() {
                   </div>
                 ) : (
                   <>
-                    <div className="grid grid-cols-3 gap-2">
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
                       <div className="rounded-md border border-slate-200 bg-white p-3">
                         <div className="text-lg font-bold text-slate-900">
                           {formatMetricValue(mismatchAggregate.meanMismatch)}
                         </div>
-                        <div className="text-xs text-muted-foreground">{text('平均 mismatch', 'Mean mismatch')}</div>
+                        <div className="text-xs text-muted-foreground">{text('失配均值', 'Mean mismatch')}</div>
                       </div>
                       <div className="rounded-md border border-slate-200 bg-white p-3">
                         <div className="text-lg font-bold text-slate-900">
                           {formatMetricValue(mismatchAggregate.maxMismatch)}
                         </div>
-                        <div className="text-xs text-muted-foreground">{text('最大 mismatch', 'Max mismatch')}</div>
+                        <div className="text-xs text-muted-foreground">{text('最大失配', 'Max mismatch')}</div>
                       </div>
                       <div className="rounded-md border border-slate-200 bg-white p-3">
                         <div className="text-lg font-bold text-slate-900">
@@ -1018,15 +1130,52 @@ export function ConsistencyChecker() {
                       )}
                       <Badge variant="outline">{runDetail.evidenceGraph?.nodeCount || 0} {text('图节点', 'graph nodes')}</Badge>
                       <Badge variant="outline">{runDetail.evidenceGraph?.edgeCount || 0} {text('图边', 'graph edges')}</Badge>
-                      {Object.entries(mismatchAggregate.dimensionMax || {}).map(([name, value]) => (
-                        <Badge key={name} variant="outline">{name}: {formatMetricValue(value)}</Badge>
-                      ))}
                     </div>
 
-                    {runDetail.mismatchReport?.method?.formula && (
-                      <div className="rounded-md border border-slate-200 bg-slate-50 p-3 text-xs leading-relaxed text-slate-700">
-                        {runDetail.mismatchReport.method.formula}
+                    {mismatchDimensions.length > 0 && (
+                      <div className="space-y-2">
+                        <div className="text-xs font-semibold text-slate-600">
+                          {text('主要风险维度', 'Highest-risk dimensions')}
+                        </div>
+                        <div className="flex flex-wrap gap-2 text-xs">
+                          {mismatchDimensions.slice(0, 5).map(([name, value]) => {
+                            const label = mismatchDimensionLabels[name]
+                            return (
+                              <Badge key={name} variant="outline" title={name}>
+                                {label ? text(label[0], label[1]) : name}: {formatMetricValue(value)}
+                              </Badge>
+                            )
+                          })}
+                        </div>
+                        {mismatchDimensions.length > 5 && (
+                          <details className="text-xs text-slate-600">
+                            <summary className="w-fit cursor-pointer font-medium text-teal-700 hover:text-teal-800">
+                              {text(`查看其余 ${mismatchDimensions.length - 5} 个维度`, `Show ${mismatchDimensions.length - 5} more dimensions`)}
+                            </summary>
+                            <div className="mt-2 flex flex-wrap gap-2">
+                              {mismatchDimensions.slice(5).map(([name, value]) => {
+                                const label = mismatchDimensionLabels[name]
+                                return (
+                                  <Badge key={name} variant="outline" title={name}>
+                                    {label ? text(label[0], label[1]) : name}: {formatMetricValue(value)}
+                                  </Badge>
+                                )
+                              })}
+                            </div>
+                          </details>
+                        )}
                       </div>
+                    )}
+
+                    {runDetail.mismatchReport?.method?.formula && (
+                      <details className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700">
+                        <summary className="cursor-pointer font-semibold text-slate-700">
+                          {text('CEM 计算定义', 'CEM calculation')}
+                        </summary>
+                        <code className="mt-2 block whitespace-pre-wrap break-words font-mono leading-relaxed [overflow-wrap:anywhere]">
+                          {runDetail.mismatchReport.method.formula.replace(/,/g, ',\u200b')}
+                        </code>
+                      </details>
                     )}
 
                     {topMismatchClaims.length > 0 && (
@@ -1085,7 +1234,7 @@ export function ConsistencyChecker() {
           )}
 
           {selectedPaperId && (
-            <Card className="shadow-md">
+            <Card className="order-4 min-w-0 overflow-hidden shadow-md xl:order-none">
               <CardHeader className="bg-gradient-to-r from-slate-50 to-white border-b">
                 <CardTitle className="text-xl flex items-center gap-2">
                   <CheckCircle className="h-5 w-5 text-teal-600" />
@@ -1106,16 +1255,16 @@ export function ConsistencyChecker() {
                 ) : (
                   <>
                     <div className="rounded-md border border-slate-200 bg-white p-3">
-                      <div className="grid grid-cols-[1fr_64px_64px_64px] gap-2 text-xs font-semibold text-slate-600">
-                        <span>Metric</span>
+                      <div className="grid grid-cols-[minmax(0,1fr)_44px_44px_52px] gap-1.5 text-[11px] font-semibold text-slate-600 sm:grid-cols-[minmax(0,1fr)_64px_64px_64px] sm:gap-2 sm:text-xs">
+                        <span className="min-w-0">Metric</span>
                         <span className="text-right">{text('修订前', 'Before')}</span>
                         <span className="text-right">{text('修订后', 'After')}</span>
                         <span className="text-right">Δ</span>
                       </div>
                       <div className="mt-2 space-y-2">
                         {comparisonRows.map((row) => (
-                          <div key={row.key} className="grid grid-cols-[1fr_64px_64px_64px] items-center gap-2 text-sm">
-                            <span className="text-slate-700">{row.label}</span>
+                          <div key={row.key} className="grid grid-cols-[minmax(0,1fr)_44px_44px_52px] items-center gap-1.5 text-[11px] sm:grid-cols-[minmax(0,1fr)_64px_64px_64px] sm:gap-2 sm:text-sm">
+                            <span className="min-w-0 break-words text-slate-700">{row.label}</span>
                             <span className="text-right text-muted-foreground">
                               {formatMetricValue(comparison.before[row.key as keyof ReviewXComparisonMetrics] as number | undefined, row.percent)}
                             </span>
@@ -1123,7 +1272,7 @@ export function ConsistencyChecker() {
                               {formatMetricValue(comparison.after[row.key as keyof ReviewXComparisonMetrics] as number | undefined, row.percent)}
                             </span>
                             <span className="text-right">
-                              <Badge variant={deltaTone(comparison.delta[row.key], row.lowerIsBetter)}>
+                              <Badge className="max-w-full px-1 text-[10px] sm:px-2 sm:text-xs" variant={deltaTone(comparison.delta[row.key], row.lowerIsBetter)}>
                                 {formatDelta(comparison.delta[row.key], row.percent)}
                               </Badge>
                             </span>
@@ -1166,7 +1315,7 @@ export function ConsistencyChecker() {
           )}
 
           {selectedPaperId && (
-            <Card className="shadow-md">
+            <Card className="order-4 min-w-0 overflow-hidden shadow-md xl:order-none">
               <CardHeader className="bg-gradient-to-r from-slate-50 to-white border-b">
                 <CardTitle className="text-xl flex items-center gap-2">
                   <GitBranch className="h-5 w-5 text-teal-600" />
@@ -1186,7 +1335,7 @@ export function ConsistencyChecker() {
                     {text('暂无风险问题树，运行 ReviewX 后将在此生成。', 'No risk question tree yet. Run ReviewX to create one.')}
                   </div>
                 ) : (
-                  <div className="max-h-[720px] overflow-y-auto pr-1">
+                  <div className="max-h-[720px] overflow-x-hidden overflow-y-auto pr-1">
                     {rootRiskNodes.map((node) => renderRiskNode(node))}
                   </div>
                 )}
@@ -1195,7 +1344,7 @@ export function ConsistencyChecker() {
           )}
 
           {selectedPaperId && (
-            <Card className="shadow-md">
+            <Card className="order-4 min-w-0 overflow-hidden shadow-md xl:order-none">
               <CardHeader className="bg-gradient-to-r from-slate-50 to-white border-b">
                 <div className="flex items-center justify-between gap-3">
                   <div>
@@ -1393,7 +1542,7 @@ export function ConsistencyChecker() {
           )}
 
           {selectedPaperId && (
-            <Card className="shadow-md">
+            <Card className="order-4 min-w-0 overflow-hidden shadow-md xl:order-none">
               <CardHeader className="bg-gradient-to-r from-slate-50 to-white border-b">
                 <CardTitle className="text-xl flex items-center gap-2">
                   <Route className="h-5 w-5 text-teal-600" />
@@ -1422,7 +1571,7 @@ export function ConsistencyChecker() {
                       <Badge variant="outline">Model: {runDetail.modelTrace.llmRouting?.requestedModel || runDetail.model || 'unknown'}</Badge>
                       <Badge variant="outline">Tokens: {runDetail.modelTrace.estimatedTokenCost || 0}</Badge>
                       {runDetail.modelTrace.llmRouting?.budgetPolicy && (
-                        <Badge variant="secondary">Policy: {runDetail.modelTrace.llmRouting.budgetPolicy}</Badge>
+                        <Badge variant="secondary" className="max-w-full whitespace-normal break-all">Policy: {runDetail.modelTrace.llmRouting.budgetPolicy}</Badge>
                       )}
                     </div>
 
@@ -1449,7 +1598,7 @@ export function ConsistencyChecker() {
                     )}
 
                     {runDetail.modelTrace.llmRouting?.budgetFormula && (
-                      <div className="rounded-md border border-slate-200 bg-slate-50 p-3 text-xs leading-relaxed text-slate-700">
+                      <div className="min-w-0 break-words rounded-md border border-slate-200 bg-slate-50 p-3 text-xs leading-relaxed text-slate-700 [overflow-wrap:anywhere]">
                         {runDetail.modelTrace.llmRouting.budgetFormula}
                       </div>
                     )}
@@ -1505,10 +1654,10 @@ export function ConsistencyChecker() {
                     {(runDetail.modelTrace.llmCalls || []).length > 0 ? (
                       <div className="space-y-2">
                         {(runDetail.modelTrace.llmCalls || []).map((call, index) => (
-                          <div key={`${call.task || 'call'}-${index}`} className="rounded-md border border-slate-200 bg-white p-3">
-                            <div className="flex items-center justify-between gap-2">
-                              <div className="text-sm font-semibold text-slate-900">{call.task || `LLM call ${index + 1}`}</div>
-                              <Badge variant="outline">{call.model || 'model'}</Badge>
+                          <div key={`${call.task || 'call'}-${index}`} className="min-w-0 rounded-md border border-slate-200 bg-white p-3">
+                            <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
+                              <div className="min-w-0 break-all text-sm font-semibold text-slate-900">{call.task || `LLM call ${index + 1}`}</div>
+                              <Badge variant="outline" className="max-w-full whitespace-normal break-all">{call.model || 'model'}</Badge>
                             </div>
                             <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-muted-foreground">
                               <span>Provider: {call.provider || 'unknown'}</span>
@@ -1531,60 +1680,71 @@ export function ConsistencyChecker() {
           )}
         </div>
 
-        <div className="space-y-6 min-w-0">
+        <div className="contents xl:block xl:min-w-0 xl:space-y-6">
           {selectedPaperId && findings && (
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-              <Card className="border-l-4 border-l-red-500 bg-gradient-to-br from-red-50/50 to-white">
-                <CardContent className="pt-6">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="text-sm font-medium text-slate-600">{text('阻断项 (Blocker)', 'Blockers')}</p>
-                      <p className="text-3xl font-bold text-red-600">{severityCounts.blocker || 0}</p>
-                    </div>
-                    <AlertCircle className="h-8 w-8 text-red-500" />
-                  </div>
-                </CardContent>
-              </Card>
-              <Card className="border-l-4 border-l-orange-500 bg-gradient-to-br from-orange-50/50 to-white">
-                <CardContent className="pt-6">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="text-sm font-medium text-slate-600">{text('主要问题', 'Major Issues')}</p>
-                      <p className="text-3xl font-bold text-orange-600">{severityCounts.major || 0}</p>
-                    </div>
-                    <AlertTriangle className="h-8 w-8 text-orange-500" />
-                  </div>
-                </CardContent>
-              </Card>
-              <Card className="border-l-4 border-l-blue-500 bg-gradient-to-br from-blue-50/50 to-white">
-                <CardContent className="pt-6">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="text-sm font-medium text-slate-600">{text('次要问题', 'Minor Issues')}</p>
-                      <p className="text-3xl font-bold text-blue-600">{severityCounts.minor || 0}</p>
-                    </div>
-                    <Info className="h-8 w-8 text-blue-500" />
-                  </div>
-                </CardContent>
-              </Card>
-              <Card className="border-l-4 border-l-teal-500 bg-gradient-to-br from-teal-50/50 to-white">
-                <CardContent className="pt-6">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="text-sm font-medium text-slate-600">{text('提示', 'Info')}</p>
-                      <p className="text-3xl font-bold text-teal-600">{severityCounts.info || 0}</p>
-                    </div>
-                    <CheckCircle className="h-8 w-8 text-teal-500" />
-                  </div>
-                </CardContent>
-              </Card>
-            </div>
+            <section className="order-3 border-y border-slate-200 bg-slate-50 px-4 py-4 sm:px-5 xl:order-none" aria-labelledby="reviewx-audit-summary">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h2 id="reviewx-audit-summary" className="text-sm font-bold text-slate-950">
+                    {text('本次审计概览', 'Audit summary')}
+                  </h2>
+                  <p className="mt-0.5 text-xs text-slate-600">
+                    {text('评分表示论文当前可接受性，不是 ReviewX 的结果置信度。', 'The score rates the manuscript, not confidence in the ReviewX audit.')}
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Badge variant={auditTraceAvailable ? 'secondary' : 'outline'}>
+                    {auditTraceAvailable ? text('审计轨迹可查', 'Audit trace available') : text('轨迹不完整', 'Partial trace')}
+                  </Badge>
+                  <Badge variant={hasLlmCalls ? 'secondary' : 'outline'}>
+                    {hasLlmCalls ? text('Qwen 增强', 'Qwen refined') : text('本地规则', 'Local rules')}
+                  </Badge>
+                  {visualTrace?.enabled && (
+                    <Badge variant={visualTrace.status === 'completed' ? 'secondary' : 'outline'}>
+                      {text('视觉审计', 'Visual audit')}: {visualTrace.status || 'unknown'}
+                    </Badge>
+                  )}
+                </div>
+              </div>
+              <div className="mt-4 grid grid-cols-2 divide-x divide-y divide-slate-200 border border-slate-200 bg-white sm:grid-cols-3 sm:divide-y-0 xl:grid-cols-6">
+                <div className="min-w-0 px-3 py-3">
+                  <div className="text-xl font-bold text-slate-950">{auditScore ?? '-'}<span className="ml-1 text-xs font-medium text-slate-500">/10</span></div>
+                  <div className="text-xs text-slate-600">{text('论文建议评分', 'Paper score')}</div>
+                </div>
+                <div className="min-w-0 px-3 py-3">
+                  <div className="text-xl font-bold text-slate-950">{findings.length}</div>
+                  <div className="text-xs text-slate-600">Findings</div>
+                </div>
+                <div className="min-w-0 px-3 py-3">
+                  <div className="text-xl font-bold text-red-600">{severityCounts.blocker || 0}</div>
+                  <div className="text-xs text-slate-600">{text('阻断问题', 'Blockers')}</div>
+                </div>
+                <div className="min-w-0 px-3 py-3">
+                  <div className="text-xl font-bold text-orange-600">{severityCounts.major || 0}</div>
+                  <div className="text-xs text-slate-600">{text('主要问题', 'Major issues')}</div>
+                </div>
+                <div className="min-w-0 px-3 py-3">
+                  <div className="text-xl font-bold text-slate-950">{auditClaimCount}</div>
+                  <div className="text-xs text-slate-600">{text('已审计主张', 'Audited claims')}</div>
+                </div>
+                <div className="min-w-0 px-3 py-3">
+                  <div className="text-xl font-bold text-slate-950">{auditEvidenceCount}<span className="mx-1 text-sm text-slate-400">/</span>{auditVerificationCount}</div>
+                  <div className="text-xs text-slate-600">{text('证据 / 核验', 'Evidence / checks')}</div>
+                </div>
+              </div>
+              <p className="mt-3 text-xs leading-5 text-slate-600">
+                {text(
+                  `可信依据：逐条关联 ${auditClaimCount} 条主张、${auditEvidenceCount} 条证据与 ${auditVerificationCount} 项核验；可在下方 finding 中查看原文定位、证据来源和修改建议。`,
+                  `Trust basis: ${auditClaimCount} claims are linked to ${auditEvidenceCount} evidence items and ${auditVerificationCount} checks; inspect each finding below for source location, provenance, and a suggested fix.`,
+                )}
+              </p>
+            </section>
           )}
 
           {selectedPaperId ? (
-            <Card className="shadow-md">
+            <Card className="order-3 min-w-0 overflow-hidden shadow-md xl:order-none">
           <CardHeader className="bg-gradient-to-r from-slate-50 to-white border-b">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-col items-start gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <CardTitle className="text-xl">{text('审计结果', 'Audit Results')} ({findings ? filteredFindings.length : 0})</CardTitle>
                 <CardDescription>
@@ -1613,22 +1773,22 @@ export function ConsistencyChecker() {
               </div>
             ) : (
               <>
-            <div className="flex gap-3">
+            <div className="flex min-w-0 flex-col gap-3 sm:flex-row">
               <select
                 className="rounded-md border-2 border-slate-200 bg-white px-4 py-2 text-sm font-medium hover:border-teal-500 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 transition-colors"
                 value={severityFilter}
                 onChange={(e) => setSeverityFilter(e.target.value)}
               >
                 <option value="all">{text('全部级别', 'All Severities')}</option>
-                <option value="blocker">Blocker</option>
-                <option value="major">Major</option>
-                <option value="minor">Minor</option>
-                <option value="info">Info</option>
+                <option value="blocker">{text('阻断问题 (Blocker)', 'Blocker')}</option>
+                <option value="major">{text('主要问题 (Major)', 'Major')}</option>
+                <option value="minor">{text('次要问题 (Minor)', 'Minor')}</option>
+                <option value="info">{text('提示 (Info)', 'Info')}</option>
               </select>
               <input
                 type="search"
                 placeholder={text('搜索 finding...', 'Search findings...')}
-                className="flex-1 rounded-md border-2 border-slate-200 bg-white px-4 py-2 text-sm hover:border-teal-500 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 transition-colors"
+                className="min-w-0 flex-1 rounded-md border-2 border-slate-200 bg-white px-4 py-2 text-sm hover:border-teal-500 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20 transition-colors"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
               />
@@ -1665,54 +1825,45 @@ export function ConsistencyChecker() {
                             severity === 'minor' ? '#3b82f6' : '#14b8a6'
                       }}>
                         {severityIcons[severity as keyof typeof severityIcons]}
-                        <h3 className="text-lg font-bold capitalize text-slate-900">{severity}</h3>
+                        <h3 className="text-lg font-bold text-slate-900">
+                          {text(
+                            severityLabels[severity as keyof typeof severityLabels][0],
+                            severityLabels[severity as keyof typeof severityLabels][1],
+                          )}
+                        </h3>
                         <Badge variant="outline" className="ml-auto">{items.length} {text('个问题', 'issues')}</Badge>
                       </div>
                       <div className="space-y-3">
                         {items.map((finding) => (
-                          <Card key={finding.id} className="border-l-4 shadow-sm hover:shadow-md transition-shadow" style={{
+                          <article key={finding.id} className="min-w-0 overflow-hidden border border-slate-200 border-l-4 bg-white px-4 py-4" style={{
                             borderLeftColor: severity === 'blocker' ? '#ef4444' :
                               severity === 'major' ? '#f97316' :
                                 severity === 'minor' ? '#3b82f6' : '#14b8a6'
                           }}>
-                            <CardHeader className="pb-3">
-                              <div className="flex items-start justify-between">
-                                <div className="flex-1">
-                                  <div className="flex items-center gap-2 mb-2">
-                                    <CardTitle className="text-base font-semibold text-slate-900">{finding.title}</CardTitle>
-                                    <Badge variant={severityVariants[severity as keyof typeof severityVariants]} className="capitalize text-xs">
-                                      {severity}
-                                    </Badge>
-                                    {finding.riskType && (
-                                      <Badge variant="outline" className="text-xs">
-                                        {finding.riskType}
-                                      </Badge>
-                                    )}
-                                    <Badge
-                                      variant={findingHasLlmRefinement(finding) ? 'secondary' : 'outline'}
-                                      className="text-xs"
-                                    >
-                                    {findingHasLlmRefinement(finding) ? text('LLM 增强', 'LLM Refined') : text('本地规则', 'Local Rule')}
-                                  </Badge>
-                                  {finding.reviewerDecision && (
-                                    <Badge variant="outline" className="text-xs">
-                                      Decision: {finding.reviewerDecision}
-                                    </Badge>
+                            <div className="flex min-w-0 flex-col items-start gap-2 sm:flex-row sm:justify-between">
+                              <h4 className="min-w-0 flex-1 break-words text-base font-semibold leading-6 text-slate-950 [overflow-wrap:anywhere]">{finding.title}</h4>
+                              <div className="flex shrink-0 flex-wrap justify-start gap-2 sm:justify-end">
+                                <Badge variant={severityVariants[severity as keyof typeof severityVariants]} className="capitalize text-xs">
+                                  {text(
+                                    severityLabels[severity as keyof typeof severityLabels][0],
+                                    severityLabels[severity as keyof typeof severityLabels][1],
                                   )}
-                                  {finding.revisionStatus && (
-                                    <Badge variant="secondary" className="text-xs">
-                                      Revision: {finding.revisionStatus}
-                                    </Badge>
-                                  )}
-                                </div>
-                                  <CardDescription className="text-sm leading-relaxed">
-                                    {finding.description}
-                                  </CardDescription>
-                                </div>
+                                </Badge>
+                                <Badge variant={findingHasLlmRefinement(finding) ? 'secondary' : 'outline'} className="text-xs">
+                                  {findingHasLlmRefinement(finding) ? text('LLM 增强', 'LLM Refined') : text('本地规则', 'Local Rule')}
+                                </Badge>
                               </div>
-                            </CardHeader>
-                            <CardContent className="space-y-4">
-                              <div className="flex flex-wrap gap-2 text-xs">
+                            </div>
+                            <p className="mt-2 break-words text-sm leading-6 text-slate-700 [overflow-wrap:anywhere]">{finding.description}</p>
+
+                            <details className="mt-3 text-xs text-slate-600">
+                              <summary className="w-fit cursor-pointer font-semibold text-teal-700 hover:text-teal-800">
+                                {text('查看证据链与技术元数据', 'Show evidence trace and metadata')}
+                              </summary>
+                              <div className="mt-2 flex flex-wrap gap-2">
+                                {finding.riskType && (
+                                  <Badge variant="outline">Risk: {finding.riskType}</Badge>
+                                )}
                                 {finding.targetModule && (
                                   <Badge variant="secondary">Target: {finding.targetModule}</Badge>
                                 )}
@@ -1737,15 +1888,23 @@ export function ConsistencyChecker() {
                                 {finding.evidenceIds && finding.evidenceIds.length > 0 && (
                                   <Badge variant="outline">Evidence: {finding.evidenceIds.join(', ')}</Badge>
                                 )}
+                                {finding.reviewerDecision && (
+                                  <Badge variant="outline">Decision: {finding.reviewerDecision}</Badge>
+                                )}
+                                {finding.revisionStatus && (
+                                  <Badge variant="secondary">Revision: {finding.revisionStatus}</Badge>
+                                )}
                               </div>
+                            </details>
 
+                            <div className="mt-4 space-y-3">
                               {finding.evidence && (
-                                <div className="bg-slate-50 border-l-2 border-slate-300 rounded-r-md">
+                                <div className="min-w-0 overflow-hidden bg-slate-50 border-l-2 border-slate-300 rounded-r-md">
                                   <div className="px-4 py-2 bg-slate-100 border-b border-slate-200">
                                     <span className="text-xs font-semibold text-slate-700 uppercase tracking-wide">{text('证据', 'Evidence')}</span>
                                   </div>
-                                  <div className="p-4">
-                                    <pre className="text-xs font-mono text-slate-700 whitespace-pre-wrap leading-relaxed">
+                                  <div className="min-w-0 p-4">
+                                    <pre className="max-w-full whitespace-pre-wrap break-words text-xs font-mono leading-relaxed text-slate-700 [overflow-wrap:anywhere]">
                                       {finding.evidence}
                                     </pre>
                                   </div>
@@ -1753,28 +1912,28 @@ export function ConsistencyChecker() {
                               )}
 
                               {finding.suggestedFix && (
-                                <div className="bg-teal-50 border-l-2 border-teal-400 rounded-r-md">
+                                <div className="min-w-0 overflow-hidden bg-teal-50 border-l-2 border-teal-400 rounded-r-md">
                                   <div className="px-4 py-2 bg-teal-100 border-b border-teal-200">
                                     <span className="text-xs font-semibold text-teal-800 uppercase tracking-wide">{text('建议修复', 'Suggested Fix')}</span>
                                   </div>
                                   <div className="p-4">
-                                    <p className="text-sm text-teal-900 leading-relaxed">{finding.suggestedFix}</p>
+                                    <p className="break-words text-sm leading-relaxed text-teal-900 [overflow-wrap:anywhere]">{finding.suggestedFix}</p>
                                   </div>
                                 </div>
                               )}
 
-                              <div className="flex items-center gap-2 pt-3 border-t">
-                                {finding.relatedRunId && (
+                              {finding.relatedRunId && (
+                                <div className="flex items-center gap-2 border-t border-slate-200 pt-3">
                                   <Link to={`/runs/${finding.relatedRunId}`}>
                                     <Button variant="outline" size="sm" className="hover:bg-teal-50 hover:border-teal-500">
                                       <ExternalLink className="h-3 w-3 mr-2" />
                                       {text('查看运行', 'View Run')}
                                     </Button>
                                   </Link>
-                                )}
-                              </div>
-                            </CardContent>
-                          </Card>
+                                </div>
+                              )}
+                            </div>
+                          </article>
                         ))}
                       </div>
                     </div>
@@ -1787,7 +1946,7 @@ export function ConsistencyChecker() {
               </CardContent>
             </Card>
           ) : (
-            <Card className="shadow-md">
+            <Card className="order-3 min-w-0 shadow-md xl:order-none">
               <CardContent className="py-16 text-center text-sm text-muted-foreground">
                 {text('选择一篇论文以查看 ReviewX 结果和历史。', 'Select a paper to view ReviewX results and history.')}
               </CardContent>

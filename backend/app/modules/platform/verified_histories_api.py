@@ -12,6 +12,7 @@ import json
 import mimetypes
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
@@ -70,6 +71,16 @@ def _stage_entity_path(data_dir: Path, stage: dict[str, Any]) -> Path | None:
     return paths.get(stage_id)
 
 
+def _stage_url(stage_id: str, value: Any) -> str:
+    url = str(value or "")
+    if stage_id not in {"idea", "plan"} or not url.startswith("/research/pipeline"):
+        return url
+    parts = urlsplit(url)
+    query = dict(parse_qsl(parts.query, keep_blank_values=True))
+    query["phase"] = stage_id
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
+
+
 def _public_manifest(data_dir: Path, payload: dict[str, Any]) -> dict[str, Any]:
     stages = payload.get("stages") or []
     stage_by_id = {
@@ -88,7 +99,11 @@ def _public_manifest(data_dir: Path, payload: dict[str, Any]) -> dict[str, Any]:
         exists = bool(entity_path and entity_path.exists())
         if not exists:
             broken_stages.append(stage_id)
-        public_stages.append({**stage, "status": "passed" if exists else "missing"})
+        public_stages.append({
+            **stage,
+            "url": _stage_url(stage_id, stage.get("url")),
+            "status": "passed" if exists else "missing",
+        })
 
     broken_artifacts: list[str] = []
     public_artifacts: list[dict[str, Any]] = []

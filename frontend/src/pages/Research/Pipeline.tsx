@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { AppPageLayout } from '@/components/layout/AppPageLayout'
 import { IdeaGenerationPanel } from '@/components/ideas/IdeaGenerationPanel'
@@ -14,19 +14,44 @@ interface CandidateSelection {
   ideaSeedQuery: string
 }
 
+const candidateFromParams = (searchParams: URLSearchParams): CandidateSelection | null => {
+  const ideaSessionId = searchParams.get('ideaSessionId')?.trim() || ''
+  if (!ideaSessionId) return null
+  return {
+    ideaSessionId,
+    ideaCandidateId: searchParams.get('ideaCandidateId')?.trim() || '',
+    ideaCandidateTitle: searchParams.get('ideaCandidateTitle')?.trim() || '',
+    ideaSeedQuery: searchParams.get('ideaSeedQuery')?.trim() || '',
+  }
+}
+
 export function ResearchPipeline() {
   const { text } = useReviewLocale()
   const [searchParams, setSearchParams] = useSearchParams()
-  const [selectedCandidate, setSelectedCandidate] = useState<CandidateSelection | null>(() => {
-    const ideaSessionId = searchParams.get('ideaSessionId')?.trim() || ''
-    if (!ideaSessionId) return null
-    return {
-      ideaSessionId,
-      ideaCandidateId: searchParams.get('ideaCandidateId')?.trim() || '',
-      ideaCandidateTitle: searchParams.get('ideaCandidateTitle')?.trim() || '',
-      ideaSeedQuery: searchParams.get('ideaSeedQuery')?.trim() || '',
-    }
-  })
+  const [selectedCandidate, setSelectedCandidate] = useState<CandidateSelection | null>(() => candidateFromParams(searchParams))
+  const requestedPhase = searchParams.get('phase') === 'idea' ? 'idea' : searchParams.get('phase') === 'plan' ? 'plan' : ''
+  const selectedIdeaSessionId = selectedCandidate?.ideaSessionId || ''
+
+  useEffect(() => {
+    const nextCandidate = candidateFromParams(searchParams)
+    setSelectedCandidate((current) => {
+      if (!current || !nextCandidate) return nextCandidate
+      const unchanged = current.ideaSessionId === nextCandidate.ideaSessionId
+        && current.ideaCandidateId === nextCandidate.ideaCandidateId
+        && current.ideaCandidateTitle === nextCandidate.ideaCandidateTitle
+        && current.ideaSeedQuery === nextCandidate.ideaSeedQuery
+      return unchanged ? current : nextCandidate
+    })
+  }, [searchParams])
+
+  useEffect(() => {
+    if (!requestedPhase || (requestedPhase === 'plan' && !selectedIdeaSessionId)) return
+    const timer = window.setTimeout(() => {
+      document.getElementById(`pipeline-phase-${requestedPhase === 'idea' ? '1' : '2'}`)
+        ?.scrollIntoView?.({ behavior: 'smooth', block: 'start' })
+    }, 80)
+    return () => window.clearTimeout(timer)
+  }, [requestedPhase, selectedIdeaSessionId])
 
   const handleCandidateSelected = useCallback((data: CandidateSelection) => {
     setSelectedCandidate(data)
@@ -35,11 +60,8 @@ export function ResearchPipeline() {
     next.set('ideaCandidateId', data.ideaCandidateId)
     next.set('ideaCandidateTitle', data.ideaCandidateTitle)
     if (data.ideaSeedQuery) next.set('ideaSeedQuery', data.ideaSeedQuery)
+    next.set('phase', 'plan')
     setSearchParams(next, { replace: true })
-    // scroll to plan section
-    setTimeout(() => {
-      document.getElementById('pipeline-phase-2')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-    }, 100)
   }, [searchParams, setSearchParams])
 
   return (
