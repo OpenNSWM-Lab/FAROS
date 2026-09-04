@@ -424,7 +424,7 @@ class ArxivSearch:
                     last_error = e
                     if (
                         url.startswith("https://")
-                        and _env_bool("FAROS_ALLOW_INSECURE_ARXIV_SSL", True)
+                        and _env_bool("FAROS_ALLOW_INSECURE_SSL", False)
                         and "CERTIFICATE_VERIFY_FAILED" in str(e)
                     ):
                         try:
@@ -1088,8 +1088,11 @@ class DblpSearch:
                 with _urlopen(request, timeout=30) as resp:
                     raw = resp.read().decode("utf-8")
             except urllib.error.URLError as e:
-                if "CERTIFICATE" in str(e) or "SSL" in str(e):
-                    logger.info("DBLP: SSL cert untrusted, retrying with unverified context")
+                if ("CERTIFICATE" in str(e) or "SSL" in str(e)) and _env_bool("FAROS_ALLOW_INSECURE_SSL", False):
+                    logger.warning(
+                        "DBLP: SSL cert untrusted, retrying with unverified context. "
+                        "Set FAROS_ALLOW_INSECURE_SSL=false to disable this fallback."
+                    )
                     with _urlopen(request, timeout=30, context=_INSECURE_SSL_CONTEXT) as resp:
                         raw = resp.read().decode("utf-8")
                 else:
