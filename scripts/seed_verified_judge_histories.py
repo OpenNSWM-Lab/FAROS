@@ -1406,8 +1406,8 @@ def _seed_manifest(
         },
         "primaryMetric": metric,
         "stages": [
-            {"id": "idea", "labelZh": "选题与证据", "labelEn": "Idea & evidence", "entityId": ids["idea"], "candidateId": ids["candidate"], "url": f"/research/pipeline?ideaSessionId={ids['idea']}&ideaCandidateId={ids['candidate']}&ideaCandidateTitle={definition['titleEn']}"},
-            {"id": "plan", "labelZh": "实验计划", "labelEn": "Plan", "entityId": ids["plan"], "url": f"/research/pipeline?ideaSessionId={ids['idea']}&ideaCandidateId={ids['candidate']}&ideaCandidateTitle={definition['titleEn']}"},
+            {"id": "idea", "labelZh": "选题与证据", "labelEn": "Idea & evidence", "entityId": ids["idea"], "candidateId": ids["candidate"], "url": f"/research/pipeline?ideaSessionId={ids['idea']}&ideaCandidateId={ids['candidate']}&ideaCandidateTitle={definition['titleEn']}&phase=idea"},
+            {"id": "plan", "labelZh": "实验计划", "labelEn": "Plan", "entityId": ids["plan"], "url": f"/research/pipeline?ideaSessionId={ids['idea']}&ideaCandidateId={ids['candidate']}&ideaCandidateTitle={definition['titleEn']}&phase=plan"},
             {"id": "code", "labelZh": "代码与配置", "labelEn": "Code", "entityId": ids["code"], "url": f"/code/projects/{ids['code']}"},
             {"id": "experiment", "labelZh": "真实实验", "labelEn": "Experiment", "entityId": ids["experiment"], "url": f"/experiments/{ids['experiment']}"},
             {"id": "paper", "labelZh": "完整论文", "labelEn": "Paper", "entityId": ids["paper"], "url": f"/papers/{ids['paper']}/preview"},

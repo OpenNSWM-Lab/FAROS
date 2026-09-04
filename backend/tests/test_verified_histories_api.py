@@ -41,7 +41,15 @@ def test_verified_history_checks_stages_and_artifact_digests(tmp_path: Path):
         "id": history_id,
         "completedAt": "2026-09-04T00:00:00+00:00",
         "stages": [
-            {"id": stage_id, "entityId": entity_id, "url": f"/{stage_id}/{entity_id}"}
+            {
+                "id": stage_id,
+                "entityId": entity_id,
+                "url": (
+                    f"/research/pipeline?ideaSessionId=idea_1&ideaCandidateId=candidate_1"
+                    if stage_id in {"idea", "plan"}
+                    else f"/{stage_id}/{entity_id}"
+                ),
+            }
             for stage_id, entity_id in entity_ids.items()
         ],
         "artifacts": [{
@@ -59,6 +67,9 @@ def test_verified_history_checks_stages_and_artifact_digests(tmp_path: Path):
     assert len(histories) == 1
     assert histories[0]["integrity"]["status"] == "verified"
     assert all(stage["status"] == "passed" for stage in histories[0]["stages"])
+    stage_urls = {stage["id"]: stage["url"] for stage in histories[0]["stages"]}
+    assert stage_urls["idea"].endswith("&phase=idea")
+    assert stage_urls["plan"].endswith("&phase=plan")
     assert histories[0]["artifacts"][0]["verified"] is True
     assert "path" not in histories[0]["artifacts"][0]
 
