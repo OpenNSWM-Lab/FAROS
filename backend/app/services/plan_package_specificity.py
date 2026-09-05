@@ -68,7 +68,7 @@ def hypothesis_is_falsifiable(hypothesis: str) -> bool:
 
 def _issue(section_path: str, message: str) -> PlanReviewerIssue:
     digest = hashlib.sha1(
-        f"{section_path}|{message}".encode("utf-8")
+        f"{section_path}|{message}".encode("utf-8"), usedforsecurity=False
     ).hexdigest()[:12]
     return PlanReviewerIssue(
         id=f"specificity:{digest}",

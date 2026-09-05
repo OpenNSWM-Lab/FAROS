@@ -394,7 +394,10 @@ class RankingService:
         weights = PAPER_TYPE_WEIGHTS.get(paper_type, PAPER_TYPE_WEIGHTS["default"])
         
         # Generate deterministic but varied scores based on candidate content
-        seed_hash = int(hashlib.md5(candidate.id.encode()).hexdigest()[:8], 16)
+        seed_hash = int(
+            hashlib.md5(candidate.id.encode(), usedforsecurity=False).hexdigest()[:8],
+            16,
+        )
         random.seed(seed_hash)
         
         # Base scores: always generate fresh heuristic scores for unscored candidates

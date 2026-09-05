@@ -58,7 +58,7 @@ def _utcnow() -> datetime:
 
 
 def _short_id(prefix: str, seed: str) -> str:
-    return f"{prefix}_{hashlib.md5(seed.encode()).hexdigest()[:12]}"
+    return f"{prefix}_{hashlib.md5(seed.encode(), usedforsecurity=False).hexdigest()[:12]}"
 
 
 def _score_to_01(value: float, scale: float = 10.0) -> float:

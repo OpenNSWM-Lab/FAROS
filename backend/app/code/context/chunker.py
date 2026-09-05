@@ -89,7 +89,7 @@ class CodeChunker:
     def _generate_chunk_id(self, file_path: str, start_line: int, content: str) -> str:
         """Generate unique chunk ID."""
         hash_input = f"{file_path}:{start_line}:{content[:100]}"
-        hash_val = hashlib.md5(hash_input.encode()).hexdigest()[:12]
+        hash_val = hashlib.md5(hash_input.encode(), usedforsecurity=False).hexdigest()[:12]
         return f"chunk_{hash_val}"
     
     def _estimate_tokens(self, text: str) -> int:

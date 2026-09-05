@@ -13,8 +13,8 @@
 <p align="center">
   <a href="https://github.com/OpenNSWM-Lab/FAROS/stargazers"><img src="https://img.shields.io/github/stars/OpenNSWM-Lab/FAROS?style=for-the-badge&color=FFB300&label=Stars" alt="GitHub Stars" /></a>
   <img src="https://img.shields.io/badge/Release-1.1.0--rc1-0891B2?style=for-the-badge" alt="Release 1.1.0-rc1" />
-  <img src="https://img.shields.io/badge/Backend_Tests-644_passed-16A34A?style=for-the-badge" alt="644 backend tests passed" />
-  <img src="https://img.shields.io/badge/Frontend_Tests-35_passed-2563EB?style=for-the-badge" alt="35 frontend tests passed" />
+  <img src="https://img.shields.io/badge/Backend_Tests-685_passed-16A34A?style=for-the-badge" alt="685 backend tests passed" />
+  <img src="https://img.shields.io/badge/Frontend_Tests-41_passed-2563EB?style=for-the-badge" alt="41 frontend tests passed" />
   <img src="https://img.shields.io/badge/Qwen-Ready-FFB300?style=for-the-badge" alt="Qwen Ready" />
 </p>
 
