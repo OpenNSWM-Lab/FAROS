@@ -39,7 +39,7 @@ def _build_ssl_context() -> ssl.SSLContext:
 
 
 _SSL_CONTEXT = _build_ssl_context()
-_INSECURE_SSL_CONTEXT = ssl._create_unverified_context()
+_INSECURE_SSL_CONTEXT = ssl._create_unverified_context()  # nosec B323 - opt-in compatibility fallback
 _USER_AGENT = os.getenv(
     "FAROS_PAPER_SEARCH_USER_AGENT",
     "FAROS/0.1 literature-search",
@@ -424,7 +424,7 @@ class ArxivSearch:
                     last_error = e
                     if (
                         url.startswith("https://")
-                        and _env_bool("FAROS_ALLOW_INSECURE_ARXIV_SSL", True)
+                        and _env_bool("FAROS_ALLOW_INSECURE_ARXIV_SSL", False)
                         and "CERTIFICATE_VERIFY_FAILED" in str(e)
                     ):
                         try:
@@ -1088,7 +1088,10 @@ class DblpSearch:
                 with _urlopen(request, timeout=30) as resp:
                     raw = resp.read().decode("utf-8")
             except urllib.error.URLError as e:
-                if "CERTIFICATE" in str(e) or "SSL" in str(e):
+                if (
+                    ("CERTIFICATE" in str(e) or "SSL" in str(e))
+                    and _env_bool("FAROS_ALLOW_INSECURE_DBLP_SSL", False)
+                ):
                     logger.info("DBLP: SSL cert untrusted, retrying with unverified context")
                     with _urlopen(request, timeout=30, context=_INSECURE_SSL_CONTEXT) as resp:
                         raw = resp.read().decode("utf-8")

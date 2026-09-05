@@ -4,7 +4,43 @@ import urllib.error
 import urllib.parse
 
 from app.services import search_service as search_service_module
-from app.services.search_service import LocalCorpusSearch, OpenAlexSearch, SemanticScholarSearch
+from app.services.search_service import (
+    ArxivSearch,
+    DblpSearch,
+    LocalCorpusSearch,
+    OpenAlexSearch,
+    SemanticScholarSearch,
+)
+
+
+def test_arxiv_does_not_use_insecure_tls_fallback_by_default(monkeypatch):
+    contexts = []
+
+    def fake_urlopen(*_args, **kwargs):
+        contexts.append(kwargs.get("context"))
+        raise urllib.error.URLError("CERTIFICATE_VERIFY_FAILED")
+
+    monkeypatch.delenv("FAROS_ALLOW_INSECURE_ARXIV_SSL", raising=False)
+    monkeypatch.setattr(search_service_module, "_urlopen", fake_urlopen)
+    monkeypatch.setattr(search_service_module.time, "sleep", lambda *_args, **_kwargs: None)
+
+    assert ArxivSearch().search("evidence calibrated review", limit=1) == []
+    assert search_service_module._INSECURE_SSL_CONTEXT not in contexts
+
+
+def test_dblp_does_not_use_insecure_tls_fallback_by_default(monkeypatch):
+    contexts = []
+
+    def fake_urlopen(*_args, **kwargs):
+        contexts.append(kwargs.get("context"))
+        raise urllib.error.URLError("SSL CERTIFICATE failure")
+
+    monkeypatch.delenv("FAROS_ALLOW_INSECURE_DBLP_SSL", raising=False)
+    monkeypatch.setattr(search_service_module, "_urlopen", fake_urlopen)
+    monkeypatch.setattr(search_service_module.time, "sleep", lambda *_args, **_kwargs: None)
+
+    assert DblpSearch().search("evidence calibrated review", limit=1) == []
+    assert search_service_module._INSECURE_SSL_CONTEXT not in contexts
 
 
 def test_semantic_scholar_circuit_breaks_after_rate_limit(monkeypatch):

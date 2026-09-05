@@ -5,14 +5,14 @@ Wants=network-online.target docker.service
 
 [Service]
 Type=simple
-User=zhouxueyang
-Group=zhouxueyang
+User=faros
+Group=faros
 SupplementaryGroups=docker
-WorkingDirectory=/data/zxy/faros/current/backend
-EnvironmentFile=/data/zxy/faros/runtime/backend.env
-EnvironmentFile=/data/zxy/faros/runtime/credentials.env
-ExecStartPre=/data/zxy/faros/current/scripts/cleanup_stale_sandboxes.sh
-ExecStart=/data/zxy/faros/venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 18005 --workers 1 --proxy-headers --forwarded-allow-ips 127.0.0.1
+WorkingDirectory=/opt/faros/current/backend
+EnvironmentFile=/opt/faros/runtime/backend.env
+EnvironmentFile=/opt/faros/runtime/credentials.env
+ExecStartPre=/opt/faros/current/scripts/cleanup_stale_sandboxes.sh
+ExecStart=/opt/faros/venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 18005 --workers 1 --proxy-headers --forwarded-allow-ips 127.0.0.1
 Restart=always
 RestartSec=5
 TimeoutStopSec=30

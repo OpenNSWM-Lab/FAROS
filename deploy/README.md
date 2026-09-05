@@ -47,8 +47,8 @@ Browser
 ./scripts/check_deployment_dependencies.sh --role local
 
 # 内网计算节点；同时强制验证 NVIDIA 运行时和 GPU 镜像
-DATA_DIR=/data/zxy/faros/runtime/data \
-MPLCONFIGDIR=/data/zxy/faros/runtime/matplotlib \
+DATA_DIR=/opt/faros/runtime/data \
+MPLCONFIGDIR=/opt/faros/runtime/matplotlib \
 ./scripts/check_deployment_dependencies.sh --role compute --require-gpu
 
 # 公网网关
@@ -174,13 +174,13 @@ docker run --rm --gpus all faros/codegen-gpu:cuda12.4 \
 
 ### 5.3 目录与 Python
 
-参考部署以 `/data/zxy/faros` 为根，与仓库中的 systemd 单元一致。若目标机器使用其他路径，必须同步修改单元和两个环境文件：
+参考部署以 `/opt/faros` 为根，与仓库中的 systemd 单元一致。若目标机器使用其他路径，必须同步修改单元和两个环境文件：
 
 ```bash
-mkdir -p /data/zxy/faros/{current,releases,runtime/data,runtime/matplotlib,runtime/provider-configs}
-python3 -m venv /data/zxy/faros/venv
-/data/zxy/faros/venv/bin/python -m pip install --upgrade pip
-/data/zxy/faros/venv/bin/python -m pip install -r backend/requirements.txt
+mkdir -p /opt/faros/{current,releases,runtime/data,runtime/matplotlib,runtime/provider-configs}
+python3 -m venv /opt/faros/venv
+/opt/faros/venv/bin/python -m pip install --upgrade pip
+/opt/faros/venv/bin/python -m pip install -r backend/requirements.txt
 ```
 
 所有目录必须归 systemd 中的 `User` 所有。`DATA_DIR`、`MPLCONFIGDIR` 和 Provider 配置目录必须可写；SQLite 数据库不应通过 Git 或 rsync 覆盖。
@@ -191,15 +191,15 @@ python3 -m venv /data/zxy/faros/venv
 
 ```bash
 install -m 0640 deploy/systemd/faros-compute.env.example \
-  /data/zxy/faros/runtime/backend.env
+  /opt/faros/runtime/backend.env
 install -m 0600 deploy/systemd/faros-credentials.env.example \
-  /data/zxy/faros/runtime/credentials.env
+  /opt/faros/runtime/credentials.env
 ```
 
 用部署虚拟环境生成稳定的 Fernet Key，填入 `FAROS_CREDENTIAL_KEY`：
 
 ```bash
-/data/zxy/faros/venv/bin/python -c \
+/opt/faros/venv/bin/python -c \
   'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'
 ```
 
@@ -216,8 +216,8 @@ ReviewX 正式签核必须使用专用 signer 账号。生产模板启用
 升级前先备份 `DATA_DIR`，再执行：
 
 ```bash
-cd /data/zxy/faros/current/backend
-DATA_DIR=/data/zxy/faros/runtime/data /data/zxy/faros/venv/bin/alembic upgrade head
+cd /opt/faros/current/backend
+DATA_DIR=/opt/faros/runtime/data /opt/faros/venv/bin/alembic upgrade head
 ```
 
 ### 5.6 systemd
