@@ -18,8 +18,8 @@ export function MetricsTable({ metrics }: MetricsTableProps) {
           </tr>
         </thead>
         <tbody>
-          {metrics.map((metric, index) => (
-            <tr key={index} className="border-b last:border-0">
+          {metrics.map((metric) => (
+            <tr key={metric.name} className="border-b last:border-0">
               <td className="px-4 py-3 text-sm font-medium capitalize">
                 {metric.name.replace(/_/g, ' ')}
               </td>
