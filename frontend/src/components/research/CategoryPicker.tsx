@@ -31,9 +31,15 @@ export function CategoryPicker({
   const [expandedGroups, setExpandedGroups] = useState<Set<CategoryGroup>>(
     new Set(['post-training', 'inference'])
   )
-  const [favorites, setFavorites] = useState<Set<string>>(
-    new Set(JSON.parse(localStorage.getItem('favoriteDirections') || '[]'))
-  )
+  const [favorites, setFavorites] = useState<Set<string>>(() => {
+    try {
+      const stored = localStorage.getItem('favoriteDirections')
+      const parsed = stored ? JSON.parse(stored) : []
+      return new Set(Array.isArray(parsed) ? parsed : [])
+    } catch {
+      return new Set()
+    }
+  })
 
   const filteredDirections = useMemo(() => {
     let results = searchQuery ? searchDirections(searchQuery) : allDirections
