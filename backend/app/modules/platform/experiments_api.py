@@ -637,7 +637,7 @@ async def render_figure_endpoint(experiment_id: str, req: RenderFigureRequest):
         artifact = generate_figure(
             experiment_id=experiment_id,
             user_spec=user_spec,
-            data_override=data_override or [{'_': 1}],
+            data_override=data_override,
         )
         return artifact
     except ValueError as exc:
