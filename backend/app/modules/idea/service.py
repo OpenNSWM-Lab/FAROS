@@ -6504,19 +6504,19 @@ class IdeaGenerationService:
                     try:
                         score = float(''.join(c for c in line if c.isdigit() or c == '.'))
                         current_idea["novelty"] = min(10, max(0, score))
-                    except:
+                    except (ValueError, IndexError):
                         current_idea["novelty"] = 7.0
                 elif "feasibility" in lower and "score" in lower:
                     try:
                         score = float(''.join(c for c in line if c.isdigit() or c == '.'))
                         current_idea["feasibility"] = min(10, max(0, score))
-                    except:
+                    except (ValueError, IndexError):
                         current_idea["feasibility"] = 7.0
                 elif "impact" in lower and "score" in lower:
                     try:
                         score = float(''.join(c for c in line if c.isdigit() or c == '.'))
                         current_idea["impact"] = min(10, max(0, score))
-                    except:
+                    except (ValueError, IndexError):
                         current_idea["impact"] = 7.0
         
         # Don't forget the last idea
