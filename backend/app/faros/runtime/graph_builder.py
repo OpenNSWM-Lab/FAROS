@@ -12,9 +12,20 @@ class GraphBuilder:
 
     def dependency_map(self, blueprint: Blueprint) -> Dict[str, Dict[str, List[str]]]:
         mapping = {node.id: {'upstream': [], 'downstream': []} for node in blueprint.workflow}
+        node_ids = set(mapping.keys())
         for edge in blueprint.edges:
-            mapping.setdefault(edge.target, {'upstream': [], 'downstream': []})['upstream'].append(edge.source)
-            mapping.setdefault(edge.source, {'upstream': [], 'downstream': []})['downstream'].append(edge.target)
+            invalid = []
+            if edge.source not in node_ids:
+                invalid.append(f"source '{edge.source}'")
+            if edge.target not in node_ids:
+                invalid.append(f"target '{edge.target}'")
+            if invalid:
+                raise ValueError(
+                    f"Edge {edge.source} -> {edge.target} references "
+                    f"non-existent node(s): {', '.join(invalid)}"
+                )
+            mapping[edge.target]['upstream'].append(edge.source)
+            mapping[edge.source]['downstream'].append(edge.target)
         return mapping
 
     def initial_step_states(self, blueprint: Blueprint) -> List[StepState]:
