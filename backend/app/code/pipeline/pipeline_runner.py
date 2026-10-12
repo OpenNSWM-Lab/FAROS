@@ -129,9 +129,10 @@ class PipelineRunner:
         except json.JSONDecodeError:
             pass
         
-        # Return empty dict if parsing fails
-        logger.warning(f"Failed to parse JSON from response: {text[:200]}")
-        return {}
+        # Raise instead of silently returning empty dict so callers
+        # can distinguish "no valid JSON" from "empty response" and
+        # handle it as a pipeline step failure.
+        raise ValueError(f"Failed to parse JSON from LLM response: {text[:200]}")
     
     def _step_search(self) -> Tuple[Dict, Dict]:
         """Step 1: Search and retrieve context."""
