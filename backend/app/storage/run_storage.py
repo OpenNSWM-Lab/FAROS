@@ -9,6 +9,7 @@ Scientific Responsibility:
 """
 
 import json
+import logging
 import os
 from pathlib import Path
 from typing import List, Optional
@@ -16,6 +17,8 @@ from datetime import datetime
 
 from app.models.run import Run, RunStatus
 from app.core.paths import get_data_dir
+
+logger = logging.getLogger(__name__)
 
 
 class RunStorage:
@@ -172,14 +175,18 @@ class RunStorage:
         runs = []
         
         for run_file in self.storage_dir.glob("*.json"):
-            with open(run_file, 'r', encoding='utf-8') as f:
-                run_dict = json.load(f)
-            
-            run = self._deserialize_run(run_dict)
-            
-            # Apply status filter
-            if status is None or run.status == status:
-                runs.append(run)
+            try:
+                with open(run_file, 'r', encoding='utf-8') as f:
+                    run_dict = json.load(f)
+                
+                run = self._deserialize_run(run_dict)
+                
+                # Apply status filter
+                if status is None or run.status == status:
+                    runs.append(run)
+            except (json.JSONDecodeError, OSError, ValueError, KeyError) as e:
+                logger.warning("Skipping corrupted run file %s: %s", run_file, e)
+                continue
         
         # Sort by creation time (newest first)
         runs.sort(key=lambda r: r.createdAt, reverse=True)
@@ -199,11 +206,15 @@ class RunStorage:
         runs = []
         
         for run_file in self.storage_dir.glob("*.json"):
-            with open(run_file, 'r', encoding='utf-8') as f:
-                run_dict = json.load(f)
-            
-            if run_dict.get('planId') == plan_id:
-                runs.append(self._deserialize_run(run_dict))
+            try:
+                with open(run_file, 'r', encoding='utf-8') as f:
+                    run_dict = json.load(f)
+                
+                if run_dict.get('planId') == plan_id:
+                    runs.append(self._deserialize_run(run_dict))
+            except (json.JSONDecodeError, OSError, ValueError, KeyError) as e:
+                logger.warning("Skipping corrupted run file %s: %s", run_file, e)
+                continue
         
         runs.sort(key=lambda r: r.createdAt, reverse=True)
         
