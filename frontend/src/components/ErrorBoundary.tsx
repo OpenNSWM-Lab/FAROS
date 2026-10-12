@@ -27,14 +27,14 @@ export class ErrorBoundary extends Component<Props, State> {
     }
   }
 
-  static getDerivedStateFromError(error: Error): Partial<State> {
+  static override getDerivedStateFromError(error: Error): Partial<State> {
     return {
       hasError: true,
       error,
     }
   }
 
-  componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+  override componentDidCatch(error: Error, errorInfo: ErrorInfo) {
     console.error('ErrorBoundary caught an error:', error, errorInfo)
     this.setState({
       errorInfo,
@@ -87,7 +87,7 @@ export class ErrorBoundary extends Component<Props, State> {
     setTimeout(() => this.setState({ copied: false }), 2000)
   }
 
-  render() {
+  override render() {
     if (this.state.hasError) {
       const { error } = this.state
       const isApiError = error && 'code' in error
