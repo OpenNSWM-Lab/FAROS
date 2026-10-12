@@ -520,9 +520,15 @@ async def cancel_session(session_id: str) -> SessionResponse:
         session = service.cancel_session(session_id)
         return _session_to_response(session)
     except ValueError as e:
+        msg = str(e)
+        if "not found" in msg:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=msg
+            )
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
+            status_code=status.HTTP_409_CONFLICT,
+            detail=msg
         )
 
 
