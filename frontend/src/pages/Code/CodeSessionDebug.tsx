@@ -372,7 +372,10 @@ export function CodeSessionDebug() {
                 <Input
                   type="number"
                   value={timeoutSec}
-                  onChange={(e) => setTimeoutSec(parseInt(e.target.value) || 300)}
+                  onChange={(e) => {
+                    const parsed = parseInt(e.target.value, 10)
+                    setTimeoutSec(Number.isNaN(parsed) || parsed < 1 ? 300 : parsed)
+                  }}
                   min={10}
                   max={3600}
                   className="text-sm mt-1"
