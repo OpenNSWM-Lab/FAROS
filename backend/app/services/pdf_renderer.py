@@ -52,7 +52,8 @@ def compile_latex_project(project_dir: str, main_tex: str = "main.tex", engine: 
 
 def _requires_xelatex(main_tex_path: str) -> bool:
     try:
-        content = open(main_tex_path, "r", encoding="utf-8", errors="ignore").read(4096)
+        with open(main_tex_path, "r", encoding="utf-8", errors="ignore") as f:
+            content = f.read(4096)
     except OSError:
         return False
     return any(marker in content for marker in ("ctexart", "ctexbook", "ctexrep", "xeCJK", "fontspec"))
