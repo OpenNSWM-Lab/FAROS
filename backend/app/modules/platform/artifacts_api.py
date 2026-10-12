@@ -41,9 +41,13 @@ async def get_artifact(artifact_id: str) -> ArtifactResponse:
 
 
 @router.get("", response_model=ArtifactListResponse)
-async def list_artifacts(runId: Optional[str] = Query(None, description="Filter by runId")) -> ArtifactListResponse:
+async def list_artifacts(
+    runId: Optional[str] = Query(None, description="Filter by runId"),
+    limit: int = Query(100, ge=1, le=1000, description="Maximum number of artifacts to return"),
+    offset: int = Query(0, ge=0, description="Number of artifacts to skip"),
+) -> ArtifactListResponse:
     service = get_service()
-    artifacts = service.list_artifacts(runId=runId)
+    artifacts = service.list_artifacts(runId=runId, limit=limit, offset=offset)
     return ArtifactListResponse(
         artifacts=[ArtifactResponse.model_validate(a) for a in artifacts],
         total=len(artifacts),
