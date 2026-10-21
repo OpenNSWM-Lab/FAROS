@@ -12,6 +12,7 @@
 
 <p align="center">
   <a href="https://github.com/OpenNSWM-Lab/FAROS/stargazers"><img src="https://img.shields.io/github/stars/OpenNSWM-Lab/FAROS?style=for-the-badge&color=FFB300&label=Stars" alt="GitHub Stars" /></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-16A34A?style=for-the-badge" alt="MIT License" /></a>
   <a href="#模型接入"><img src="https://img.shields.io/badge/Models-Multi--Provider-0891B2?style=for-the-badge" alt="Multiple model providers" /></a>
   <a href="#三项核心机制"><img src="https://img.shields.io/badge/Research-Evidence--Driven-2563EB?style=for-the-badge" alt="Evidence-driven research" /></a>
   <a href="#科研闭环"><img src="https://img.shields.io/badge/Workflow-Human--in--the--Loop-16A34A?style=for-the-badge" alt="Human-in-the-loop workflow" /></a>
@@ -240,6 +241,10 @@ npm run build
 
 欢迎通过 [Issues](https://github.com/OpenNSWM-Lab/FAROS/issues) 和 [Pull Requests](https://github.com/OpenNSWM-Lab/FAROS/pulls) 贡献模型适配、领域数据、验证工具、科研流程与交互改进。接入新的研究领域时，可以从一个代表性问题出发，逐步补充数据源、执行工具和验收标准，再扩展为可复用的流程。
 
+## 许可证
+
+FAROS 原创源代码与文档采用 [MIT 许可证](LICENSE)。使用、修改和分发时，请保留许可证文本及版权声明。第三方代码、论文模板、数据集与模型资源遵循各自的授权条款，详见[第三方授权说明](THIRD_PARTY_NOTICES.txt)。
+
 ---
 
 # English
@@ -398,6 +403,10 @@ Experiment directories document data preparation, entry points, and outputs. Rec
 - [ReviewX evaluation framework](experiments/reviewx_eval/README.md) and [SciFact closed-loop experiment](backend/experiments/reviewx_scifact/README.md)
 
 Contributions to model adapters, domain datasets, verification tools, workflows, and user experience are welcome through [Issues](https://github.com/OpenNSWM-Lab/FAROS/issues) and [Pull Requests](https://github.com/OpenNSWM-Lab/FAROS/pulls). Start a domain extension with a representative question, connect its data and execution tools, define acceptance criteria, and grow it into a reusable workflow.
+
+## License
+
+Original FAROS source code and documentation are licensed under the [MIT License](LICENSE). Retain the license text and copyright notice when using, modifying, or distributing the software. Third-party code, paper templates, datasets, and model resources retain their own terms; see [Third-Party Notices](THIRD_PARTY_NOTICES.txt).
 
 ---
 

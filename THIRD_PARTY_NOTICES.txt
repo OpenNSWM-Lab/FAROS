@@ -1,0 +1,61 @@
+FAROS Third-Party Notices
+=========================
+
+Scope
+-----
+The root MIT License covers original FAROS source code and documentation
+unless otherwise stated. Third-party components retain their own copyrights
+and licenses. The FAROS license does not replace their terms or grant rights
+that belong to their respective owners.
+
+Bundled LaTeX components
+-----------------------
+The following files contain LaTeX Project Public License (LPPL) notices:
+
+- backend/templates/latex/iclr/fancyhdr.sty
+- backend/templates/latex/iclr/natbib.sty
+- backend/templates/latex/iclr/iclr2025_conference.bst
+- backend/templates/latex/icml/fancyhdr.sty
+- backend/templates/latex/icml/icml2025.bst
+- backend/templates/latex/acl/acl_natbib.bst
+
+Their original file headers identify authors, license versions, and
+redistribution conditions. Preserve these notices and comply with the
+applicable LPPL version, including any source or modification requirements.
+For example, the bundled natbib.sty header requires its original natbib.dtx
+source when redistributing it.
+
+LPPL information: https://www.latex-project.org/lppl/
+natbib source distribution: https://ctan.org/pkg/natbib
+
+Other conference-supplied style files, bibliography styles, algorithm
+packages, and derived template material under backend/templates/latex/
+remain third-party material. Their original notices and upstream terms
+apply. A file without an explicit license must not be assumed to be covered
+by FAROS's MIT License; check the corresponding upstream distribution before
+redistributing or modifying such material.
+
+Software dependencies
+---------------------
+Dependencies installed from backend/requirements.txt,
+backend/requirements-dev.txt, and frontend/package-lock.json remain under
+their respective licenses. The frontend package's MIT declaration describes
+FAROS application code, not every dependency it installs.
+
+In particular, fpdf2 is a runtime dependency with an LGPLv3 license:
+https://github.com/py-pdf/fpdf2/blob/master/LICENSE
+
+Consult the license shipped with each installed version. Preserve required
+copyright notices, license texts, and source-access provisions when packaging
+dependencies or distributing an image that includes them. This notice is
+not an exhaustive inventory of transitive dependencies.
+
+External research resources
+---------------------------
+Datasets, source papers, third-party images, fonts, model weights, and
+user-uploaded materials are not relicensed by the FAROS code license.
+Their original owners' terms govern their use and redistribution. Experiment
+documentation and data manifests record available source and license details.
+Access to a download or an API is not itself permission to redistribute the
+underlying material. Model API services also remain subject to their
+providers' terms.

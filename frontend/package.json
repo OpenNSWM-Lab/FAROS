@@ -2,6 +2,7 @@
   "name": "llm-scientist-platform",
   "private": true,
   "version": "5.15.2",
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "dev": "bash ./scripts/run_frontend.sh",
